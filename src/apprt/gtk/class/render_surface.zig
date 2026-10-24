@@ -308,6 +308,8 @@ pub const RenderSurface = extern struct {
         switch (frame) {
             .dmabuf => |dmabuf| try self.rebuildDmabufTexture(dmabuf),
             .memory => |memory| try self.rebuildMemoryTexture(memory),
+            // Only produced by the WGL path on Windows.
+            .presented => unreachable,
         }
     }
 

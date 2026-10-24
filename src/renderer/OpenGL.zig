@@ -2,9 +2,11 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const gl = @import("opengl");
 const egl = gl.egl;
+const wgl = gl.wgl;
 const shadertoy = @import("shadertoy.zig");
 const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
@@ -35,6 +37,10 @@ pub const swap_chain_count = 3;
 
 const log = std.log.scoped(.opengl);
 
+/// On Windows we render with WGL directly into the surface's window
+/// and present with SwapBuffers instead of exporting frames.
+const is_windows = builtin.target.os.tag == .windows;
+
 /// We require at least OpenGL 4.3
 pub const MIN_VERSION_MAJOR = 4;
 pub const MIN_VERSION_MINOR = 3;
@@ -47,13 +53,24 @@ blending: configpkg.Config.AlphaBlending,
 /// The shared render device.
 device: *const Device,
 
-egl_context: *gl.egl.Context,
+egl_context: if (is_windows) void else *gl.egl.Context,
+
+/// The WGL state for the surface's window (Windows only).
+wgl_state: if (is_windows) Wgl else void,
+
+const Wgl = struct {
+    hwnd: wgl.HWND,
+    hdc: wgl.HDC,
+    context: wgl.HGLRC,
+};
 
 pub fn init(
     alloc: Allocator,
     device: *const Device,
     opts: rendererpkg.Options,
 ) !OpenGL {
+    if (comptime is_windows) return initWgl(alloc, device, opts);
+
     const display = device.display;
 
     // Bind to OpenGL API explicitly before we create the context,
@@ -86,10 +103,58 @@ pub fn init(
         .blending = opts.config.blending,
         .device = device,
         .egl_context = context,
+        .wgl_state = {},
+    };
+}
+
+/// Create a WGL context for the apprt surface's window. The window's
+/// pixel format is set here, on the main thread, before the render
+/// thread ever makes the context current.
+fn initWgl(
+    alloc: Allocator,
+    device: *const Device,
+    opts: rendererpkg.Options,
+) !OpenGL {
+    if (comptime !@hasDecl(apprt.Surface, "nativeWindow")) {
+        @compileError("the apprt must provide nativeWindow() for WGL rendering");
+    }
+
+    const hwnd: wgl.HWND = @ptrCast(opts.rt_surface.nativeWindow());
+    const hdc = wgl.GetDC(hwnd) orelse return error.WglGetDCFailed;
+    errdefer _ = wgl.ReleaseDC(hwnd, hdc);
+
+    try device.wgl_ext.setPixelFormat(hdc);
+    const context = try device.wgl_ext.createContext(
+        hdc,
+        MIN_VERSION_MAJOR,
+        MIN_VERSION_MINOR,
+        builtin.mode == .debug,
+    );
+    errdefer _ = wgl.wglDeleteContext(context);
+
+    // Verify the context works, then release it so the render
+    // thread can make it current.
+    if (wgl.wglMakeCurrent(hdc, context) == 0) return error.WglMakeCurrentFailed;
+    _ = wgl.wglMakeCurrent(null, null);
+
+    return .{
+        .alloc = alloc,
+        .blending = opts.config.blending,
+        .device = device,
+        .egl_context = {},
+        .wgl_state = .{ .hwnd = hwnd, .hdc = hdc, .context = context },
     };
 }
 
 pub fn deinit(self: *OpenGL) void {
+    if (comptime is_windows) {
+        _ = wgl.wglMakeCurrent(null, null);
+        _ = wgl.wglDeleteContext(self.wgl_state.context);
+        _ = wgl.ReleaseDC(self.wgl_state.hwnd, self.wgl_state.hdc);
+        self.* = undefined;
+        return;
+    }
+
     self.device.display.releaseCurrent();
     self.egl_context.destroy(self.device.display) catch {};
     self.* = undefined;
@@ -200,6 +265,20 @@ fn prepareContext(getProcAddress: anytype) !void {
 /// function pointers so all subsequent GL work on this thread is valid.
 pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     _ = surface;
+    if (comptime is_windows) {
+        const state = self.wgl_state;
+        if (wgl.wglMakeCurrent(state.hdc, state.context) == 0) {
+            return error.WglMakeCurrentFailed;
+        }
+        try prepareContext(&wgl.getProcAddress);
+
+        // DWM composites windowed GL output so there is no tearing
+        // without vsync, and blocking in SwapBuffers would only add
+        // input latency to the render thread.
+        if (self.device.wgl_ext.swapInterval) |swapInterval| _ = swapInterval(0);
+        return;
+    }
+
     try self.device.display.makeCurrent(null, null, self.egl_context);
     // Load our function pointers for this thread's threadlocal.
     try prepareContext(&gl.egl.getProcAddress);
@@ -209,6 +288,12 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
 /// thread; unbinds the context from this thread so it can be destroyed on
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
+    if (comptime is_windows) {
+        _ = wgl.wglMakeCurrent(null, null);
+        gl.glad.unload();
+        return;
+    }
+
     self.device.display.releaseCurrent();
     gl.glad.unload();
 }
@@ -279,6 +364,11 @@ pub fn present(
     target: Target,
     presentation_health: rendererpkg.Health,
 ) !ExportedFrame {
+    if (comptime is_windows) {
+        try self.presentWgl(target);
+        return .presented;
+    }
+
     // We only export DMABUFs when the apprt can present them.
     // Otherwise, use CPU buffers.
     if (presentation_health == .healthy) {
@@ -297,10 +387,35 @@ pub fn present(
     } };
 }
 
+/// Blit the render target to the window's back buffer and swap.
+///
+/// The target texture holds sRGB-encoded values. The window's pixel
+/// format is sRGB-capable and GL_FRAMEBUFFER_SRGB is enabled, so the
+/// blit decodes and re-encodes, copying the pixels unchanged.
+fn presentWgl(self: *OpenGL, target: Target) !void {
+    const ctx = &gl.glad.context;
+    const w: gl.c.GLint = @intCast(target.width);
+    const h: gl.c.GLint = @intCast(target.height);
+
+    ctx.BindFramebuffer.?(gl.c.GL_DRAW_FRAMEBUFFER, 0);
+    // The window may briefly be larger than the target while resizing.
+    ctx.ClearColor.?(0, 0, 0, 1);
+    ctx.Clear.?(gl.c.GL_COLOR_BUFFER_BIT);
+    ctx.BindFramebuffer.?(gl.c.GL_READ_FRAMEBUFFER, target.framebuffer.id);
+    ctx.BlitFramebuffer.?(0, 0, w, h, 0, 0, w, h, gl.c.GL_COLOR_BUFFER_BIT, gl.c.GL_NEAREST);
+    ctx.BindFramebuffer.?(gl.c.GL_FRAMEBUFFER, 0);
+
+    if (wgl.SwapBuffers(self.wgl_state.hdc) == 0) return error.WglSwapBuffersFailed;
+}
+
 /// A finished frame exported for presentation by the apprt.
 pub const ExportedFrame = union(enum) {
-    dmabuf: Dmabuf,
+    dmabuf: if (is_windows) void else Dmabuf,
     memory: Memory,
+
+    /// The frame was already presented directly to the apprt's
+    /// window (WGL) and there is nothing left to composite.
+    presented,
 
     /// RGBA8 pixel data with premultiplied alpha, tightly packed
     /// (`width * 4` bytes per row), in CPU memory.
@@ -317,8 +432,9 @@ pub const ExportedFrame = union(enum) {
 
     pub fn deinit(self: ExportedFrame) void {
         switch (self) {
-            .dmabuf => |v| v.deinit(),
+            .dmabuf => |v| if (comptime !is_windows) v.deinit(),
             .memory => |v| v.deinit(),
+            .presented => {},
         }
     }
 };

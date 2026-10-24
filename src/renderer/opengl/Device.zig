@@ -4,14 +4,21 @@
 //! contexts, each corresponding to a surface, its renderer
 //! object and its render thread.
 //!
+//! On Windows there is no EGL; this instead holds the WGL extension
+//! entry points used to create a WGL context per surface.
+//!
 //! TODO: If there's a way to prefer certain devices like in
 //! Vulkan or Metal we should do it here.
 const Device = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const gl = @import("opengl");
 const egl = gl.egl;
+const wgl = gl.wgl;
+
+const is_windows = builtin.target.os.tag == .windows;
 
 const log = std.log.scoped(.opengl);
 
@@ -28,15 +35,27 @@ pub const Options = struct {
 /// The lifecycle of this display is always managed externally, both in the
 /// cases where we were given a display as a config option, or we use the
 /// systemwide default display that is cleaned up by the OS.
-display: *egl.Display,
+display: if (is_windows) void else *egl.Display,
 
 /// The EGL config used to create surface renderer contexts. Chosen
 /// once here so that all contexts share compatible capabilities.
-config: *egl.Config,
+config: if (is_windows) void else *egl.Config,
+
+/// The WGL extension entry points (Windows only).
+wgl_ext: if (is_windows) wgl.Extensions else void,
 
 pub fn init(alloc: Allocator, options: Options) !*Device {
     const self = try alloc.create(Device);
     errdefer alloc.destroy(self);
+
+    if (comptime is_windows) {
+        self.* = .{
+            .display = {},
+            .config = {},
+            .wgl_ext = try wgl.Extensions.load(),
+        };
+        return self;
+    }
 
     try egl.load();
 
@@ -69,6 +88,7 @@ pub fn init(alloc: Allocator, options: Options) !*Device {
     self.* = .{
         .display = display,
         .config = config,
+        .wgl_ext = {},
     };
     return self;
 }

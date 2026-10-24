@@ -77,12 +77,15 @@ pub fn complete(self: *const Self, sync: bool) void {
     // Sync after frame draw AND frame present GL calls.
     gl.finish();
 
-    // At this point the ExportedFrame is finished and can be shared
+    // At this point the ExportedFrame is finished and can be shared.
+    // A frame already presented to the window needs nothing more.
     if (presented_frame) |frame| {
-        self.renderer.pushFrame(frame);
+        if (frame != .presented) {
+            self.renderer.pushFrame(frame);
 
-        // Notify the surface that it should redraw
-        _ = self.renderer.surface_mailbox.push(.redraw, .{ .forever = {} });
+            // Notify the surface that it should redraw
+            _ = self.renderer.surface_mailbox.push(.redraw, .{ .forever = {} });
+        }
     }
 
     // Report the health to the renderer.
