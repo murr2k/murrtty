@@ -61,6 +61,18 @@ These change the work. Each has a recommendation.
 6. **CI on a private repository.** Actions minutes are billed for private
    repos, and Windows runners count double. *Recommended: a single port-owned
    workflow (0.11, later 7.2), started manually or on release tags at first.*
+   *Decided 2026-10-24: both kinds of runner.* A self-hosted runner on the
+   owner's desktop runs the build, the unit tests and the GUI suite often,
+   possibly on every push (its GPU has the OpenGL 4.3 hosted runners lack);
+   the owner accepts GitHub's fee for self-hosted runners on private repos.
+   The GitHub-hosted job stays manual and occasional (after a rebase, before
+   a release) as the clean-machine builder test, so it gets no build cache.
+   Planned at the break between Phase 0 and Phase 1. Open points for that
+   plan: the runner must run in a signed-in session for the GUI suite
+   (a service in session 0 has no interactive desktop), the clipboard
+   scenarios briefly take over the clipboard of the session they run in, a
+   dedicated low-privilege account, and the runner must never serve a public
+   repository.
 7. **Upstreaming.** Whether to pursue in-tree support (7.9). It decides how
    carefully history is kept (0.10) and which fixes are written to be
    upstreamable first (Windows `reportPwd`, font style matching).
@@ -375,11 +387,42 @@ branch `windows-port-regrouped` (seven area commits, same tree); replacing
 - Rebase per upstream tag on a `rebase/<date>` branch, tagging the previous
   tip for rollback. This is an ongoing practice from here on, not a one-off.
 
-**0.11 Minimal CI, M.** One port-owned workflow, started manually: the Windows
+**0.11 Minimal CI, M.** *Done 2026-10-24.* One port-owned workflow, started manually: the Windows
 build, the Windows unit tests, and the builder under PowerShell 5.1. Before
 enabling Actions, disable every upstream workflow: the vouch workflows have no
 repository guard and act on every issue. A guard step fails if any other
 workflow is active. Phase 7 extends it (7.2).
+
+*As built:* `.github/workflows/windows-port.yml`, started with
+`gh workflow run windows-port.yml --ref windows-port` or from the Actions
+tab. A guard job, then a `windows-latest` job that runs `build-windows.cmd`
+(Windows PowerShell 5.1 on a runner without Zig: download, SHA-256 check,
+ReleaseFast build) and the full unit suite, about 4,100 tests, with the Zig
+the builder installed. A run from cold takes about 57 minutes (builder 29,
+unit tests 27), about 115 billed minutes of the free plan's 2,000 a month
+since Windows minutes count double. Three upstream tests failed on Windows and were fixed: one
+compared two `@tagName` strings by pointer, two skipped on `AccessDenied`
+where Zig 0.17 reports a missing symlink privilege as `PermissionDenied`.
+Two of the port's own tests assumed a Windows 11 desktop and failed on the
+runner's Windows Server 2025: there `.pyw` is registered without a command
+(Python installed without its launcher, so it opens in Notepad) and Cascadia
+Mono has no italic file. They now check `.reg`, `.msc` and `.chm`, which
+Windows registers to code runners, and the italic match only where an italic
+file exists.
+
+Disabling first turned out to be impossible: GitHub registers a workflow
+only when one of its own events fires, and only a registered workflow can be
+disabled. So Actions was enabled with the policy "GitHub-owned actions only",
+which stops every upstream workflow at startup since each uses a third-party
+action. The first push registered `test.yml` and `nix.yml` (push-triggered);
+their runs ended in `startup_failure` with no jobs and nothing billed, and
+both are now disabled. The other 13 register on their own events (an issue,
+a tag, a cron) and are disabled as they appear. Their jobs also target
+upstream's `namespace-profile-*` runners, which don't exist here. The guard
+fails while any registered workflow other than the port's is active and
+lists the unregistered ones as notices. Before pushing a rebase, list the
+workflows it adds: one that is push-triggered and uses only GitHub-owned
+actions on a GitHub-hosted runner would get past the policy.
 
 **0.12 Modified keys through ConPTY (win32-input-mode), M.** *Added
 2026-10-24, found during 0.2; not yet scheduled.* ConPTY turns the VT bytes it
