@@ -243,7 +243,9 @@ fixed width, from an index built once. Upstreamable; the DirectWrite backend
 stays in 6.1. *Done when:* the log shows the Bold and Italic faces of Consolas
 and Cascadia Mono for bold and italic text.
 
-**0.10 Rebase hygiene, S.**
+**0.10 Rebase hygiene, S.** *Done 2026-10-24. The regrouped history is the
+branch `windows-port-regrouped` (seven area commits, same tree); replacing
+`windows-port` with it is the owner's call.*
 - Move the port README to `.github/README.md`. GitHub shows it in preference
   to the root file, so the root `README.md` returns to upstream's text and
   stops conflicting on every upstream README edit.
