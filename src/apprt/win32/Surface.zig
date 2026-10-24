@@ -39,6 +39,12 @@ core_surface: CoreSurface = undefined,
 core_initialized: bool = false,
 
 title: ?[:0]const u8 = null,
+
+/// The terminal's background and foreground as they are now, which the
+/// window's caption and tab strip follow: the surface's config's until a
+/// program changes them (OSC 10/11) or the config changes.
+colors: Colors = .{ .bg = .{ .r = 0, .g = 0, .b = 0 }, .fg = .{ .r = 255, .g = 255, .b = 255 } },
+
 content_scale: apprt.ContentScale = .{ .x = 1, .y = 1 },
 size: apprt.SurfaceSize = .{ .width = 0, .height = 0 },
 cursor_pos: apprt.CursorPos = .{ .x = -1, .y = -1 },
@@ -57,6 +63,15 @@ ime_composing: bool = false,
 /// shown from the message loop, never inside a core callback. The surface
 /// owns them, so closing it answers (denies) and frees what is still queued.
 clipboard_pending: std.ArrayList(PendingClipboard) = .empty,
+
+pub const Colors = struct {
+    bg: configpkg.Config.Color,
+    fg: configpkg.Config.Color,
+
+    pub fn fromConfig(config: *const configpkg.Config) Colors {
+        return .{ .bg = config.background, .fg = config.foreground };
+    }
+};
 
 /// Register the window class. Called once by the App.
 pub fn registerClass(instance: c.HINSTANCE) !void {
@@ -113,6 +128,7 @@ pub fn init(
 
     var config = try apprt.surface.newConfig(app.core_app, &app.config, context);
     defer config.deinit();
+    self.colors = .fromConfig(&config);
 
     // Initializing the core surface creates the renderer, which sets
     // the pixel format on our window and starts the render thread.

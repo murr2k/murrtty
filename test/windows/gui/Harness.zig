@@ -744,6 +744,9 @@ pub const Dump = struct {
         enabled: bool,
         active: usize,
         client: [2]i32,
+        /// The title bar as Ghostty set it: dark or light, and the caption
+        /// color (0xRRGGBB) or -1 for the system's.
+        chrome: ?struct { dark: bool, caption: i64 } = null,
         tab_bar: TabBar,
         tabs: []const Tab,
     };
@@ -768,6 +771,8 @@ pub const Dump = struct {
         /// The pixel asked for with `probe`, 0xRRGGBB with bit 24 set
         /// once a frame has been read; 0 until then.
         probe: ?u32 = null,
+        /// The color scheme the core surface has: "light" or "dark".
+        scheme: ?[]const u8 = null,
         text: ?[]const u8 = null,
     };
 };
@@ -792,6 +797,13 @@ pub fn probe(self: *Harness, g: *const Ghostty, x: u32, y: u32) !u32 {
         w.Sleep(100);
     }
     return self.fail("no frame was presented after asking for pixel ({d},{d})", .{ x, y });
+}
+
+/// Make Ghostty act as if the system's light/dark setting changed, without
+/// changing the user's setting.
+pub fn setSystemDark(self: *Harness, g: *const Ghostty, dark: bool) !void {
+    var d = try self.dumpWith(g, 2, @intFromBool(dark));
+    d.deinit();
 }
 
 fn dumpWith(self: *Harness, g: *const Ghostty, wparam: w.WPARAM, lparam: w.LPARAM) !std.json.Parsed(Dump) {

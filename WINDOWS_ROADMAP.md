@@ -220,7 +220,7 @@ by the Debug renderer under the test hooks: the background at several
 opacities, and a prompt cell painted red, which proves the frame itself
 reaches the window at its top-left corner, unblended.
 
-**0.4 Window theme and caption colors, S.**
+**0.4 Window theme and caption colors, S.** *Done 2026-10-24.*
 - Implement `window-theme` (auto, system, light, dark, ghostty) and
   `window-titlebar-background`/`-foreground`.
 - On Windows 11 set `DWMWA_CAPTION_COLOR`/`TEXT_COLOR`/`BORDER_COLOR`. With
@@ -239,6 +239,17 @@ reaches the window at its top-left corner, unblended.
 
 *Done when:* every `window-theme` value gives the expected caption under both
 system themes, and mode 2031 reports arrive.
+
+*As built:* each surface tracks its current background and foreground
+(config, then OSC 10/11, reset by its `config_change`), and the window's
+caption, border, caption text and tab strip follow the active tab's. The
+`theme` GUI scenario checks every value through the state dump (what Ghostty
+asks DWM for), the caption following OSC 11, and a simulated system switch
+reaching open terminals' color scheme, which is what queues the mode 2031
+report; whether the report then gets through ConPTY to the program isn't
+observable from the tests. `auto` takes the terminal colors even when the
+theme has light and dark variants (the config docs say `auto` then acts as
+`system`); the terminal's colors follow the scheme in that case anyway.
 
 **0.5 Paint hygiene during resize, S.**
 - Lay out with `BeginDeferWindowPos`/`DeferWindowPos` and `SWP_NOCOPYBITS`.

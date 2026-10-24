@@ -385,6 +385,11 @@ pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 // DWM
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+/// Windows 11 (build 22000) and later only.
+pub const DWMWA_BORDER_COLOR = 34;
+pub const DWMWA_CAPTION_COLOR = 35;
+pub const DWMWA_TEXT_COLOR = 36;
+pub const DWMWA_COLOR_DEFAULT: COLORREF = 0xFFFFFFFF;
 
 // Registry
 pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);

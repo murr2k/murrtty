@@ -175,7 +175,7 @@ pub fn init(
 pub fn run(self: *App) !void {
     // Apply the color scheme before the first surface so it starts
     // with the right conditional config.
-    self.core_app.colorSchemeEvent(self, if (self.dark) .dark else .light) catch |err| {
+    self.core_app.colorSchemeEvent(self, self.colorScheme()) catch |err| {
         log.warn("error setting initial color scheme err={}", .{err});
     };
 
@@ -666,13 +666,38 @@ fn closeAllWindows(self: *App) void {
 
 /// Re-read the system light/dark preference and notify the core.
 pub fn systemThemeChanged(self: *App) void {
-    const dark = systemDark();
+    self.setSystemDark(systemDark());
+}
+
+/// The system preference changed to `dark` (or the GUI tests say so).
+pub fn setSystemDark(self: *App, dark: bool) void {
     if (dark == self.dark) return;
     self.dark = dark;
-    for (self.windows.items) |w| w.applyTheme(dark);
-    self.core_app.colorSchemeEvent(self, if (dark) .dark else .light) catch |err| {
+    for (self.windows.items) |w| w.applyChrome();
+    self.reportColorScheme();
+}
+
+/// The color scheme the core sees, for conditional themes and DEC mode
+/// 2031: the system's, unless `window-theme` forces light or dark. Never
+/// derived from the chrome's colors: a theme that depends on the scheme
+/// would then change the colors that set the scheme, and the config would
+/// reload in a loop.
+fn colorScheme(self: *const App) apprt.ColorScheme {
+    return switch (self.config.@"window-theme") {
+        .light => .light,
+        .dark => .dark,
+        .auto, .system, .ghostty => if (self.dark) .dark else .light,
+    };
+}
+
+/// Tell the core, and every surface, the current color scheme. Each does
+/// nothing if it is the one it already has.
+fn reportColorScheme(self: *App) void {
+    const scheme = self.colorScheme();
+    self.core_app.colorSchemeEvent(self, scheme) catch |err| {
         log.warn("error updating color scheme err={}", .{err});
     };
+    for (self.windows.items) |w| for (w.surfaces.items) |s| s.colorSchemeCallback(scheme);
 }
 
 fn systemDark() bool {
@@ -861,13 +886,33 @@ pub fn performAction(
         .reload_config => try self.reloadConfig(target, value.soft),
 
         .config_change => switch (target) {
-            .surface => {},
+            // A surface's own config (after a reload, or its conditional
+            // state changing) resets the colors its tab and caption show.
+            .surface => |core| {
+                const surface = core.rt_surface;
+                surface.colors = .fromConfig(value.config);
+                surface.window.colorsChanged(surface);
+            },
             .app => {
                 const config = try value.config.clone(self.core_app.alloc);
                 self.config.deinit();
                 self.config = config;
                 for (self.windows.items) |w| w.configChanged();
+                // window-theme may now force a different scheme.
+                self.reportColorScheme();
             },
+        },
+
+        // A program changed the terminal's background or foreground
+        // (OSC 10/11), which the caption and tab strip follow.
+        .color_change => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            switch (value.kind) {
+                .background => surface.colors.bg = .{ .r = value.r, .g = value.g, .b = value.b },
+                .foreground => surface.colors.fg = .{ .r = value.r, .g = value.g, .b = value.b },
+                else => return false,
+            }
+            surface.window.colorsChanged(surface);
         },
 
         .quit_timer => switch (value) {

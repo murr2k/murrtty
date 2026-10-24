@@ -4,6 +4,7 @@ const Window = @This();
 
 const std = @import("std");
 const apprt = @import("../../apprt.zig");
+const configpkg = @import("../../config.zig");
 const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
@@ -36,6 +37,15 @@ size_limit: ?apprt.action.SizeLimit = null,
 
 /// Saved placement and style while fullscreen.
 fullscreen: ?Saved = null,
+
+/// What applyChrome last set, for the GUI tests' state dump.
+chrome: Chrome = .{},
+
+pub const Chrome = struct {
+    dark: bool = false,
+    /// The caption color, or null for the system's.
+    caption: ?c.COLORREF = null,
+};
 
 const Saved = struct {
     placement: c.WINDOWPLACEMENT,
@@ -88,7 +98,7 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     // Size the client area for the monitor's DPI (setClientSize scales).
     self.tab_bar.setDpi(c.GetDpiForWindow(self.hwnd));
     self.setClientSize(default_width, default_height);
-    self.applyTheme(app.dark);
+    self.applyChrome();
 
     try app.windows.append(alloc, self);
     errdefer _ = app.windows.pop();
@@ -209,6 +219,8 @@ pub fn select(self: *Window, index: usize) void {
     for (self.surfaces.items, 0..) |s, i| s.setVisible(i == index);
     self.focusActive();
     self.syncTitle();
+    // The chrome follows the active tab's colors.
+    self.applyChrome();
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
 
@@ -442,18 +454,82 @@ pub fn ringBell(self: *Window) void {
     }
 }
 
-/// Use a dark or light title bar.
-pub fn applyTheme(self: *Window, dark: bool) void {
-    const value: c.BOOL = @intFromBool(dark);
-    // Attribute 20 is honored from Windows 10 2004 (build 19041); earlier
-    // supported builds only know the undocumented 19.
-    if (c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_USE_IMMERSIVE_DARK_MODE, &value, @sizeOf(c.BOOL)) < 0) {
-        _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &value, @sizeOf(c.BOOL));
-    }
+/// The colors the chrome follows: the active tab's.
+fn chromeColors(self: *const Window) Surface.Colors {
+    if (self.activeSurface()) |s| return s.colors;
+    return .fromConfig(&self.app.config);
 }
 
-/// The config changed: the tab bar colors and visibility may differ.
+/// Color the title bar for `window-theme`:
+/// - `auto` (the default): the caption takes the terminal's background
+///   and foreground, following programs that change them (OSC 10/11), as
+///   macOS's transparent title bar does; light or dark by the background.
+/// - `ghostty`: `window-titlebar-background`/`-foreground`, or the
+///   configured background and foreground.
+/// - `system`, `light`, `dark`: the system's caption, light or dark as
+///   named (`system` follows the system setting).
+/// Caption colors need Windows 11; Windows 10 ignores them and only gets
+/// the light or dark caption.
+pub fn applyChrome(self: *Window) void {
+    const config = &self.app.config;
+    const colors = self.chromeColors();
+    var chrome: Chrome = .{};
+    var text: ?c.COLORREF = null;
+    switch (config.@"window-theme") {
+        .system => chrome.dark = self.app.dark,
+        .light => chrome.dark = false,
+        .dark => chrome.dark = true,
+        .auto => {
+            chrome.dark = isDark(colors.bg);
+            chrome.caption = rgbRef(colors.bg);
+            text = rgbRef(colors.fg);
+        },
+        .ghostty => {
+            const bg = config.@"window-titlebar-background" orelse config.background;
+            chrome.dark = isDark(bg);
+            chrome.caption = rgbRef(bg);
+            text = rgbRef(config.@"window-titlebar-foreground" orelse config.foreground);
+        },
+    }
+
+    const dark: c.BOOL = @intFromBool(chrome.dark);
+    // Attribute 20 is honored from Windows 10 2004 (build 19041); earlier
+    // supported builds only know the undocumented 19.
+    if (c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, @sizeOf(c.BOOL)) < 0) {
+        _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &dark, @sizeOf(c.BOOL));
+    }
+    const caption = chrome.caption orelse c.DWMWA_COLOR_DEFAULT;
+    const text_color = text orelse c.DWMWA_COLOR_DEFAULT;
+    _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_CAPTION_COLOR, &caption, @sizeOf(c.COLORREF));
+    _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_BORDER_COLOR, &caption, @sizeOf(c.COLORREF));
+    _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_TEXT_COLOR, &text_color, @sizeOf(c.COLORREF));
+    self.chrome = chrome;
+}
+
+fn rgbRef(color: configpkg.Config.Color) c.COLORREF {
+    return c.rgb(color.r, color.g, color.b);
+}
+
+fn isDark(color: configpkg.Config.Color) bool {
+    const r: f64 = @floatFromInt(color.r);
+    const g: f64 = @floatFromInt(color.g);
+    const b: f64 = @floatFromInt(color.b);
+    // Perceived luminance (the core's RGB.perceivedLuminance).
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0 < 0.5;
+}
+
+/// A surface's colors changed (a program set them, or its config changed).
+pub fn colorsChanged(self: *Window, surface: *Surface) void {
+    if (self.activeSurface() != surface) return;
+    self.applyChrome();
+    var r = self.tabBarRect();
+    _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
+}
+
+/// The config changed: the chrome, and the tab bar's colors and
+/// visibility, may differ.
 pub fn configChanged(self: *Window) void {
+    self.applyChrome();
     self.layout();
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
@@ -472,7 +548,8 @@ fn paintTabBar(self: *Window) void {
     for (self.surfaces.items[0..n], 0..) |s, i| titles_buf[i] = s.title orelse "Ghostty";
 
     const r = self.tabBarRect();
-    self.tab_bar.paint(hdc, r.right, titles_buf[0..n], self.active, &self.app.config);
+    const colors = self.chromeColors();
+    self.tab_bar.paint(hdc, r.right, titles_buf[0..n], self.active, colors.bg, colors.fg);
 }
 
 fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {

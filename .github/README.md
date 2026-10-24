@@ -94,8 +94,13 @@ desktop. The port has not yet had much use on a physical keyboard.
   the other tabs or the tabs to the right (no default keys: bind
   `close_tab:other` or `close_tab:right`), opening the config file (`Ctrl+,`).
 - Precision touchpad scrolling, mouse pointer shapes and hiding the pointer
-  while typing, moving a window between monitors with different DPI, the dark
-  title bar in dark mode.
+  while typing, moving a window between monitors with different DPI.
+- Title bar colors (`window-theme`). By default the caption takes the
+  terminal's background and foreground, following programs that change them;
+  `ghostty` uses `window-titlebar-background`/`-foreground`; `system`,
+  `light` and `dark` use the system's caption. Caption colors need Windows
+  11; Windows 10 gets a light or dark caption. The GUI tests check what
+  Ghostty asks Windows for, not yet what appears on screen.
 - Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell,
   configuration reload and paste protection.
 
@@ -219,8 +224,7 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
   [configuration reference](https://ghostty.org/docs/config): fonts, colors,
   themes, keybindings, the shell and so on. Options that the macOS and GTK
   apps implement in their own user interface mostly have no effect here,
-  besides the missing features listed above. Among them: `window-theme` (the
-  title bar follows the Windows light or dark setting),
+  besides the missing features listed above. Among them:
   `window-position-x`/`-y`, `window-save-state`, `window-new-tab-position`,
   `resize-overlay`, and the `title`, `audio` and `border` bell features (only
   `system` and `attention` work). Ghostty always opens a window at startup and

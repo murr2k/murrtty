@@ -88,13 +88,17 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
     return state.msg != 0 and msg == state.msg;
 }
 
-/// Write the app's state to the dump file. Returns 1 on success. With
-/// `wparam` 1, it first asks every surface's renderer to read back the
-/// pixel at `lparam` (x in the low word, y in the high word, client pixels
-/// from the top left) from the frames it presents next ("probe").
+/// Write the app's state to the dump file. Returns 1 on success. First,
+/// with `wparam`:
+/// - 1: ask every surface's renderer to read back the pixel at `lparam`
+///   (x in the low word, y in the high word, client pixels from the top
+///   left) from the frames it presents next ("probe").
+/// - 2: act as if the system's light/dark setting changed to dark
+///   (`lparam` 1) or light (0), without touching the user's setting.
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
     const alloc = app.core_app.alloc;
+    if (wparam == 2) app.setSystemDark(lparam != 0);
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
         for (app.windows.items) |w| for (w.surfaces.items) |s| {
@@ -142,6 +146,13 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             client.right,
             client.bottom,
         });
+        // The title bar as applyChrome set it; the caption as 0xRRGGBB,
+        // or -1 for the system's.
+        const caption: i64 = if (w.chrome.caption) |ref|
+            @as(i64, ref & 0xFF) << 16 | @as(i64, (ref >> 8) & 0xFF) << 8 | @as(i64, (ref >> 16) & 0xFF)
+        else
+            -1;
+        try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
 
         // Tab bar geometry in client coordinates, for clicks.
         const n = w.surfaces.items.len;
@@ -176,6 +187,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 // The last presented frame's pixel near the bottom-right
                 // corner (see OpenGL.Wgl.sample).
                 const wgl_state = &s.core_surface.renderer.api.wgl_state;
+                try out.print(alloc, ",\"scheme\":\"{t}\"", .{s.core_surface.config_conditional_state.theme});
                 try out.print(alloc, ",\"cols\":{d},\"rows\":{d},\"cell\":[{d},{d}],\"padding\":[{d},{d}],\"pixel\":{d},\"probe\":{d},\"text\":", .{
                     grid.columns,
                     grid.rows,

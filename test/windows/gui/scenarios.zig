@@ -25,6 +25,7 @@ pub const all = [_]Scenario{
     .{ .name = "links", .about = "Ctrl+click links: programs and UNC paths blocked, web opens, other schemes ask", .run = links },
     .{ .name = "links-open", .about = "links really open: a test protocol and file type registered in HKCU", .run = linksOpen },
     .{ .name = "present", .about = "background-opacity doesn't darken the (opaque) window; exact background pixels", .run = present },
+    .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
 };
 
 const base_config =
@@ -673,6 +674,85 @@ fn nearColor(a: u32, b: u32) bool {
         if (@abs(x - y) > 1) return false;
     }
     return true;
+}
+
+const Chrome = struct { dark: bool, caption: i64 };
+
+fn chromeOf(h: *Harness, g: *Harness.Ghostty) !Chrome {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const c = d.value.windows[0].chrome orelse return h.fail("no chrome in the dump", .{});
+    return .{ .dark = c.dark, .caption = c.caption };
+}
+
+fn schemeOf(h: *Harness, g: *Harness.Ghostty) ![]const u8 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const s = d.value.windows[0].tabs[0].scheme orelse return h.fail("no scheme in the dump", .{});
+    // Static strings, so they outlive the dump.
+    return if (std.mem.eql(u8, s, "dark")) "dark" else if (std.mem.eql(u8, s, "light")) "light" else "?";
+}
+
+/// Launch with `extra` and check the title bar.
+fn expectChrome(h: *Harness, name: []const u8, extra: []const u8, dark: bool, caption: i64) !void {
+    var g = try start(h, name, extra, ">");
+    defer g.deinit();
+    const got = try chromeOf(h, &g);
+    try h.expect(got.dark == dark and got.caption == caption, "{s}: dark {} caption {x}, expected dark {} caption {x}", .{ name, got.dark, got.caption, dark, caption });
+}
+
+/// window-theme (roadmap 0.4). The caption colors themselves need Windows
+/// 11; the dump reports what Ghostty asked DWM for.
+fn theme(h: *Harness) anyerror!void {
+    // auto (the default): the terminal's own colors.
+    try expectChrome(h, "theme-auto", "", true, 0x282c34);
+    try expectChrome(h, "theme-auto-light", "background = #fafafa\nforeground = #202020\n", false, 0xfafafa);
+    // Forced light or dark: the system's caption.
+    try expectChrome(h, "theme-light", "window-theme = light\n", false, -1);
+    try expectChrome(h, "theme-dark", "window-theme = dark\n", true, -1);
+    // ghostty: the titlebar colors, else the configured background.
+    try expectChrome(h, "theme-ghostty", "window-theme = ghostty\nwindow-titlebar-background = #112233\n", true, 0x112233);
+
+    // auto follows a program changing the background (OSC 11).
+    {
+        var g = try start(h, "theme-osc11", "command = powershell.exe -NoLogo -NoProfile\n", "PS ");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try h.typeText(surf, "Write-Host -NoNewline \"$([char]27)]11;#f0f0f0$([char]7)\"");
+        h.enter(surf);
+        var waited: u32 = 0;
+        var got = try chromeOf(h, &g);
+        while (got.caption != 0xf0f0f0 and waited < 5000) : (waited += 200) {
+            w.Sleep(200);
+            got = try chromeOf(h, &g);
+        }
+        try h.expect(got.caption == 0xf0f0f0 and !got.dark, "OSC 11 sets the caption (got {x}, dark {})", .{ got.caption, got.dark });
+        try quit(h, &g, surf);
+    }
+
+    // The system's light/dark setting reaches the terminals that are
+    // already open (conditional themes, DEC mode 2031), and the caption
+    // under window-theme = system. Simulated: the user's setting is left
+    // alone.
+    {
+        var g = try start(h, "theme-system", "window-theme = system\n", ">");
+        defer g.deinit();
+        try h.setSystemDark(&g, true);
+        try h.expect(std.mem.eql(u8, try schemeOf(h, &g), "dark"), "a system switch to dark reaches the terminal", .{});
+        try h.expect((try chromeOf(h, &g)).dark, "and darkens the caption", .{});
+        try h.setSystemDark(&g, false);
+        try h.expect(std.mem.eql(u8, try schemeOf(h, &g), "light"), "a switch to light reaches it too", .{});
+        try h.expect(!(try chromeOf(h, &g)).dark, "and lightens the caption", .{});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+    // A forced theme is the scheme whatever the system says.
+    {
+        var g = try start(h, "theme-forced", "window-theme = dark\n", ">");
+        defer g.deinit();
+        try h.setSystemDark(&g, false);
+        try h.expect(std.mem.eql(u8, try schemeOf(h, &g), "dark"), "window-theme = dark keeps the terminal dark", .{});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
 }
 
 fn windowSize(h: *Harness) anyerror!void {

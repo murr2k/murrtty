@@ -123,11 +123,9 @@ fn ref(v: Color) c.COLORREF {
     return c.rgb(v.r, v.g, v.b);
 }
 
-/// Derive the colors from the terminal palette so the active tab
-/// merges with the terminal below it.
-fn palette(config: *const configpkg.Config) Palette {
-    const bg = config.background;
-    const fg = config.foreground;
+/// Derive the colors from the terminal's background and foreground so the
+/// active tab merges with the terminal below it.
+fn palette(bg: Color, fg: Color) Palette {
     const bar = blend(bg, .{ .r = 0, .g = 0, .b = 0 }, 0.25);
     return .{
         .bar = ref(bar),
@@ -162,7 +160,9 @@ pub fn paint(
     width: c_int,
     titles: []const []const u8,
     active: usize,
-    config: *const configpkg.Config,
+    /// The active terminal's background and foreground.
+    bg: Color,
+    fg: Color,
 ) void {
     const h = self.height();
     const mem = c.CreateCompatibleDC(hdc) orelse return;
@@ -177,7 +177,7 @@ pub fn paint(
     };
     _ = c.SetBkMode(mem, c.TRANSPARENT);
 
-    const pal = palette(config);
+    const pal = palette(bg, fg);
     fill(mem, .{ .right = width, .bottom = h }, pal.bar);
 
     const n = titles.len;
