@@ -7027,12 +7027,16 @@ pub const Keybinds = struct {
                 .{ .select_all = {} },
             );
 
-            // Selection clipboard paste
-            try self.set.put(
-                alloc,
-                .{ .key = .{ .physical = .insert }, .mods = .{ .shift = true } },
-                .{ .paste_from_selection = {} },
-            );
+            // Selection clipboard paste. Windows has no selection
+            // clipboard, so there shift+insert keeps the standard
+            // paste_from_clipboard binding set above.
+            if (comptime builtin.target.os.tag != .windows) {
+                try self.set.put(
+                    alloc,
+                    .{ .key = .{ .physical = .insert }, .mods = .{ .shift = true } },
+                    .{ .paste_from_selection = {} },
+                );
+            }
         }
         {
             // On macOS we default to super but everywhere else
