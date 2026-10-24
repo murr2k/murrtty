@@ -4,9 +4,13 @@
 #
 # Every upstream workflow in this directory must stay disabled on this
 # repository (gh workflow disable <file>): they run on upstream's runners,
-# and the vouch workflows act on every issue and pull request. The guard
-# job fails the run if any of them is active, or if a workflow file in this
-# commit has never been registered and disabled (a new one from a rebase).
+# and the vouch workflows act on every issue and pull request. GitHub only
+# registers a workflow when one of its events fires (a push for test.yml,
+# an issue for the vouch ones), and only a registered one can be disabled,
+# so until then the repository's actions policy (GitHub-owned actions
+# only) stops each at startup: all of them use third-party actions. The
+# guard job fails the run if any registered workflow but this one is
+# active, and lists the ones not registered yet.
 name: Windows port
 
 on:
@@ -20,7 +24,7 @@ concurrency:
 
 jobs:
   guard:
-    name: Upstream workflows are disabled
+    name: No other workflow is active
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -48,9 +52,8 @@ jobs:
           done <<< "$registered"
           for path in $files; do
             [ "$path" = "$self" ] && continue
-            if ! awk -v p="$path" '$1 == p && $2 ~ /^disabled/ { f = 1 } END { exit !f }' <<< "$registered"; then
-              echo "::error::$path is not registered as disabled. After it registers, disable it: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
-              bad=1
+            if ! awk -v p="$path" '$1 == p { f = 1 } END { exit !f }' <<< "$registered"; then
+              echo "::notice::$path is not registered yet. Disable it once it is: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
             fi
           done
           exit $bad
