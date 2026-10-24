@@ -1,0 +1,649 @@
+//! A top-level window. Each window hosts one or more surfaces as tabs;
+//! only the active tab's surface window is shown.
+const Window = @This();
+
+const std = @import("std");
+const apprt = @import("../../apprt.zig");
+const CoreSurface = @import("../../Surface.zig");
+
+const c = @import("c.zig");
+const App = @import("App.zig");
+const Surface = @import("Surface.zig");
+const TabBar = @import("TabBar.zig");
+
+const log = std.log.scoped(.win32_window);
+
+pub const class_name = c.L("GhosttyWindow");
+
+/// Default client size in device-independent pixels.
+const default_width = 960;
+const default_height = 600;
+
+app: *App,
+hwnd: c.HWND,
+
+/// Identifies the window in App requests, which may outlive it.
+id: u64,
+
+/// The tabs, in display order, and the selected one.
+surfaces: std.ArrayList(*Surface) = .empty,
+active: usize = 0,
+
+tab_bar: TabBar = .{},
+
+/// Client size limits from the core, in device pixels.
+size_limit: ?apprt.action.SizeLimit = null,
+
+/// Saved placement and style while fullscreen.
+fullscreen: ?Saved = null,
+
+const Saved = struct {
+    placement: c.WINDOWPLACEMENT,
+    style: isize,
+};
+
+pub fn registerClass(instance: c.HINSTANCE) !void {
+    const wc: c.WNDCLASSEXW = .{
+        .lpfnWndProc = &wndProc,
+        .hInstance = instance,
+        .hIcon = c.LoadIconW(instance, 1),
+        .hCursor = c.LoadCursorW(null, c.IDC_ARROW),
+        .lpszClassName = class_name,
+    };
+    if (c.RegisterClassExW(&wc) == 0) return error.RegisterClassFailed;
+}
+
+/// Create and show a new window with a single tab.
+pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
+    const alloc = app.core_app.alloc;
+    const self = try alloc.create(Window);
+    errdefer alloc.destroy(self);
+    self.* = .{ .app = app, .hwnd = undefined, .id = app.next_window_id };
+    app.next_window_id += 1;
+
+    self.hwnd = c.CreateWindowExW(
+        c.WS_EX_APPWINDOW,
+        class_name,
+        c.L("Ghostty"),
+        c.WS_OVERLAPPEDWINDOW | c.WS_CLIPCHILDREN,
+        c.CW_USEDEFAULT,
+        c.CW_USEDEFAULT,
+        default_width,
+        default_height,
+        null,
+        null,
+        app.instance,
+        self,
+    ) orelse {
+        log.err("failed to create window err={}", .{c.GetLastError()});
+        return error.CreateWindowFailed;
+    };
+    errdefer {
+        _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+        _ = c.DestroyWindow(self.hwnd);
+        self.surfaces.deinit(alloc);
+        self.tab_bar.deinit();
+    }
+
+    // Size the client area for the monitor's DPI (setClientSize scales).
+    self.tab_bar.setDpi(c.GetDpiForWindow(self.hwnd));
+    self.setClientSize(default_width, default_height);
+    self.applyTheme(app.dark);
+
+    try app.windows.append(alloc, self);
+    errdefer _ = app.windows.pop();
+
+    _ = try self.addTab(parent, .window);
+
+    const config = &app.config;
+    _ = c.ShowWindow(self.hwnd, if (config.maximize) c.SW_SHOWMAXIMIZED else c.SW_SHOWNORMAL);
+    if (config.fullscreen != .false) self.toggleFullscreen();
+    _ = c.SetForegroundWindow(self.hwnd);
+    self.focusActive();
+
+    return self;
+}
+
+/// Add a tab after the active one and select it.
+pub fn addTab(
+    self: *Window,
+    parent: ?*CoreSurface,
+    context: apprt.surface.NewSurfaceContext,
+) !*Surface {
+    const alloc = self.app.core_app.alloc;
+
+    // Make room for the tab bar first so the new surface starts at
+    // its final size.
+    const index = if (self.surfaces.items.len == 0) 0 else self.active + 1;
+    try self.surfaces.ensureUnusedCapacity(alloc, 1);
+    const had_bar = self.tabBarVisible();
+
+    const surface = try alloc.create(Surface);
+    errdefer alloc.destroy(surface);
+    try surface.init(self.app, self, context, parent, self.surfaceRect(self.surfaces.items.len + 1));
+
+    self.surfaces.insertAssumeCapacity(index, surface);
+    if (had_bar != self.tabBarVisible()) _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+    self.select(index);
+    return surface;
+}
+
+/// Close a tab, confirming first if `confirm` and a process is running.
+/// Destroys the window when its last tab closes. Only call this from the
+/// message loop (see App.Request), never from inside a core callback.
+pub fn closeTab(self: *Window, surface: *Surface, confirm: bool) void {
+    if (confirm and self.needsConfirm(surface) and !self.app.confirm(
+        self.hwnd,
+        "A process is still running in this terminal. Close it anyway?",
+        "Ghostty: Close Tab",
+    )) return;
+
+    const index = std.mem.indexOfScalar(*Surface, self.surfaces.items, surface) orelse return;
+    if (self.surfaces.items.len == 1) {
+        self.destroy();
+        return;
+    }
+
+    _ = self.surfaces.orderedRemove(index);
+    self.freeSurface(surface);
+
+    if (self.active > index or self.active >= self.surfaces.items.len) {
+        self.active -|= 1;
+    }
+    self.select(self.active);
+    _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+}
+
+/// Close tabs relative to `surface` for the close_tab action.
+pub fn closeTabs(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMode) void {
+    switch (mode) {
+        .this => self.closeTab(surface, true),
+        .other, .right => {
+            const index = std.mem.indexOfScalar(*Surface, self.surfaces.items, surface) orelse return;
+            var targets: std.ArrayList(*Surface) = .empty;
+            defer targets.deinit(self.app.core_app.alloc);
+            for (self.surfaces.items, 0..) |s, i| {
+                const close = switch (mode) {
+                    .other => i != index,
+                    .right => i > index,
+                    .this => unreachable,
+                };
+                if (close) targets.append(self.app.core_app.alloc, s) catch return;
+            }
+            if (targets.items.len == 0) return;
+
+            var confirm = false;
+            for (targets.items) |s| confirm = confirm or self.needsConfirm(s);
+            if (confirm and !self.app.confirm(
+                self.hwnd,
+                "Processes are still running in the tabs being closed. Close them anyway?",
+                "Ghostty: Close Tabs",
+            )) return;
+
+            for (targets.items) |s| self.closeTab(s, false);
+        },
+    }
+}
+
+fn needsConfirm(self: *Window, surface: *Surface) bool {
+    if (!surface.core_initialized) return false;
+    return switch (self.app.config.@"confirm-close-surface") {
+        .false => false,
+        .true => surface.core_surface.needsConfirmQuit(),
+        .always => true,
+    };
+}
+
+fn freeSurface(self: *Window, surface: *Surface) void {
+    const hwnd = surface.hwnd;
+    surface.deinit();
+    self.app.core_app.alloc.destroy(surface);
+    _ = c.DestroyWindow(hwnd);
+}
+
+/// Select tab `index`: show its surface, hide the rest.
+pub fn select(self: *Window, index: usize) void {
+    if (index >= self.surfaces.items.len) return;
+    self.active = index;
+    self.layout();
+    for (self.surfaces.items, 0..) |s, i| s.setVisible(i == index);
+    self.focusActive();
+    self.syncTitle();
+    _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+}
+
+pub fn gotoTab(self: *Window, tab: apprt.action.GotoTab) bool {
+    const total = self.surfaces.items.len;
+    if (total == 0) return false;
+    const current = self.active;
+    const target: usize = switch (tab) {
+        .previous => if (current > 0) current - 1 else total - 1,
+        .next => if (current + 1 < total) current + 1 else 0,
+        .last => total - 1,
+        _ => n: {
+            // 1-indexed
+            const n = std.math.cast(usize, @intFromEnum(tab)) orelse return false;
+            if (n == 0) return false;
+            break :n @min(n - 1, total - 1);
+        },
+    };
+    if (target == current) return false;
+    self.select(target);
+    return true;
+}
+
+pub fn moveTab(self: *Window, surface: *Surface, amount: isize) bool {
+    const total: isize = @intCast(self.surfaces.items.len);
+    if (total < 2) return false;
+    const from_u = std.mem.indexOfScalar(*Surface, self.surfaces.items, surface) orelse return false;
+    const from: isize = @intCast(from_u);
+    const to: usize = @intCast(@mod(from + amount, total));
+    if (to == from_u) return false;
+
+    _ = self.surfaces.orderedRemove(from_u);
+    self.surfaces.insertAssumeCapacity(to, surface);
+    self.select(to);
+    return true;
+}
+
+pub fn activeSurface(self: *const Window) ?*Surface {
+    if (self.active >= self.surfaces.items.len) return null;
+    return self.surfaces.items[self.active];
+}
+
+fn focusActive(self: *Window) void {
+    if (self.activeSurface()) |s| _ = c.SetFocus(s.hwnd);
+}
+
+/// Destroy the window. Its surfaces and memory are released when the
+/// window receives WM_DESTROY.
+pub fn destroy(self: *Window) void {
+    _ = c.DestroyWindow(self.hwnd);
+}
+
+fn onDestroy(self: *Window) void {
+    const alloc = self.app.core_app.alloc;
+    _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+
+    // The child windows are destroyed by the system after this.
+    for (self.surfaces.items) |surface| {
+        surface.deinit();
+        alloc.destroy(surface);
+    }
+    self.surfaces.deinit(alloc);
+    self.tab_bar.deinit();
+
+    self.app.windowDestroyed(self);
+    alloc.destroy(self);
+}
+
+/// Close the window, confirming if a process is running. Only call this
+/// from the message loop (see App.Request).
+pub fn requestClose(self: *Window) void {
+    var confirm = false;
+    for (self.surfaces.items) |s| confirm = confirm or self.needsConfirm(s);
+    if (confirm and !self.app.confirm(
+        self.hwnd,
+        if (self.surfaces.items.len > 1)
+            "Processes are still running in this window's tabs. Close it anyway?"
+        else
+            "A process is still running in this terminal. Close it anyway?",
+        "Ghostty: Close Window",
+    )) return;
+    self.destroy();
+}
+
+/// Queue closing tab `i` (from a click on the tab bar).
+fn requestCloseTab(self: *Window, i: usize) void {
+    const s = self.surfaces.items[i];
+    if (!s.core_initialized) return;
+    self.app.request(.{ .close_tabs = .{ .id = s.core_surface.id, .mode = .this } });
+}
+
+/// Called by a surface when its title changes.
+pub fn surfaceTitleChanged(self: *Window, surface: *Surface) void {
+    if (self.activeSurface() == surface) self.syncTitle();
+    if (self.tabBarVisible()) {
+        var r = self.tabBarRect();
+        _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
+    }
+}
+
+pub fn syncTitle(self: *Window) void {
+    const title: []const u8 = if (self.activeSurface()) |s| s.title orelse "Ghostty" else "Ghostty";
+    const alloc = self.app.core_app.alloc;
+    const title16 = std.unicode.utf8ToUtf16LeAllocZ(alloc, title) catch return;
+    defer alloc.free(title16);
+    _ = c.SetWindowTextW(self.hwnd, title16);
+}
+
+//---------------------------------------------------------------
+// Layout
+
+fn tabBarVisibleFor(self: *const Window, count: usize) bool {
+    return switch (self.app.config.@"window-show-tab-bar") {
+        .always => true,
+        .never => false,
+        .auto => count > 1,
+    };
+}
+
+fn tabBarVisible(self: *const Window) bool {
+    return self.tabBarVisibleFor(self.surfaces.items.len);
+}
+
+fn tabBarRect(self: *const Window) c.RECT {
+    var client: c.RECT = .{};
+    _ = c.GetClientRect(self.hwnd, &client);
+    return .{ .right = client.right, .bottom = self.tab_bar.height() };
+}
+
+/// The area surfaces occupy when the window has `count` tabs.
+fn surfaceRect(self: *const Window, count: usize) c.RECT {
+    var r: c.RECT = .{};
+    _ = c.GetClientRect(self.hwnd, &r);
+    if (self.tabBarVisibleFor(count)) r.top = @min(r.bottom, self.tab_bar.height());
+    return r;
+}
+
+fn layout(self: *Window) void {
+    const r = self.surfaceRect(self.surfaces.items.len);
+    for (self.surfaces.items) |s| {
+        _ = c.MoveWindow(s.hwnd, r.left, r.top, r.right - r.left, r.bottom - r.top, c.TRUE);
+    }
+}
+
+/// Resize the window so its surface area is the given size in points
+/// (1/96 inch), the unit of the core's initial_size and resize_window
+/// actions: it divides pixel sizes by the content scale. A zero
+/// dimension keeps its current size, as resize_window requires.
+pub fn setClientSize(self: *Window, width: u32, height: u32) void {
+    if (width == 0 and height == 0) return;
+    const dpi = c.GetDpiForWindow(self.hwnd);
+    const current = self.surfaceRect(self.surfaces.items.len);
+    // Round up so the grid doesn't lose a column or row.
+    const w: c_int = if (width == 0)
+        current.right - current.left
+    else
+        @intCast((@as(u64, width) * dpi + 95) / 96);
+    const h: c_int = if (height == 0)
+        current.bottom - current.top
+    else
+        @intCast((@as(u64, height) * dpi + 95) / 96);
+    const bar: c_int = if (self.tabBarVisible()) self.tab_bar.height() else 0;
+    var rect: c.RECT = .{ .right = w, .bottom = h + bar };
+    const style: c.DWORD = @truncate(@as(usize, @bitCast(c.GetWindowLongPtrW(self.hwnd, c.GWL_STYLE))));
+    _ = c.AdjustWindowRectExForDpi(&rect, style, c.FALSE, c.WS_EX_APPWINDOW, dpi);
+    _ = c.SetWindowPos(
+        self.hwnd,
+        null,
+        0,
+        0,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+        c.SWP_NOMOVE | c.SWP_NOZORDER | c.SWP_NOACTIVATE,
+    );
+}
+
+pub fn toggleMaximize(self: *Window) void {
+    _ = c.ShowWindow(self.hwnd, if (c.IsZoomed(self.hwnd) != 0) c.SW_RESTORE else c.SW_MAXIMIZE);
+}
+
+pub fn toggleFullscreen(self: *Window) void {
+    if (self.fullscreen) |saved| {
+        _ = c.SetWindowLongPtrW(self.hwnd, c.GWL_STYLE, saved.style);
+        _ = c.SetWindowPlacement(self.hwnd, &saved.placement);
+        _ = c.SetWindowPos(self.hwnd, null, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE |
+            c.SWP_NOZORDER | c.SWP_NOOWNERZORDER | c.SWP_FRAMECHANGED);
+        self.fullscreen = null;
+        return;
+    }
+
+    var saved: Saved = .{
+        .placement = .{},
+        .style = c.GetWindowLongPtrW(self.hwnd, c.GWL_STYLE),
+    };
+    _ = c.GetWindowPlacement(self.hwnd, &saved.placement);
+
+    var mi: c.MONITORINFO = .{};
+    const monitor = c.MonitorFromWindow(self.hwnd, c.MONITOR_DEFAULTTONEAREST) orelse return;
+    if (c.GetMonitorInfoW(monitor, &mi) == 0) return;
+
+    const style: usize = @bitCast(saved.style);
+    _ = c.SetWindowLongPtrW(self.hwnd, c.GWL_STYLE, @bitCast(style & ~@as(usize, c.WS_OVERLAPPEDWINDOW)));
+    const r = mi.rcMonitor;
+    _ = c.SetWindowPos(self.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOOWNERZORDER | c.SWP_FRAMECHANGED);
+    self.fullscreen = saved;
+}
+
+pub fn present(self: *Window) void {
+    if (c.IsIconic(self.hwnd) != 0) _ = c.ShowWindow(self.hwnd, c.SW_RESTORE);
+    _ = c.SetForegroundWindow(self.hwnd);
+    self.focusActive();
+}
+
+/// Bring the tab holding `surface` to the front.
+pub fn presentSurface(self: *Window, surface: *Surface) void {
+    if (std.mem.indexOfScalar(*Surface, self.surfaces.items, surface)) |i| {
+        if (i != self.active) self.select(i);
+    }
+    self.present();
+}
+
+pub fn ringBell(self: *Window) void {
+    const features = self.app.config.@"bell-features";
+    if (features.system) _ = c.MessageBeep(c.MB_OK);
+    if (features.attention and c.GetForegroundWindow() != self.hwnd) {
+        _ = c.FlashWindowEx(&.{
+            .hwnd = self.hwnd,
+            .dwFlags = c.FLASHW_TRAY | c.FLASHW_TIMERNOFG,
+            .uCount = 0,
+        });
+    }
+}
+
+/// Use a dark or light title bar.
+pub fn applyTheme(self: *Window, dark: bool) void {
+    const value: c.BOOL = @intFromBool(dark);
+    // Attribute 20 is honored from Windows 10 2004 (build 19041); earlier
+    // supported builds only know the undocumented 19.
+    if (c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_USE_IMMERSIVE_DARK_MODE, &value, @sizeOf(c.BOOL)) < 0) {
+        _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &value, @sizeOf(c.BOOL));
+    }
+}
+
+/// The config changed: the tab bar colors and visibility may differ.
+pub fn configChanged(self: *Window) void {
+    self.layout();
+    _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+}
+
+//---------------------------------------------------------------
+// Tab bar input and painting
+
+fn paintTabBar(self: *Window) void {
+    var ps: c.PAINTSTRUCT = undefined;
+    const hdc = c.BeginPaint(self.hwnd, &ps) orelse return;
+    defer _ = c.EndPaint(self.hwnd, &ps);
+    if (!self.tabBarVisible()) return;
+
+    var titles_buf: [64][]const u8 = undefined;
+    const n = @min(self.surfaces.items.len, titles_buf.len);
+    for (self.surfaces.items[0..n], 0..) |s, i| titles_buf[i] = s.title orelse "Ghostty";
+
+    const r = self.tabBarRect();
+    self.tab_bar.paint(hdc, r.right, titles_buf[0..n], self.active, &self.app.config);
+}
+
+fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {
+    if (!self.tabBarVisible()) return .none;
+    return self.tab_bar.hitTest(
+        c.xParam(lparam),
+        c.yParam(lparam),
+        self.surfaces.items.len,
+        self.tabBarRect().right,
+    );
+}
+
+fn setHover(self: *Window, hit: TabBar.Hit) void {
+    if (hit.eql(self.tab_bar.hover)) return;
+    self.tab_bar.hover = hit;
+    var r = self.tabBarRect();
+    _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
+}
+
+fn newTabFromActive(self: *Window) void {
+    const parent: ?*CoreSurface = if (self.activeSurface()) |s|
+        (if (s.core_initialized) &s.core_surface else null)
+    else
+        null;
+    _ = self.addTab(parent, .tab) catch |err| {
+        log.err("error creating tab err={}", .{err});
+    };
+}
+
+fn fromHwnd(hwnd: c.HWND) ?*Window {
+    const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
+    if (ptr == 0) return null;
+    return @ptrFromInt(@as(usize, @bitCast(ptr)));
+}
+
+fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    if (msg == c.WM_NCCREATE) {
+        const cs: *const c.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(lparam)));
+        _ = c.SetWindowLongPtrW(hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(cs.lpCreateParams)));
+        return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+
+    const self = fromHwnd(hwnd) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+    switch (msg) {
+        c.WM_ERASEBKGND => return 1,
+
+        c.WM_PAINT => {
+            self.paintTabBar();
+            return 0;
+        },
+
+        c.WM_SIZE => {
+            const minimized = wparam == c.SIZE_MINIMIZED;
+            if (!minimized) self.layout();
+            if (self.activeSurface()) |s| s.setVisible(!minimized);
+            return 0;
+        },
+
+        c.WM_MOUSEMOVE => {
+            if (!self.tab_bar.tracking) {
+                var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE, .hwndTrack = hwnd };
+                if (c.TrackMouseEvent(&tme) != 0) self.tab_bar.tracking = true;
+            }
+            self.setHover(self.tabBarHit(lparam));
+            return 0;
+        },
+
+        c.WM_MOUSELEAVE => {
+            self.tab_bar.tracking = false;
+            self.setHover(.none);
+            return 0;
+        },
+
+        c.WM_LBUTTONDOWN => {
+            switch (self.tabBarHit(lparam)) {
+                .none => {},
+                .tab => |i| self.select(i),
+                .close => |i| self.requestCloseTab(i),
+                .new_tab => self.newTabFromActive(),
+            }
+            return 0;
+        },
+
+        c.WM_MBUTTONUP => {
+            switch (self.tabBarHit(lparam)) {
+                .tab, .close => |i| self.requestCloseTab(i),
+                else => {},
+            }
+            return 0;
+        },
+
+        c.WM_ACTIVATE => {
+            if (c.loword(wparam) != c.WA_INACTIVE) {
+                // Activated (from the taskbar, say) while a dialog has
+                // it disabled: bring the dialog forward instead.
+                if (c.IsWindowEnabled(hwnd) == 0) {
+                    self.app.postRaiseModal();
+                } else {
+                    self.focusActive();
+                }
+            }
+            return 0;
+        },
+
+        c.WM_SETCURSOR => {
+            // A click on a window that a dialog of another window has
+            // disabled. Windows only looks for a dialog among the
+            // clicked window's own popups, so find it for it.
+            if (c.loword(lparam) == c.HTERROR) switch (c.hiword(lparam)) {
+                c.WM_LBUTTONDOWN,
+                c.WM_RBUTTONDOWN,
+                c.WM_MBUTTONDOWN,
+                c.WM_XBUTTONDOWN,
+                => self.app.raiseModal(),
+                else => {},
+            };
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
+        c.WM_SETFOCUS => {
+            self.focusActive();
+            return 0;
+        },
+
+        c.WM_ACTIVATEAPP => {
+            self.app.core_app.focusEvent(wparam != 0);
+            return 0;
+        },
+
+        c.WM_GETMINMAXINFO => {
+            const limit = self.size_limit orelse return 0;
+            const info: *c.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            const bar: c_int = if (self.tabBarVisible()) self.tab_bar.height() else 0;
+            var rect: c.RECT = .{
+                .right = @intCast(limit.min_width),
+                .bottom = @as(c_int, @intCast(limit.min_height)) + bar,
+            };
+            const style: c.DWORD = @truncate(@as(usize, @bitCast(c.GetWindowLongPtrW(hwnd, c.GWL_STYLE))));
+            _ = c.AdjustWindowRectExForDpi(&rect, style, c.FALSE, c.WS_EX_APPWINDOW, c.GetDpiForWindow(hwnd));
+            info.ptMinTrackSize = .{ .x = rect.right - rect.left, .y = rect.bottom - rect.top };
+            return 0;
+        },
+
+        c.WM_DPICHANGED => {
+            self.tab_bar.setDpi(c.hiword(wparam));
+            const r: *const c.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            _ = c.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+            for (self.surfaces.items) |s| s.dpiChanged();
+            return 0;
+        },
+
+        c.WM_SETTINGCHANGE => {
+            if (lparam != 0) {
+                const name: [*:0]const u16 = @ptrFromInt(@as(usize, @bitCast(lparam)));
+                if (std.mem.eql(u16, std.mem.span(name), c.L("ImmersiveColorSet"))) {
+                    self.app.systemThemeChanged();
+                }
+            }
+            return 0;
+        },
+
+        c.WM_CLOSE => {
+            self.app.request(.{ .close_window = self.id });
+            return 0;
+        },
+
+        c.WM_DESTROY => {
+            self.onDestroy();
+            return 0;
+        },
+
+        else => return c.DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}

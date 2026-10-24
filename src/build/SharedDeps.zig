@@ -705,7 +705,7 @@ pub fn add(
         }
 
         switch (self.config.app_runtime) {
-            .none => {},
+            .none, .win32 => {},
             .gtk => try self.addGtk(step),
         }
     }

@@ -24,6 +24,10 @@ const MainReturn = switch (build_config.artifact) {
 };
 
 pub fn main(minimal: std.process.Init.Minimal) !MainReturn {
+    // Let the app runtime prepare the process before anything else,
+    // e.g. so CLI output is visible (see apprt/win32/console.zig).
+    if (comptime @hasDecl(apprt.runtime, "preInit")) apprt.runtime.preInit();
+
     // We first start by initializing our global state. This will setup
     // process-level state we need to run the terminal. The reason we use
     // a global is because the C API needs to be able to access this state;
