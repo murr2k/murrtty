@@ -156,26 +156,40 @@ pub const Face = struct {
     /// but sometimes allocation isn't required and a static string is
     /// returned.
     pub fn name(self: *const Face, buf: []u8) Allocator.Error![]const u8 {
-        const count = self.face.getSfntNameCount();
+        return self.nameString(buf, freetype.c.TT_NAME_ID_FONT_FAMILY);
+    }
 
-        // We look for the font family entry.
+    /// The full name, such as "Consolas Bold", or the family name if the
+    /// font has none.
+    pub fn fullName(self: *const Face, buf: []u8) Allocator.Error![]const u8 {
+        const full = try self.nameString(buf, freetype.c.TT_NAME_ID_FULL_NAME);
+        if (full.len > 0) return full;
+        return self.name(buf);
+    }
+
+    /// The first name table entry with the given name id.
+    fn nameString(self: *const Face, buf: []u8, id: c_uint) Allocator.Error![]const u8 {
+        const count = self.face.getSfntNameCount();
         for (0..count) |i| {
             const entry = self.face.getSfntName(i) catch continue;
-            if (entry.name_id == freetype.c.TT_NAME_ID_FONT_FAMILY) {
-                const string = entry.string[0..entry.string_len];
-                // There are other encodings that are something other than UTF-8
-                // but this is one we've seen "in the wild" so far.
-                if (entry.platform_id == freetype.c.TT_PLATFORM_MICROSOFT and entry.encoding_id == freetype.c.TT_MS_ID_UNICODE_CS) skip: {
-                    if (string.len % 2 != 0) break :skip;
-                    if (string.len > 1024) break :skip;
-                    var tmp: [512]u16 = undefined;
-                    const max = string.len / 2;
-                    for (@as([]const u16, @ptrCast(@alignCast(string))), 0..) |c, j| tmp[j] = @byteSwap(c);
-                    const len = std.unicode.utf16LeToUtf8(buf, tmp[0..max]) catch return string;
-                    return buf[0..len];
-                }
-                return string;
+            if (entry.name_id != id) continue;
+            const string = entry.string[0..entry.string_len];
+            // Microsoft and Unicode platform names are UTF-16BE, which is
+            // what Windows' fonts use; others (Macintosh Roman) are taken
+            // as they are, which is right for ASCII.
+            const utf16 = entry.platform_id == freetype.c.TT_PLATFORM_MICROSOFT or
+                entry.platform_id == freetype.c.TT_PLATFORM_APPLE_UNICODE;
+            if (utf16) skip: {
+                if (string.len % 2 != 0) break :skip;
+                if (string.len > 1024) break :skip;
+                var tmp: [512]u16 = undefined;
+                const max = string.len / 2;
+                // The bytes needn't be aligned for u16.
+                for (tmp[0..max], 0..) |*c, j| c.* = std.mem.readInt(u16, string[2 * j ..][0..2], .big);
+                const len = std.unicode.utf16LeToUtf8(buf, tmp[0..max]) catch return string;
+                return buf[0..len];
             }
+            return string;
         }
 
         return "";

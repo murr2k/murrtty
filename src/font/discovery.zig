@@ -978,7 +978,7 @@ pub const Windows = struct {
         alloc: Allocator,
         desc: Descriptor,
     ) !DiscoverIterator {
-        return .{
+        var it: DiscoverIterator = .{
             .alloc = alloc,
             .lib = self.lib,
             .desc = desc,
@@ -989,6 +989,16 @@ pub const Windows = struct {
             .system_path = null,
             .user_path = null,
         };
+        // A family has a handful of faces, so collect them all and return
+        // the best match for the requested style first, as the other
+        // backends do; otherwise bold or italic text got whichever face
+        // the directory listed first. Codepoint fallback queries, which
+        // nearly every font matches, keep returning matches as found.
+        if (desc.family != null) {
+            errdefer it.deinit();
+            try it.collect();
+        }
+        return it;
     }
 
     pub fn discoverFallback(
@@ -1012,16 +1022,56 @@ pub const Windows = struct {
         system_path: ?[:0]const u8,
         user_path: ?[:0]const u8,
 
+        /// For a family query: every match, best first (see collect). The
+        /// faces from `pos` on are still owned here.
+        sorted: ?[]Scored = null,
+        pos: usize = 0,
+
         const State = enum { system, user, done };
+        const Scored = struct { face: DeferredFace, score: Score };
 
         pub fn deinit(self: *DiscoverIterator) void {
             if (self.dir) |*d| d.close(global.io());
             if (self.system_path) |p| self.alloc.free(p);
             if (self.user_path) |p| self.alloc.free(p);
+            if (self.sorted) |list| {
+                for (list[self.pos..]) |*s| s.face.deinit();
+                self.alloc.free(list);
+            }
             self.* = undefined;
         }
 
         pub fn next(self: *DiscoverIterator) !?DeferredFace {
+            const list = self.sorted orelse return self.nextFound();
+            if (self.pos >= list.len) return null;
+            defer self.pos += 1;
+            return list[self.pos].face;
+        }
+
+        /// Gather every match and sort them by Score, best first. Equal
+        /// scores keep the order they were found in.
+        fn collect(self: *DiscoverIterator) !void {
+            var list: std.ArrayList(Scored) = .empty;
+            errdefer {
+                for (list.items) |*s| s.face.deinit();
+                list.deinit(self.alloc);
+            }
+            while (try self.nextFound()) |found| {
+                var face = found;
+                errdefer face.deinit();
+                const score: Score = .score(&self.desc, &face.win.?.peek);
+                try list.append(self.alloc, .{ .face = face, .score = score });
+            }
+            std.mem.sort(Scored, list.items, {}, struct {
+                fn lessThan(_: void, a: Scored, b: Scored) bool {
+                    return a.score.int() > b.score.int();
+                }
+            }.lessThan);
+            self.sorted = try list.toOwnedSlice(self.alloc);
+        }
+
+        /// The next match in directory order.
+        fn nextFound(self: *DiscoverIterator) !?DeferredFace {
             while (true) {
                 // Ensure we have a directory iterator for the current state.
                 if (self.iter == null) {
@@ -1186,6 +1236,77 @@ pub const Windows = struct {
                     .alloc = self.alloc,
                 },
             };
+        }
+    };
+
+    /// How well a face matches a descriptor's style, compared numerically
+    /// like the CoreText backend's Score: fields in increasing precedence.
+    /// (Codepoint coverage isn't scored: a face without the codepoint
+    /// never matches.)
+    const Score = packed struct {
+        const Backing = @typeInfo(@This()).@"struct".backing_integer.?;
+
+        /// More glyphs wins a tie.
+        glyph_count: u16 = 0,
+        /// How much of the style name is the wanted style.
+        fuzzy_style: u8 = 0,
+        bold: bool = false,
+        italic: bool = false,
+        /// The style name is exactly the wanted one.
+        exact_style: bool = false,
+        /// Monospace faces first.
+        monospace: bool = false,
+
+        fn int(self: Score) Backing {
+            return @bitCast(self);
+        }
+
+        fn score(desc: *const Descriptor, face: *const Face) Score {
+            const ft = @import("freetype");
+            const handle = face.face.handle;
+            var self: Score = .{};
+            self.glyph_count = std.math.cast(u16, handle.*.num_glyphs) orelse std.math.maxInt(u16);
+
+            // Bold and italic: FreeType's style flags, refined with the
+            // OS/2 and head tables, which some fonts fill in better.
+            var is_bold = handle.*.style_flags & ft.c.FT_STYLE_FLAG_BOLD != 0;
+            var is_italic = handle.*.style_flags & ft.c.FT_STYLE_FLAG_ITALIC != 0;
+            if (face.face.getSfntTable(.os2)) |os2| if (os2.version != 0xFFFF) {
+                // fsSelection bit 5 is BOLD and bit 0 ITALIC; a weight
+                // class above 600 (semibold) counts as bold.
+                is_bold = is_bold or os2.fsSelection & (1 << 5) != 0 or os2.usWeightClass > 600;
+                is_italic = is_italic or os2.fsSelection & 1 != 0;
+            };
+            if (face.face.getSfntTable(.head)) |head| {
+                is_bold = is_bold or head.Mac_Style & 1 != 0;
+                is_italic = is_italic or head.Mac_Style & 2 != 0;
+            }
+            self.bold = desc.bold == is_bold;
+            self.italic = desc.italic == is_italic;
+
+            self.monospace = handle.*.face_flags & ft.c.FT_FACE_FLAG_FIXED_WIDTH != 0 or
+                if (face.face.getSfntTable(.post)) |post| post.isFixedPitch != 0 else false;
+
+            // The style name, as CoreText does: an exact match on the
+            // wanted style, else a fuzzy one.
+            const style_name: []const u8 = if (handle.*.style_name) |s| std.mem.span(s) else "";
+            const desired: []const []const u8 = if (desc.style) |s|
+                &.{s}
+            else if (desc.bold and desc.italic)
+                &.{ "bold italic", "bold", "italic", "oblique" }
+            else if (desc.bold)
+                &.{ "bold", "upright" }
+            else if (desc.italic)
+                &.{ "italic", "regular", "oblique" }
+            else
+                &.{ "regular", "upright" };
+            self.exact_style = std.ascii.eqlIgnoreCase(style_name, desired[0]);
+            var fuzzy: u8 = std.math.cast(u8, style_name.len) orelse std.math.maxInt(u8);
+            for (desired) |s| {
+                if (std.ascii.findIgnoreCase(style_name, s) != null) fuzzy -|= @intCast(s.len);
+            }
+            self.fuzzy_style = std.math.maxInt(u8) -| fuzzy;
+            return self;
         }
     };
 
@@ -1412,4 +1533,50 @@ test "windows" {
     var face = (try it.next()) orelse return error.TestFontNotFound;
     defer face.deinit();
     try testing.expect(face.hasCodepoint('A', null));
+}
+
+/// The file of the best match for `family` in the given style.
+fn windowsBestFile(alloc: Allocator, lib: Library, family: [:0]const u8, bold: bool, italic: bool) !?[]u8 {
+    var win = Windows.init(lib);
+    defer win.deinit();
+    var it = try win.discover(alloc, .{ .family = family, .size = 12, .bold = bold, .italic = italic });
+    defer it.deinit();
+    var face = (try it.next()) orelse return null;
+    defer face.deinit();
+    const path = face.win.?.path;
+    return try alloc.dupe(u8, path[(std.mem.lastIndexOfScalar(u8, path, '\\') orelse 0) + 1 ..]);
+}
+
+test "windows: the face matching the style comes first" {
+    if (options.backend != .freetype_windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var lib = try Library.init(alloc);
+    defer lib.deinit();
+
+    // Consolas ships on every Windows install as four files.
+    const cases = [_]struct { bold: bool, italic: bool, file: []const u8 }{
+        .{ .bold = false, .italic = false, .file = "consola.ttf" },
+        .{ .bold = true, .italic = false, .file = "consolab.ttf" },
+        .{ .bold = false, .italic = true, .file = "consolai.ttf" },
+        .{ .bold = true, .italic = true, .file = "consolaz.ttf" },
+    };
+    for (cases) |case| {
+        const file = (try windowsBestFile(alloc, lib, "Consolas", case.bold, case.italic)) orelse
+            return error.TestFontNotFound;
+        defer alloc.free(file);
+        testing.expect(std.ascii.eqlIgnoreCase(file, case.file)) catch |err| {
+            std.debug.print("Consolas bold={} italic={}: {s}, expected {s}\n", .{ case.bold, case.italic, file, case.file });
+            return err;
+        };
+    }
+
+    // Cascadia Mono (Windows 11) is a variable font: one upright file and
+    // one italic one.
+    const italic = (try windowsBestFile(alloc, lib, "Cascadia Mono", false, true)) orelse return;
+    defer alloc.free(italic);
+    try testing.expect(std.ascii.findIgnoreCase(italic, "italic") != null);
+    const upright = (try windowsBestFile(alloc, lib, "Cascadia Mono", false, false)) orelse return;
+    defer alloc.free(upright);
+    try testing.expect(std.ascii.findIgnoreCase(upright, "italic") == null);
 }

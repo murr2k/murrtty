@@ -343,7 +343,7 @@ Phase 1 tests depend on it; running it in CI comes later (7.3). *Done when:*
 the README's tested list (tabs, close confirmations, clipboard, Ctrl+C) runs
 as one command.
 
-**0.9 Font style matching, S.** The default `freetype_windows` discovery
+**0.9 Font style matching, S.** *Done 2026-10-24.* The default `freetype_windows` discovery
 checks only family and codepoint (`font/discovery.zig:1157-1165`) and returns
 the first file found. Bold Consolas resolves to `consola.ttf`, and italic
 Cascadia to the upright face, for anyone who sets `font-family`. Score
@@ -351,6 +351,18 @@ candidates on weight, slant (FreeType style flags, OS/2 weight class) and
 fixed width, from an index built once. Upstreamable; the DirectWrite backend
 stays in 6.1. *Done when:* the log shows the Bold and Italic faces of Consolas
 and Cascadia Mono for bold and italic text.
+
+*As built:* family queries collect every matching face and sort them with a
+score modeled on the CoreText backend's (monospace, exact style name,
+italic, bold, fuzzy style name, glyph count; bold and italic from
+FreeType's style flags, OS/2 and head). Codepoint fallback queries still
+stream, since nearly every font matches. Discovered faces now report their
+full name ("Consolas Bold") in the log, and name-table strings from the
+Unicode platform decode as UTF-16 (the log read "C o n s o l a s"). Unit
+tests check all four Consolas files and Cascadia Mono's italic file; the
+`fonts` GUI scenario checks the log. Cascadia Mono has no separate bold
+file: it is a variable font, so bold uses its upright file. Variable named
+instances aren't enumerated as faces yet.
 
 **0.10 Rebase hygiene, S.** *Done 2026-10-24. The regrouped history is the
 branch `windows-port-regrouped` (seven area commits, same tree); replacing

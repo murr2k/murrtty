@@ -134,7 +134,8 @@ fn writeFile(alloc: Allocator, path: []const u8, data: []const u8) !void {
 fn readFile(alloc: Allocator, path: []const u8) ![]u8 {
     const p = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path);
     defer alloc.free(p);
-    const h = w.CreateFileW(p, w.GENERIC_READ, w.FILE_SHARE_READ, null, w.OPEN_EXISTING, w.FILE_ATTRIBUTE_NORMAL, null);
+    // Shared for writing too: Ghostty may still be writing (its log).
+    const h = w.CreateFileW(p, w.GENERIC_READ, w.FILE_SHARE_READ | w.FILE_SHARE_WRITE | w.FILE_SHARE_DELETE, null, w.OPEN_EXISTING, w.FILE_ATTRIBUTE_NORMAL, null);
     if (h == w.INVALID_HANDLE_VALUE) return error.DumpFailed;
     defer _ = w.CloseHandle(h);
     const size = w.GetFileSize(h, null);

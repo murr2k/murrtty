@@ -29,6 +29,7 @@ pub const all = [_]Scenario{
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
+    .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -896,6 +897,33 @@ fn launchContext(h: *Harness) anyerror!void {
         try h.expect(std.ascii.findIgnoreCase(text, "Microsoft Windows") != null, "SHELL=/usr/bin/bash still starts cmd", .{});
         try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
+}
+
+/// With font-family set, bold and italic text use the family's own Bold
+/// and Italic faces, not the regular one (roadmap 0.9). Read from
+/// Ghostty's log.
+fn fonts(h: *Harness) anyerror!void {
+    var g = try start(h, "fonts", "font-family = Consolas\n", ">");
+    defer g.deinit();
+    w.Sleep(1000);
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\ghostty.log", .{g.dir});
+    defer h.alloc.free(path);
+    const log = h.readFileOrNull(path) orelse return h.fail("no log", .{});
+    defer h.alloc.free(log);
+    // The grid set logs "font <style>: <full name>" for each style.
+    const cases = [_][2][]const u8{
+        .{ "font regular:", "Consolas" },
+        .{ "font bold:", "Consolas Bold" },
+        .{ "font italic:", "Consolas Italic" },
+        .{ "font bold_italic:", "Consolas Bold Italic" },
+    };
+    for (cases) |case| {
+        const at = std.mem.indexOf(u8, log, case[0]) orelse return h.fail("no '{s}' line in the log", .{case[0]});
+        const rest = log[at + case[0].len ..];
+        const line = std.mem.trim(u8, rest[0 .. std.mem.indexOfAny(u8, rest, "\r\n") orelse rest.len], " ");
+        try h.expect(std.mem.eql(u8, line, case[1]), "{s} {s} (expected {s})", .{ case[0], line, case[1] });
+    }
+    try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
 }
 
 fn windowSize(h: *Harness) anyerror!void {
