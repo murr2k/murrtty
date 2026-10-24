@@ -166,6 +166,8 @@ pub const THREAD_START_ROUTINE = *const fn (?*anyopaque) callconv(.winapi) DWORD
 pub extern "kernel32" fn CreateThread(?*anyopaque, usize, THREAD_START_ROUTINE, ?*anyopaque, DWORD, ?*DWORD) callconv(.winapi) ?HANDLE;
 pub const STARTF_USEPOSITION = 0x00000004;
 pub const STARTF_USESTDHANDLES = 0x00000100;
+pub const STARTF_TITLEISLINKNAME = 0x00000800;
+pub extern "kernel32" fn GetEnvironmentVariableW(LPCWSTR, ?[*]u16, DWORD) callconv(.winapi) DWORD;
 pub const SECURITY_ATTRIBUTES = extern struct {
     nLength: DWORD = @sizeOf(SECURITY_ATTRIBUTES),
     lpSecurityDescriptor: ?*anyopaque = null,

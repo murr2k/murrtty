@@ -211,6 +211,9 @@ pub const LaunchOptions = struct {
     where: Where = .default,
     /// Extra environment variables, as name and value.
     env: []const [2][]const u8 = &.{},
+    /// Start Ghostty as a shortcut (.lnk) at this path would: Windows sets
+    /// STARTF_TITLEISLINKNAME with the shortcut as the title.
+    shortcut: ?[]const u8 = null,
 };
 
 pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: LaunchOptions) !Ghostty {
@@ -285,6 +288,12 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
         si.cb = @sizeOf(w.STARTUPINFOW);
     }
     defer if (logging) w.DeleteProcThreadAttributeList(&attr_buf);
+    const shortcut16 = if (opts.shortcut) |s| try std.unicode.utf8ToUtf16LeAllocZ(alloc, s) else null;
+    defer if (shortcut16) |s| alloc.free(s);
+    if (shortcut16) |s| {
+        si.dwFlags |= w.STARTF_TITLEISLINKNAME;
+        si.lpTitle = s.ptr;
+    }
     if (where == .offscreen) {
         // Ghostty creates its first window at CW_USEDEFAULT, which takes
         // this position.

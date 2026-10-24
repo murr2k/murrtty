@@ -4820,6 +4820,10 @@ pub fn finalize(self: *Config) !void {
                 // Flatpak always gets its shell from outside the sandbox
                 if (internal_os.isFlatpak()) break :shell_env;
 
+                // On Windows, SHELL comes from MSYS2, Cygwin or Git Bash
+                // as a POSIX path (/usr/bin/bash) that can't run here.
+                if (comptime builtin.target.os.tag == .windows) break :shell_env;
+
                 // If we were launched from the desktop, our SHELL env var
                 // will represent our SHELL at login time. We only want to
                 // read from SHELL if we're in a probable CLI environment.
@@ -5348,10 +5352,11 @@ pub const ChangeIterator = struct {
 /// as possible because magic sucks, but each place is well documented.
 fn probableCliEnvironment() bool {
     switch (builtin.target.os.tag) {
-        // Windows has its own problems, just ignore it for now since
-        // its not a real supported target and GTK via WSL2 assuming
-        // single instance is probably fine.
-        .windows => return false,
+        // On Windows, launches from the desktop (a shortcut, Explorer) are
+        // easy to detect, and anything else is a shell or another program.
+        // TERM_PROGRAM can't be the signal: cmd, PowerShell and Windows
+        // Terminal don't set it.
+        .windows => return !internal_os.launchedFromDesktop(),
 
         // On macOS, we don't want to detect `open` calls as CLI envs.
         // Our desktop detection on macOS is very accurate due to how

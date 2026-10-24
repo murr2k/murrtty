@@ -55,8 +55,7 @@ pub fn launchedFromDesktop() bool {
             break :ul gio_pid == pid;
         },
 
-        // TODO: This should have some logic to detect this. Perhaps std.lang.subsystem
-        .windows => false,
+        .windows => windows.launchedFromDesktop(),
 
         // iPhone/iPad is always launched from the "desktop"
         .ios => true,
@@ -64,6 +63,124 @@ pub fn launchedFromDesktop() bool {
         else => @compileError("unsupported platform"),
     };
 }
+
+/// Windows: launched through a shortcut (the Start menu, a pinned or desktop
+/// shortcut) or by Explorer itself (a double-click, the Run dialog).
+/// Anything else, a shell above all, counts as the command line.
+const windows = struct {
+    const DWORD = u32;
+    const BOOL = c_int;
+    const HANDLE = *anyopaque;
+
+    const STARTF_TITLEISLINKNAME = 0x00000800;
+    const TH32CS_SNAPPROCESS = 0x00000002;
+    const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(std.math.maxInt(usize));
+
+    const STARTUPINFOW = extern struct {
+        cb: DWORD = @sizeOf(STARTUPINFOW),
+        lpReserved: ?[*:0]u16 = null,
+        lpDesktop: ?[*:0]u16 = null,
+        lpTitle: ?[*:0]u16 = null,
+        dwX: DWORD = 0,
+        dwY: DWORD = 0,
+        dwXSize: DWORD = 0,
+        dwYSize: DWORD = 0,
+        dwXCountChars: DWORD = 0,
+        dwYCountChars: DWORD = 0,
+        dwFillAttribute: DWORD = 0,
+        dwFlags: DWORD = 0,
+        wShowWindow: u16 = 0,
+        cbReserved2: u16 = 0,
+        lpReserved2: ?*u8 = null,
+        hStdInput: ?HANDLE = null,
+        hStdOutput: ?HANDLE = null,
+        hStdError: ?HANDLE = null,
+    };
+
+    const PROCESSENTRY32W = extern struct {
+        dwSize: DWORD = @sizeOf(PROCESSENTRY32W),
+        cntUsage: DWORD = 0,
+        th32ProcessID: DWORD = 0,
+        th32DefaultHeapID: usize = 0,
+        th32ModuleID: DWORD = 0,
+        cntThreads: DWORD = 0,
+        th32ParentProcessID: DWORD = 0,
+        pcPriClassBase: c_long = 0,
+        dwFlags: DWORD = 0,
+        szExeFile: [260]u16 = @splat(0),
+    };
+
+    comptime {
+        if (@sizeOf(usize) == 8) {
+            std.debug.assert(@sizeOf(STARTUPINFOW) == 104);
+            std.debug.assert(@sizeOf(PROCESSENTRY32W) == 568);
+        }
+    }
+
+    extern "kernel32" fn GetStartupInfoW(*STARTUPINFOW) callconv(.winapi) void;
+    extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
+    extern "kernel32" fn CreateToolhelp32Snapshot(DWORD, DWORD) callconv(.winapi) HANDLE;
+    extern "kernel32" fn Process32FirstW(HANDLE, *PROCESSENTRY32W) callconv(.winapi) BOOL;
+    extern "kernel32" fn Process32NextW(HANDLE, *PROCESSENTRY32W) callconv(.winapi) BOOL;
+    extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
+
+    /// 0 until worked out, then 1 (no) or 2 (yes). The answer can't change,
+    /// and config finalization asks on every load.
+    var cached: std.atomic.Value(u8) = .init(0);
+
+    fn launchedFromDesktop() bool {
+        switch (cached.load(.monotonic)) {
+            1 => return false,
+            2 => return true,
+            else => {},
+        }
+        const yes = detect();
+        cached.store(if (yes) 2 else 1, .monotonic);
+        return yes;
+    }
+
+    fn detect() bool {
+        var si: STARTUPINFOW = .{};
+        GetStartupInfoW(&si);
+        if (si.dwFlags & STARTF_TITLEISLINKNAME != 0) return true;
+        return parentIsExplorer();
+    }
+
+    fn parentIsExplorer() bool {
+        const snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) return false;
+        defer _ = CloseHandle(snap);
+
+        // Find our parent, then its image name. (Its process id may have
+        // been reused if it exited, which at worst picks the wrong default
+        // directory.)
+        const me = GetCurrentProcessId();
+        var parent: ?DWORD = null;
+        var entry: PROCESSENTRY32W = .{};
+        var ok = Process32FirstW(snap, &entry) != 0;
+        while (ok) : (ok = Process32NextW(snap, &entry) != 0) {
+            if (entry.th32ProcessID == me) {
+                parent = entry.th32ParentProcessID;
+                break;
+            }
+        }
+        const ppid = parent orelse return false;
+        entry = .{};
+        ok = Process32FirstW(snap, &entry) != 0;
+        while (ok) : (ok = Process32NextW(snap, &entry) != 0) {
+            if (entry.th32ProcessID != ppid) continue;
+            const name = std.mem.sliceTo(&entry.szExeFile, 0);
+            const explorer = std.unicode.utf8ToUtf16LeStringLiteral("explorer.exe");
+            if (name.len != explorer.len) return false;
+            for (name, explorer) |a, b| {
+                const lower = if (a >= 'A' and a <= 'Z') a + 32 else a;
+                if (lower != b) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+};
 
 /// The list of desktop environments that we detect. New Linux desktop
 /// environments should only be added to this list if there's a specific reason

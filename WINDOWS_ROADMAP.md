@@ -289,7 +289,7 @@ covers the dialog, Open Configuration, fix and Reload, and `Ctrl+,`, with
 the editor launch recorded rather than performed; the clean-machine editor
 check is still open.
 
-**0.7 Launch context, S.**
+**0.7 Launch context, S.** *Done 2026-10-24.*
 - Explorer and Start menu launches already open in the home directory,
   because `probableCliEnvironment` is hard-coded false on Windows
   (`Config.zig:5349-5354`).
@@ -303,6 +303,14 @@ check is still open.
 
 *Done when:* `cd C:\src && ghostty` opens in `C:\src`, and a double-click still
 opens in `%USERPROFILE%` (regression check).
+
+*As built:* `launchedFromDesktop` on Windows checks the shortcut flag and an
+`explorer.exe` parent (Toolhelp; cached, since config finalization asks on
+every load), and `SHELL` is skipped on Windows. The `launch-context` GUI
+scenario covers a launch from a program (its directory), a shortcut launch
+(home; simulated with `STARTF_TITLEISLINKNAME`, which is what a shortcut
+sets) and a POSIX `SHELL`. The Explorer-parent path isn't covered: testing
+it would mean launching through Explorer on the user's desktop.
 
 **0.8 GUI test harness in the repository, M.** *Done 2026-10-24:
 `test\windows\gui\run.cmd` builds a Debug Ghostty and the harness and runs

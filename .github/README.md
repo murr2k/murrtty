@@ -237,7 +237,11 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
   `quit-after-last-window-closed` say.
 - **Shell.** The default is `cmd.exe`, as in upstream Ghostty. For
   PowerShell 7 add `command = pwsh`. Shell integration isn't available for
-  `cmd` or PowerShell (upstream doesn't support them either).
+  `cmd` or PowerShell (upstream doesn't support them either). A `SHELL`
+  variable (from MSYS2 or Git Bash) is ignored.
+- **Starting directory.** Started from a shell or another program, Ghostty
+  opens in that program's directory; started from the Start menu, a shortcut
+  or Explorer, in your home folder. `working-directory` overrides both.
 - **Keybindings** are Ghostty's defaults for non-macOS platforms, for example
   `Ctrl+Shift+C`/`Ctrl+Shift+V` to copy and paste, `Ctrl+Shift+T` for a new
   tab, `Ctrl+Shift+W` to close it, and `Ctrl+Tab` or `Ctrl+PgUp`/`Ctrl+PgDn` to

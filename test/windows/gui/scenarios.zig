@@ -28,11 +28,16 @@ pub const all = [_]Scenario{
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
+    .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
 };
 
+/// Home as the working directory: the harness's launches count as from a
+/// shell (see launch-context), which would start each terminal in its long
+/// scenario folder, and text typed after that prompt wraps.
 const base_config =
     \\command = cmd.exe
     \\window-show-tab-bar = auto
+    \\working-directory = home
     \\
 ;
 
@@ -843,6 +848,54 @@ fn configErrors(h: *Harness) anyerror!void {
     while (try launchCount(h, &g, "edit-config ") < 2 and waited < 5000) : (waited += 200) w.Sleep(200);
     try h.expect(try launchCount(h, &g, "edit-config ") == 2, "Ctrl+, opens the config file", .{});
     try quit(h, &g, surf);
+}
+
+/// The visible text of the first tab, once `needle` is in it.
+fn textWith(h: *Harness, g: *Harness.Ghostty, needle: []const u8) ![]u8 {
+    try h.waitText(g, needle, 1, 20000);
+    var d = try h.dump(g);
+    defer d.deinit();
+    return h.alloc.dupe(u8, d.value.windows[0].tabs[0].text orelse "");
+}
+
+/// Where Ghostty starts depends on how it was launched (roadmap 0.7): a
+/// shell (anything but the desktop) passes its directory on, a shortcut or
+/// Explorer starts it in the home directory, and a POSIX SHELL (MSYS2, Git
+/// Bash) is not taken as the command.
+fn launchContext(h: *Harness) anyerror!void {
+    // The harness starts Ghostty in the scenario's folder, as a shell would.
+    {
+        var g = try h.launchWith("launch-context", "", .{});
+        defer g.deinit();
+        const text = try textWith(h, &g, ">");
+        defer h.alloc.free(text);
+        try h.expect(std.ascii.findIgnoreCase(text, g.dir) != null, "started from a program, it opens in that program's directory", .{});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+    // As a shortcut launch: the home directory.
+    {
+        var home_buf: [260]u16 = undefined;
+        const n = w.GetEnvironmentVariableW(w.L("USERPROFILE"), &home_buf, home_buf.len);
+        const home = try std.unicode.utf16LeToUtf8Alloc(h.alloc, home_buf[0..n]);
+        defer h.alloc.free(home);
+        const prompt = try std.fmt.allocPrint(h.alloc, "{s}>", .{home});
+        defer h.alloc.free(prompt);
+        var g = try h.launchWith("launch-context-shortcut", "", .{ .shortcut = "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Ghostty.lnk" });
+        defer g.deinit();
+        const text = try textWith(h, &g, ">");
+        defer h.alloc.free(text);
+        try h.expect(std.ascii.findIgnoreCase(text, prompt) != null, "started from a shortcut, it opens in {s}", .{home});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+    // SHELL from Git Bash is ignored: cmd starts.
+    {
+        var g = try h.launchWith("launch-context-shell", "", .{ .env = &.{.{ "SHELL", "/usr/bin/bash" }} });
+        defer g.deinit();
+        const text = try textWith(h, &g, ">");
+        defer h.alloc.free(text);
+        try h.expect(std.ascii.findIgnoreCase(text, "Microsoft Windows") != null, "SHELL=/usr/bin/bash still starts cmd", .{});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
 }
 
 fn windowSize(h: *Harness) anyerror!void {
