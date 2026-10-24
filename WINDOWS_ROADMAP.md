@@ -126,8 +126,8 @@ because 0.1 and 0.6 need them.
 and a close request queued while a TaskDialog is open runs only after it
 closes.
 
-**0.1 Untrusted links (security), M.** `open_url` sends every link kind to
-`rundll32 url.dll,FileProtocolHandler` (`App.zig:555-558`, `os/open.zig`),
+**0.1 Untrusted links (security), M.** *Done 2026-10-24.* `open_url` sent
+every link kind to `rundll32 url.dll,FileProtocolHandler` (`os/open.zig`),
 which runs executables, `.lnk`, `.url`, UNC targets and arbitrary protocol
 handlers. Upstream marks OSC 8 and unknown links untrusted and requires the
 runtime to vet them (`apprt/action.zig`); macOS does. Add `win32/url.zig`
@@ -142,6 +142,46 @@ Launch with `ShellExecuteExW`, and return true for untrusted kinds even when
 denied, so the core never falls back to the unsafe opener. *Done when:* unit
 tests cover the decision table, and an OSC 8 link to `calc.exe` is blocked
 while an https link opens the browser.
+
+*As built:* links queue as an `App.Request` and are decided from the message
+loop, because the core asks with the renderer lock held. Beyond the plan,
+much of it from review:
+- Files fail closed. Only inert types (text, source code, images, media,
+  PDF) open directly. A file is blocked if its extension can run code (our
+  list, `%PATHEXT%`, `AssocIsDangerous`) or the program registered for it is
+  an interpreter or loader (`py`, `wscript`, `mshta`, `msdt`, ...). Every
+  other file asks first, naming the program.
+- Paths are canonicalized with `GetFullPathNameW`, then walked one component
+  at a time with `FindFirstFileExW`, which gives the long names (an 8.3 name
+  can hide an extension) without following any link. A path through a
+  symbolic link is blocked, since following one can connect to another
+  computer. A junction's target is read and walked in turn (it can pass
+  through a symbolic link); volume mount points and cloud files are fine.
+  Names Win32 can't spell (a trailing dot or space, reached by an 8.3 alias)
+  and names with disguising characters are blocked too.
+- Reserved device names, streams and `name.{CLSID}` folders are denied, and
+  so is a short list of abused schemes (`ms-msdt`, `search-ms`,
+  `ms-officecmd`, `ms-appinstaller`, script and help-file schemes, `shell`).
+- URLs are percent-encoded as Chromium does, non-ASCII included, before they
+  reach a handler's command line, so a quote or space (or a look-alike an
+  ANSI program would "best fit" into one) can't add arguments.
+- Files and folders open as the checked shell item (a PIDL) with their
+  default verb, so the user's file manager opens folders, and the launch is
+  refused if the shell parsed the path into a different item. The root of
+  removable or optical media is shown selected instead
+  (`SHOpenFolderAndSelectItems`), since its `autorun.inf` can define any verb.
+- The block dialog offers Copy Link (the full, escaped target), not a way to
+  open the link anyway.
+
+The `links` GUI scenario checks the decisions, with the Debug build recording
+launches instead of performing them. `links-open` performs real launches
+through a protocol and a file type it registers in HKCU (volatile keys, swept
+before and after), handled by a windowless recorder, on the hidden desktop;
+https takes the same `ShellExecuteExW` path. Core fix: on Windows,
+`resolvePathForOpening` no longer resolves relative text (see 2.1) or touches
+the file system. Its std calls panicked Debug builds on a Ctrl+clicked URL,
+`./nul` or an over-long name, and a very long path overran a fixed stack
+buffer in release builds.
 
 **0.2 Stop swallowing default keys, S.** The defaults for the inspector
 (`Ctrl+Shift+I`), the command palette (`Ctrl+Shift+P`), new split
@@ -390,6 +430,15 @@ Check the host case-insensitively against the DNS and NetBIOS computer names;
 `os/hostname.zig` `isLocal` compares bytes exactly against `GetComputerNameA`
 and needs fixing. Written to be upstreamable. *Done when:* unit tests cover
 the path conversion, and a new tab opens where the shell last reported.
+
+Two link follow-ups from 0.1 depend on this:
+- Re-enable relative link text. `resolvePathForOpening` returns null on
+  Windows while the pwd is stuck at the starting directory, so Ctrl+click on
+  `src/main.zig` is blocked as a relative path. Resolve it against the
+  reported pwd without touching the file system, and let `url.zig` vet it.
+- Accept the local computer name as a `file://` host in `url.zig`. `ls
+  --hyperlink` and ripgrep emit `file://HOSTNAME/...`, which is blocked as
+  remote today.
 
 **2.2 PowerShell integration, L.**
 - New `src/shell-integration/powershell/ghostty.ps1`, compatible with Windows
@@ -872,7 +921,6 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 
 | Action | Gap | Item |
 |---|---|---|
-| open_url | unsafe for untrusted kinds | 0.1 |
 | config_change | surface target ignored | 0.4 |
 | ring_bell | only `system` and `attention` | 3.7 |
 | renderer_health | only logged | 3.6, 6.3 |

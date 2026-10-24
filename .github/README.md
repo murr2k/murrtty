@@ -73,6 +73,14 @@ desktop. The port has not yet had much use on a physical keyboard.
   this off. Closing all windows asks too.
 - OSC 52 clipboard writes with `clipboard-write = ask`: a burst of requests
   is confirmed one dialog at a time.
+- Links (`Ctrl`+click a URL or an OSC 8 hyperlink). Web and mail links,
+  folders, and files of plain data types (text, source code, images, media,
+  PDF) open. Links from terminal output to programs, scripts, shortcuts,
+  network paths or a few abused protocols are blocked, with the reason.
+  Other files and protocols ask first, naming the program that would open
+  them. Relative paths, and `file://` links that name this computer (as
+  `ls --hyperlink` writes them), are blocked for now: Ghostty doesn't track
+  the shell's directory on Windows yet.
 - Resizing, the initial size from `window-width`/`window-height`, closing
   windows and tabs cleanly, quitting when the last window closes.
 - CLI actions such as `ghostty +version` print to the console they were
@@ -88,8 +96,8 @@ desktop. The port has not yet had much use on a physical keyboard.
 - Precision touchpad scrolling, mouse pointer shapes and hiding the pointer
   while typing, moving a window between monitors with different DPI, the dark
   title bar in dark mode.
-- Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell, opening
-  URLs, configuration reload and paste protection.
+- Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell,
+  configuration reload and paste protection.
 
 **Not implemented yet**
 
@@ -240,6 +248,7 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
 | `src/apprt/win32/Surface.zig` | One child window per terminal: keyboard, IME, mouse, clipboard |
 | `src/apprt/win32/key.zig` | Scancode and text translation into Ghostty key events |
 | `src/apprt/win32/console.zig` | Attaches to the parent console for CLI actions |
+| `src/apprt/win32/url.zig` | Decides whether a link from terminal output opens, asks first or is blocked |
 | `src/apprt/win32/c.zig` | Hand-written Win32 bindings |
 | `pkg/opengl/wgl.zig` | Minimal WGL bindings and context creation |
 | `src/renderer/OpenGL.zig`, `src/renderer/opengl/Device.zig` | WGL context per surface and `SwapBuffers` presentation on Windows |
@@ -259,6 +268,9 @@ A few rules the code depends on:
   callback from Ghostty's core, which may still be using them, and never
   while a confirmation dialog is open, since a dialog runs a nested message
   loop. Close requests are queued and run when it is safe.
+- Every link Ghostty's core asks to open is accepted, even one that is then
+  blocked. Declining one would make the core open it with its generic opener,
+  which opens anything.
 - Pipe handles on Windows are `HANDLE`s, not C runtime file descriptors: use
   `WriteFile` and `CloseHandle`, not `write()` and `close()`.
 - A key-down message only takes the `WM_CHAR` messages queued directly behind

@@ -16,6 +16,7 @@ const c = @import("c.zig");
 const Surface = @import("Surface.zig");
 const text_util = @import("text.zig");
 const test_hooks = @import("test_hooks.zig");
+const url = @import("url.zig");
 const Window = @import("Window.zig");
 
 const log = std.log.scoped(.win32);
@@ -25,11 +26,13 @@ const WM_WAKEUP = c.WM_APP + 1;
 const WM_RUN_REQUESTS = c.WM_APP + 2;
 const WM_RAISE_MODAL = c.WM_APP + 3;
 
-/// A request that closes tabs or windows. These never run inside a
-/// callback from the core or while a modal dialog is open, because the
-/// core or the dialog's caller may still be using what they would free:
-/// `request` queues them and the message loop runs them. Targets are
-/// identified by id, so a request for something already gone does nothing.
+/// A request that closes tabs or windows, or opens a link. These never run
+/// inside a callback from the core or while a modal dialog is open: the
+/// core or the dialog's caller may still be using what a close would free,
+/// and the core asks to open links with the renderer lock held, which a
+/// dialog's nested loop would keep held. `request` queues them and the
+/// message loop runs them. Targets are identified by id, so closing
+/// something already gone does nothing.
 pub const Request = union(enum) {
     /// The core asked to close a surface (e.g. its process exited).
     close_surface: struct { id: u64, process_active: bool },
@@ -38,7 +41,27 @@ pub const Request = union(enum) {
     close_window: u64,
     close_all_windows,
     quit,
+    open_url: OpenUrl,
+
+    fn deinit(self: Request, alloc: Allocator) void {
+        switch (self) {
+            .open_url => |v| alloc.free(v.url),
+            else => {},
+        }
+    }
 };
+
+pub const OpenUrl = struct {
+    /// The surface the link is in, whose window owns any dialog.
+    surface: ?u64,
+    kind: apprt.action.OpenUrl.Kind,
+    /// Owned.
+    url: []u8,
+};
+
+/// Button ids for the link dialogs.
+const id_open_link = 100;
+const id_copy_link = 101;
 
 /// HWND_MESSAGE: the parent for message-only windows.
 const HWND_MESSAGE: c.HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
@@ -194,6 +217,7 @@ pub fn terminate(self: *App) void {
         _ = c.DestroyWindow(self.windows.items[self.windows.items.len - 1].hwnd);
     }
     self.windows.deinit(self.core_app.alloc);
+    for (self.requests.items) |req| req.deinit(self.core_app.alloc);
     self.requests.deinit(self.core_app.alloc);
     _ = c.DestroyWindow(self.wakeup_hwnd);
     test_hooks.deinit(&self.test_state, self.core_app.alloc);
@@ -201,10 +225,12 @@ pub fn terminate(self: *App) void {
     if (self.ole_initialized) c.OleUninitialize();
 }
 
-/// Queue a close request to run from the message loop.
+/// Queue a request to run from the message loop. It takes ownership of
+/// what the request owns.
 pub fn request(self: *App, req: Request) void {
     self.requests.append(self.core_app.alloc, req) catch |err| {
         log.err("error queueing request {t} err={}", .{ req, err });
+        req.deinit(self.core_app.alloc);
         return;
     };
     if (self.modal_depth == 0) _ = c.PostMessageW(self.wakeup_hwnd, WM_RUN_REQUESTS, 0, 0);
@@ -223,7 +249,116 @@ fn runRequests(self: *App) void {
                 "Ghostty: Close All Windows",
             )) self.closeAllWindows(),
             .quit => self.quit(),
+            .open_url => |v| {
+                defer req.deinit(self.core_app.alloc);
+                self.openUrl(v);
+            },
         }
+    }
+}
+
+/// Open a link: links from Ghostty itself as they are, links from terminal
+/// output as url.zig decides.
+fn openUrl(self: *App, req: OpenUrl) void {
+    const alloc = self.core_app.alloc;
+    const owner: ?c.HWND = if (req.surface) |id|
+        if (self.findSurface(id)) |s| s.window.hwnd else null
+    else
+        null;
+    const decision: url.Decision = switch (req.kind) {
+        .text, .html => .{ .open = .{ .value = alloc.dupe(u8, req.url) catch return } },
+        .unknown, .osc8 => url.decide(alloc, req.url) catch |err| {
+            log.warn("error vetting a link err={}", .{err});
+            return;
+        },
+    };
+    defer decision.deinit(alloc);
+    switch (decision) {
+        .open => |t| self.launch(owner, t),
+        .confirm => |t| if (self.confirmLink(owner, t)) self.launch(owner, t),
+        .deny => |d| self.linkBlocked(owner, d),
+    }
+}
+
+fn launch(self: *App, owner: ?c.HWND, target: url.Target) void {
+    if (test_hooks.recordLaunch(&self.test_state, self.core_app.alloc, @tagName(target.verb), target.value)) return;
+    // The shell can show dialogs of its own.
+    var modal = self.beginModal(owner, .{});
+    defer modal.end();
+    _ = url.launch(self.core_app.alloc, owner, target);
+}
+
+/// Ask before opening a link with a scheme nothing vetted, or a file of a
+/// type not known to be inert. Cancel is the default.
+fn confirmLink(self: *App, owner: ?c.HWND, target: url.Target) bool {
+    const alloc = self.core_app.alloc;
+    const handler = url.handlerName(alloc, target);
+    defer if (handler) |h| alloc.free(h);
+    // decide() already refused targets with characters that could disguise
+    // them; escaping here keeps it that way for anything that skips it.
+    const shown = url.display(alloc, target.value) catch return false;
+    defer alloc.free(shown);
+    const what = if (target.item) "file" else "link";
+    const instruction = if (target.item)
+        "Open this file from terminal output?"
+    else
+        "Open this link from terminal output?";
+    const content = std.fmt.allocPrint(
+        alloc,
+        "This {s} will open in {s}. Only continue if you recognize and trust it.\n\n{s}",
+        .{ what, handler orelse "the application registered for it", shown },
+    ) catch return false;
+    defer alloc.free(content);
+    const chosen = self.taskDialog(.{
+        .owner = owner,
+        .title = "Ghostty: Open Link",
+        .instruction = instruction,
+        .content = content,
+        .icon = .warning,
+        .buttons = &.{.{ .id = id_open_link, .text = if (target.item) "&Open File" else "&Open Link" }},
+        .common_buttons = c.TDCBF_CANCEL_BUTTON,
+        .default_button = c.IDCANCEL,
+    }) orelse {
+        const text = std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ instruction, content }) catch return false;
+        defer alloc.free(text);
+        return self.confirm(owner, text, "Ghostty: Open Link");
+    };
+    return chosen == id_open_link;
+}
+
+/// Say why a link was not opened. Copying it is the way forward, rather
+/// than a button that opens it anyway.
+fn linkBlocked(self: *App, owner: ?c.HWND, denial: url.Denial) void {
+    const alloc = self.core_app.alloc;
+    // Very long targets are cut in the dialog, never in what is copied.
+    const shown = text_util.truncate(denial.target, 1024);
+    const cut = shown.len < denial.target.len or !denial.complete;
+    const content = std.fmt.allocPrint(alloc, "{s}\n\n{s}{s}", .{
+        denial.reason.message(),
+        shown,
+        if (cut) "... (truncated)" else "",
+    }) catch return;
+    defer alloc.free(content);
+    const chosen = self.taskDialog(.{
+        .owner = owner,
+        .title = "Ghostty: Link Blocked",
+        .instruction = "Ghostty blocked this link",
+        .content = content,
+        .icon = .warning,
+        // Copying only part of a link would look like copying it.
+        .buttons = if (denial.complete) &.{.{ .id = id_copy_link, .text = "&Copy Link" }} else &.{},
+        .common_buttons = c.TDCBF_OK_BUTTON,
+        .default_button = c.IDOK,
+    }) orelse {
+        var modal = self.beginModal(owner, .{});
+        defer modal.end();
+        _ = Surface.messageBox(alloc, owner, content, "Ghostty: Link Blocked", c.MB_OK | c.MB_ICONWARNING);
+        return;
+    };
+    if (chosen == id_copy_link) {
+        Surface.writeClipboardText(alloc, owner orelse self.wakeup_hwnd, denial.target) catch |err| {
+            log.warn("error copying a blocked link err={}", .{err});
+        };
     }
 }
 
@@ -709,10 +844,17 @@ pub fn performAction(
             window.ringBell();
         },
 
-        .open_url => internal_os.open(value.kind, value.url) catch |err| {
-            log.warn("unable to open url err={}", .{err});
-            return false;
-        },
+        // Every link is taken, even one that will be blocked: if this
+        // returned false the core would open it with the generic opener,
+        // which opens anything.
+        .open_url => self.request(.{ .open_url = .{
+            .surface = switch (target) {
+                .app => null,
+                .surface => |core| core.id,
+            },
+            .kind = value.kind,
+            .url = try self.core_app.alloc.dupe(u8, value.url),
+        } }),
 
         .open_config => return self.openConfig(),
 

@@ -441,6 +441,7 @@ pub extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
 pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
 pub extern "user32" fn GetClipboardData(UINT) callconv(.winapi) ?HANDLE;
 pub extern "user32" fn SetClipboardData(UINT, ?HANDLE) callconv(.winapi) ?HANDLE;
+pub extern "user32" fn RegisterClipboardFormatW(LPCWSTR) callconv(.winapi) UINT;
 pub extern "user32" fn MessageBoxW(?HWND, LPCWSTR, LPCWSTR, UINT) callconv(.winapi) c_int;
 pub extern "user32" fn MessageBeep(UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn FlashWindowEx(*const FLASHWINFO) callconv(.winapi) BOOL;
@@ -571,7 +572,59 @@ pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
 pub const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(std.math.maxInt(usize));
 pub const GENERIC_WRITE = 0x40000000;
 pub const CREATE_ALWAYS = 2;
+pub const FILE_ATTRIBUTE_DIRECTORY = 0x10;
+pub const FILE_ATTRIBUTE_DEVICE = 0x40;
 pub const FILE_ATTRIBUTE_NORMAL = 0x80;
+pub const FILE_ATTRIBUTE_REPARSE_POINT = 0x400;
+pub const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFFFFFF;
+pub const IO_REPARSE_TAG_NAME_SURROGATE: DWORD = 0x20000000;
+pub const IO_REPARSE_TAG_MOUNT_POINT: DWORD = 0xA0000003;
+pub const IO_REPARSE_TAG_SYMLINK: DWORD = 0xA000000C;
+pub const IO_REPARSE_TAG_LX_SYMLINK: DWORD = 0xA000001D;
+pub const FILE_READ_ATTRIBUTES = 0x80;
+pub const FILE_SHARE_READ = 0x1;
+pub const FILE_SHARE_WRITE = 0x2;
+pub const FILE_SHARE_DELETE = 0x4;
+pub const OPEN_EXISTING = 3;
+pub const FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+pub const FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+pub const FSCTL_GET_REPARSE_POINT = 0x000900A8;
+pub extern "kernel32" fn DeviceIoControl(HANDLE, DWORD, ?*anyopaque, DWORD, ?*anyopaque, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
+pub const CSTR_EQUAL = 2;
+pub extern "kernel32" fn CompareStringOrdinal([*]const u16, c_int, [*]const u16, c_int, BOOL) callconv(.winapi) c_int;
+pub extern "kernel32" fn GetFileAttributesW(LPCWSTR) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetFullPathNameW(LPCWSTR, DWORD, [*]u16, ?*?[*:0]u16) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetShortPathNameW(LPCWSTR, [*]u16, DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetTempPathW(DWORD, [*]u16) callconv(.winapi) DWORD;
+pub extern "kernel32" fn DeleteFileW(LPCWSTR) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) DWORD;
+pub extern "kernel32" fn Sleep(DWORD) callconv(.winapi) void;
+pub const DRIVE_FIXED = 3;
+pub extern "kernel32" fn GetDriveTypeW(LPCWSTR) callconv(.winapi) UINT;
+pub const FILETIME = extern struct { dwLowDateTime: DWORD, dwHighDateTime: DWORD };
+pub const WIN32_FIND_DATAW = extern struct {
+    dwFileAttributes: DWORD,
+    ftCreationTime: FILETIME,
+    ftLastAccessTime: FILETIME,
+    ftLastWriteTime: FILETIME,
+    nFileSizeHigh: DWORD,
+    nFileSizeLow: DWORD,
+    /// The reparse tag, when dwFileAttributes has FILE_ATTRIBUTE_REPARSE_POINT.
+    dwReserved0: DWORD,
+    dwReserved1: DWORD,
+    cFileName: [260]u16,
+    cAlternateFileName: [14]u16,
+};
+comptime {
+    std.debug.assert(@sizeOf(WIN32_FIND_DATAW) == 592);
+}
+pub const FindExInfoStandard = 0;
+pub const FindExInfoBasic = 1;
+pub extern "kernel32" fn CreateDirectoryW(LPCWSTR, ?*anyopaque) callconv(.winapi) BOOL;
+pub extern "kernel32" fn RemoveDirectoryW(LPCWSTR) callconv(.winapi) BOOL;
+pub const FindExSearchNameMatch = 0;
+pub extern "kernel32" fn FindFirstFileExW(LPCWSTR, c_int, *WIN32_FIND_DATAW, c_int, ?*anyopaque, DWORD) callconv(.winapi) HANDLE;
+pub extern "kernel32" fn FindClose(HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetProcAddress(HINSTANCE, [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 pub extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(.winapi) ?HGLOBAL;
 pub extern "kernel32" fn GlobalLock(HGLOBAL) callconv(.winapi) ?*anyopaque;
@@ -594,6 +647,49 @@ pub extern "shell32" fn ShellExecuteW(
     ?LPCWSTR,
     c_int,
 ) callconv(.winapi) ?HINSTANCE;
+
+/// Natural alignment on x64 (shellapi.h packs it to 1 only on 32-bit).
+pub const SHELLEXECUTEINFOW = extern struct {
+    cbSize: DWORD = @sizeOf(SHELLEXECUTEINFOW),
+    fMask: c_ulong = 0,
+    hwnd: ?HWND = null,
+    lpVerb: ?LPCWSTR = null,
+    lpFile: ?LPCWSTR = null,
+    lpParameters: ?LPCWSTR = null,
+    lpDirectory: ?LPCWSTR = null,
+    nShow: c_int = 0,
+    hInstApp: ?HINSTANCE = null,
+    lpIDList: ?*anyopaque = null,
+    lpClass: ?LPCWSTR = null,
+    hkeyClass: ?HKEY = null,
+    dwHotKey: DWORD = 0,
+    hIconOrMonitor: ?HANDLE = null,
+    hProcess: ?HANDLE = null,
+};
+comptime {
+    if (@sizeOf(usize) == 8) std.debug.assert(@sizeOf(SHELLEXECUTEINFOW) == 112);
+}
+pub const SEE_MASK_INVOKEIDLIST = 0x0000000C;
+pub const SEE_MASK_NOASYNC = 0x00000100;
+pub extern "shell32" fn ShellExecuteExW(*SHELLEXECUTEINFOW) callconv(.winapi) BOOL;
+pub extern "shell32" fn ILCreateFromPathW(LPCWSTR) callconv(.winapi) ?*anyopaque;
+pub extern "shell32" fn ILFree(?*anyopaque) callconv(.winapi) void;
+pub extern "shell32" fn SHGetPathFromIDListEx(*const anyopaque, [*]u16, DWORD, c_int) callconv(.winapi) BOOL;
+pub extern "shell32" fn SHOpenFolderAndSelectItems(*const anyopaque, UINT, ?[*]const *const anyopaque, DWORD) callconv(.winapi) HRESULT;
+
+// shlwapi
+pub const ASSOCF_INIT_IGNOREUNKNOWN = 0x00000400;
+pub const ASSOCSTR_EXECUTABLE = 2;
+pub const ASSOCSTR_FRIENDLYAPPNAME = 4;
+pub extern "shlwapi" fn AssocIsDangerous(LPCWSTR) callconv(.winapi) BOOL;
+pub extern "shlwapi" fn AssocQueryStringW(
+    c_uint,
+    c_int,
+    LPCWSTR,
+    ?LPCWSTR,
+    ?[*]u16,
+    *DWORD,
+) callconv(.winapi) HRESULT;
 
 // imm32
 pub extern "imm32" fn ImmGetContext(HWND) callconv(.winapi) ?HIMC;

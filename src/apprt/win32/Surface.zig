@@ -19,6 +19,7 @@ const c = @import("c.zig");
 const key = @import("key.zig");
 const App = @import("App.zig");
 const Window = @import("Window.zig");
+const test_hooks = @import("test_hooks.zig");
 const text_util = @import("text.zig");
 
 const log = std.log.scoped(.win32_surface);
@@ -896,7 +897,7 @@ fn readClipboardText(alloc: Allocator, hwnd: c.HWND) !?[]u8 {
     return try std.unicode.utf16LeToUtf8Alloc(alloc, units);
 }
 
-fn writeClipboardText(alloc: Allocator, hwnd: c.HWND, text: []const u8) !void {
+pub fn writeClipboardText(alloc: Allocator, hwnd: c.HWND, text: []const u8) !void {
     const utf16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, text);
     defer alloc.free(utf16);
 
@@ -911,9 +912,15 @@ fn writeClipboardText(alloc: Allocator, hwnd: c.HWND, text: []const u8) !void {
         _ = c.GlobalUnlock(handle);
     }
 
-    if (c.OpenClipboard(hwnd) == 0) {
-        _ = c.GlobalFree(handle);
-        return error.ClipboardOpenFailed;
+    // Another program (a clipboard manager, clipboard history) may have the
+    // clipboard open for a moment.
+    var tries: usize = 0;
+    while (c.OpenClipboard(hwnd) == 0) : (tries += 1) {
+        if (tries == 5) {
+            _ = c.GlobalFree(handle);
+            return error.ClipboardOpenFailed;
+        }
+        c.Sleep(10);
     }
     defer _ = c.CloseClipboard();
     _ = c.EmptyClipboard();
@@ -921,6 +928,15 @@ fn writeClipboardText(alloc: Allocator, hwnd: c.HWND, text: []const u8) !void {
     if (c.SetClipboardData(c.CF_UNICODETEXT, handle) == null) {
         _ = c.GlobalFree(handle);
         return error.ClipboardWriteFailed;
+    }
+
+    // Under the GUI tests, keep what they make us copy out of the user's
+    // clipboard history and cloud clipboard.
+    if (test_hooks.active()) {
+        const format = c.RegisterClipboardFormatW(c.L("ExcludeClipboardContentFromMonitorProcessing"));
+        if (format != 0) if (c.GlobalAlloc(c.GMEM_MOVEABLE, 1)) |marker| {
+            if (c.SetClipboardData(format, marker) == null) _ = c.GlobalFree(marker);
+        };
     }
 }
 

@@ -22,6 +22,8 @@ pub const all = [_]Scenario{
     .{ .name = "clipboard-queue", .about = "a burst of OSC 52 writes asks one dialog at a time", .run = clipboardQueue },
     .{ .name = "close-all", .about = "close-all asks and disables the other windows meanwhile", .run = closeAll },
     .{ .name = "window-size", .about = "window-width/height give the exact grid", .run = windowSize },
+    .{ .name = "links", .about = "Ctrl+click links: programs and UNC paths blocked, web opens, other schemes ask", .run = links },
+    .{ .name = "links-open", .about = "links really open: a test protocol and file type registered in HKCU", .run = linksOpen },
 };
 
 const base_config =
@@ -81,6 +83,9 @@ fn launch(h: *Harness) anyerror!void {
 /// thread on that desktop, and is terminated rather than closed through a
 /// dialog that would appear on screen.
 fn pixels(h: *Harness) anyerror!void {
+    if (!h.userDesktopShown()) {
+        return h.skip("the desktop isn't being drawn (screen saver or lock screen is up)", .{});
+    }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
     h.runOnUserDesktop(&ctx, struct {
@@ -222,11 +227,8 @@ fn tabs(h: *Harness) anyerror!void {
 }
 
 fn clipboard(h: *Harness) anyerror!void {
-    const saved = h.getClipboard() catch null;
-    defer if (saved) |s| {
-        h.setClipboard(s) catch {};
-        h.alloc.free(s);
-    };
+    var saved = try h.saveClipboard();
+    defer saved.restore();
 
     try h.setClipboard("gui-paste-one");
     var g = try start(h, "clipboard", "", ">");
@@ -266,11 +268,8 @@ fn altF4(h: *Harness) anyerror!void {
 }
 
 fn clipboardQueue(h: *Harness) anyerror!void {
-    const saved = h.getClipboard() catch null;
-    defer if (saved) |s| {
-        h.setClipboard(s) catch {};
-        h.alloc.free(s);
-    };
+    var saved = try h.saveClipboard();
+    defer saved.restore();
     try h.setClipboard("before");
 
     var g = try start(h, "clipboard-queue",
@@ -328,6 +327,281 @@ fn closeAll(h: *Harness) anyerror!void {
     h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
     const code = g.waitExit(10000);
     try h.expect(code != null and code.? == 0, "Yes closes everything, exit code 0 (got {?d})", .{code});
+}
+
+/// Button ids of the link dialogs (src/apprt/win32/App.zig): Open Link or
+/// Open File, and Copy Link.
+const id_open_link = 100;
+const id_copy_link = 101;
+
+/// Clears the screen, then prints one OSC 8 link per line, each labelled
+/// LNK-<name>, then a plain-text URL and an end marker. The labels are
+/// built at run time so only the output contains them.
+const links_command =
+    "cls;$e=[char]27;$t=\"$e\\\";" ++
+    "function Lnk($u,$n){Write-Host \"$e]8;;$u${t}LNK-$n$e]8;;$t\"};" ++
+    "Lnk file:///C:/Windows/System32/calc.exe CALC;" ++
+    "Lnk file://attacker.invalid/share/x.txt UNC;" ++
+    "Lnk https://example.com/ghostty-gui-test WEB;" ++
+    "Lnk ghostty-gui-test:hello APP;" ++
+    "Lnk 'ghostty-gui-test:a\"b c' QUOTE;" ++
+    "Lnk file:///C:/Windows DIR;" ++
+    "Lnk file:///C:/Windows/win.ini INI;" ++
+    "Lnk file:///C:/Windows/System32/drivers/etc/hosts HOSTS;" ++
+    "Write-Host ('LNK-'+'TXT https://example.org/plain');" ++
+    "Write-Host ('LNK-'+'NUL ./nul');" ++
+    "Write-Host ('LNK-'+'LONG ./'+('a'*300)+'.txt');" ++
+    "Write-Host ('LNK-'+'END')";
+
+/// Ctrl+click the cell `col` of the row that starts with `label`.
+fn ctrlClickRow(h: *Harness, g: *Harness.Ghostty, surf: w.HWND, label: []const u8, col: u32) !void {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const t = d.value.windows[0].tabs[d.value.windows[0].active];
+    const cell = t.cell orelse return h.fail("no cell size in the dump", .{});
+    const pad = t.padding orelse return h.fail("no padding in the dump", .{});
+    var row: u32 = 0;
+    var lines = std.mem.splitScalar(u8, t.text orelse "", '\n');
+    while (lines.next()) |line| : (row += 1) {
+        if (std.mem.startsWith(u8, line, label)) break;
+    } else return h.fail("no row starts with {s}", .{label});
+    const x: c_int = @intCast(pad[0] + col * cell[0] + cell[0] / 2);
+    const y: c_int = @intCast(pad[1] + row * cell[1] + cell[1] / 2);
+    h.log("ctrl+click {s} at row {d} col {d} ({d},{d})", .{ label, row, col, x, y });
+    h.clickMods(surf, x, y, .left, .{ .ctrl = true });
+}
+
+fn waitNoDialog(h: *Harness, g: *Harness.Ghostty) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        if (try h.dialogCount(g) == 0) return;
+        w.Sleep(100);
+    }
+    return h.fail("the dialog did not close", .{});
+}
+
+/// Wait for `n` recorded launches and check the last one.
+fn expectLaunch(h: *Harness, g: *Harness.Ghostty, n: usize, expected: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const l = d.value.launches;
+        if (l.len >= n) {
+            try h.expect(l.len == n, "{d} launch(es), got {d}", .{ n, l.len });
+            try h.expect(std.ascii.eqlIgnoreCase(l[n - 1], expected), "opens '{s}' (got '{s}')", .{ expected, l[n - 1] });
+            return;
+        }
+        w.Sleep(200);
+    }
+    return h.fail("nothing opened; expected '{s}'", .{expected});
+}
+
+fn expectLaunchCount(h: *Harness, g: *Harness.Ghostty, n: usize) !void {
+    var d = try h.dump(g);
+    defer d.deinit();
+    try h.expect(d.value.launches.len == n, "still {d} launch(es) (got {d})", .{ n, d.value.launches.len });
+}
+
+fn expectTitle(h: *Harness, dlg: w.HWND, expected: []const u8) !void {
+    const t = try h.title(dlg);
+    defer h.alloc.free(t);
+    try h.expect(std.mem.indexOf(u8, t, expected) != null, "dialog '{s}' (expected '{s}')", .{ t, expected });
+}
+
+/// Ctrl+click the row labelled `label`, expect a dialog titled `title`,
+/// answer it with `id`, and wait for it to close.
+fn clickAndAnswer(h: *Harness, g: *Harness.Ghostty, surf: w.HWND, label: []const u8, title: []const u8, id: c_int) !void {
+    try ctrlClickRow(h, g, surf, label, 2);
+    const dlg = try h.waitDialog(g, 5000);
+    try expectTitle(h, dlg, title);
+    h.answer(g, dlg, id);
+    try waitNoDialog(h, g);
+}
+
+/// Links from terminal output go through the runtime's policy (url.zig).
+/// The Debug build records what would open instead of opening it, so no
+/// browser or Explorer window appears.
+fn links(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+
+    var g = try start(h, "links", "command = powershell.exe -NoLogo -NoProfile\n", "PS ");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    try h.typeText(surf, links_command);
+    h.enter(surf);
+    try h.waitText(&g, "LNK-END", 1, 15000);
+
+    // A program is blocked, and Copy Link copies its path. Ghostty writes
+    // the clipboard after the dialog closes, so wait for the write before
+    // reading.
+    try h.setClipboard("");
+    const before = h.clipboardSequence();
+    try clickAndAnswer(h, &g, surf, "LNK-CALC", "Link Blocked", id_copy_link);
+    var waited: u32 = 0;
+    while (h.clipboardSequence() == before and waited < 5000) : (waited += 50) w.Sleep(50);
+    const copied = (try h.getClipboard()) orelse "";
+    defer if (copied.len > 0) h.alloc.free(copied);
+    try h.expect(std.ascii.findIgnoreCase(copied, "\\System32\\calc.exe") != null, "Copy Link copied the path (got '{s}')", .{copied});
+
+    // A UNC path is blocked without touching the network.
+    try clickAndAnswer(h, &g, surf, "LNK-UNC", "Link Blocked", w.IDOK);
+
+    // https opens without asking.
+    try ctrlClickRow(h, &g, surf, "LNK-WEB", 2);
+    try expectLaunch(h, &g, 1, "default https://example.com/ghostty-gui-test");
+    try h.expect(try h.dialogCount(&g) == 0, "no dialog for https", .{});
+
+    // Another scheme asks: Cancel opens nothing, Open Link opens it.
+    try clickAndAnswer(h, &g, surf, "LNK-APP", "Open Link", w.IDCANCEL);
+    try expectLaunchCount(h, &g, 1);
+    try clickAndAnswer(h, &g, surf, "LNK-APP", "Open Link", id_open_link);
+    try expectLaunch(h, &g, 2, "default ghostty-gui-test:hello");
+
+    // A quote and a space reach the handler encoded, so they can't add
+    // arguments to its command line.
+    try clickAndAnswer(h, &g, surf, "LNK-QUOTE", "Open Link", id_open_link);
+    try expectLaunch(h, &g, 3, "default ghostty-gui-test:a%22b%20c");
+
+    // A directory opens with its default verb (the user's file manager).
+    try ctrlClickRow(h, &g, surf, "LNK-DIR", 2);
+    try expectLaunch(h, &g, 4, "default C:\\Windows");
+
+    // A text file opens without asking; a file of no known type asks.
+    try ctrlClickRow(h, &g, surf, "LNK-INI", 2);
+    try expectLaunch(h, &g, 5, "default C:\\Windows\\win.ini");
+    try clickAndAnswer(h, &g, surf, "LNK-HOSTS", "Open Link", w.IDCANCEL);
+    try expectLaunchCount(h, &g, 5);
+
+    // A plain-text URL matched by link-url (an "unknown" link).
+    try ctrlClickRow(h, &g, surf, "LNK-TXT", 12);
+    try expectLaunch(h, &g, 6, "default https://example.org/plain");
+
+    // Relative paths a file system call would choke on: a device name, and
+    // a name longer than NTFS allows (spanning several rows). Both used to
+    // crash Debug builds inside the standard library.
+    try ctrlClickRow(h, &g, surf, "LNK-NUL", 9);
+    var dlg = try h.waitDialog(&g, 5000);
+    try expectTitle(h, dlg, "Link Blocked");
+    h.answer(&g, dlg, w.IDOK);
+    try waitNoDialog(h, &g);
+    try ctrlClickRow(h, &g, surf, "LNK-LONG", 12);
+    dlg = try h.waitDialog(&g, 5000);
+    try expectTitle(h, dlg, "Link Blocked");
+    h.answer(&g, dlg, w.IDOK);
+    try waitNoDialog(h, &g);
+    try expectLaunchCount(h, &g, 6);
+
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.modal_depth == 0, "no dialog left open", .{});
+    }
+    try quit(h, &g, surf);
+}
+
+/// Wait until the file at `path` exists and contains `needle` (any case).
+fn waitFileText(h: *Harness, path: []const u8, needle: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 200) {
+        if (h.readFileOrNull(path)) |data| {
+            defer h.alloc.free(data);
+            if (std.ascii.findIgnoreCase(data, needle) != null) return h.expect(true, "{s} was opened", .{needle});
+        }
+        w.Sleep(200);
+    }
+    return h.fail("nothing opened {s}", .{needle});
+}
+
+/// The registry entries links-open makes, and the ones the shell adds
+/// itself once it has used them.
+const link_test_keys = [_][]const u8{
+    "Software\\Classes\\ghostty-gui-test",
+    "Software\\Classes\\.ghosttyguitest",
+    "Software\\Classes\\GhosttyGuiTest.File",
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\.ghosttyguitest",
+};
+const association_toasts = "Software\\Microsoft\\Windows\\CurrentVersion\\ApplicationAssociationToasts";
+
+fn removeLinkTestRegistry(h: *Harness) void {
+    for (link_test_keys) |k| h.deleteRegTree(k);
+    h.deleteRegValue(association_toasts, "ghostty-gui-test_ghostty-gui-test");
+    h.deleteRegValue(association_toasts, "GhosttyGuiTest.File_.ghosttyguitest");
+    w.SHChangeNotify(w.SHCNE_ASSOCCHANGED, 0, null, null);
+}
+
+/// The other link scenario records what would open; this one opens links
+/// for real, through ShellExecuteExW, with handlers of its own: a protocol
+/// and a file type registered under HKCU for the test's duration. Both run
+/// ghostty-gui-record (record.zig), a windowless program that writes what
+/// it was given to a marker file, so nothing appears on screen and the
+/// argument is never parsed by a shell.
+fn linksOpen(h: *Harness) anyerror!void {
+    const alloc = h.alloc;
+    const recorder = try h.helperPath("ghostty-gui-record.exe");
+    defer alloc.free(recorder);
+    const protocol_marker = try std.fmt.allocPrint(alloc, "{s}\\protocol-opened.txt", .{h.temp_dir});
+    defer alloc.free(protocol_marker);
+    const file_marker = try std.fmt.allocPrint(alloc, "{s}\\file-opened.txt", .{h.temp_dir});
+    defer alloc.free(file_marker);
+    const sample = try std.fmt.allocPrint(alloc, "{s}\\sample.ghosttyguitest", .{h.temp_dir});
+    defer alloc.free(sample);
+
+    const files = [_][]const u8{ protocol_marker, file_marker, sample };
+    for (files) |f| h.deleteFile(f);
+    defer for (files) |f| h.deleteFile(f);
+    for (files[0..2]) |f| if (h.readFileOrNull(f)) |data| {
+        alloc.free(data);
+        return h.fail("a marker from before the test remains: {s}", .{f});
+    };
+    try h.writeFileAt(sample, "sample\r\n");
+
+    // Before, in case a killed run left entries behind, and after.
+    removeLinkTestRegistry(h);
+    defer removeLinkTestRegistry(h);
+    {
+        const cmd = try std.fmt.allocPrint(alloc, "\"{s}\" \"{s}\" \"%1\"", .{ recorder, protocol_marker });
+        defer alloc.free(cmd);
+        try h.setRegString(link_test_keys[0], null, "URL:Ghostty GUI test");
+        try h.setRegString(link_test_keys[0], "URL Protocol", "");
+        try h.setRegString(link_test_keys[0] ++ "\\shell\\open\\command", null, cmd);
+    }
+    {
+        const cmd = try std.fmt.allocPrint(alloc, "\"{s}\" \"{s}\" \"%1\"", .{ recorder, file_marker });
+        defer alloc.free(cmd);
+        try h.setRegString(link_test_keys[1], null, "GhosttyGuiTest.File");
+        try h.setRegString(link_test_keys[2] ++ "\\shell\\open\\command", null, cmd);
+    }
+
+    var g = try h.launchWith("links-open", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n", .{
+        .env = &.{.{ "GHOSTTY_WIN32_TEST_LAUNCH", "1" }},
+    });
+    defer g.deinit();
+    try h.waitText(&g, "PS ", 1, 20000);
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    const command = try std.fmt.allocPrint(alloc, "cls;$e=[char]27;$t=\"$e\\\";" ++
+        "function Lnk($u,$n){{Write-Host \"$e]8;;$u${{t}}LNK-$n$e]8;;$t\"}};" ++
+        "Lnk ghostty-gui-test:hello APP;Lnk '{s}' FILE;Write-Host ('LNK-'+'END')", .{sample});
+    defer alloc.free(command);
+    try h.typeText(surf, command);
+    h.enter(surf);
+    try h.waitText(&g, "LNK-END", 1, 15000);
+
+    // The protocol asks first, then opens.
+    try clickAndAnswer(h, &g, surf, "LNK-APP", "Open Link", id_open_link);
+    try waitFileText(h, protocol_marker, "ghostty-gui-test:hello");
+
+    // A file of a type nothing vouches for asks too, then opens as the
+    // item that was checked.
+    try clickAndAnswer(h, &g, surf, "LNK-FILE", "Open Link", id_open_link);
+    try waitFileText(h, file_marker, "sample.ghosttyguitest");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.launches.len == 0, "nothing was only recorded", .{});
+    }
+    try quit(h, &g, surf);
 }
 
 fn windowSize(h: *Harness) anyerror!void {

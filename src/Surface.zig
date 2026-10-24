@@ -2193,6 +2193,16 @@ fn resolvePathForOpening(
     path: []const u8,
 ) Allocator.Error!?[]const u8 {
     if (!std.fs.path.isAbsolute(path)) {
+        // Not on Windows, where the link goes to the runtime as clicked.
+        // The pwd there is still the starting directory whatever the shell
+        // did since (OSC 7 is not handled on Windows), so resolving against
+        // it would name the wrong file. And the check below would go
+        // through std's Windows file calls, which follow links, panic in
+        // Debug builds on names Windows rejects (NUL, an over-long
+        // component) and overrun a fixed buffer on very long paths, all of
+        // which terminal output can supply.
+        if (comptime builtin.os.tag == .windows) return null;
+
         const terminal_pwd = self.io.terminal.getPwd() orelse {
             return null;
         };

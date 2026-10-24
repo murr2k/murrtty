@@ -5,7 +5,14 @@
 //! writing the app's state to that file as JSON: windows, tabs, tab-bar
 //! geometry, titles, grid sizes and each terminal's visible text. The
 //! harness sends the message with SendMessageTimeout, so the file is
-//! complete when the call returns. Release builds compile none of this.
+//! complete when the call returns.
+//!
+//! While the hooks are on, links that would open (a browser, Explorer, a
+//! protocol handler) are recorded in the dump instead, so the tests can
+//! check what would have opened without anything appearing on the user's
+//! screen. GHOSTTY_WIN32_TEST_LAUNCH=1 opens them for real, for a test
+//! whose handlers are its own. What Ghostty copies is kept out of the
+//! user's clipboard history. Release builds compile none of this.
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
@@ -23,7 +30,19 @@ pub const State = if (enabled) struct {
     msg: c.UINT = 0,
     /// Where to write the dump, as UTF-16 for CreateFileW.
     path: ?[:0]u16 = null,
+    /// What would have opened, as "verb target".
+    launches: std.ArrayList([]u8) = .empty,
+    /// Whether launches are recorded instead of performed.
+    record_launches: bool = true,
 } else struct {};
+
+/// Whether the hooks are on, for code with no App at hand.
+var on = false;
+
+pub fn active() bool {
+    if (comptime !enabled) return false;
+    return on;
+}
 
 /// Turn the hooks on if GHOSTTY_WIN32_TEST_DUMP is set.
 pub fn init(alloc: Allocator) State {
@@ -37,9 +56,11 @@ pub fn init(alloc: Allocator) State {
         return .{};
     }
     log.warn("test hooks enabled", .{});
+    on = true;
     return .{
         .msg = c.RegisterWindowMessageW(c.L("GhosttyWin32TestDump")),
         .path = path,
+        .record_launches = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_LAUNCH"), null, 0) == 0,
     };
 }
 
@@ -47,6 +68,18 @@ pub fn deinit(state: *State, alloc: Allocator) void {
     if (comptime !enabled) return;
     if (state.path) |p| alloc.free(p);
     state.path = null;
+    for (state.launches.items) |l| alloc.free(l);
+    state.launches.deinit(alloc);
+}
+
+/// Record a launch instead of performing it, if the hooks are on. Returns
+/// whether it was taken.
+pub fn recordLaunch(state: *State, alloc: Allocator, verb: []const u8, target: []const u8) bool {
+    if (comptime !enabled) return false;
+    if (state.msg == 0 or !state.record_launches) return false;
+    const entry = std.fmt.allocPrint(alloc, "{s} {s}", .{ verb, target }) catch return true;
+    state.launches.append(alloc, entry) catch alloc.free(entry);
+    return true;
 }
 
 /// Whether `msg` is the dump request.
@@ -117,8 +150,17 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             });
             try writeString(alloc, out, s.title orelse "");
             if (s.core_initialized) {
-                const grid = s.core_surface.size.grid();
-                try out.print(alloc, ",\"cols\":{d},\"rows\":{d},\"text\":", .{ grid.columns, grid.rows });
+                // Cell size and padding in pixels, to click on a cell.
+                const size = s.core_surface.size;
+                const grid = size.grid();
+                try out.print(alloc, ",\"cols\":{d},\"rows\":{d},\"cell\":[{d},{d}],\"padding\":[{d},{d}],\"text\":", .{
+                    grid.columns,
+                    grid.rows,
+                    size.cell.width,
+                    size.cell.height,
+                    size.padding.left,
+                    size.padding.top,
+                });
                 const text = text: {
                     s.core_surface.renderer_state.mutex.lockUncancelable(global.io());
                     defer s.core_surface.renderer_state.mutex.unlock(global.io());
@@ -130,6 +172,11 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             try out.append(alloc, '}');
         }
         try out.appendSlice(alloc, "]}");
+    }
+    try out.appendSlice(alloc, "],\"launches\":[");
+    for (app.test_state.launches.items, 0..) |l, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try writeString(alloc, out, l);
     }
     try out.appendSlice(alloc, "]}");
 }

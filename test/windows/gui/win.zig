@@ -81,6 +81,8 @@ pub const WM_MBUTTONUP = 0x0208;
 pub const WM_USER = 0x0400;
 pub const TDM_CLICK_BUTTON = WM_USER + 102;
 pub const MK_LBUTTON = 0x0001;
+pub const MK_SHIFT = 0x0004;
+pub const MK_CONTROL = 0x0008;
 pub const MK_MBUTTON = 0x0010;
 pub const SMTO_ABORTIFHUNG = 0x0002;
 pub const PW_RENDERFULLCONTENT = 0x00000002;
@@ -107,6 +109,7 @@ pub const GENERIC_READ = 0x80000000;
 pub const GENERIC_WRITE = 0x40000000;
 pub const GENERIC_ALL = 0x10000000;
 pub const FILE_SHARE_READ = 0x00000001;
+pub const FILE_SHARE_DELETE = 0x00000004;
 pub const CREATE_ALWAYS = 2;
 pub const OPEN_EXISTING = 3;
 pub const FILE_ATTRIBUTE_NORMAL = 0x80;
@@ -141,13 +144,31 @@ pub extern "kernel32" fn CreateProcessW(
     DWORD,
     ?*anyopaque,
     ?LPCWSTR,
+    // A STARTUPINFOEXW's StartupInfo with EXTENDED_STARTUPINFO_PRESENT.
     *STARTUPINFOW,
     *PROCESS_INFORMATION,
 ) callconv(.winapi) BOOL;
+pub const STARTUPINFOEXW = extern struct {
+    StartupInfo: STARTUPINFOW,
+    lpAttributeList: ?*anyopaque = null,
+};
+pub const EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+pub const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x00020002;
+pub extern "kernel32" fn InitializeProcThreadAttributeList(?*anyopaque, DWORD, DWORD, *usize) callconv(.winapi) BOOL;
+pub extern "kernel32" fn UpdateProcThreadAttribute(*anyopaque, DWORD, usize, *const anyopaque, usize, ?*anyopaque, ?*usize) callconv(.winapi) BOOL;
+pub extern "kernel32" fn DeleteProcThreadAttributeList(*anyopaque) callconv(.winapi) void;
+pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+pub extern "kernel32" fn GetModuleFileNameW(?*anyopaque, [*]u16, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn WaitForSingleObject(HANDLE, DWORD) callconv(.winapi) DWORD;
 pub const THREAD_START_ROUTINE = *const fn (?*anyopaque) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateThread(?*anyopaque, usize, THREAD_START_ROUTINE, ?*anyopaque, DWORD, ?*DWORD) callconv(.winapi) ?HANDLE;
 pub const STARTF_USEPOSITION = 0x00000004;
+pub const STARTF_USESTDHANDLES = 0x00000100;
+pub const SECURITY_ATTRIBUTES = extern struct {
+    nLength: DWORD = @sizeOf(SECURITY_ATTRIBUTES),
+    lpSecurityDescriptor: ?*anyopaque = null,
+    bInheritHandle: BOOL = FALSE,
+};
 pub extern "kernel32" fn GetExitCodeProcess(HANDLE, *DWORD) callconv(.winapi) BOOL;
 pub extern "kernel32" fn TerminateProcess(HANDLE, UINT) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
@@ -157,6 +178,17 @@ pub extern "kernel32" fn GetTempPathW(DWORD, [*]u16) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateDirectoryW(LPCWSTR, ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn RemoveDirectoryW(LPCWSTR) callconv(.winapi) BOOL;
 pub extern "kernel32" fn DeleteFileW(LPCWSTR) callconv(.winapi) BOOL;
+
+pub const HKEY = *opaque {};
+pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
+pub const KEY_WRITE = 0x20006;
+pub const REG_SZ = 1;
+pub const REG_OPTION_VOLATILE = 1;
+pub extern "advapi32" fn RegDeleteKeyValueW(HKEY, ?LPCWSTR, ?LPCWSTR) callconv(.winapi) c_long;
+pub extern "advapi32" fn RegCreateKeyExW(HKEY, LPCWSTR, DWORD, ?LPWSTR, DWORD, DWORD, ?*anyopaque, *HKEY, ?*DWORD) callconv(.winapi) c_long;
+pub extern "advapi32" fn RegSetValueExW(HKEY, ?LPCWSTR, DWORD, DWORD, [*]const u8, DWORD) callconv(.winapi) c_long;
+pub extern "advapi32" fn RegCloseKey(HKEY) callconv(.winapi) c_long;
+pub extern "advapi32" fn RegDeleteTreeW(HKEY, ?LPCWSTR) callconv(.winapi) c_long;
 pub extern "kernel32" fn CreateFileW(LPCWSTR, DWORD, DWORD, ?*anyopaque, DWORD, DWORD, ?HANDLE) callconv(.winapi) HANDLE;
 pub extern "kernel32" fn ReadFile(HANDLE, [*]u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WriteFile(HANDLE, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
@@ -167,9 +199,12 @@ pub extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn GlobalLock(HANDLE) callconv(.winapi) ?*anyopaque;
 pub extern "kernel32" fn GlobalUnlock(HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GlobalFree(HANDLE) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn GlobalSize(HANDLE) callconv(.winapi) usize;
 
 // shell32
 pub extern "shell32" fn CommandLineToArgvW(LPCWSTR, *c_int) callconv(.winapi) ?[*]LPWSTR;
+pub const SHCNE_ASSOCCHANGED = 0x08000000;
+pub extern "shell32" fn SHChangeNotify(c_long, UINT, ?*const anyopaque, ?*const anyopaque) callconv(.winapi) void;
 
 // user32
 pub extern "user32" fn SetProcessDPIAware() callconv(.winapi) BOOL;
@@ -201,11 +236,19 @@ pub extern "user32" fn CreateDesktopW(LPCWSTR, ?LPCWSTR, ?*anyopaque, DWORD, DWO
 pub extern "user32" fn SetThreadDesktop(HDESK) callconv(.winapi) BOOL;
 pub extern "user32" fn GetThreadDesktop(DWORD) callconv(.winapi) ?HDESK;
 pub extern "user32" fn CloseDesktop(HDESK) callconv(.winapi) BOOL;
+pub const DESKTOP_READOBJECTS = 0x0001;
+pub const UOI_NAME = 2;
+pub extern "user32" fn OpenInputDesktop(DWORD, BOOL, DWORD) callconv(.winapi) ?HDESK;
+pub extern "user32" fn GetUserObjectInformationW(HANDLE, c_int, ?*anyopaque, DWORD, ?*DWORD) callconv(.winapi) BOOL;
 pub extern "user32" fn OpenClipboard(?HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn CloseClipboard() callconv(.winapi) BOOL;
 pub extern "user32" fn EmptyClipboard() callconv(.winapi) BOOL;
 pub extern "user32" fn GetClipboardData(UINT) callconv(.winapi) ?HANDLE;
 pub extern "user32" fn SetClipboardData(UINT, ?HANDLE) callconv(.winapi) ?HANDLE;
+pub extern "user32" fn EnumClipboardFormats(UINT) callconv(.winapi) UINT;
+pub extern "user32" fn GetClipboardSequenceNumber() callconv(.winapi) DWORD;
+pub extern "user32" fn RegisterClipboardFormatW(LPCWSTR) callconv(.winapi) UINT;
+pub extern "user32" fn GetClipboardFormatNameW(UINT, [*]u16, c_int) callconv(.winapi) c_int;
 
 // gdi32
 pub extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(.winapi) ?HDC;

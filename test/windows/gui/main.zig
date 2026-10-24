@@ -68,6 +68,7 @@ pub fn main(init: std.process.Init) !u8 {
     std.debug.print("ghostty: {s}\ndesktop: {s}\n", .{ ghostty, if (visible) "the user's" else "hidden" });
 
     var failed: usize = 0;
+    var skipped: usize = 0;
     var ran: usize = 0;
     for (scenarios.all) |s| {
         if (only.items.len > 0) {
@@ -80,16 +81,24 @@ pub fn main(init: std.process.Init) !u8 {
         if (verbose) std.debug.print("\n", .{});
         if (s.run(&h)) |_| {
             std.debug.print("ok\n", .{});
-        } else |err| {
-            failed += 1;
-            std.debug.print("FAILED ({t})\n", .{err});
+        } else |err| switch (err) {
+            error.Skipped => {
+                skipped += 1;
+                std.debug.print("skipped\n", .{});
+            },
+            else => {
+                failed += 1;
+                std.debug.print("FAILED ({t})\n", .{err});
+            },
         }
     }
-    std.debug.print("{d} of {d} passed\n", .{ ran - failed, ran });
+    std.debug.print("{d} of {d} passed", .{ ran - failed - skipped, ran });
+    if (skipped > 0) std.debug.print(", {d} skipped", .{skipped});
+    std.debug.print("\n", .{});
     if (failed == 0) {
         h.cleanup();
         return 0;
     }
-    std.debug.print("configs and state dumps kept in {s}\n", .{h.temp_dir});
+    std.debug.print("configs, state dumps and logs kept in {s}\n", .{h.temp_dir});
     return 1;
 }

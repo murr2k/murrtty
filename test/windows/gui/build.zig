@@ -19,6 +19,19 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // The handler that the links-open scenario registers (see record.zig),
+    // installed beside the harness, which finds it there.
+    const record = b.addExecutable(.{
+        .name = "ghostty-gui-record",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("record.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    record.subsystem = .windows;
+    b.installArtifact(record);
+
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
     b.step("run", "Run the GUI tests").dependOn(&run.step);

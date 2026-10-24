@@ -28,6 +28,8 @@ launched: std.ArrayList([]u8) = .empty,
 
 pub const Error = error{
     TestFailed,
+    /// The scenario can't run here; it printed why.
+    Skipped,
     Timeout,
     LaunchFailed,
     DumpFailed,
@@ -43,7 +45,13 @@ pub fn init(alloc: Allocator, exe: []const u8, hidden: bool) !Harness {
     if (tlen == 0) return error.LaunchFailed;
     const base = try std.unicode.utf16LeToUtf8Alloc(alloc, tmp[0..tlen]);
     defer alloc.free(base);
-    const temp_dir = try std.fmt.allocPrint(alloc, "{s}ghostty-gui-test-{d}", .{ base, w.GetCurrentProcessId() });
+    // Failed runs keep their folders, and process ids are reused, so the
+    // name has the time too: no run starts with an earlier run's files.
+    const temp_dir = try std.fmt.allocPrint(alloc, "{s}ghostty-gui-test-{d}-{d}", .{
+        base,
+        w.GetCurrentProcessId(),
+        w.GetTickCount64(),
+    });
     try makeDir(alloc, temp_dir);
 
     var self: Harness = .{
@@ -89,7 +97,7 @@ pub fn deinit(self: *Harness) void {
 /// folders. Called after a fully passing run; a failing run keeps them.
 pub fn cleanup(self: *Harness) void {
     for (self.launched.items) |dir| {
-        for ([_][]const u8{ "\\dump.json", "\\ghostty\\config.ghostty" }) |file| removePath(self.alloc, dir, file, .file);
+        for ([_][]const u8{ "\\dump.json", "\\ghostty.log", "\\ghostty\\config.ghostty" }) |file| removePath(self.alloc, dir, file, .file);
         removePath(self.alloc, dir, "\\ghostty", .dir);
         removePath(self.alloc, dir, "", .dir);
     }
@@ -192,10 +200,21 @@ pub const Where = enum {
 /// Start Ghostty with `config` as its whole configuration. `name` names
 /// the scenario's folder. Returns once its first window exists.
 pub fn launch(self: *Harness, name: []const u8, config: []const u8) !Ghostty {
-    return self.launchAt(name, config, .default);
+    return self.launchWith(name, config, .{});
 }
 
 pub fn launchAt(self: *Harness, name: []const u8, config: []const u8, where: Where) !Ghostty {
+    return self.launchWith(name, config, .{ .where = where });
+}
+
+pub const LaunchOptions = struct {
+    where: Where = .default,
+    /// Extra environment variables, as name and value.
+    env: []const [2][]const u8 = &.{},
+};
+
+pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: LaunchOptions) !Ghostty {
+    const where = opts.where;
     const alloc = self.alloc;
     const dir = try std.fmt.allocPrint(alloc, "{s}\\{s}", .{ self.temp_dir, name });
     errdefer alloc.free(dir);
@@ -210,7 +229,7 @@ pub fn launchAt(self: *Harness, name: []const u8, config: []const u8, where: Whe
     const dump_path = try std.fmt.allocPrint(alloc, "{s}\\dump.json", .{dir});
     errdefer alloc.free(dump_path);
 
-    const env = try self.environment(dir, dump_path);
+    const env = try self.environment(dir, dump_path, opts.env);
     defer alloc.free(env);
 
     var cmdline: std.ArrayList(u16) = .empty;
@@ -224,7 +243,48 @@ pub fn launchAt(self: *Harness, name: []const u8, config: []const u8, where: Whe
     if (where == .default) if (self.desktop_name) |n| {
         desktop = try std.mem.concatWithSentinel(alloc, u16, &.{ std.unicode.utf8ToUtf16LeStringLiteral("WinSta0\\"), n }, 0);
     };
-    var si: w.STARTUPINFOW = .{ .lpDesktop = if (desktop) |d| d.ptr else null };
+    // Ghostty's log (its stderr) goes to ghostty.log beside the dump. Its
+    // shells inherit the handle too (Ghostty starts them inheriting), so
+    // the file can be deleted while one is still open.
+    const log_path = try std.fmt.allocPrint(alloc, "{s}\\ghostty.log", .{dir});
+    defer alloc.free(log_path);
+    const log16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, log_path);
+    defer alloc.free(log16);
+    var sa: w.SECURITY_ATTRIBUTES = .{ .bInheritHandle = w.TRUE };
+    const log_file = w.CreateFileW(log16, w.GENERIC_WRITE, w.FILE_SHARE_READ | w.FILE_SHARE_DELETE, &sa, w.CREATE_ALWAYS, w.FILE_ATTRIBUTE_NORMAL, null);
+    defer if (log_file != w.INVALID_HANDLE_VALUE) {
+        _ = w.CloseHandle(log_file);
+    };
+    const logging = log_file != w.INVALID_HANDLE_VALUE;
+
+    var siex: w.STARTUPINFOEXW = .{ .StartupInfo = .{
+        .cb = @sizeOf(w.STARTUPINFOEXW),
+        .lpDesktop = if (desktop) |d| d.ptr else null,
+    } };
+    const si = &siex.StartupInfo;
+    // Only the log is inherited. Inheriting without a list would hand
+    // Ghostty every inheritable handle this process has, including a pipe
+    // to whatever reads its output, which would then never see the end of
+    // it while an orphaned Ghostty lived.
+    var attr_buf: [128]u8 align(@alignOf(usize)) = undefined;
+    const inherit = [1]w.HANDLE{log_file};
+    if (logging) {
+        var size: usize = 0;
+        _ = w.InitializeProcThreadAttributeList(null, 1, 0, &size);
+        if (size > attr_buf.len or
+            w.InitializeProcThreadAttributeList(&attr_buf, 1, 0, &size) == 0) return error.LaunchFailed;
+        siex.lpAttributeList = &attr_buf;
+        if (w.UpdateProcThreadAttribute(&attr_buf, 0, w.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherit, @sizeOf(@TypeOf(inherit)), null, null) == 0) {
+            w.DeleteProcThreadAttributeList(&attr_buf);
+            return error.LaunchFailed;
+        }
+        si.dwFlags |= w.STARTF_USESTDHANDLES;
+        si.hStdOutput = log_file;
+        si.hStdError = log_file;
+    } else {
+        si.cb = @sizeOf(w.STARTUPINFOW);
+    }
+    defer if (logging) w.DeleteProcThreadAttributeList(&attr_buf);
     if (where == .offscreen) {
         // Ghostty creates its first window at CW_USEDEFAULT, which takes
         // this position.
@@ -240,11 +300,11 @@ pub fn launchAt(self: *Harness, name: []const u8, config: []const u8, where: Whe
         @ptrCast(cmdline.items.ptr),
         null,
         null,
-        w.FALSE,
-        w.CREATE_UNICODE_ENVIRONMENT,
+        if (logging) w.TRUE else w.FALSE,
+        w.CREATE_UNICODE_ENVIRONMENT | @as(w.DWORD, if (logging) w.EXTENDED_STARTUPINFO_PRESENT else 0),
         env.ptr,
         dir16,
-        &si,
+        si,
         &pi,
     ) == 0) {
         std.debug.print("CreateProcessW failed ({d})\n", .{w.GetLastError()});
@@ -274,13 +334,13 @@ pub fn launchAt(self: *Harness, name: []const u8, config: []const u8, where: Whe
 }
 
 /// This process's environment with the test's variables replaced.
-fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8) ![]u16 {
+fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8, extra: []const [2][]const u8) ![]u16 {
     const alloc = self.alloc;
     var out: std.ArrayList(u16) = .empty;
     errdefer out.deinit(alloc);
     const block = w.GetEnvironmentStringsW() orelse return error.LaunchFailed;
     defer _ = w.FreeEnvironmentStringsW(block);
-    const drop = [_][]const u8{ "XDG_CONFIG_HOME=", "GHOSTTY_WIN32_TEST_DUMP=", "NO_COLOR=" };
+    const drop = [_][]const u8{ "XDG_CONFIG_HOME=", "GHOSTTY_WIN32_TEST_DUMP=", "GHOSTTY_WIN32_TEST_LAUNCH=", "NO_COLOR=" };
     var i: usize = 0;
     while (block[i] != 0) {
         const entry = std.mem.sliceTo(block[i..], 0);
@@ -294,19 +354,87 @@ fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8) ![]u
             try out.append(alloc, 0);
         }
     }
-    for ([_][2][]const u8{
-        .{ "XDG_CONFIG_HOME=", cfg_home },
-        .{ "GHOSTTY_WIN32_TEST_DUMP=", dump_path },
-    }) |kv| {
-        const s = try std.mem.concat(alloc, u8, &kv);
+    const fixed = [_][2][]const u8{
+        .{ "XDG_CONFIG_HOME", cfg_home },
+        .{ "GHOSTTY_WIN32_TEST_DUMP", dump_path },
+    };
+    for ([_][]const [2][]const u8{ &fixed, extra }) |list| for (list) |kv| {
+        const s = try std.mem.concat(alloc, u8, &.{ kv[0], "=", kv[1] });
         defer alloc.free(s);
         const s16 = try std.unicode.utf8ToUtf16LeAlloc(alloc, s);
         defer alloc.free(s16);
         try out.appendSlice(alloc, s16);
         try out.append(alloc, 0);
-    }
+    };
     try out.append(alloc, 0);
     return out.toOwnedSlice(alloc);
+}
+
+//---------------------------------------------------------------
+// Registry
+
+/// Set a string value under HKEY_CURRENT_USER\`path`, creating the key.
+/// `value` null sets the key's default value. Keys created here are
+/// volatile: if the harness is killed before it deletes them, they are
+/// gone at the next sign-in anyway.
+pub fn setRegString(self: *Harness, path: []const u8, value: ?[]const u8, data: []const u8) !void {
+    const alloc = self.alloc;
+    const path16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path);
+    defer alloc.free(path16);
+    const value16 = if (value) |v| try std.unicode.utf8ToUtf16LeAllocZ(alloc, v) else null;
+    defer if (value16) |v| alloc.free(v);
+    const data16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, data);
+    defer alloc.free(data16);
+
+    var key_handle: w.HKEY = undefined;
+    if (w.RegCreateKeyExW(w.HKEY_CURRENT_USER, path16, 0, null, w.REG_OPTION_VOLATILE, w.KEY_WRITE, null, &key_handle, null) != 0) {
+        return self.fail("could not create HKCU\\{s}", .{path});
+    }
+    defer _ = w.RegCloseKey(key_handle);
+    const bytes: w.DWORD = @intCast((data16.len + 1) * 2);
+    if (w.RegSetValueExW(key_handle, if (value16) |v| v.ptr else null, 0, w.REG_SZ, @ptrCast(data16.ptr), bytes) != 0) {
+        return self.fail("could not set a value in HKCU\\{s}", .{path});
+    }
+}
+
+/// Delete HKEY_CURRENT_USER\`path` and everything under it.
+pub fn deleteRegTree(self: *Harness, path: []const u8) void {
+    const path16 = std.unicode.utf8ToUtf16LeAllocZ(self.alloc, path) catch return;
+    defer self.alloc.free(path16);
+    _ = w.RegDeleteTreeW(w.HKEY_CURRENT_USER, path16);
+}
+
+/// Delete the value `value` of HKEY_CURRENT_USER\`path`.
+pub fn deleteRegValue(self: *Harness, path: []const u8, value: []const u8) void {
+    const path16 = std.unicode.utf8ToUtf16LeAllocZ(self.alloc, path) catch return;
+    defer self.alloc.free(path16);
+    const value16 = std.unicode.utf8ToUtf16LeAllocZ(self.alloc, value) catch return;
+    defer self.alloc.free(value16);
+    _ = w.RegDeleteKeyValueW(w.HKEY_CURRENT_USER, path16, value16);
+}
+
+/// The path of a helper program built and installed next to the harness.
+pub fn helperPath(self: *Harness, comptime name: []const u8) ![]u8 {
+    var buf: [1024]u16 = undefined;
+    const n = w.GetModuleFileNameW(null, &buf, buf.len);
+    if (n == 0 or n >= buf.len) return error.LaunchFailed;
+    const exe = try std.unicode.utf16LeToUtf8Alloc(self.alloc, buf[0..n]);
+    defer self.alloc.free(exe);
+    const dir = exe[0 .. std.mem.lastIndexOfScalar(u8, exe, '\\') orelse return error.LaunchFailed];
+    return std.fmt.allocPrint(self.alloc, "{s}\\" ++ name, .{dir});
+}
+
+/// The contents of a file, or null if it can't be read.
+pub fn readFileOrNull(self: *Harness, path: []const u8) ?[]u8 {
+    return readFile(self.alloc, path) catch null;
+}
+
+pub fn writeFileAt(self: *Harness, path: []const u8, data: []const u8) !void {
+    try writeFile(self.alloc, path, data);
+}
+
+pub fn deleteFile(self: *Harness, path: []const u8) void {
+    removePath(self.alloc, path, "", .file);
 }
 
 fn asciiEqlIgnoreCase16(a: []const u16, b: []const u8) bool {
@@ -412,6 +540,25 @@ pub fn expect(self: *const Harness, ok: bool, comptime fmt: []const u8, args: an
     self.log("ok: " ++ fmt, args);
 }
 
+pub fn skip(self: *const Harness, comptime fmt: []const u8, args: anytype) error{Skipped} {
+    _ = self;
+    std.debug.print("    SKIP: " ++ fmt ++ "\n", args);
+    return error.Skipped;
+}
+
+/// Whether the user's desktop is the one on screen, and so drawn by DWM.
+/// It isn't while a screen saver or the lock screen is up (each has a
+/// desktop of its own), and captures of its windows then come back blank.
+pub fn userDesktopShown(self: *const Harness) bool {
+    _ = self;
+    const desk = w.OpenInputDesktop(0, w.FALSE, w.DESKTOP_READOBJECTS) orelse return false;
+    defer _ = w.CloseDesktop(desk);
+    var name: [64]u16 = undefined;
+    var needed: w.DWORD = 0;
+    if (w.GetUserObjectInformationW(desk, w.UOI_NAME, &name, @sizeOf(@TypeOf(name)), &needed) == 0) return false;
+    return std.mem.eql(u16, std.mem.sliceTo(&name, 0), std.unicode.utf8ToUtf16LeStringLiteral("Default"));
+}
+
 /// Run `func(ctx)` on a new thread, which starts on the user's desktop
 /// (only the harness's main thread moved to the hidden one), and wait for
 /// it. Windows are enumerated and messaged per desktop, so an `.offscreen`
@@ -483,34 +630,55 @@ pub fn typeText(self: *Harness, target: w.HWND, text: []const u8) !void {
     for (t16) |u| _ = w.PostMessageW(target, w.WM_CHAR, u, 1);
 }
 
-/// A key press with modifiers held: this thread attaches to the target's
-/// input queue and sets the shared key state, so GetKeyState in Ghostty
-/// sees the modifiers as they would be with a real keyboard.
+/// Modifier keys held for messages posted to a window: this thread
+/// attaches to the window's input queue and sets the shared key state, so
+/// GetKeyState in Ghostty sees the modifiers as they would be with a real
+/// keyboard.
+const Held = struct {
+    me: w.DWORD,
+    tid: w.DWORD,
+    attached: bool,
+    saved: [256]u8,
+
+    fn init(target: w.HWND, mods: Mods) Held {
+        var self: Held = .{
+            .me = w.GetCurrentThreadId(),
+            .tid = w.GetWindowThreadProcessId(target, null),
+            .attached = false,
+            .saved = undefined,
+        };
+        self.attached = w.AttachThreadInput(self.me, self.tid, w.TRUE) != 0;
+        _ = w.GetKeyboardState(&self.saved);
+        var state = self.saved;
+        if (mods.ctrl) {
+            state[w.VK_CONTROL] = 0x80;
+            state[w.VK_LCONTROL] = 0x80;
+        }
+        if (mods.shift) {
+            state[w.VK_SHIFT] = 0x80;
+            state[w.VK_LSHIFT] = 0x80;
+        }
+        if (mods.alt) {
+            state[w.VK_MENU] = 0x80;
+            state[w.VK_LMENU] = 0x80;
+        }
+        _ = w.SetKeyboardState(&state);
+        return self;
+    }
+
+    fn release(self: *Held) void {
+        // Ghostty reads the modifier state when it handles the messages.
+        w.Sleep(300);
+        _ = w.SetKeyboardState(&self.saved);
+        if (self.attached) _ = w.AttachThreadInput(self.me, self.tid, w.FALSE);
+    }
+};
+
+/// A key press with modifiers held (see Held).
 pub fn key(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
     _ = self;
-    const tid = w.GetWindowThreadProcessId(target, null);
-    const me = w.GetCurrentThreadId();
-    const attached = w.AttachThreadInput(me, tid, w.TRUE) != 0;
-    defer if (attached) {
-        _ = w.AttachThreadInput(me, tid, w.FALSE);
-    };
-
-    var saved: [256]u8 = undefined;
-    _ = w.GetKeyboardState(&saved);
-    var state = saved;
-    if (mods.ctrl) {
-        state[w.VK_CONTROL] = 0x80;
-        state[w.VK_LCONTROL] = 0x80;
-    }
-    if (mods.shift) {
-        state[w.VK_SHIFT] = 0x80;
-        state[w.VK_LSHIFT] = 0x80;
-    }
-    if (mods.alt) {
-        state[w.VK_MENU] = 0x80;
-        state[w.VK_LMENU] = 0x80;
-    }
-    _ = w.SetKeyboardState(&state);
+    var held: Held = .init(target, mods);
+    defer held.release();
 
     const sc = w.MapVirtualKeyW(vk, w.MAPVK_VK_TO_VSC);
     const extended = switch (vk) {
@@ -523,9 +691,6 @@ pub fn key(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
     const sys = mods.alt and !mods.ctrl;
     _ = w.PostMessageW(target, if (sys) w.WM_SYSKEYDOWN else w.WM_KEYDOWN, vk, @bitCast(flags));
     _ = w.PostMessageW(target, if (sys) w.WM_SYSKEYUP else w.WM_KEYUP, vk, @bitCast(flags | 0xC0000000));
-    // Ghostty reads the modifier state when it handles the message.
-    w.Sleep(300);
-    _ = w.SetKeyboardState(&saved);
 }
 
 pub fn enter(self: *Harness, target: w.HWND) void {
@@ -536,17 +701,29 @@ pub const Button = enum { left, middle };
 
 /// Click at client coordinates of `target`.
 pub fn click(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: Button) void {
+    self.clickMods(target, x, y, button, .{});
+}
+
+/// Click with modifiers held from before the pointer moves there until
+/// after the button is released (see Held).
+pub fn clickMods(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: Button, mods: Mods) void {
     _ = self;
+    var held: ?Held = if (mods.ctrl or mods.shift or mods.alt) .init(target, mods) else null;
+    defer if (held) |*h| h.release();
+
+    var mk: w.WPARAM = 0;
+    if (mods.ctrl) mk |= w.MK_CONTROL;
+    if (mods.shift) mk |= w.MK_SHIFT;
     const pos = w.makeLParam(x, y);
-    _ = w.PostMessageW(target, w.WM_MOUSEMOVE, 0, pos);
+    _ = w.PostMessageW(target, w.WM_MOUSEMOVE, mk, pos);
     switch (button) {
         .left => {
-            _ = w.PostMessageW(target, w.WM_LBUTTONDOWN, w.MK_LBUTTON, pos);
-            _ = w.PostMessageW(target, w.WM_LBUTTONUP, 0, pos);
+            _ = w.PostMessageW(target, w.WM_LBUTTONDOWN, mk | w.MK_LBUTTON, pos);
+            _ = w.PostMessageW(target, w.WM_LBUTTONUP, mk, pos);
         },
         .middle => {
-            _ = w.PostMessageW(target, w.WM_MBUTTONDOWN, w.MK_MBUTTON, pos);
-            _ = w.PostMessageW(target, w.WM_MBUTTONUP, 0, pos);
+            _ = w.PostMessageW(target, w.WM_MBUTTONDOWN, mk | w.MK_MBUTTON, pos);
+            _ = w.PostMessageW(target, w.WM_MBUTTONUP, mk, pos);
         },
     }
 }
@@ -557,6 +734,9 @@ pub fn click(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: Button)
 pub const Dump = struct {
     modal_depth: u32,
     windows: []const Window,
+    /// Links that would have opened, as "verb target" (Ghostty records
+    /// them instead of opening them while the test hooks are on).
+    launches: []const []const u8 = &.{},
 
     pub const Window = struct {
         id: u64,
@@ -579,6 +759,9 @@ pub const Dump = struct {
         title: []const u8,
         cols: ?u32 = null,
         rows: ?u32 = null,
+        /// Cell size and padding in pixels.
+        cell: ?[2]u32 = null,
+        padding: ?[2]u32 = null,
         text: ?[]const u8 = null,
     };
 };
@@ -689,18 +872,144 @@ pub fn getClipboard(self: *Harness) !?[]u8 {
 pub fn setClipboard(self: *Harness, text: []const u8) !void {
     const t16 = try std.unicode.utf8ToUtf16LeAllocZ(self.alloc, text);
     defer self.alloc.free(t16);
-    const bytes = (t16.len + 1) * 2;
-    const h = w.GlobalAlloc(w.GMEM_MOVEABLE, bytes) orelse return error.OutOfMemory;
-    const p: [*]u16 = @ptrCast(@alignCast(w.GlobalLock(h) orelse {
-        _ = w.GlobalFree(h);
-        return error.OutOfMemory;
-    }));
-    @memcpy(p[0 .. t16.len + 1], t16[0 .. t16.len + 1]);
-    _ = w.GlobalUnlock(h);
     try openClipboard();
     defer _ = w.CloseClipboard();
     _ = w.EmptyClipboard();
-    if (w.SetClipboardData(w.CF_UNICODETEXT, h) == null) _ = w.GlobalFree(h);
+    setClipboardData(w.CF_UNICODETEXT, std.mem.sliceAsBytes(t16[0 .. t16.len + 1]));
+    excludeFromHistory();
+}
+
+/// A copy of `data` on the open clipboard as `format`.
+fn setClipboardData(format: w.UINT, data: []const u8) void {
+    const h = w.GlobalAlloc(w.GMEM_MOVEABLE, @max(data.len, 1)) orelse return;
+    const p: [*]u8 = @ptrCast(w.GlobalLock(h) orelse {
+        _ = w.GlobalFree(h);
+        return;
+    });
+    @memcpy(p[0..data.len], data);
+    _ = w.GlobalUnlock(h);
+    // On success the system owns the memory.
+    if (w.SetClipboardData(format, h) == null) _ = w.GlobalFree(h);
+}
+
+/// Keep what the harness puts on the open clipboard out of clipboard
+/// history (Win+V) and cloud clipboard.
+fn excludeFromHistory() void {
+    const format = w.RegisterClipboardFormatW(w.L("ExcludeClipboardContentFromMonitorProcessing"));
+    if (format != 0) setClipboardData(format, &.{0});
+}
+
+/// The clipboard's change counter, which reading doesn't need the
+/// clipboard open for (so it can't get in the way of a write).
+pub fn clipboardSequence(self: *Harness) w.DWORD {
+    _ = self;
+    return w.GetClipboardSequenceNumber();
+}
+
+/// The user's clipboard, to put back after a scenario that changes it: the
+/// clipboard belongs to the window station, so the hidden desktop shares
+/// it. Only formats that are cheap to read and mean the same as plain bytes
+/// are kept: text, rich text, HTML, PNG and file lists. Reading a format
+/// makes the program that copied it render it (Office renders a selection
+/// as a picture or a whole document), so nothing else is read; formats
+/// outside the list are dropped, and if one of them holds content the list
+/// can't stand in for (a picture, embedded Office data), the scenario is
+/// skipped rather than lose it.
+pub const ClipboardSnapshot = struct {
+    alloc: Allocator,
+    formats: std.ArrayList(Format) = .empty,
+
+    const Format = struct { id: w.UINT, data: []u8 };
+
+    pub fn restore(self: *ClipboardSnapshot) void {
+        defer self.deinit();
+        openClipboard() catch {
+            std.debug.print("    could not restore the clipboard (busy)\n", .{});
+            return;
+        };
+        defer _ = w.CloseClipboard();
+        _ = w.EmptyClipboard();
+        for (self.formats.items) |f| setClipboardData(f.id, f.data);
+        excludeFromHistory();
+    }
+
+    fn deinit(self: *ClipboardSnapshot) void {
+        for (self.formats.items) |f| self.alloc.free(f.data);
+        self.formats.deinit(self.alloc);
+    }
+};
+
+/// Save the clipboard (see ClipboardSnapshot). Returns error.Skipped,
+/// having said why, if it holds content that couldn't be put back.
+pub fn saveClipboard(self: *Harness) !ClipboardSnapshot {
+    var snap: ClipboardSnapshot = .{ .alloc = self.alloc };
+    errdefer snap.deinit();
+    try openClipboard();
+    defer _ = w.CloseClipboard();
+
+    // Listing the formats renders nothing; only kept ones are read.
+    var keep: std.ArrayList(w.UINT) = .empty;
+    defer keep.deinit(self.alloc);
+    var format: w.UINT = 0;
+    while (true) {
+        format = w.EnumClipboardFormats(format);
+        if (format == 0) break;
+        switch (clipboardFormatKind(format)) {
+            .keep => try keep.append(self.alloc, format),
+            .drop => {},
+            .lose => return self.skip("the clipboard holds a picture or embedded data the tests can't put back; clear it to run this", .{}),
+        }
+    }
+    for (keep.items) |f| {
+        const h = w.GetClipboardData(f) orelse continue;
+        const size = w.GlobalSize(h);
+        if (size == 0) continue;
+        const p: [*]const u8 = @ptrCast(w.GlobalLock(h) orelse continue);
+        defer _ = w.GlobalUnlock(h);
+        const data = try self.alloc.dupe(u8, p[0..size]);
+        errdefer self.alloc.free(data);
+        try snap.formats.append(self.alloc, .{ .id = f, .data = data });
+    }
+    return snap;
+}
+
+fn clipboardFormatKind(format: w.UINT) enum { keep, drop, lose } {
+    return switch (format) {
+        13, 15, 16 => .keep, // CF_UNICODETEXT, CF_HDROP, CF_LOCALE
+        // Pictures (bitmap, metafile, palette, DIB, DIBV5), owner-display
+        // and private formats.
+        2, 3, 8, 9, 14, 17, 0x80...0x8E, 0x200...0x3FF => .lose,
+        0xC000...0xFFFF => registered: {
+            var buf: [128]u16 = undefined;
+            const n = w.GetClipboardFormatNameW(format, &buf, buf.len);
+            if (n <= 0) break :registered .drop;
+            const name = buf[0..@intCast(n)];
+            for (kept_formats) |k| if (eqlAscii16(name, k)) break :registered .keep;
+            for (lost_formats) |k| if (eqlAscii16(name, k)) break :registered .lose;
+            break :registered .drop;
+        },
+        // CF_TEXT, CF_OEMTEXT and the like, which Windows makes from
+        // CF_UNICODETEXT again.
+        else => .drop,
+    };
+}
+
+const kept_formats = [_][]const u8{
+    "HTML Format", "Rich Text Format",   "PNG",                  "FileNameW",
+    "FileName",    "Shell IDList Array", "Preferred DropEffect", "ExcludeClipboardContentFromMonitorProcessing",
+};
+
+/// Embedded documents, Office's own formats and the like.
+const lost_formats = [_][]const u8{
+    "Embed Source",      "Embedded Object", "Link Source",     "Link Source Descriptor",
+    "Object Descriptor", "Native",          "OwnerLink",       "ObjectLink",
+    "Biff8",             "Biff12",          "XML Spreadsheet", "Art::GVML ClipFormat",
+};
+
+fn eqlAscii16(a: []const u16, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (x != y) return false;
+    return true;
 }
 
 fn openClipboard() !void {
