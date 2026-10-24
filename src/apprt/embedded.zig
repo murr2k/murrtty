@@ -382,6 +382,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    windows: Windows,
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -395,6 +396,13 @@ pub const Platform = union(PlatformTag) {
         uiview: objc.Object,
     } else void;
 
+    pub const Windows = if (builtin.target.os.tag == .windows) struct {
+        /// The window (HWND) to render the surface into. The renderer
+        /// sets the window's pixel format and presents into it with
+        /// WGL, so it must be a window dedicated to this surface.
+        hwnd: *anyopaque,
+    } else void;
+
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
@@ -404,6 +412,10 @@ pub const Platform = union(PlatformTag) {
 
         ios: extern struct {
             uiview: ?*anyopaque,
+        },
+
+        windows: extern struct {
+            hwnd: ?*anyopaque,
         },
     };
 
@@ -424,6 +436,12 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .windows => if (Windows != void) windows: {
+                const hwnd = c_platform.windows.hwnd orelse
+                    break :windows error.HWNDMustBeSet;
+                break :windows .{ .windows = .{ .hwnd = hwnd } };
+            } else error.UnsupportedPlatform,
         };
     }
 };
@@ -434,6 +452,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
+    windows = 3,
 };
 
 pub const EnvVar = extern struct {
@@ -1254,6 +1273,14 @@ pub const Surface = struct {
         // The Metal renderer currently does not have any options
         _ = self;
         return .{};
+    }
+
+    /// The native window to render into. Used by the WGL renderer.
+    pub fn nativeWindow(self: *const Surface) *anyopaque {
+        return switch (self.platform) {
+            .windows => |v| if (comptime Platform.Windows != void) v.hwnd else unreachable,
+            else => unreachable,
+        };
     }
 };
 
