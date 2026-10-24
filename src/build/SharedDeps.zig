@@ -216,8 +216,14 @@ pub fn add(
     // POSIX C imports that are used throughout Ghostty on a general basis.
     // (note: errno is C stdlib but we just include it here because that's
     // where it's generally included otherwise)
+    // Windows (mingw-w64) has no pwd.h; nothing on Windows uses it.
     try translate_c.addImportToModule(b, "posix_c", step.root_module, .{
-        .source = .{ .includes = .{ .files = &.{
+        .source = .{ .includes = .{ .files = if (target.result.os.tag == .windows) &.{
+            .{ .path = "errno.h" },
+            .{ .path = "signal.h" },
+            .{ .path = "sys/types.h" },
+            .{ .path = "unistd.h" },
+        } else &.{
             .{ .path = "errno.h" },
             .{ .path = "pwd.h" },
             .{ .path = "signal.h" },
@@ -651,6 +657,16 @@ pub fn add(
                 .{ .root_source_file = nf_symbols.path("SymbolsNerdFont-Regular.ttf") },
             );
         }
+    }
+
+    // libghostty on Windows renders with OpenGL (WGL) so it needs glad
+    // too. Exes get glad below.
+    if (step.kind == .lib and target.result.os.tag == .windows) {
+        step.root_module.addIncludePath(b.path("vendor/glad/include/"));
+        step.root_module.addCSourceFile(.{
+            .file = b.path("vendor/glad/src/gl.c"),
+            .flags = &.{},
+        });
     }
 
     // If we're building an exe then we have additional dependencies.
