@@ -235,7 +235,7 @@ test "desktop environment" {
         inline .macos, .windows => |tag| {
             var environ_map: std.process.Environ.Map = .init(testing.allocator);
             defer environ_map.deinit();
-            try testing.expectEqual(@tagName(tag), @tagName(desktopEnvironment(&environ_map)));
+            try testing.expectEqualStrings(@tagName(tag), @tagName(desktopEnvironment(&environ_map)));
         },
         .linux, .freebsd => {
             {
