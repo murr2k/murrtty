@@ -1276,11 +1276,20 @@ test "url: scripts are denied, unknown types ask" {
 
 test "url: the program registered for a type is checked" {
     const alloc = std.testing.allocator;
-    // Python's launcher, where Python is installed.
-    const exe = try assocString(alloc, ".pyw", c.ASSOCSTR_EXECUTABLE, null) orelse return error.SkipZigTest;
-    defer alloc.free(exe);
-    try std.testing.expect(runsCode(exe));
-    try std.testing.expect(try handlerRunsCode(alloc, ".pyw"));
+    // Types Windows itself registers to code runners. Not .pyw: where
+    // Python was installed without its launcher (as on GitHub's Windows
+    // Server image), it opens in Notepad.
+    var found: usize = 0;
+    for ([_][]const u8{ ".reg", ".msc", ".chm" }) |ext| {
+        const exe = try assocString(alloc, ext, c.ASSOCSTR_EXECUTABLE, null) orelse continue;
+        defer alloc.free(exe);
+        found += 1;
+        std.testing.expect(runsCode(exe) and try handlerRunsCode(alloc, ext)) catch |err| {
+            std.debug.print("{s} is registered to {s}\n", .{ ext, exe });
+            return err;
+        };
+    }
+    if (found == 0) return error.SkipZigTest;
     try std.testing.expect(!try handlerRunsCode(alloc, ".txt"));
 }
 

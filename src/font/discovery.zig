@@ -1571,12 +1571,30 @@ test "windows: the face matching the style comes first" {
         };
     }
 
-    // Cascadia Mono (Windows 11) is a variable font: one upright file and
-    // one italic one.
-    const italic = (try windowsBestFile(alloc, lib, "Cascadia Mono", false, true)) orelse return;
-    defer alloc.free(italic);
-    try testing.expect(std.ascii.findIgnoreCase(italic, "italic") != null);
+    // Cascadia Mono is a variable font. Windows 11 ships an upright file
+    // and an italic one; Windows Server 2025 only the upright one.
     const upright = (try windowsBestFile(alloc, lib, "Cascadia Mono", false, false)) orelse return;
     defer alloc.free(upright);
     try testing.expect(std.ascii.findIgnoreCase(upright, "italic") == null);
+    if (!try windowsFamilyHasFile(alloc, lib, "Cascadia Mono", "italic")) return;
+    const italic = (try windowsBestFile(alloc, lib, "Cascadia Mono", false, true)).?;
+    defer alloc.free(italic);
+    try testing.expect(std.ascii.findIgnoreCase(italic, "italic") != null);
+}
+
+/// Whether any face of `family` comes from a file whose name contains
+/// `needle`.
+fn windowsFamilyHasFile(alloc: Allocator, lib: Library, family: [:0]const u8, needle: []const u8) !bool {
+    var win = Windows.init(lib);
+    defer win.deinit();
+    var it = try win.discover(alloc, .{ .family = family, .size = 12 });
+    defer it.deinit();
+    while (try it.next()) |next| {
+        var face = next;
+        defer face.deinit();
+        const path = face.win.?.path;
+        const file = path[(std.mem.lastIndexOfScalar(u8, path, '\\') orelse 0) + 1 ..];
+        if (std.ascii.findIgnoreCase(file, needle) != null) return true;
+    }
+    return false;
 }
