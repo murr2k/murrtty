@@ -108,8 +108,9 @@ desktop. The port has not yet had much use on a physical keyboard.
   a selection, otherwise paste, as in Windows Terminal) or `paste` instead.
 - Scrollbar, search, command palette, terminal inspector, quick terminal,
   desktop notifications.
-- `background-opacity` (it darkens the background instead of making it
-  transparent), background blur and the `window-decoration` options.
+- Transparency: with `background-opacity` the window stays opaque and shows
+  the background color as configured. Also background blur and the
+  `window-decoration` options.
 - Dragging tabs with the mouse, and moving a tab to a new window.
 - Sending commands to an already running instance (`ghostty +new-window`).
 

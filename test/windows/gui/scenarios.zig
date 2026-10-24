@@ -24,6 +24,7 @@ pub const all = [_]Scenario{
     .{ .name = "window-size", .about = "window-width/height give the exact grid", .run = windowSize },
     .{ .name = "links", .about = "Ctrl+click links: programs and UNC paths blocked, web opens, other schemes ask", .run = links },
     .{ .name = "links-open", .about = "links really open: a test protocol and file type registered in HKCU", .run = linksOpen },
+    .{ .name = "present", .about = "background-opacity doesn't darken the (opaque) window; exact background pixels", .run = present },
 };
 
 const base_config =
@@ -602,6 +603,76 @@ fn linksOpen(h: *Harness) anyerror!void {
         try h.expect(d.value.launches.len == 0, "nothing was only recorded", .{});
     }
     try quit(h, &g, surf);
+}
+
+/// The pixel Ghostty last presented near its window's bottom-right corner
+/// (read back by the renderer in Debug builds, so this works on the hidden
+/// desktop, where captures don't).
+fn presentedPixel(h: *Harness, name: []const u8, config: []const u8) !u32 {
+    var g = try start(h, name, config, ">");
+    defer g.deinit();
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 200) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        if (d.value.windows[0].tabs[0].pixel) |px| if (px != 0) {
+            h.log("{s}: #{x:0>6}", .{ name, px });
+            return px;
+        };
+        w.Sleep(200);
+    }
+    return h.fail("{s}: no frame was presented", .{name});
+}
+
+/// The window is opaque, so background-opacity below 1 must show the
+/// background color as configured, not darkened toward black (roadmap 0.3).
+fn present(h: *Harness) anyerror!void {
+    const default = try presentedPixel(h, "present-default", "");
+    try h.expect(default == 0x282c34, "default background #{x:0>6}, expected #282c34", .{default});
+    const half = try presentedPixel(h, "present-opacity", "background-opacity = 0.5\n");
+    try h.expect(half == 0x282c34, "opacity 0.5 gives #{x:0>6}, expected #282c34", .{half});
+    const color = try presentedPixel(h, "present-color", "background = #336699\nbackground-opacity = 0.3\n");
+    try h.expect(color == 0x336699, "#336699 at opacity 0.3 gives #{x:0>6}", .{color});
+    // Native (non-linear) blending, whose colors used to be encoded twice
+    // (#336699 showed as #7caacb). Its sRGB values pass through the sRGB
+    // target's 8-bit encoding, which can be off by one.
+    const native_opaque = try presentedPixel(h, "present-native-1", "background = #336699\nalpha-blending = native\n");
+    try h.expect(nearColor(native_opaque, 0x336699), "native blending gives #{x:0>6}, expected #336699", .{native_opaque});
+    const native_part = try presentedPixel(h, "present-native-0.3", "background = #336699\nbackground-opacity = 0.3\nalpha-blending = native\n");
+    try h.expect(nearColor(native_part, 0x336699), "native blending at opacity 0.3 gives #{x:0>6}", .{native_part});
+
+    // The frame itself reaches the window, at its top-left corner and not
+    // blended into the background: the prompt starts with a cell whose
+    // background is explicitly red, and cell backgrounds stay opaque at any
+    // background-opacity.
+    var g = try start(h, "present-cell", "command = cmd.exe /k prompt $E[48;2;255;0;0m $E[0m$G\nbackground-opacity = 0.5\n", ">");
+    defer g.deinit();
+    const x, const y = cell: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const cell = t.cell orelse return h.fail("no cell size in the dump", .{});
+        const pad = t.padding orelse return h.fail("no padding in the dump", .{});
+        var row: u32 = 0;
+        var lines = std.mem.splitScalar(u8, t.text orelse "", '\n');
+        while (lines.next()) |line| : (row += 1) {
+            if (std.mem.startsWith(u8, line, " >")) break;
+        } else return h.fail("no prompt row", .{});
+        break :cell .{ pad[0] + cell[0] / 2, pad[1] + row * cell[1] + cell[1] / 2 };
+    };
+    const red = try h.probe(&g, x, y);
+    try h.expect(red == 0xff0000, "the red prompt cell at ({d},{d}) shows #{x:0>6}", .{ x, y, red });
+    try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+}
+
+/// Whether each channel of two 0xRRGGBB colors differs by at most one.
+fn nearColor(a: u32, b: u32) bool {
+    for ([_]u5{ 0, 8, 16 }) |shift| {
+        const x: i32 = @intCast((a >> shift) & 0xFF);
+        const y: i32 = @intCast((b >> shift) & 0xFF);
+        if (@abs(x - y) > 1) return false;
+    }
+    return true;
 }
 
 fn windowSize(h: *Harness) anyerror!void {

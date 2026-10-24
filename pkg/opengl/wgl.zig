@@ -121,6 +121,9 @@ extern "user32" fn DestroyWindow(HWND) callconv(.winapi) BOOL;
 extern "user32" fn DefWindowProcA(HWND, u32, usize, isize) callconv(.winapi) isize;
 pub extern "user32" fn GetDC(?HWND) callconv(.winapi) ?HDC;
 pub extern "user32" fn ReleaseDC(?HWND, HDC) callconv(.winapi) c_int;
+pub const RECT = extern struct { left: c_long = 0, top: c_long = 0, right: c_long = 0, bottom: c_long = 0 };
+pub extern "user32" fn GetClientRect(HWND, *RECT) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetEnvironmentVariableW([*:0]const u16, ?[*]u16, u32) callconv(.winapi) u32;
 
 /// Resolve a GL function for GLAD. `wglGetProcAddress` only returns
 /// functions above OpenGL 1.1, and some drivers return small sentinel

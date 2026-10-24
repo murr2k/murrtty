@@ -62,6 +62,34 @@ const Wgl = struct {
     hwnd: wgl.HWND,
     hdc: wgl.HDC,
     context: wgl.HGLRC,
+
+    /// The present pass's program and (empty) vertex array, made on the
+    /// render thread at the first present.
+    present: ?struct { program: gl.Program, vao: gl.VertexArray } = null,
+
+    /// For the GUI tests (GHOSTTY_WIN32_TEST_DUMP set in a Debug build):
+    /// each present reads back one pixel near the window's bottom-right
+    /// corner into `sample` (0x00RRGGBB, as stored), and, once the tests
+    /// ask for one, the pixel at `probe_point` (x | y << 16, from the top
+    /// left) into `probe` (with bit 24 set once read). The state dump
+    /// reports both. Captures can't see windows on the tests' hidden
+    /// desktop.
+    sampling: bool = false,
+    sample: std.atomic.Value(u32) = .init(0),
+    probe_point: std.atomic.Value(u32) = .init(no_probe),
+    probe: std.atomic.Value(u32) = .init(0),
+
+    pub const no_probe = std.math.maxInt(u32);
+    pub const probe_read: u32 = 1 << 24;
+};
+
+/// The terminal background, which the Windows present pass composites the
+/// frame over.
+pub const Background = struct {
+    /// sRGB.
+    rgb: [3]u8,
+    /// Whether the frame holds linear colors (alpha-blending is linear).
+    linear: bool,
 };
 
 pub fn init(
@@ -142,7 +170,13 @@ fn initWgl(
         .blending = opts.config.blending,
         .device = device,
         .egl_context = {},
-        .wgl_state = .{ .hwnd = hwnd, .hdc = hdc, .context = context },
+        .wgl_state = .{
+            .hwnd = hwnd,
+            .hdc = hdc,
+            .context = context,
+            .sampling = builtin.mode == .debug and
+                wgl.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("GHOSTTY_WIN32_TEST_DUMP"), null, 0) != 0,
+        },
     };
 }
 
@@ -289,6 +323,11 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
     if (comptime is_windows) {
+        if (self.wgl_state.present) |p| {
+            p.program.destroy();
+            p.vao.destroy();
+            self.wgl_state.present = null;
+        }
         _ = wgl.wglMakeCurrent(null, null);
         gl.glad.unload();
         return;
@@ -363,9 +402,10 @@ pub fn present(
     self: *OpenGL,
     target: Target,
     presentation_health: rendererpkg.Health,
+    background: Background,
 ) !ExportedFrame {
     if (comptime is_windows) {
-        try self.presentWgl(target);
+        try self.presentWgl(target, background);
         return .presented;
     }
 
@@ -387,26 +427,123 @@ pub fn present(
     } };
 }
 
-/// Blit the render target to the window's back buffer and swap.
+/// Draw the render target into the window's back buffer and swap.
 ///
-/// The target texture holds sRGB-encoded values. The window's pixel
-/// format is sRGB-capable and GL_FRAMEBUFFER_SRGB is enabled, so the
-/// blit decodes and re-encodes, copying the pixels unchanged.
-fn presentWgl(self: *OpenGL, target: Target) !void {
+/// The target holds premultiplied color with the background's alpha set
+/// by `background-opacity`. The window is opaque, so this composites the
+/// frame over the opaque terminal background (rather than copying it onto
+/// black, which darkened any opacity below 1), and it fills whatever part
+/// of the window the target doesn't cover yet during a resize with the
+/// background too. The shader works in the frame's own color space:
+/// linear (the target is sRGB, so sampling decodes, and the window's back
+/// buffer is sRGB with GL_FRAMEBUFFER_SRGB on, so storing encodes), or with
+/// native alpha blending the sRGB values the shaders wrote.
+fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     const ctx = &gl.glad.context;
-    const w: gl.c.GLint = @intCast(target.width);
-    const h: gl.c.GLint = @intCast(target.height);
+    const state = &self.wgl_state;
+    const p = state.present orelse made: {
+        const program = try gl.Program.createVF(present_vertex, present_fragment);
+        errdefer program.destroy();
+        const vao = try gl.VertexArray.create();
+        state.present = .{ .program = program, .vao = vao };
+        break :made state.present.?;
+    };
 
-    ctx.BindFramebuffer.?(gl.c.GL_DRAW_FRAMEBUFFER, 0);
-    // The window may briefly be larger than the target while resizing.
-    ctx.ClearColor.?(0, 0, 0, 1);
-    ctx.Clear.?(gl.c.GL_COLOR_BUFFER_BIT);
-    ctx.BindFramebuffer.?(gl.c.GL_READ_FRAMEBUFFER, target.framebuffer.id);
-    ctx.BlitFramebuffer.?(0, 0, w, h, 0, 0, w, h, gl.c.GL_COLOR_BUFFER_BIT, gl.c.GL_NEAREST);
+    const frame_w: f32 = @floatFromInt(target.width);
+    const frame_h: f32 = @floatFromInt(target.height);
+    var client: wgl.RECT = .{};
+    _ = wgl.GetClientRect(state.hwnd, &client);
+    const win_w: gl.c.GLint = if (client.right > 0) client.right else @intCast(target.width);
+    const win_h: gl.c.GLint = if (client.bottom > 0) client.bottom else @intCast(target.height);
+
+    // The renderer reads the viewport back as the surface size.
+    var viewport: [4]gl.c.GLint = undefined;
+    ctx.GetIntegerv.?(gl.c.GL_VIEWPORT, &viewport);
+    defer ctx.Viewport.?(viewport[0], viewport[1], viewport[2], viewport[3]);
+
     ctx.BindFramebuffer.?(gl.c.GL_FRAMEBUFFER, 0);
+    ctx.Viewport.?(0, 0, win_w, win_h);
+    ctx.Disable.?(gl.c.GL_BLEND);
+    const pbind = try p.program.use();
+    defer pbind.unbind();
+    const vbind = try p.vao.bind();
+    defer vbind.unbind();
 
-    if (wgl.SwapBuffers(self.wgl_state.hdc) == 0) return error.WglSwapBuffersFailed;
+    var bg: [4]f32 = .{ 0, 0, 0, 1 };
+    for (background.rgb, bg[0..3]) |v, *out| {
+        const f = @as(f32, @floatFromInt(v)) / 255.0;
+        out.* = if (background.linear) srgbToLinear(f) else f;
+    }
+    try p.program.setUniform("background", @as(@Vector(4, f32), bg));
+    try p.program.setUniform("frame_size", @Vector(2, f32){ frame_w, frame_h });
+    // The frame sits at the window's top-left corner.
+    try p.program.setUniform("frame_offset_y", @as(f32, @floatFromInt(win_h)) - frame_h);
+
+    try gl.Texture.active(0);
+    ctx.BindSampler.?(0, 0);
+    const tbind = try target.texture.bind(.@"2d");
+    defer tbind.unbind();
+    // With native blending the frame already holds sRGB values (the
+    // shaders don't linearize), so they are stored as they are; encoding
+    // them again showed every color too light.
+    if (!background.linear) ctx.Disable.?(gl.c.GL_FRAMEBUFFER_SRGB);
+    defer if (!background.linear) ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
+    ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 3);
+
+    if (comptime builtin.mode == .debug) if (state.sampling) {
+        state.sample.store(readPixel(@max(win_w - 6, 0), 6), .monotonic);
+        const point = state.probe_point.load(.monotonic);
+        if (point != Wgl.no_probe) {
+            const x: gl.c.GLint = @intCast(point & 0xFFFF);
+            const y: gl.c.GLint = @intCast(point >> 16);
+            if (x < win_w and y < win_h) {
+                state.probe.store(readPixel(x, win_h - 1 - y) | Wgl.probe_read, .monotonic);
+            }
+        }
+    };
+
+    if (wgl.SwapBuffers(state.hdc) == 0) return error.WglSwapBuffersFailed;
 }
+
+/// The back buffer's pixel at GL coordinates (origin bottom left) as
+/// 0x00RRGGBB, as stored.
+fn readPixel(x: gl.c.GLint, y: gl.c.GLint) u32 {
+    var px: [4]u8 = undefined;
+    gl.glad.context.ReadPixels.?(x, y, 1, 1, gl.c.GL_RGBA, gl.c.GL_UNSIGNED_BYTE, &px);
+    return @as(u32, px[0]) << 16 | @as(u32, px[1]) << 8 | px[2];
+}
+
+fn srgbToLinear(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
+/// A triangle that covers the viewport.
+const present_vertex =
+    \\#version 430 core
+    \\void main() {
+    \\    vec2 pos = vec2(gl_VertexID == 2 ? 3.0 : -1.0, gl_VertexID == 1 ? 3.0 : -1.0);
+    \\    gl_Position = vec4(pos, 0.0, 1.0);
+    \\}
+;
+
+/// The frame (premultiplied) over the opaque background.
+const present_fragment =
+    \\#version 430 core
+    \\layout(binding = 0) uniform sampler2D frame;
+    \\uniform vec4 background;
+    \\uniform vec2 frame_size;
+    \\uniform float frame_offset_y;
+    \\layout(location = 0) out vec4 out_color;
+    \\void main() {
+    \\    ivec2 p = ivec2(gl_FragCoord.xy) - ivec2(0, int(frame_offset_y));
+    \\    ivec2 size = ivec2(frame_size);
+    \\    vec4 color = vec4(0.0);
+    \\    if (p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y) {
+    \\        color = texelFetch(frame, p, 0);
+    \\    }
+    \\    out_color = color + background * (1.0 - color.a);
+    \\}
+;
 
 /// A finished frame exported for presentation by the apprt.
 pub const ExportedFrame = union(enum) {

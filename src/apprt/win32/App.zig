@@ -605,7 +605,7 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
                 if (ptr != 0) {
                     const self: *App = @ptrFromInt(@as(usize, @bitCast(ptr)));
-                    if (test_hooks.isDump(&self.test_state, msg)) return test_hooks.dump(self);
+                    if (test_hooks.isDump(&self.test_state, msg)) return test_hooks.dump(self, wparam, lparam);
                 }
             }
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);

@@ -64,9 +64,14 @@ pub fn complete(self: *const Self, sync: bool) void {
     // Then sync before exporting and pushing to the present queue.
     // The apprt pulls from this queue in its snapshot handler.
     const presented_frame: ?OpenGL.ExportedFrame = if (health == .healthy) frame: {
+        const uniforms = &self.renderer.uniforms;
         const frame = self.renderer.api.present(
             self.target.*,
             self.renderer.presentationHealth(),
+            .{
+                .rgb = uniforms.bg_color[0..3].*,
+                .linear = uniforms.bools.use_linear_blending,
+            },
         ) catch |err| {
             log.warn("failed to present render target: err={}", .{err});
             break :frame null;

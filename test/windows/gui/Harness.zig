@@ -762,12 +762,39 @@ pub const Dump = struct {
         /// Cell size and padding in pixels.
         cell: ?[2]u32 = null,
         padding: ?[2]u32 = null,
+        /// The last presented frame's pixel near the window's
+        /// bottom-right corner, 0xRRGGBB.
+        pixel: ?u32 = null,
+        /// The pixel asked for with `probe`, 0xRRGGBB with bit 24 set
+        /// once a frame has been read; 0 until then.
+        probe: ?u32 = null,
         text: ?[]const u8 = null,
     };
 };
 
 /// Ask Ghostty for its state. Needs a Debug build.
 pub fn dump(self: *Harness, g: *const Ghostty) !std.json.Parsed(Dump) {
+    return self.dumpWith(g, 0, 0);
+}
+
+/// The color of the pixel at client (`x`, `y`) of the active tab, as the
+/// renderer next presents it. Ghostty reads it back in Debug builds, so
+/// this works on the hidden desktop, where captures don't.
+pub fn probe(self: *Harness, g: *const Ghostty, x: u32, y: u32) !u32 {
+    var d = try self.dumpWith(g, 1, @bitCast(@as(usize, y << 16 | x)));
+    d.deinit();
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var dd = try self.dump(g);
+        defer dd.deinit();
+        const win = dd.value.windows[0];
+        if (win.tabs[win.active].probe) |v| if (v & (1 << 24) != 0) return v & 0xFFFFFF;
+        w.Sleep(100);
+    }
+    return self.fail("no frame was presented after asking for pixel ({d},{d})", .{ x, y });
+}
+
+fn dumpWith(self: *Harness, g: *const Ghostty, wparam: w.WPARAM, lparam: w.LPARAM) !std.json.Parsed(Dump) {
     var hwnd: ?w.HWND = null;
     var prev: ?w.HWND = null;
     while (w.FindWindowExW(w.HWND_MESSAGE, prev, w.L("GhosttyWakeup"), null)) |cand| {
@@ -781,7 +808,7 @@ pub fn dump(self: *Harness, g: *const Ghostty) !std.json.Parsed(Dump) {
     }
     const target = hwnd orelse return self.fail("no wakeup window (is this a Debug build?)", .{});
     var result: usize = 0;
-    if (w.SendMessageTimeoutW(target, self.dump_msg, 0, 0, w.SMTO_ABORTIFHUNG, 5000, &result) == 0 or result != 1) {
+    if (w.SendMessageTimeoutW(target, self.dump_msg, wparam, lparam, w.SMTO_ABORTIFHUNG, 5000, &result) == 0 or result != 1) {
         return self.fail("state dump failed (Debug build with test hooks needed)", .{});
     }
     const bytes = try readFile(self.alloc, g.dump_path);

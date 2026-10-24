@@ -199,7 +199,7 @@ met yet, though: ConPTY drops the sequences these keys encode to before a
 console program sees them (0.12). Remove each override when its feature
 lands (Phase 1 splits, 3.3 palette, the inspector).
 
-**0.3 `background-opacity` without darkening, S.** The renderer emits a
+**0.3 `background-opacity` without darkening, S.** *Done 2026-10-24.* The renderer emits a
 premultiplied background, and `presentWgl` blits it onto opaque black, so any
 opacity below 1 shows a darker color (`OpenGL.zig:395-409`). Replace the blit
 with a present pass: a full-screen triangle that clears to the terminal
@@ -208,6 +208,17 @@ same pass clears resize margins to the background instead of black, and it is
 the hook for in-surface overlays (3.0) and transparency (4.1). *Done when:*
 with opacity 0.5 the background samples exactly as configured, and the
 default stays `#282c34`.
+
+*As built:* the pass computes `frame + background * (1 - frame.a)` in the
+frame's color space, with the frame at the window's top-left corner and the
+background filling any margin. It also fixed `alpha-blending = native`, whose
+colors were sRGB-encoded twice (`#336699` showed as `#7caacb`); native mode
+is now within one step per channel, the residue of the sRGB render target's
+8-bit encoding (exact would need native mode to render without it). The
+`present` GUI scenario checks exact pixels on the hidden desktop, read back
+by the Debug renderer under the test hooks: the background at several
+opacities, and a prompt cell painted red, which proves the frame itself
+reaches the window at its top-left corner, unblended.
 
 **0.4 Window theme and caption colors, S.**
 - Implement `window-theme` (auto, system, light, dark, ghostty) and

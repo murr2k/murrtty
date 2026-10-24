@@ -88,10 +88,30 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
     return state.msg != 0 and msg == state.msg;
 }
 
-/// Write the app's state to the dump file. Returns 1 on success.
-pub fn dump(app: *App) c.LRESULT {
+/// Write the app's state to the dump file. Returns 1 on success. With
+/// `wparam` 1, it first asks every surface's renderer to read back the
+/// pixel at `lparam` (x in the low word, y in the high word, client pixels
+/// from the top left) from the frames it presents next ("probe").
+pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
     const alloc = app.core_app.alloc;
+    if (wparam == 1) {
+        const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
+        for (app.windows.items) |w| for (w.surfaces.items) |s| {
+            if (!s.core_initialized) continue;
+            const core = &s.core_surface;
+            const state = &core.renderer.api.wgl_state;
+            state.probe.store(0, .monotonic);
+            state.probe_point.store(point, .monotonic);
+            // Nothing may have changed to cause a frame, so mark the whole
+            // screen dirty (as a modifier change does) and wake the
+            // renderer.
+            core.renderer_state.mutex.lockUncancelable(global.io());
+            core.renderer_state.terminal.flags.dirty.clear = true;
+            core.renderer_state.mutex.unlock(global.io());
+            core.renderer_thread.wakeup.notify() catch {};
+        };
+    }
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
     write(app, alloc, &out) catch |err| {
@@ -153,13 +173,18 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 // Cell size and padding in pixels, to click on a cell.
                 const size = s.core_surface.size;
                 const grid = size.grid();
-                try out.print(alloc, ",\"cols\":{d},\"rows\":{d},\"cell\":[{d},{d}],\"padding\":[{d},{d}],\"text\":", .{
+                // The last presented frame's pixel near the bottom-right
+                // corner (see OpenGL.Wgl.sample).
+                const wgl_state = &s.core_surface.renderer.api.wgl_state;
+                try out.print(alloc, ",\"cols\":{d},\"rows\":{d},\"cell\":[{d},{d}],\"padding\":[{d},{d}],\"pixel\":{d},\"probe\":{d},\"text\":", .{
                     grid.columns,
                     grid.rows,
                     size.cell.width,
                     size.cell.height,
                     size.padding.left,
                     size.padding.top,
+                    wgl_state.sample.load(.monotonic),
+                    wgl_state.probe.load(.monotonic),
                 });
                 const text = text: {
                     s.core_surface.renderer_state.mutex.lockUncancelable(global.io());
