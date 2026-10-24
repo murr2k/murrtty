@@ -88,6 +88,7 @@ pub const SMTO_ABORTIFHUNG = 0x0002;
 pub const PW_RENDERFULLCONTENT = 0x00000002;
 pub const GW_OWNER = 4;
 pub const SWP_NOSIZE = 0x0001;
+pub const SWP_NOMOVE = 0x0002;
 pub const SWP_NOZORDER = 0x0004;
 pub const SWP_NOACTIVATE = 0x0010;
 pub const MAPVK_VK_TO_VSC = 0;

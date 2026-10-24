@@ -224,7 +224,12 @@ pub const SWP_NOMOVE = 0x0002;
 pub const SWP_NOZORDER = 0x0004;
 pub const SWP_NOACTIVATE = 0x0010;
 pub const SWP_FRAMECHANGED = 0x0020;
+pub const SWP_NOCOPYBITS = 0x0100;
 pub const SWP_NOOWNERZORDER = 0x0200;
+pub const HDWP = *opaque {};
+pub extern "user32" fn BeginDeferWindowPos(c_int) callconv(.winapi) ?HDWP;
+pub extern "user32" fn DeferWindowPos(HDWP, HWND, ?HWND, c_int, c_int, c_int, c_int, UINT) callconv(.winapi) ?HDWP;
+pub extern "user32" fn EndDeferWindowPos(HDWP) callconv(.winapi) BOOL;
 
 pub const SIZE_MINIMIZED = 1;
 

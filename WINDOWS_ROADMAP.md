@@ -251,13 +251,20 @@ observable from the tests. `auto` takes the terminal colors even when the
 theme has light and dark variants (the config docs say `auto` then acts as
 `system`); the terminal's colors follow the scheme in that case anyway.
 
-**0.5 Paint hygiene during resize, S.**
+**0.5 Paint hygiene during resize, S.** *Built 2026-10-24; the visual check
+is still open.*
 - Lay out with `BeginDeferWindowPos`/`DeferWindowPos` and `SWP_NOCOPYBITS`.
 - Paint exposed areas in the terminal background.
 - Fix the tab strip painting at most 64 titles while hit-testing all of them
   (`Window.zig:470-486`).
 
 *Done when:* a slow-motion capture of a resize shows no black bars or trails.
+
+*As built:* all three, plus 0.3's present pass, which fills the surface's
+own margin with the background while its frame catches up. The `resize`
+GUI scenario checks that growing and shrinking relays out the grid and
+leaves the corner exactly the background color. The slow-motion capture
+needs the visible desktop and hasn't been done yet.
 
 **0.6 Config errors dialog, S.** Config diagnostics only reach the log of a
 GUI program with no console (`App.zig:86-91`). After startup and each reload,

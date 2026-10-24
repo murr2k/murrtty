@@ -26,6 +26,7 @@ pub const all = [_]Scenario{
     .{ .name = "links-open", .about = "links really open: a test protocol and file type registered in HKCU", .run = linksOpen },
     .{ .name = "present", .about = "background-opacity doesn't darken the (opaque) window; exact background pixels", .run = present },
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
+    .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
 };
 
 const base_config =
@@ -753,6 +754,43 @@ fn theme(h: *Harness) anyerror!void {
         try h.expect(std.mem.eql(u8, try schemeOf(h, &g), "dark"), "window-theme = dark keeps the terminal dark", .{});
         try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
+}
+
+fn gridOf(h: *Harness, g: *Harness.Ghostty) ![2]u32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const t = d.value.windows[0].tabs[0];
+    return .{ t.cols orelse 0, t.rows orelse 0 };
+}
+
+/// Growing and shrinking the window resizes the terminal (laid out with
+/// DeferWindowPos, roadmap 0.5), and its bottom-right corner shows the
+/// background color each time, not black.
+fn resize(h: *Harness) anyerror!void {
+    var g = try start(h, "resize", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const before = try gridOf(h, &g);
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(win, &r);
+    for ([_]c_int{ 240, -160 }) |delta| {
+        const width = r.right - r.left + delta;
+        const height = r.bottom - r.top + @divTrunc(delta, 2);
+        _ = w.SetWindowPos(win, null, 0, 0, width, height, w.SWP_NOMOVE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+        var waited: u32 = 0;
+        var grid = try gridOf(h, &g);
+        while (grid[0] == before[0] and waited < 5000) : (waited += 200) {
+            w.Sleep(200);
+            grid = try gridOf(h, &g);
+        }
+        try h.expect(if (delta > 0) grid[0] > before[0] else grid[0] < before[0], "a {d}px change resizes the grid ({d}x{d} to {d}x{d})", .{ delta, before[0], before[1], grid[0], grid[1] });
+        w.Sleep(500);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const px = d.value.windows[0].tabs[0].pixel orelse 0;
+        try h.expect(px == 0x282c34, "the corner is the background after resizing (#{x:0>6})", .{px});
+    }
+    try quit(h, &g, try h.surface(&g, win));
 }
 
 fn windowSize(h: *Harness) anyerror!void {

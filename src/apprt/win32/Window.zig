@@ -358,11 +358,21 @@ fn surfaceRect(self: *const Window, count: usize) c.RECT {
     return r;
 }
 
+/// Size every surface to the surface area, all in one step (so they never
+/// show at different sizes), discarding their old contents rather than
+/// copying them, which left trails while resizing; the renderer redraws.
 fn layout(self: *Window) void {
     const r = self.surfaceRect(self.surfaces.items.len);
+    const flags = c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOCOPYBITS;
+    var hdwp = c.BeginDeferWindowPos(@intCast(self.surfaces.items.len));
     for (self.surfaces.items) |s| {
-        _ = c.MoveWindow(s.hwnd, r.left, r.top, r.right - r.left, r.bottom - r.top, c.TRUE);
+        if (hdwp) |h| {
+            hdwp = c.DeferWindowPos(h, s.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
+        }
+        // If deferring failed (it then frees the batch), move it directly.
+        if (hdwp == null) _ = c.SetWindowPos(s.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
     }
+    if (hdwp) |h| _ = c.EndDeferWindowPos(h);
 }
 
 /// Resize the window so its surface area is the given size in points
@@ -537,19 +547,30 @@ pub fn configChanged(self: *Window) void {
 //---------------------------------------------------------------
 // Tab bar input and painting
 
-fn paintTabBar(self: *Window) void {
+/// Paint the tab bar, and anything of the client area the surfaces don't
+/// cover yet (while resizing) in the terminal's background rather than
+/// leaving it black. WS_CLIPCHILDREN keeps this off the surfaces.
+fn paint(self: *Window) void {
     var ps: c.PAINTSTRUCT = undefined;
     const hdc = c.BeginPaint(self.hwnd, &ps) orelse return;
     defer _ = c.EndPaint(self.hwnd, &ps);
+
+    const colors = self.chromeColors();
+    var below = self.surfaceRect(self.surfaces.items.len);
+    if (c.CreateSolidBrush(c.rgb(colors.bg.r, colors.bg.g, colors.bg.b))) |brush| {
+        defer _ = c.DeleteObject(brush);
+        _ = c.FillRect(hdc, &below, brush);
+    }
     if (!self.tabBarVisible()) return;
 
-    var titles_buf: [64][]const u8 = undefined;
-    const n = @min(self.surfaces.items.len, titles_buf.len);
-    for (self.surfaces.items[0..n], 0..) |s, i| titles_buf[i] = s.title orelse "Ghostty";
+    // Every title: the bar is laid out (and hit-tested) for all the tabs.
+    const alloc = self.app.core_app.alloc;
+    const titles = alloc.alloc([]const u8, self.surfaces.items.len) catch return;
+    defer alloc.free(titles);
+    for (self.surfaces.items, titles) |s, *t| t.* = s.title orelse "Ghostty";
 
     const r = self.tabBarRect();
-    const colors = self.chromeColors();
-    self.tab_bar.paint(hdc, r.right, titles_buf[0..n], self.active, colors.bg, colors.fg);
+    self.tab_bar.paint(hdc, r.right, titles, self.active, colors.bg, colors.fg);
 }
 
 fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {
@@ -597,7 +618,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_ERASEBKGND => return 1,
 
         c.WM_PAINT => {
-            self.paintTabBar();
+            self.paint();
             return 0;
         },
 
