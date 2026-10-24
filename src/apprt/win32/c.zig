@@ -340,6 +340,10 @@ pub const TASKDIALOG_BUTTON = extern struct {
     pszButtonText: LPCWSTR align(1),
 };
 
+pub const PFTASKDIALOGCALLBACK = *const fn (HWND, UINT, WPARAM, LPARAM, isize) callconv(.winapi) HRESULT;
+pub const TDN_BUTTON_CLICKED = 2;
+pub const S_OK: HRESULT = 0;
+pub const S_FALSE: HRESULT = 1;
 pub const TASKDIALOGCONFIG = extern struct {
     cbSize: UINT align(1) = @sizeOf(TASKDIALOGCONFIG),
     hwndParent: ?HWND align(1) = null,
@@ -681,6 +685,7 @@ comptime {
 }
 pub const SEE_MASK_INVOKEIDLIST = 0x0000000C;
 pub const SEE_MASK_NOASYNC = 0x00000100;
+pub const SEE_MASK_FLAG_NO_UI = 0x00000400;
 pub extern "shell32" fn ShellExecuteExW(*SHELLEXECUTEINFOW) callconv(.winapi) BOOL;
 pub extern "shell32" fn ILCreateFromPathW(LPCWSTR) callconv(.winapi) ?*anyopaque;
 pub extern "shell32" fn ILFree(?*anyopaque) callconv(.winapi) void;

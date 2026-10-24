@@ -266,7 +266,7 @@ GUI scenario checks that growing and shrinking relays out the grid and
 leaves the corner exactly the background color. The slow-motion capture
 needs the visible desktop and hasn't been done yet.
 
-**0.6 Config errors dialog, S.** Config diagnostics only reach the log of a
+**0.6 Config errors dialog, S.** *Done 2026-10-24.* Config diagnostics only reach the log of a
 GUI program with no console (`App.zig:86-91`). After startup and each reload,
 show a TaskDialog listing them, with Open Configuration, Reload and Ignore.
 
@@ -278,6 +278,16 @@ machine shows the "How do you want to open this file?" chooser. Use
 *Done when:* a misspelled key produces the dialog, fixing it and choosing
 Reload applies the change, and `Ctrl+,` opens the file in an editor on a clean
 machine.
+
+*As built (2026-10-24):* the dialog shows at startup and after a config
+change whose errors differ from those last shown, or after any hard reload,
+so a soft reload (a theme switch) doesn't repeat it. Open Configuration
+keeps the dialog up (a TaskDialog callback) so the file can be fixed and
+then reloaded. `open_config` now runs from the message loop and tries the
+`edit` verb, then `open`, then Notepad. The `config-errors` GUI scenario
+covers the dialog, Open Configuration, fix and Reload, and `Ctrl+,`, with
+the editor launch recorded rather than performed; the clean-machine editor
+check is still open.
 
 **0.7 Launch context, S.**
 - Explorer and Start menu launches already open in the home directory,

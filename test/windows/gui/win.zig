@@ -126,6 +126,7 @@ pub const VK_PRIOR = 0x21;
 pub const VK_NEXT = 0x22;
 pub const VK_INSERT = 0x2D;
 pub const VK_F4 = 0x73;
+pub const VK_OEM_COMMA = 0xBC;
 pub const VK_LSHIFT = 0xA0;
 pub const VK_LCONTROL = 0xA2;
 pub const VK_LMENU = 0xA4;

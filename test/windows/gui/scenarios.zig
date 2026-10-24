@@ -27,6 +27,7 @@ pub const all = [_]Scenario{
     .{ .name = "present", .about = "background-opacity doesn't darken the (opaque) window; exact background pixels", .run = present },
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
+    .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
 };
 
 const base_config =
@@ -791,6 +792,57 @@ fn resize(h: *Harness) anyerror!void {
         try h.expect(px == 0x282c34, "the corner is the background after resizing (#{x:0>6})", .{px});
     }
     try quit(h, &g, try h.surface(&g, win));
+}
+
+/// Button ids of the config errors dialog (src/apprt/win32/App.zig).
+const id_open_config = 110;
+const id_reload_config = 111;
+
+fn launchCount(h: *Harness, g: *Harness.Ghostty, prefix: []const u8) !usize {
+    var d = try h.dump(g);
+    defer d.deinit();
+    var n: usize = 0;
+    for (d.value.launches) |l| {
+        if (std.mem.startsWith(u8, l, prefix)) n += 1;
+    }
+    return n;
+}
+
+/// A config error shows a dialog at startup (the log of a GUI program goes
+/// nowhere); Open Configuration opens the file and leaves the dialog up;
+/// fixing the file and choosing Reload applies it; Ctrl+, opens the file
+/// too (roadmap 0.6). Opening is recorded by the Debug build, not done.
+fn configErrors(h: *Harness) anyerror!void {
+    var g = try start(h, "config-errors", "fontt-size = 12\n", ">");
+    defer g.deinit();
+    var dlg = try h.waitDialog(&g, 5000);
+    try expectTitle(h, dlg, "Configuration Errors");
+
+    h.answer(&g, dlg, id_open_config);
+    w.Sleep(1000);
+    try h.expect(try h.dialogCount(&g) == 1, "Open Configuration leaves the dialog open", .{});
+    try h.expect(try launchCount(h, &g, "edit-config ") == 1, "and opens the config file", .{});
+
+    // Fix the file (the misspelled key goes; a visible setting comes) and
+    // reload from the dialog.
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\ghostty\\config.ghostty", .{g.dir});
+    defer h.alloc.free(path);
+    try h.writeFileAt(path, base_config ++ "window-theme = light\n");
+    dlg = try h.waitDialog(&g, 1000);
+    h.answer(&g, dlg, id_reload_config);
+    try waitNoDialog(h, &g);
+    w.Sleep(1500);
+    try h.expect(try h.dialogCount(&g) == 0, "a config without errors shows no dialog", .{});
+    const chrome = try chromeOf(h, &g);
+    try h.expect(!chrome.dark and chrome.caption == -1, "Reload applied the fixed config (window-theme = light)", .{});
+
+    // Ctrl+, opens the config file.
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    h.key(surf, .{ .ctrl = true }, w.VK_OEM_COMMA);
+    var waited: u32 = 0;
+    while (try launchCount(h, &g, "edit-config ") < 2 and waited < 5000) : (waited += 200) w.Sleep(200);
+    try h.expect(try launchCount(h, &g, "edit-config ") == 2, "Ctrl+, opens the config file", .{});
+    try quit(h, &g, surf);
 }
 
 fn windowSize(h: *Harness) anyerror!void {

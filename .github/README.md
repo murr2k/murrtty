@@ -73,6 +73,9 @@ desktop. The port has not yet had much use on a physical keyboard.
   this off. Closing all windows asks too.
 - OSC 52 clipboard writes with `clipboard-write = ask`: a burst of requests
   is confirmed one dialog at a time.
+- Configuration errors: a dialog lists them at startup and after a reload,
+  with Open Configuration, Reload and Ignore; reloading (`Ctrl+Shift+,`)
+  applies a fixed file.
 - Links (`Ctrl`+click a URL or an OSC 8 hyperlink). Web and mail links,
   folders, and files of plain data types (text, source code, images, media,
   PDF) open. Links from terminal output to programs, scripts, shortcuts,
@@ -92,7 +95,9 @@ desktop. The port has not yet had much use on a physical keyboard.
   placement).
 - Moving tabs (`Ctrl+Shift+PgUp`/`PgDn`), jumping to a tab (`Alt+1` to `Alt+8`, and `Alt+9` for the last tab), closing
   the other tabs or the tabs to the right (no default keys: bind
-  `close_tab:other` or `close_tab:right`), opening the config file (`Ctrl+,`).
+  `close_tab:other` or `close_tab:right`).
+- Opening the config file (`Ctrl+,`) in the editor registered for it, else
+  Notepad. The GUI tests check the request, not the editor appearing.
 - Precision touchpad scrolling, mouse pointer shapes and hiding the pointer
   while typing, moving a window between monitors with different DPI.
 - Title bar colors (`window-theme`). By default the caption takes the
@@ -101,8 +106,8 @@ desktop. The port has not yet had much use on a physical keyboard.
   `light` and `dark` use the system's caption. Caption colors need Windows
   11; Windows 10 gets a light or dark caption. The GUI tests check what
   Ghostty asks Windows for, not yet what appears on screen.
-- Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell,
-  configuration reload and paste protection.
+- Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell and paste
+  protection.
 
 **Not implemented yet**
 

@@ -8,7 +8,6 @@ const apprt = @import("../../apprt.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 const input = @import("../../input.zig");
-const internal_os = @import("../../os/main.zig");
 const CoreApp = @import("../../App.zig");
 const CoreSurface = @import("../../Surface.zig");
 
@@ -42,6 +41,10 @@ pub const Request = union(enum) {
     close_all_windows,
     quit,
     open_url: OpenUrl,
+    /// Open the config file in an editor (see openConfig).
+    open_config,
+    /// Show the config's errors (see showConfigErrors).
+    config_errors,
 
     fn deinit(self: Request, alloc: Allocator) void {
         switch (self) {
@@ -62,6 +65,11 @@ pub const OpenUrl = struct {
 /// Button ids for the link dialogs.
 const id_open_link = 100;
 const id_copy_link = 101;
+
+/// Button ids for the config errors dialog.
+const id_open_config = 110;
+const id_reload_config = 111;
+const id_ignore_config = 112;
 
 /// HWND_MESSAGE: the parent for message-only windows.
 const HWND_MESSAGE: c.HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
@@ -93,6 +101,14 @@ quitting: bool = false,
 
 /// Whether OleInitialize succeeded, so terminate balances it.
 ole_initialized: bool = false,
+
+/// The config errors last shown (a hash of their text), so that a soft
+/// reload with the same errors doesn't show them again; whether the next
+/// config change shows them regardless (after a reload the user asked
+/// for); and whether a request to show them is already queued.
+config_errors_shown: ?u64 = null,
+config_errors_force: bool = false,
+config_errors_queued: bool = false,
 
 /// The GUI test harness's state dump (Debug builds only; see test_hooks).
 test_state: test_hooks.State = .{},
@@ -202,6 +218,9 @@ pub fn run(self: *App) !void {
         return err;
     };
 
+    // A GUI program's log goes nowhere, so show any config errors.
+    self.queueConfigErrors();
+
     var msg: c.MSG = undefined;
     while (true) {
         const ret = c.GetMessageW(&msg, null, 0, 0);
@@ -249,6 +268,16 @@ fn runRequests(self: *App) void {
                 "Ghostty: Close All Windows",
             )) self.closeAllWindows(),
             .quit => self.quit(),
+            .open_config => {
+                // The shell can show dialogs of its own.
+                var modal = self.beginModal(null, .{});
+                defer modal.end();
+                _ = self.openConfig();
+            },
+            .config_errors => {
+                self.config_errors_queued = false;
+                self.showConfigErrors();
+            },
             .open_url => |v| {
                 defer req.deinit(self.core_app.alloc);
                 self.openUrl(v);
@@ -453,8 +482,15 @@ pub const TaskDialog = struct {
     common_buttons: c_int = 0,
     /// The button chosen by Enter; 0 for the first one.
     default_button: c_int = 0,
+    /// Buttons that run an action and leave the dialog open.
+    stay: ?Stay = null,
 
     pub const Button = struct { id: c_int, text: []const u8 };
+    pub const Stay = struct {
+        ids: []const c_int,
+        /// Runs inside the dialog's modal loop.
+        action: *const fn (*App, c_int) void,
+    };
 };
 
 /// Show a task dialog in a modal scope. Returns the id of the chosen
@@ -474,7 +510,7 @@ pub fn taskDialog(self: *App, td: TaskDialog) ?c_int {
         .pszButtonText = text_util.utf16Lossy(arena, b.text) catch return null,
     };
 
-    const config: c.TASKDIALOGCONFIG = .{
+    var config: c.TASKDIALOGCONFIG = .{
         .hwndParent = td.owner,
         .dwFlags = c.TDF_ALLOW_DIALOG_CANCELLATION | c.TDF_POSITION_RELATIVE_TO_WINDOW,
         .dwCommonButtons = td.common_buttons,
@@ -493,6 +529,13 @@ pub fn taskDialog(self: *App, td: TaskDialog) ?c_int {
         .pszExpandedInformation = utf16Opt(arena, td.expanded) catch return null,
     };
 
+    var stay: StayContext = undefined;
+    if (td.stay) |s| {
+        stay = .{ .app = self, .stay = s };
+        config.pfCallback = @ptrCast(&taskDialogCallback);
+        config.lpCallbackData = @bitCast(@intFromPtr(&stay));
+    }
+
     var modal = self.beginModal(td.owner, .{});
     defer modal.end();
     var chosen: c_int = 0;
@@ -502,6 +545,26 @@ pub fn taskDialog(self: *App, td: TaskDialog) ?c_int {
         return null;
     }
     return chosen;
+}
+
+const StayContext = struct { app: *App, stay: TaskDialog.Stay };
+
+fn taskDialogCallback(
+    _: c.HWND,
+    msg: c.UINT,
+    wparam: c.WPARAM,
+    _: c.LPARAM,
+    data: isize,
+) callconv(.winapi) c.HRESULT {
+    if (msg != c.TDN_BUTTON_CLICKED) return c.S_OK;
+    const ctx: *const StayContext = @ptrFromInt(@as(usize, @bitCast(data)));
+    for (ctx.stay.ids) |id| {
+        if (wparam != @as(c.WPARAM, @intCast(id))) continue;
+        ctx.stay.action(ctx.app, id);
+        // Not S_OK: the dialog stays open.
+        return c.S_FALSE;
+    }
+    return c.S_OK;
 }
 
 /// TaskDialogIndirect from comctl32 v6, or null where only v5 is loaded
@@ -736,11 +799,111 @@ fn reloadConfig(self: *App, target: apprt.Target, soft: bool) !void {
     var config = try Config.load(self.core_app.alloc);
     defer config.deinit();
     switch (target) {
-        .app => try self.core_app.updateConfig(self, &config),
+        .app => {
+            // The user asked for this reload, so show its errors even if
+            // they are the ones shown before.
+            self.config_errors_force = true;
+            try self.core_app.updateConfig(self, &config);
+        },
         .surface => |core| try core.updateConfig(&config),
     }
 }
 
+/// Queue the config errors dialog if the config has errors that weren't
+/// just shown (see config_errors_shown).
+fn queueConfigErrors(self: *App) void {
+    const force = self.config_errors_force;
+    self.config_errors_force = false;
+    const diags = self.config._diagnostics.items();
+    if (diags.len == 0) {
+        // Fixed: if the same errors come back, show them again.
+        self.config_errors_shown = null;
+        return;
+    }
+    if (!force and self.config_errors_shown == diagnosticsHash(diags)) return;
+    if (self.config_errors_queued) return;
+    self.config_errors_queued = true;
+    self.request(.config_errors);
+}
+
+fn diagnosticsHash(diags: anytype) u64 {
+    var hasher: std.hash.Wyhash = .init(0);
+    for (diags) |diag| {
+        var buf: [1024]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        diag.format(&writer) catch {};
+        hasher.update(writer.buffered());
+        hasher.update("\n");
+    }
+    return hasher.final();
+}
+
+/// Show the config's errors, with Open Configuration (which leaves the
+/// dialog up, so the file can be fixed and then reloaded), Reload and
+/// Ignore. Config errors otherwise only reach the log, which a GUI
+/// program's user never sees.
+fn showConfigErrors(self: *App) void {
+    const alloc = self.core_app.alloc;
+    const diags = self.config._diagnostics.items();
+    if (diags.len == 0) return;
+    self.config_errors_shown = diagnosticsHash(diags);
+
+    // The first few in the content, all of them under "See details".
+    const shown_max = 10;
+    var content: std.ArrayList(u8) = .empty;
+    defer content.deinit(alloc);
+    var all: std.ArrayList(u8) = .empty;
+    defer all.deinit(alloc);
+    for (diags, 0..) |diag, i| {
+        var buf: [1024]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buf);
+        diag.format(&writer) catch {};
+        const line = writer.buffered();
+        all.print(alloc, "{s}\n", .{line}) catch return;
+        if (i < shown_max) content.print(alloc, "{s}\n", .{line}) catch return;
+    }
+    if (diags.len > shown_max) content.print(alloc, "...and {d} more.", .{diags.len - shown_max}) catch return;
+
+    const owner: ?c.HWND = if (self.windows.items.len > 0) self.windows.items[0].hwnd else null;
+    const chosen = self.taskDialog(.{
+        .owner = owner,
+        .title = "Ghostty: Configuration Errors",
+        .instruction = if (diags.len == 1)
+            "The configuration has an error"
+        else
+            "The configuration has errors",
+        .content = content.items,
+        .expanded = if (diags.len > shown_max) all.items else "",
+        .icon = .warning,
+        .buttons = &.{
+            .{ .id = id_open_config, .text = "&Open Configuration" },
+            .{ .id = id_reload_config, .text = "&Reload" },
+            .{ .id = id_ignore_config, .text = "&Ignore" },
+        },
+        .default_button = id_ignore_config,
+        .stay = .{ .ids = &.{id_open_config}, .action = openConfigFromDialog },
+    }) orelse {
+        const text = std.fmt.allocPrint(alloc, "{s}\nFix the configuration file, then reload it with Ctrl+Shift+Comma.", .{all.items}) catch return;
+        defer alloc.free(text);
+        var modal = self.beginModal(owner, .{});
+        defer modal.end();
+        _ = Surface.messageBox(alloc, owner, text, "Ghostty: Configuration Errors", c.MB_OK | c.MB_ICONWARNING);
+        return;
+    };
+    if (chosen == id_reload_config) self.reloadConfig(.app, false) catch |err| {
+        log.warn("error reloading the config err={}", .{err});
+    };
+}
+
+fn openConfigFromDialog(self: *App, _: c_int) void {
+    _ = self.openConfig();
+}
+
+/// Open the config file in an editor: the program registered to edit its
+/// type, else the one registered to open it, else Notepad. The generic
+/// opener showed Windows' "How do you want to open this file?" chooser on
+/// a machine where nothing is registered for `.ghostty` files. Run it from
+/// the message loop in a modal scope: the shell can pump messages.
 fn openConfig(self: *App) bool {
     const alloc = self.core_app.alloc;
     const path = configpkg.edit.openPath(alloc) catch |err| {
@@ -748,11 +911,34 @@ fn openConfig(self: *App) bool {
         return false;
     };
     defer alloc.free(path);
-    internal_os.open(.text, path) catch |err| {
-        log.warn("unable to open config file: {}", .{err});
-        return false;
+    if (test_hooks.recordLaunch(&self.test_state, alloc, "edit-config", path)) return true;
+
+    const path16 = text_util.utf16Lossy(alloc, path) catch return false;
+    defer alloc.free(path16);
+    for ([_]c.LPCWSTR{ c.L("edit"), c.L("open") }) |verb| {
+        var info: c.SHELLEXECUTEINFOW = .{
+            // No UI: if nothing is registered, fall through quietly.
+            .fMask = c.SEE_MASK_NOASYNC | c.SEE_MASK_FLAG_NO_UI,
+            .lpVerb = verb,
+            .lpFile = path16,
+            .nShow = c.SW_SHOWNORMAL,
+        };
+        if (c.ShellExecuteExW(&info) != 0) return true;
+    }
+
+    const params = std.fmt.allocPrint(alloc, "\"{s}\"", .{path}) catch return false;
+    defer alloc.free(params);
+    const params16 = text_util.utf16Lossy(alloc, params) catch return false;
+    defer alloc.free(params16);
+    var info: c.SHELLEXECUTEINFOW = .{
+        .fMask = c.SEE_MASK_NOASYNC,
+        .lpFile = c.L("notepad.exe"),
+        .lpParameters = params16,
+        .nShow = c.SW_SHOWNORMAL,
     };
-    return true;
+    if (c.ShellExecuteExW(&info) != 0) return true;
+    log.warn("unable to open the config file err={d}", .{c.GetLastError()});
+    return false;
 }
 
 fn gotoWindow(self: *App, target: apprt.Target, direction: apprt.action.GotoWindow) bool {
@@ -881,7 +1067,9 @@ pub fn performAction(
             .url = try self.core_app.alloc.dupe(u8, value.url),
         } }),
 
-        .open_config => return self.openConfig(),
+        // From the message loop: the shell can pump messages, and the
+        // core is using the surface that triggered this.
+        .open_config => self.request(.open_config),
 
         .reload_config => try self.reloadConfig(target, value.soft),
 
@@ -900,6 +1088,7 @@ pub fn performAction(
                 for (self.windows.items) |w| w.configChanged();
                 // window-theme may now force a different scheme.
                 self.reportColorScheme();
+                self.queueConfigErrors();
             },
         },
 
