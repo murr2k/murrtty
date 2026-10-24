@@ -48,7 +48,9 @@ This is an early port. It has been tested on one machine: Windows 11 Pro
 (build 26200), NVIDIA GeForce RTX 2070, at 125% display scaling. Most of the
 testing drove the app with key and mouse messages sent to its windows, with
 the modifier keys set as held where needed, and checked the results with
-window captures and logs. It has not yet had much use on a physical keyboard.
+window captures, a Debug-build state dump and logs. Those GUI tests are in
+`test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
+desktop. The port has not yet had much use on a physical keyboard.
 
 **Tested and working**
 
@@ -242,6 +244,7 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
 | `pkg/opengl/wgl.zig` | Minimal WGL bindings and context creation |
 | `src/renderer/OpenGL.zig`, `src/renderer/opengl/Device.zig` | WGL context per surface and `SwapBuffers` presentation on Windows |
 | `build-windows.ps1`, `build-windows.cmd` | The builder |
+| `test/windows/gui/`, `src/apprt/win32/test_hooks.zig` | GUI tests, and the Debug-only state dump they read |
 
 Ghostty's embedding library (`include/ghostty.h`, the library the macOS app
 links) also gains a Windows platform (`GHOSTTY_PLATFORM_WINDOWS`, which takes

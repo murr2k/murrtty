@@ -15,6 +15,7 @@ const CoreSurface = @import("../../Surface.zig");
 const c = @import("c.zig");
 const Surface = @import("Surface.zig");
 const text_util = @import("text.zig");
+const test_hooks = @import("test_hooks.zig");
 const Window = @import("Window.zig");
 
 const log = std.log.scoped(.win32);
@@ -69,6 +70,9 @@ quitting: bool = false,
 
 /// Whether OleInitialize succeeded, so terminate balances it.
 ole_initialized: bool = false,
+
+/// The GUI test harness's state dump (Debug builds only; see test_hooks).
+test_state: test_hooks.State = .{},
 
 pub fn init(
     self: *App,
@@ -140,6 +144,7 @@ pub fn init(
         .wakeup_hwnd = wakeup_hwnd,
         .dark = systemDark(),
         .ole_initialized = ole >= 0,
+        .test_state = test_hooks.init(alloc),
     };
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
@@ -191,6 +196,7 @@ pub fn terminate(self: *App) void {
     self.windows.deinit(self.core_app.alloc);
     self.requests.deinit(self.core_app.alloc);
     _ = c.DestroyWindow(self.wakeup_hwnd);
+    test_hooks.deinit(&self.test_state, self.core_app.alloc);
     self.config.deinit();
     if (self.ole_initialized) c.OleUninitialize();
 }
@@ -459,7 +465,16 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
             }
             return 0;
         },
-        else => return c.DefWindowProcW(hwnd, msg, wparam, lparam),
+        else => {
+            if (comptime test_hooks.enabled) {
+                const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
+                if (ptr != 0) {
+                    const self: *App = @ptrFromInt(@as(usize, @bitCast(ptr)));
+                    if (test_hooks.isDump(&self.test_state, msg)) return test_hooks.dump(self);
+                }
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
     }
 }
 

@@ -461,6 +461,7 @@ pub extern "user32" fn GetDoubleClickTime() callconv(.winapi) UINT;
 pub extern "user32" fn EnableWindow(HWND, BOOL) callconv(.winapi) BOOL;
 pub extern "user32" fn IsWindowEnabled(HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn IsWindowVisible(HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn RegisterWindowMessageW(LPCWSTR) callconv(.winapi) UINT;
 pub extern "user32" fn GetLastActivePopup(HWND) callconv(.winapi) HWND;
 
 // gdi32
@@ -555,6 +556,22 @@ pub extern "gdi32" fn CreateFontIndirectW(*const LOGFONTW) callconv(.winapi) ?HF
 // kernel32
 pub extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(.winapi) ?HINSTANCE;
 pub extern "kernel32" fn LoadLibraryW(LPCWSTR) callconv(.winapi) ?HINSTANCE;
+pub extern "kernel32" fn GetEnvironmentVariableW(LPCWSTR, ?[*]u16, DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn CreateFileW(
+    LPCWSTR,
+    DWORD,
+    DWORD,
+    ?*anyopaque,
+    DWORD,
+    DWORD,
+    ?HANDLE,
+) callconv(.winapi) HANDLE;
+pub extern "kernel32" fn WriteFile(HANDLE, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
+pub const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(std.math.maxInt(usize));
+pub const GENERIC_WRITE = 0x40000000;
+pub const CREATE_ALWAYS = 2;
+pub const FILE_ATTRIBUTE_NORMAL = 0x80;
 pub extern "kernel32" fn GetProcAddress(HINSTANCE, [*:0]const u8) callconv(.winapi) ?*const anyopaque;
 pub extern "kernel32" fn GlobalAlloc(UINT, usize) callconv(.winapi) ?HGLOBAL;
 pub extern "kernel32" fn GlobalLock(HGLOBAL) callconv(.winapi) ?*anyopaque;

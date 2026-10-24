@@ -61,7 +61,7 @@ pub fn height(self: *const TabBar) c_int {
 }
 
 /// The rectangle of tab `i` of `n` in a bar `width` pixels wide.
-fn tabRect(self: *const TabBar, i: usize, n: usize, width: c_int) c.RECT {
+pub fn tabRect(self: *const TabBar, i: usize, n: usize, width: c_int) c.RECT {
     const avail = @max(0, width - self.scale(button_width));
     const per: c_int = @intCast(@divTrunc(avail, @as(c_int, @intCast(@max(n, 1)))));
     const w = std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
@@ -69,14 +69,14 @@ fn tabRect(self: *const TabBar, i: usize, n: usize, width: c_int) c.RECT {
     return .{ .left = left, .top = 0, .right = left + w, .bottom = self.height() };
 }
 
-fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
+pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
     const s = self.scale(close_size);
     const right = tab.right - self.scale(8);
     const top = @divTrunc(tab.bottom - s, 2);
     return .{ .left = right - s, .top = top, .right = right, .bottom = top + s };
 }
 
-fn newTabRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
+pub fn newTabRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
     const last = self.tabRect(n -| 1, n, width);
     const left = if (n == 0) 0 else last.right;
     return .{ .left = left, .top = 0, .right = left + self.scale(button_width), .bottom = self.height() };

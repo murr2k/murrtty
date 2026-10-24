@@ -328,7 +328,7 @@ fn tabBarVisibleFor(self: *const Window, count: usize) bool {
     };
 }
 
-fn tabBarVisible(self: *const Window) bool {
+pub fn tabBarVisible(self: *const Window) bool {
     return self.tabBarVisibleFor(self.surfaces.items.len);
 }
 

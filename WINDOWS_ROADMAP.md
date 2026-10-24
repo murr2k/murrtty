@@ -217,18 +217,32 @@ machine.
 *Done when:* `cd C:\src && ghostty` opens in `C:\src`, and a double-click still
 opens in `%USERPROFILE%` (regression check).
 
-**0.8 GUI test harness in the repository, M.** The message-posting harness
-that tested the port so far lives in throwaway scripts. Commit it as a Zig
-program under `test/windows/gui/` behind a `test-gui-win32` build step. Its
-capabilities:
+**0.8 GUI test harness in the repository, M.** *Done 2026-10-24:
+`test\windows\gui\run.cmd` builds a Debug Ghostty and the harness and runs
+ten scenarios in about 40 s.* The message-posting harness that tested the
+port so far lived in throwaway scripts; it is now a Zig program under
+`test/windows/gui/`. Its capabilities:
 - Spawn Ghostty with a temporary config.
 - Find windows by class.
 - Post keys with real modifier state (`AttachThreadInput`, `SetKeyboardState`).
 - Capture with `PrintWindow(PW_RENDERFULLCONTENT)`.
 - Assert tab counts, titles and pixel regions.
-- Read state back through a debug-only (`-Dwin32-test-hooks`) dump of titles,
-  working directories and visible text, over a private window message. Text
-  assertions then do not wait for 5.1's pipe.
+- Read state back through a Debug-only dump of windows, tabs, tab-bar
+  geometry, grid sizes and visible text (`src/apprt/win32/test_hooks.zig`),
+  requested with a registered window message. Text assertions then do not
+  wait for 5.1's pipe.
+
+How it differs from the plan, to keep rebases clean and the owner's screen
+free:
+- It has its own `build.zig`, so upstream's needs no new step.
+- The state dump is switched on by `GHOSTTY_WIN32_TEST_DUMP` in Debug
+  builds, not by a new `-D` build option.
+- Ghostty runs on a hidden desktop, so test windows never cover the user's
+  work or take keystrokes. DWM does not compose hidden desktops, so the
+  pixel scenario runs its Ghostty on the user's desktop far off-screen,
+  driven from a thread on that desktop, and terminates it rather than
+  answering a dialog. The clipboard is shared across desktops, so clipboard
+  scenarios save and restore the user's text.
 
 Phase 1 tests depend on it; running it in CI comes later (7.3). *Done when:*
 the README's tested list (tabs, close confirmations, clipboard, Ctrl+C) runs
