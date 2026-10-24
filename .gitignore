@@ -12,6 +12,7 @@ zig-cache/
 zig-pkg/
 zig-out/
 zig-pkg/
+/.zig-toolchain/
 build-cmake/
 CMakeCache.txt
 CMakeFiles/

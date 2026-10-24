@@ -32,6 +32,10 @@ Makefile text eol=lf
 *.rc -text
 *.manifest -text
 
+# Windows scripts - always CRLF (cmd.exe misparses some LF-only batch files)
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
 # Binary files
 *.png binary
 *.ico binary
