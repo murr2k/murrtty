@@ -6643,6 +6643,13 @@ pub const Keybinds = struct {
         table: []const u8,
     } = .root,
 
+    /// Flags for default bindings whose actions the Windows runtime doesn't
+    /// implement yet: performable there, so the keys reach programs instead
+    /// of doing nothing. Drop each use as its feature lands on Windows.
+    const windows_unimplemented: inputpkg.Binding.Flags = .{
+        .performable = builtin.target.os.tag == .windows,
+    };
+
     pub fn init(self: *Keybinds, alloc: Allocator) !void {
         // We don't clear the memory because it's in the arena and unlikely
         // to be free-able anyways (since arenas can only clear the last
@@ -6878,15 +6885,17 @@ pub const Keybinds = struct {
                 .{ .next_tab = {} },
                 .{ .performable = true },
             );
-            try self.set.put(
+            try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'o' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_split = .right },
+                windows_unimplemented,
             );
-            try self.set.put(
+            try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'e' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_split = .down },
+                windows_unimplemented,
             );
             try self.set.putFlags(
                 alloc,
@@ -7014,10 +7023,11 @@ pub const Keybinds = struct {
             );
 
             // Inspector, matching Chromium
-            try self.set.put(
+            try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .unicode = 'i' }, .mods = .{ .shift = true, .ctrl = true } },
                 .{ .inspector = .toggle },
+                windows_unimplemented,
             );
 
             // Terminal
@@ -7115,17 +7125,19 @@ pub const Keybinds = struct {
         );
 
         // Toggle zoom a split
-        try self.set.put(
+        try self.set.putFlags(
             alloc,
             .{ .key = .{ .physical = .enter }, .mods = inputpkg.ctrlOrSuper(.{ .shift = true }) },
             .{ .toggle_split_zoom = {} },
+            windows_unimplemented,
         );
 
         // Toggle command palette, matches VSCode
-        try self.set.put(
+        try self.set.putFlags(
             alloc,
             .{ .key = .{ .unicode = 'p' }, .mods = inputpkg.ctrlOrSuper(.{ .shift = true }) },
             .toggle_command_palette,
+            windows_unimplemented,
         );
 
         // Mac-specific keyboard bindings.
@@ -10720,6 +10732,34 @@ test "clone default" {
 
     // I want to do this but this doesn't work (the API doesn't work)
     // try testing.expectEqualDeep(dest, source);
+}
+
+test "windows: defaults for actions the runtime lacks are performable" {
+    if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var config = try Config.default(alloc);
+    defer config.deinit();
+
+    // If they weren't, the core would swallow these keys even though the
+    // Windows runtime does nothing with them.
+    const ctrl_shift: inputpkg.Mods = .{ .ctrl = true, .shift = true };
+    const triggers = [_]inputpkg.Binding.Trigger{
+        .{ .key = .{ .unicode = 'p' }, .mods = ctrl_shift }, // command palette
+        .{ .key = .{ .unicode = 'i' }, .mods = ctrl_shift }, // inspector
+        .{ .key = .{ .unicode = 'o' }, .mods = ctrl_shift }, // new split
+        .{ .key = .{ .unicode = 'e' }, .mods = ctrl_shift }, // new split
+        .{ .key = .{ .physical = .enter }, .mods = ctrl_shift }, // split zoom
+    };
+    for (triggers) |t| {
+        const entry = config.keybind.set.get(t) orelse return error.TestUnexpectedResult;
+        const leaf = switch (entry.value_ptr.*) {
+            .leader => return error.TestUnexpectedResult,
+            inline .leaf, .leaf_chained => |*l| l.generic(),
+        };
+        try testing.expect(leaf.flags.performable);
+    }
 }
 
 test "clone preserves conditional state" {

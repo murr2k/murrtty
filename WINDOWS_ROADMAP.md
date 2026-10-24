@@ -183,13 +183,21 @@ the file system. Its std calls panicked Debug builds on a Ctrl+clicked URL,
 `./nul` or an over-long name, and a very long path overran a fixed stack
 buffer in release builds.
 
-**0.2 Stop swallowing default keys, S.** The defaults for the inspector
+**0.2 Stop swallowing default keys, S.** *Done 2026-10-24, with a caveat.*
+The defaults for the inspector
 (`Ctrl+Shift+I`), the command palette (`Ctrl+Shift+P`), new split
 (`Ctrl+Shift+O`/`E`) and split zoom (`Ctrl+Shift+Enter`) are not
 `performable`, so the core consumes them even though the runtime returns false
 (`Surface.zig:3178-3196`). Programs never see these keys. Mark them performable
 on Windows only until each feature lands, then remove each override. *Done
 when:* `Ctrl+Shift+P` reaches a key-echo program.
+
+*As built:* `Config.Keybinds.windows_unimplemented` marks the five bindings
+performable on Windows, and a unit test checks them; the log shows the core
+now encodes the key after the runtime declines. The done criterion can't be
+met yet, though: ConPTY drops the sequences these keys encode to before a
+console program sees them (0.12). Remove each override when its feature
+lands (Phase 1 splits, 3.3 palette, the inspector).
 
 **0.3 `background-opacity` without darkening, S.** The renderer emits a
 premultiplied background, and `presentWgl` blits it onto opaque black, so any
@@ -313,6 +321,27 @@ build, the Windows unit tests, and the builder under PowerShell 5.1. Before
 enabling Actions, disable every upstream workflow: the vouch workflows have no
 repository guard and act on every issue. A guard step fails if any other
 workflow is active. Phase 7 extends it (7.2).
+
+**0.12 Modified keys through ConPTY (win32-input-mode), M.** *Added
+2026-10-24, found during 0.2; not yet scheduled.* ConPTY turns the VT bytes it
+receives back into console key events, and it can't represent the sequences
+Ghostty sends for many modified keys: `CSI u` (`Ctrl+Shift+<letter>`) and
+xterm's `CSI 27;m;k~` (`Shift+Enter`, `Ctrl+Shift+Enter`, modified Escape and
+the like). They are dropped, so console programs never see them. Observed
+with PowerShell `[Console]::ReadKey`: `Shift+Enter` and `Ctrl+Shift+P` never
+arrive; plain keys do. That breaks `Shift+Enter` for a new line in PSReadLine
+and in CLIs that use it. ConPTY asks for win32-input-mode at startup (DECSET
+9001, logged as unimplemented), the mode Windows Terminal speaks: every key
+down and up as `CSI Vk;Sc;Uc;Kd;Cs;Rc _`, which ConPTY replays as the exact
+console input record.
+- Track mode 9001 in the core's terminal modes.
+- When it is set, encode key events (releases too) in that form. The core's
+  `KeyEvent` has no virtual-key or scan code, so the runtime has to supply
+  them (or the core maps its physical key back); decide which before
+  starting.
+
+*Done when:* `Shift+Enter`, `Ctrl+Shift+P` and `Ctrl+Shift+Enter` reach
+`[Console]::ReadKey` with their modifiers, and a GUI scenario checks it.
 
 ---
 

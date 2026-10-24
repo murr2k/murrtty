@@ -124,6 +124,10 @@ with splits.
   not been reproduced since, including in release builds.
 - Output of CLI actions run from `cmd` or PowerShell appears after the prompt
   returns, because shells don't wait for GUI programs to exit.
+- Some modified keys never reach programs: `Shift+Enter`,
+  `Ctrl+Shift+<letter>` and others that Ghostty sends as escape sequences
+  Windows' ConPTY layer can't translate. Plain keys and `Ctrl+<letter>`
+  work. The fix is win32-input-mode (roadmap 0.12).
 
 ## Requirements
 
