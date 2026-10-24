@@ -1,0 +1,83 @@
+# The Windows port's only workflow (WINDOWS_ROADMAP.md 0.11). Started by
+# hand: Actions minutes on a private repository are billed, Windows minutes
+# double.
+#
+# Every upstream workflow in this directory must stay disabled on this
+# repository (gh workflow disable <file>): they run on upstream's runners,
+# and the vouch workflows act on every issue and pull request. The guard
+# job fails the run if any of them is active, or if a workflow file in this
+# commit has never been registered and disabled (a new one from a rebase).
+name: Windows port
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: windows-port-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Upstream workflows are disabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check workflow states
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          self="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}"
+          self="${self%%@*}"
+          registered=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | "\(.path) \(.state)"')
+          files=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows?ref=$GITHUB_SHA" \
+            --jq '.[] | select(.type == "file" and (.name | test("\\.ya?ml$"))) | .path')
+          bad=0
+          while read -r path state; do
+            case "$path" in .github/workflows/*) ;; *) continue ;; esac
+            if [ "$path" != "$self" ] && [ "$state" = active ]; then
+              echo "::error::$path is active. Disable it: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
+              bad=1
+            fi
+          done <<< "$registered"
+          for path in $files; do
+            [ "$path" = "$self" ] && continue
+            if ! awk -v p="$path" '$1 == p && $2 ~ /^disabled/ { f = 1 } END { exit !f }' <<< "$registered"; then
+              echo "::error::$path is not registered as disabled. After it registers, disable it: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
+              bad=1
+            fi
+          done
+          exit $bad
+
+  windows:
+    name: Build and unit tests (Windows)
+    needs: guard
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # build-windows.cmd runs the builder in Windows PowerShell 5.1, as a
+      # user's double-click does: it downloads the pinned Zig into
+      # .zig-toolchain\, verifies its SHA-256 and builds ReleaseFast.
+      - name: Builder (Windows PowerShell 5.1)
+        shell: cmd
+        run: .\build-windows.cmd
+
+      - name: Unit tests
+        shell: pwsh
+        run: |
+          $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
+          & $zig build test -Dtarget=x86_64-windows-gnu --summary failures
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
