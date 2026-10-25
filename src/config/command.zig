@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 const formatterpkg = @import("formatter.zig");
@@ -71,6 +72,16 @@ pub const Command = union(enum) {
             },
 
             .direct => {
+                // On Windows, where paths hold spaces (C:\Program Files),
+                // double quotes group an argument, as formatEntry writes
+                // one; there is no escaping, and a path can't hold a quote.
+                if (comptime builtin.os.tag == .windows) {
+                    if (std.mem.indexOfScalar(u8, str, '"') != null) {
+                        self.* = .{ .direct = try splitQuoted(alloc, std.mem.trim(u8, str, " ")) };
+                        return;
+                    }
+                }
+
                 // We're not shell expanding, so the arguments are naively
                 // split on spaces.
                 var builder: std.ArrayListUnmanaged([:0]const u8) = .empty;
@@ -87,6 +98,30 @@ pub const Command = union(enum) {
                 self.* = .{ .direct = try builder.toOwnedSlice(alloc) };
             },
         }
+    }
+
+    /// Windows: `s` split on spaces, double quotes grouping (and removed).
+    fn splitQuoted(alloc: Allocator, s: []const u8) Allocator.Error![]const [:0]const u8 {
+        var builder: std.ArrayListUnmanaged([:0]const u8) = .empty;
+        var arg: std.ArrayListUnmanaged(u8) = .empty;
+        defer arg.deinit(alloc);
+        var quoted = false;
+        var started = false;
+        for (s) |c| {
+            if (c == '"') {
+                quoted = !quoted;
+                started = true;
+            } else if (c == ' ' and !quoted) {
+                if (started) try builder.append(alloc, try alloc.dupeSentinel(u8, arg.items, 0));
+                arg.clearRetainingCapacity();
+                started = false;
+            } else {
+                try arg.append(alloc, c);
+                started = true;
+            }
+        }
+        if (started) try builder.append(alloc, try alloc.dupeSentinel(u8, arg.items, 0));
+        return try builder.toOwnedSlice(alloc);
     }
 
     /// Creates a command as a single string, joining arguments as
@@ -184,7 +219,14 @@ pub const Command = union(enum) {
                 var writer: std.Io.Writer = .fixed(&buf);
                 writer.writeAll("direct:") catch return error.OutOfMemory;
                 for (v) |arg| {
-                    writer.writeAll(arg) catch return error.OutOfMemory;
+                    // Windows: quoted when it holds a space, as parseCLI
+                    // reads it back.
+                    const quote = comptime builtin.os.tag == .windows;
+                    if (quote and std.mem.indexOfAny(u8, arg, " \t") != null) {
+                        writer.print("\"{s}\"", .{arg}) catch return error.OutOfMemory;
+                    } else {
+                        writer.writeAll(arg) catch return error.OutOfMemory;
+                    }
                     writer.writeByte(' ') catch return error.OutOfMemory;
                 }
 
@@ -322,6 +364,34 @@ pub const Command = union(enum) {
         try v.parseCLI(alloc, "direct: echo hello");
         try v.formatEntry(formatterpkg.entryFormatter("a", &buf.writer));
         try std.testing.expectEqualSlices(u8, "a = direct:echo hello\n", buf.written());
+    }
+
+    test "Command: direct with spaces round-trips on Windows" {
+        if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        defer buf.deinit();
+        const v: Self = .{ .direct = &.{ "C:\\Program Files\\PowerShell\\7\\pwsh.exe", "-NoLogo" } };
+        try v.formatEntry(formatterpkg.entryFormatter("a", &buf.writer));
+        try testing.expectEqualStrings("a = direct:\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo\n", buf.written());
+
+        var back: Self = undefined;
+        try back.parseCLI(alloc, "direct:\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoLogo");
+        try testing.expectEqual(@as(usize, 2), back.direct.len);
+        try testing.expectEqualStrings("C:\\Program Files\\PowerShell\\7\\pwsh.exe", back.direct[0]);
+        try testing.expectEqualStrings("-NoLogo", back.direct[1]);
+
+        // Quotes in the middle of an argument group too; empty quotes are
+        // an empty argument.
+        try back.parseCLI(alloc, "direct:a\"b c\"d \"\" e");
+        try testing.expectEqual(@as(usize, 3), back.direct.len);
+        try testing.expectEqualStrings("ab cd", back.direct[0]);
+        try testing.expectEqualStrings("", back.direct[1]);
+        try testing.expectEqualStrings("e", back.direct[2]);
     }
 };
 

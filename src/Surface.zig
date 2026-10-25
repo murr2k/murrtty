@@ -2185,18 +2185,33 @@ pub fn pwd(
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
     if (comptime builtin.os.tag == .windows) {
-        // Until the shell reports, cmd's own directory (its cd changes it).
-        if (!self.io.terminal_stream.handler.pwd_reported) {
-            if (self.io.processCwd(alloc)) |cwd| return cwd;
-        }
+        if (try self.shellCwdWindows(alloc)) |cwd| return cwd;
+        // A shell that reported it doesn't know leaves the configured
+        // directory to new terminals; one that never reported, its own
+        // starting directory.
+        if (self.io.terminal_stream.handler.pwd_reported) return null;
     }
     const terminal_pwd = self.io.terminal.getPwd() orelse return null;
-    // Windows: a shell that reported it doesn't know (empty) leaves the
-    // configured directory to new terminals.
-    if (comptime builtin.os.tag == .windows) {
-        if (terminal_pwd.len == 0) return null;
-    }
     return try alloc.dupe(u8, terminal_pwd);
+}
+
+/// Windows: the shell's directory as far as Ghostty knows it, or null. That
+/// is the one the shell last reported, unless the shell is cmd and cmd has
+/// moved since (its reports stopped, or a program it ran that reported has
+/// exited), in which case cmd's own, as also before any report. Called with
+/// the renderer state's lock held.
+fn shellCwdWindows(self: *const Surface, alloc: Allocator) Allocator.Error!?[]u8 {
+    const handler = &self.io.terminal_stream.handler;
+    const own = self.io.processCwd(alloc);
+    if (!handler.pwd_reported) return own;
+    if (own) |cwd| {
+        const base = handler.pwd_report_base orelse return cwd;
+        if (!std.ascii.eqlIgnoreCase(cwd, base)) return cwd;
+        alloc.free(cwd);
+    }
+    const reported = self.io.terminal.getPwd() orelse return null;
+    if (reported.len == 0) return null;
+    return try alloc.dupe(u8, reported);
 }
 
 /// Resolves a relative file path to an absolute path using the terminal's pwd.
@@ -2225,16 +2240,16 @@ fn resolvePathForOpening(
 }
 
 /// Windows: relative link text (src/main.zig, ./x, ../x) joined to the
-/// working directory the shell reported, by spelling alone, with no
-/// existence check. The file system calls the check would make follow
-/// links, panic in Debug builds on names Windows rejects (NUL, an over-long
-/// component) and overrun a fixed buffer on very long paths, all of which
-/// terminal output can supply; the runtime vets what this names before
-/// opening it. Text relative to another base (~, $VAR, a drive's own folder
-/// in C:x, the current drive's root in \x) resolves to nothing, and so does
-/// any text until the shell reports where it is, unless the shell is cmd,
-/// whose own directory follows its cd: the starting directory would name
-/// the wrong file after a cd. Called with the renderer state's lock held.
+/// shell's directory as far as Ghostty knows it (shellCwdWindows), by
+/// spelling alone, with no existence check. The file system calls the check
+/// would make follow links, panic in Debug builds on names Windows rejects
+/// (NUL, an over-long component) and overrun a fixed buffer on very long
+/// paths, all of which terminal output can supply; the runtime vets what
+/// this names before opening it. Text relative to another base (~, $VAR, a
+/// drive's own folder in C:x, the current drive's root in \x) resolves to
+/// nothing, and so does any text while the directory is unknown: the
+/// starting directory would name the wrong file after a cd. Called with the
+/// renderer state's lock held.
 fn resolvePathWindows(self: *Surface, path: []const u8) Allocator.Error!?[]const u8 {
     if (path.len == 0) return null;
     switch (path[0]) {
@@ -2242,14 +2257,9 @@ fn resolvePathWindows(self: *Surface, path: []const u8) Allocator.Error!?[]const
         else => {},
     }
     if (std.mem.indexOfScalar(u8, path, ':') != null) return null;
-    if (!self.io.terminal_stream.handler.pwd_reported) {
-        const cwd = self.io.processCwd(self.alloc) orelse return null;
-        defer self.alloc.free(cwd);
-        return try std.fs.path.resolveWindows(self.alloc, &.{ cwd, path });
-    }
-    const terminal_pwd = self.io.terminal.getPwd() orelse return null;
-    if (terminal_pwd.len == 0) return null;
-    return try std.fs.path.resolveWindows(self.alloc, &.{ terminal_pwd, path });
+    const cwd = try self.shellCwdWindows(self.alloc) orelse return null;
+    defer self.alloc.free(cwd);
+    return try std.fs.path.resolveWindows(self.alloc, &.{ cwd, path });
 }
 
 /// Returns the x/y coordinate of where the IME (Input Method Editor)

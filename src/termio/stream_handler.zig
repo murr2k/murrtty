@@ -100,6 +100,14 @@ pub const StreamHandler = struct {
     /// renderer state's lock held, as the stream runs.
     pwd_reported: bool = false,
 
+    /// Windows: the backend, to read the shell's own directory (cmd's) when
+    /// a report arrives, kept in pwd_report_base. Once cmd has moved from
+    /// that directory, its reports have stopped (or a program it ran that
+    /// reported has exited), and its own directory is the better guess.
+    /// Read with the renderer state's lock held, as the stream runs.
+    backend: ?*const termio.Backend = null,
+    pwd_report_base: ?[]u8 = null,
+
     pub const Stream = terminal.Stream(StreamHandler);
 
     /// True if we have tmux control mode built in.
@@ -110,6 +118,7 @@ pub const StreamHandler = struct {
         self.dcs.deinit();
         self.kittyClipboardWriteAbort();
         self.kitty_clipboard_grants.deinit(self.alloc);
+        if (self.pwd_report_base) |base| self.alloc.free(base);
         if (comptime tmux_enabled) tmux: {
             const viewer = self.tmux_viewer orelse break :tmux;
             viewer.deinit();
@@ -1617,12 +1626,22 @@ pub const StreamHandler = struct {
         try self.setReportedPwd(path);
     }
 
+    /// A report arrived: note it, and on Windows the shell's own directory
+    /// at this moment (see pwd_report_base).
+    fn pwdReported(self: *StreamHandler) void {
+        self.pwd_reported = true;
+        if (comptime builtin.target.os.tag == .windows) {
+            if (self.pwd_report_base) |base| self.alloc.free(base);
+            self.pwd_report_base = if (self.backend) |backend| backend.processCwd(self.alloc) else null;
+        }
+    }
+
     /// The shell reported no working directory: the empty URL (see
     /// reportPwd) or, on Windows, a local path that isn't usable.
     fn setUnknownPwd(self: *StreamHandler) !void {
         // Blank value can never fail because no allocs happen.
         self.terminal.setPwd("") catch unreachable;
-        self.pwd_reported = true;
+        self.pwdReported();
 
         // If we haven't seen a title, we're using the pwd as our title.
         // Set it to blank which will reset our title behavior.
@@ -1639,7 +1658,7 @@ pub const StreamHandler = struct {
     fn setReportedPwd(self: *StreamHandler, path: []const u8) !void {
         log.debug("terminal pwd: {s}", .{path});
         try self.terminal.setPwd(path);
-        self.pwd_reported = true;
+        self.pwdReported();
 
         // Report it to the surface. If creating our write request fails
         // then we just ignore it.

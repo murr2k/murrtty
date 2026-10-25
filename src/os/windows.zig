@@ -76,6 +76,8 @@ pub const TRUE: windows.BOOL = .fromBool(true);
 // Bit-field and enum constant values
 pub const CREATE_UNICODE_ENVIRONMENT = 0x00000400;
 pub const DELETE = 0x00010000;
+pub const DRIVE_FIXED = 3;
+pub const DRIVE_RAMDISK = 6;
 pub const ERROR_SUCCESS = 0;
 pub const EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
 pub const FILE_ATTRIBUTE_DIRECTORY = 0x10;
@@ -108,6 +110,8 @@ pub const PROC_THREAD_ATTRIBUTE_INPUT = 0x00020000;
 pub const PROC_THREAD_ATTRIBUTE_NUMBER = 0x0000FFFF;
 pub const PROC_THREAD_ATTRIBUTE_THREAD = 0x00010000;
 pub const S_OK = 0;
+pub const SEM_FAILCRITICALERRORS = 0x0001;
+pub const SEM_NOOPENFILEERRORBOX = 0x8000;
 pub const SYNCHRONIZE = 0x00100000;
 pub const VOLUME_NAME_DOS = 0x0;
 pub const WAIT_FAILED = 0xFFFFFFFF;
@@ -226,6 +230,22 @@ pub const exp = struct {
             dwDesiredAccess: DWORD,
             bInheritHandle: BOOL,
             dwOptions: DWORD,
+        ) callconv(.winapi) BOOL;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfullpathnamew
+        pub extern "kernel32" fn GetFullPathNameW(
+            lpFileName: LPCWSTR,
+            nBufferLength: DWORD,
+            lpBuffer: ?[*]u16,
+            lpFilePart: ?*?LPWSTR,
+        ) callconv(.winapi) DWORD;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdrivetypew
+        pub extern "kernel32" fn GetDriveTypeW(
+            lpRootPathName: ?LPCWSTR,
+        ) callconv(.winapi) UINT;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-setthreaderrormode
+        pub extern "kernel32" fn SetThreadErrorMode(
+            dwNewMode: DWORD,
+            lpOldMode: ?*DWORD,
         ) callconv(.winapi) BOOL;
         /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileattributesw
         pub extern "kernel32" fn GetFileAttributesW(

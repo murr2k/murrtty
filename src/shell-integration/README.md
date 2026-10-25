@@ -137,11 +137,14 @@ working directory (OSC 9;9), then OSC 133 P, your prompt and OSC 133 I. A
 command's start or its exit status: nothing runs before a command, and a
 prompt can't show `%ERRORLEVEL%`.
 
-[Clink](https://chrisant996.github.io/clink/) (v1.4.24 or later) fills
+[Clink](https://chrisant996.github.io/clink/) (v1.4.25 or later) fills
 those in. Ghostty adds `cmd` to `%CLINK_PATH%`, so Clink loads
 `cmd/ghostty.lua`, which sends the same codes around whatever prompt Clink
 shows, custom prompts included, plus OSC 133 C when a line is accepted and
 the exit status with D (with Clink's `cmd.get_errorlevel`, on by default).
+Clink puts them around the prompt's last line, so of a prompt over several
+lines only the last is marked. Older Clink takes any OSC 133 for a title,
+so for it the script only removes the codes from cmd's prompt.
 The `cursor` feature doesn't apply to cmd; `path` isn't needed, as Ghostty
 puts its folder on the `PATH` it gives cmd.
 

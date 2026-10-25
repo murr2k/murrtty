@@ -813,7 +813,7 @@ title feature), `$E]9;9;$P$E\`, `$E]133;P;k=i$E\`, the user's prompt (`$P$G`
 when unset) and `$E]133;I$E\`: P and I, not A and B, for S3's reasons, and
 because with no 133;C, I lets the line feed after Enter end the input. A `PROMPT` already
 sending OSC 133 is kept. `CLINK_PATH` gains `shell-integration\cmd`, whose
-`ghostty.lua` (Clink 1.4.24 or later) strips those codes from cmd's prompt
+`ghostty.lua` (Clink 1.4.25 or later) strips those codes from cmd's prompt
 and sends them around Clink's final prompt through a prompt filter's
 `surround()`, with the exit status in D (`os.geterrorlevel()`), and 133;C
 from `onendedit`. Clink's own integration (`terminal.shell_integration`)
@@ -846,7 +846,9 @@ an atomic for the app thread, and only when the shell is cmd. PowerShell's
 `Set-Location` and WSL leave their process's directory where they started,
 so reading it would name the wrong folder, the very thing the mid-phase
 review had relative links stop doing. Until the shell reports, the new
-terminal's directory and relative links come from it. The `pwd` action
+terminal's directory and relative links come from it, and afterwards too
+once cmd has moved from where it was at the last report (its reports
+stopped, or a program it ran that reported has exited). The `pwd` action
 isn't kept per surface: the runtime asks the core's `pwd()` when it needs
 it, which includes this fallback, and a copy would miss changes no report
 announces. The `cwd-fallback` scenario covers cmd without integration (cd
@@ -862,8 +864,10 @@ via `SearchPathW`, App Paths or the Store alias, else `%COMSPEC%` (decision
 installed.
 
 *Done 2026-10-25:* `os/default_shell.zig` looks for `pwsh.exe` on `PATH`
-(drive paths only: a relative entry would search wherever Ghostty started,
-and a network one could stall it), then the Store's alias in
+(fixed drives only, by `GetDriveTypeW`, with the system's error boxes off:
+a relative entry would search wherever Ghostty started, a network one, a
+mapped drive included, could stall startup, and an empty card reader could
+ask for a disk), then the Store's alias in
 `%LOCALAPPDATA%\Microsoft\WindowsApps`, then `%ProgramFiles%\PowerShell\7`.
 The default command is then `pwsh.exe -NoLogo` as an argument list (the
 path may hold spaces), else `%COMSPEC%`. `SearchPathW` wasn't used because it
@@ -872,6 +876,51 @@ install's entry names the package's own `pwsh.exe` under
 `Program Files\WindowsApps`, which can't be started directly. The
 `launch-context` scenario, which runs with no config, checks a `PS` prompt
 without the banner and `$PSVersionTable.PSVersion.Major` of 7.
+
+*End-of-phase review 2026-10-25* (2.3 to 2.5 and the mid-phase fixes; five
+reviewers and a skeptic per finding, 22 of 25 findings confirmed), fixed:
+- **PowerShell wrappers:**
+  - Each load that wraps something is now a generation whose wrappers call
+    their own originals, and one called from inside another passes the call
+    on. A shared original had made a venv's or conda's chaining prompt, or a
+    chaining line-editor wrapper, recurse until the call depth overflowed.
+  - The line-editor wrapper calls its original first, so PSReadLine and its
+    predictors see the command's own `$?`.
+  - The status trusts `$?` when the host called the prompt itself, so a
+    handled error is no failure, and tells a native program ran by a new
+    `LASTEXITCODE` value, so a repeated code is reported and a stale one
+    isn't.
+- **Clink script:**
+  - It puts `$P` in its prefix, since Clink expands `$` codes there: a
+    folder named with a `$` was misreported, and a crafted name could inject
+    escape sequences.
+  - It needs Clink 1.4.25; older Clink takes any OSC 133 for a title, so for
+    it the script only removes the codes.
+  - Only a prompt's last line is marked under Clink (documented).
+- **Directories:**
+  - For cmd, cmd's own directory wins once cmd has moved since the last
+    report.
+  - Device names are no longer rejected as spellings (Windows 11 allows
+    folders named `aux` or `COM0`), since Exec checks the directory.
+  - Exec measures the full path as CreateProcessW does (at most MAX_PATH - 2,
+    trailing backslash or not).
+- **Default shell:** `findPwsh` searches fixed drives only, with error boxes
+  off.
+- **`direct:` commands:** on Windows they quote arguments with spaces in
+  `+show-config` and read quotes back, so the default command round-trips.
+- **Tests:**
+  - The relative-link checks now fail if the order of reported directory and
+    cmd's own changes, or if the cmd-only gate is lost.
+  - `cwd-fallback` uses a folder with a space.
+  - `launch-context` checks `-NoLogo` without the integration.
+  - The Clink run takes its folder through `PATH`.
+  - `findPwsh`'s test has relative entries that reach a `pwsh.exe`.
+
+Not changed: the current-directory search that `CreateProcessW` makes for a
+command given by bare name (`command = pwsh`, or upstream's old default
+`cmd.exe`) could run a planted program from the folder Ghostty started in;
+the defaults now name full paths, and a user's bare name keeps Windows'
+behavior.
 
 ---
 

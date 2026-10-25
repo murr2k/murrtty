@@ -8,12 +8,22 @@ const windows = @import("windows.zig");
 /// The path of PowerShell 7's pwsh.exe, or null if it isn't installed.
 /// Looked for on PATH, then as the Microsoft Store's alias, then in the
 /// MSI installer's default folder (for an install that left PATH alone).
-/// Only drive paths are searched: a relative PATH entry would search
-/// wherever Ghostty was started, and a network one could stall startup.
-/// The installer's App Paths entry isn't used: for a Store install it names
-/// the package's own pwsh.exe, which can't be started directly. The caller
-/// owns the result.
+/// Only paths on fixed drives are searched: a relative PATH entry would
+/// search wherever Ghostty was started, a network one (a mapped drive
+/// included) could stall startup for tens of seconds, and an empty card
+/// reader could raise a "No Disk" box. The installer's App Paths entry
+/// isn't used: for a Store install it names the package's own pwsh.exe,
+/// which can't be started directly. The caller owns the result.
 pub fn findPwsh(alloc: Allocator, env: *const EnvMap) Allocator.Error!?[]u8 {
+    var old_mode: windows.DWORD = 0;
+    const mode_set = windows.exp.kernel32.SetThreadErrorMode(
+        windows.SEM_FAILCRITICALERRORS | windows.SEM_NOOPENFILEERRORBOX,
+        &old_mode,
+    ) != windows.FALSE;
+    defer if (mode_set) {
+        _ = windows.exp.kernel32.SetThreadErrorMode(old_mode, null);
+    };
+
     if (env.get("PATH")) |path| {
         var dirs = std.mem.tokenizeScalar(u8, path, ';');
         while (dirs.next()) |entry| {
@@ -30,14 +40,23 @@ pub fn findPwsh(alloc: Allocator, env: *const EnvMap) Allocator.Error!?[]u8 {
     return null;
 }
 
-/// `parts` joined, if they make a drive path naming something that isn't a
-/// folder (the Store's aliases are reparse points, not files).
+/// `parts` joined, if they make a path on a fixed drive naming something
+/// that isn't a folder (the Store's aliases are reparse points, not files).
 fn existingFile(alloc: Allocator, parts: []const []const u8) Allocator.Error!?[]u8 {
     const path = try std.fs.path.join(alloc, parts);
     errdefer alloc.free(path);
     if (path.len < 3 or !std.ascii.isAlphabetic(path[0]) or path[1] != ':' or path[2] != '\\') {
         alloc.free(path);
         return null;
+    }
+    // Answered from the drive letters' table, without touching the drive.
+    const root = [_:0]u16{ path[0], ':', '\\' };
+    switch (windows.exp.kernel32.GetDriveTypeW(&root)) {
+        windows.DRIVE_FIXED, windows.DRIVE_RAMDISK => {},
+        else => {
+            alloc.free(path);
+            return null;
+        },
     }
     const path_w = std.unicode.wtf8ToWtf16LeAllocZ(alloc, path) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -76,9 +95,17 @@ test findPwsh {
     const folder = try std.fs.path.join(alloc, &.{ root, "folder" });
     defer alloc.free(folder);
 
-    // Not on PATH (a relative entry, a missing one, a folder named
-    // pwsh.exe), nor elsewhere.
-    const path = try std.mem.concat(alloc, u8, &.{ "bin;C:\\no-such-dir;", folder, ";\"", bin, "\"" });
+    // Not on PATH (relative entries, though they reach one: from the
+    // current directory, where the test runs, and from the drive's root;
+    // a missing entry; a folder named pwsh.exe), nor elsewhere.
+    try tmp.dir.createDirPath(testing.io, "rel");
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "rel\\pwsh.exe", .data = "" });
+    const path = try std.mem.concat(alloc, u8, &.{
+        ".zig-cache\\tmp\\", &tmp.sub_path, "\\rel;",
+        root[2..],           "\\rel;",      "C:\\no-such-dir;",
+        folder,              ";\"",         bin,
+        "\"",
+    });
     defer alloc.free(path);
     try env.put("PATH", path);
     try testing.expect(try findPwsh(alloc, &env) == null);

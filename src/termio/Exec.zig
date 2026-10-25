@@ -1366,18 +1366,21 @@ test tracksProcessCwd {
 }
 
 /// Windows: whether a shell can start in `path`, an existing directory
-/// CreateProcessW takes (under MAX_PATH even where long paths are on). Asked
-/// with GetFileAttributesW, because std's access panics in Debug builds on
-/// names Windows rejects, which a shell's working-directory report or the
-/// config can supply.
+/// CreateProcessW takes: its full path at most MAX_PATH - 2 units, even
+/// with a trailing backslash and where long paths are on. Asked with
+/// GetFileAttributesW, because std's access panics in Debug builds on names
+/// Windows rejects, which a shell's working-directory report or the config
+/// can supply.
 fn windowsCwdUsable(alloc: Allocator, path: []const u8) bool {
     const path_w = std.unicode.wtf8ToWtf16LeAllocZ(alloc, path) catch return false;
     defer alloc.free(path_w);
     if (path_w.len == 0) return false;
-    // MAX_PATH with the null, and the backslash Windows adds if missing.
-    const max: usize = if (path_w[path_w.len - 1] == '\\') windows.MAX_PATH - 1 else windows.MAX_PATH - 2;
-    if (path_w.len > max) return false;
-    const attrs = windows.exp.kernel32.GetFileAttributesW(path_w.ptr);
+    var full: [windows.MAX_PATH:0]u16 = undefined;
+    // The length without the null, or the size needed when it doesn't fit.
+    const len = windows.exp.kernel32.GetFullPathNameW(path_w.ptr, full.len, &full, null);
+    if (len == 0 or len > windows.MAX_PATH - 2) return false;
+    full[len] = 0;
+    const attrs = windows.exp.kernel32.GetFileAttributesW(&full);
     return attrs != windows.INVALID_FILE_ATTRIBUTES and attrs & windows.FILE_ATTRIBUTE_DIRECTORY != 0;
 }
 
@@ -1390,6 +1393,7 @@ test windowsCwdUsable {
     try testing.expect(!windowsCwdUsable(alloc, "C:\\Windows\\notepad.exe"));
     try testing.expect(!windowsCwdUsable(alloc, ""));
     try testing.expect(!windowsCwdUsable(alloc, "C:\\NUL"));
+    try testing.expect(windowsCwdUsable(alloc, "C:\\Windows\\.."));
     const long: [300]u8 = @splat('a');
     try testing.expect(!windowsCwdUsable(alloc, "C:\\" ++ long));
     try testing.expect(!windowsCwdUsable(alloc, "C:\\Windows\\" ++ long[0..256]));

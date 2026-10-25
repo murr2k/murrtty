@@ -915,6 +915,16 @@ fn launchContext(h: *Harness) anyerror!void {
         try h.expect(std.ascii.findIgnoreCase(text, prompt) != null, "started from a shortcut, it opens in {s}", .{home});
         try quitIdle(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
+    // The default command itself has -NoLogo (with the integration off, so
+    // the arguments are Ghostty's default as they are).
+    {
+        var g = try h.launchWith("launch-context-nologo", "shell-integration = none\n", .{});
+        defer g.deinit();
+        const text = try textWith(h, &g, ">");
+        defer h.alloc.free(text);
+        try h.expect(std.mem.indexOf(u8, text, "PS ") != null and std.mem.indexOf(u8, text, "PowerShell 7.") == null, "the default command starts PowerShell with -NoLogo", .{});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
     // SHELL from Git Bash is ignored: the default shell starts.
     {
         var g = try h.launchWith("launch-context-shell", "", .{ .env = &.{.{ "SHELL", "/usr/bin/bash" }} });
@@ -1775,6 +1785,16 @@ fn pwdReports(h: *Harness) anyerror!void {
     defer h.deleteFile(decoy);
     try h.typeText(second, report_prompt);
     h.enter(second);
+    // The tab's cmd stays in Ghostty's directory (where the decoy is) while
+    // a nested cmd, reporting with the same prompt, moves to rel: the report
+    // wins over the outer cmd's own directory.
+    const cd_outer = try std.fmt.allocPrint(h.alloc, "cd /d {s}", .{g.dir});
+    defer h.alloc.free(cd_outer);
+    try h.typeText(second, cd_outer);
+    h.enter(second);
+    try waitPwd(h, &g, 1, g.dir);
+    try h.typeText(second, "cmd /d");
+    h.enter(second);
     const cd = try std.fmt.allocPrint(h.alloc, "cd /d {s}", .{rel});
     defer h.alloc.free(cd);
     try h.typeText(second, cd);
@@ -1864,18 +1884,25 @@ fn powershellIntegration(h: *Harness, name: []const u8, command: []const u8) !vo
     h.enter(first);
     try waitPwd(h, &g, 0, "C:\\Windows");
 
-    // The script loaded again under strict mode, after the prompt changed
-    // to one that writes with Write-Host (as a venv's does): it wraps the
-    // new prompt, which stays on one row, adds no errors, and still
-    // reports.
-    try h.typeText(first, "Set-StrictMode -Version Latest; function global:prompt { Write-Host -NoNewline '(venv) '; 'WH> ' }; " ++
+    // A venv's prompt (it writes with Write-Host and chains to the prompt it
+    // replaced, Ghostty's), then the script loaded again under strict mode:
+    // it wraps the new prompt without recursing, the prompt stays on one
+    // row, nothing adds errors, and reports go on. Then a line editor
+    // wrapper that chains to Ghostty's, which the next prompt wraps again.
+    try h.typeText(first, "Set-StrictMode -Version Latest; Copy-Item function:prompt function:global:_OLD_VIRTUAL_PROMPT; " ++
+        "function global:prompt { Write-Host -NoNewline '(venv) '; _OLD_VIRTUAL_PROMPT }; " ++
         ". ([scriptblock]::Create([IO.File]::ReadAllText(\"$env:GHOSTTY_RESOURCES_DIR\\shell-integration\\powershell\\ghostty.ps1\"))); $Error.Clear()");
     h.enter(first);
-    try waitTabText(h, &g, 0, "(venv) WH> ");
+    try waitTabText(h, &g, 0, "(venv) PS C:\\Windows>");
+    try h.typeText(first, "$global:prev = $function:PSConsoleHostReadLine; function global:PSConsoleHostReadLine { & $global:prev }");
+    h.enter(first);
     try h.typeText(first, "cd C:\\Windows\\System32");
     h.enter(first);
     try waitPwd(h, &g, 0, "C:\\Windows\\System32");
     try runForStatus(h, &g, first, "cmd /c exit 4", 4);
+    try runForStatus(h, &g, first, "Get-Item C:\\no-such-file", 1);
+    try h.typeText(first, "$Error.Clear(); $null = 1");
+    h.enter(first);
     try h.typeText(first, "'errors=' + $Error.Count");
     h.enter(first);
     try waitTabLine(h, &g, 0, "errors=0");
@@ -1892,7 +1919,7 @@ fn cmdIntegration(h: *Harness) anyerror!void {
     try cmdIntegrationRun(h, "cmd-integration", .plain);
     try cmdIntegrationRun(h, "cmd-integration-prompt", .user_prompt);
 
-    var buf: [260]u16 = undefined;
+    var buf: [1024]u16 = undefined;
     const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_CLINK"), &buf, buf.len);
     if (n == 0 or n >= buf.len) {
         h.log("Clink part skipped: set GHOSTTY_GUI_CLINK to a Clink folder to run it", .{});
@@ -1916,21 +1943,28 @@ const CmdRun = union(enum) {
 fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
     defer if (run == .clink) h.alloc.free(run.clink);
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    // Clink's folder goes on PATH rather than in the command, which the
+    // config splits on spaces (C:\Program Files (x86)\clink).
     const extra = switch (run) {
-        .plain, .user_prompt => try h.alloc.dupe(u8, "shell-integration = detect\n"),
-        .clink => |dir| try std.fmt.allocPrint(h.alloc, "shell-integration = detect\ncommand = cmd.exe /k {s}\\clink_x64.exe inject --quiet\n", .{dir}),
+        .plain, .user_prompt => "shell-integration = detect\n",
+        .clink => "shell-integration = detect\ncommand = cmd.exe /k clink_x64.exe inject --quiet\n",
     };
-    defer h.alloc.free(extra);
     const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
     defer h.alloc.free(config);
     // In the launch's folder, never the user's (Clink's files there keep
     // the run folder from being removed).
     const profile = try std.fmt.allocPrint(h.alloc, "{s}\\{s}\\clink-profile", .{ h.temp_dir, name });
     defer h.alloc.free(profile);
+    var path_buf: [32767]u16 = undefined;
+    const path_len = w.GetEnvironmentVariableW(w.L("PATH"), &path_buf, path_buf.len);
+    const path = try std.unicode.utf16LeToUtf8Alloc(h.alloc, path_buf[0..@min(path_len, path_buf.len)]);
+    defer h.alloc.free(path);
+    const clink_path = try std.mem.concat(h.alloc, u8, &.{ if (run == .clink) run.clink else "", ";", path });
+    defer h.alloc.free(clink_path);
     const env: []const [2][]const u8 = switch (run) {
         .plain => &.{},
         .user_prompt => &.{.{ "PROMPT", "[$P]$G" }},
-        .clink => &.{.{ "CLINK_PROFILE", profile }},
+        .clink => &.{ .{ "CLINK_PROFILE", profile }, .{ "PATH", clink_path } },
     };
     const home_prompt = if (run == .user_prompt) "]>" else ">";
     var g = try h.launchWith(name, config, .{ .env = env });
@@ -1994,7 +2028,7 @@ fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
 /// than resolved against the wrong folder).
 fn cwdFallback(h: *Harness) anyerror!void {
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
-    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\cwd-fallback-dir", .{h.temp_dir});
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\cwd fallback dir", .{h.temp_dir});
     defer h.alloc.free(dir);
     try h.makeDirAt(dir);
     defer h.removeDirAt(dir);
@@ -2002,6 +2036,16 @@ fn cwdFallback(h: *Harness) anyerror!void {
     defer h.alloc.free(notes);
     try h.writeFileAt(notes, "notes\n");
     defer h.deleteFile(notes);
+    // Where the PowerShell half starts, with a decoy that a link resolved
+    // against that starting directory would open.
+    const start_dir = try std.fmt.allocPrint(h.alloc, "{s}\\cwd-fallback-start", .{h.temp_dir});
+    defer h.alloc.free(start_dir);
+    try h.makeDirAt(start_dir);
+    defer h.removeDirAt(start_dir);
+    const decoy = try std.fmt.allocPrint(h.alloc, "{s}\\notes.txt", .{start_dir});
+    defer h.alloc.free(decoy);
+    try h.writeFileAt(decoy, "decoy\n");
+    defer h.deleteFile(decoy);
 
     {
         var g = try start(h, "cwd-fallback", "", ">");
@@ -2016,24 +2060,26 @@ fn cwdFallback(h: *Harness) anyerror!void {
         h.enter(first);
         try waitTabText(h, &g, 0, prompt);
 
+        // A relative link resolves against it, in the tab that started
+        // elsewhere (recorded by the test hooks).
+        try h.typeText(first, "cls & echo ./notes.txt");
+        h.enter(first);
+        try waitTabLine(h, &g, 0, "./notes.txt");
+        try ctrlClickRow(h, &g, first, "./notes.txt", 3);
+        const want = try std.fmt.allocPrint(h.alloc, "default {s}", .{notes});
+        defer h.alloc.free(want);
+        try expectLaunch(h, &g, 1, want);
+
         // A new tab starts there.
         h.key(first, cs, 'T');
         try waitWindowTabs(h, &g, win, 2);
         try waitTabText(h, &g, 1, prompt);
-        const second = try h.surface(&g, win);
-
-        // A relative link resolves against it (recorded by the test hooks).
-        try h.typeText(second, "cls & echo ./notes.txt");
-        h.enter(second);
-        try waitTabLine(h, &g, 1, "./notes.txt");
-        try ctrlClickRow(h, &g, second, "./notes.txt", 3);
-        const want = try std.fmt.allocPrint(h.alloc, "default {s}", .{notes});
-        defer h.alloc.free(want);
-        try expectLaunch(h, &g, 1, want);
-        try quit(h, &g, second);
+        try quit(h, &g, try h.surface(&g, win));
     }
     {
-        var g = try start(h, "cwd-fallback-pwsh", "command = powershell -NoLogo -NoProfile\n", "PS ");
+        const extra = try std.fmt.allocPrint(h.alloc, "command = powershell -NoLogo -NoProfile\nworking-directory = {s}\n", .{start_dir});
+        defer h.alloc.free(extra);
+        var g = try start(h, "cwd-fallback-pwsh", extra, "PS ");
         defer g.deinit();
         const win = try h.mainWindow(&g);
         const first = try h.surface(&g, win);
