@@ -79,8 +79,13 @@ pub fn complete(self: *const Self, sync: bool) void {
         break :frame frame;
     } else null;
 
-    // Sync after frame draw AND frame present GL calls.
-    gl.finish();
+    // Sync after frame draw AND frame present GL calls, so an exported
+    // frame is complete before another thread uses it. A frame already
+    // presented to the window (WGL's SwapBuffers on Windows) is shared with
+    // no one, and the context orders the next frame's GL calls after it;
+    // finishing there only blocked this thread until the GPU and the
+    // compositor caught up (about 2 ms a frame, and stalls of 200 ms).
+    if (presented_frame == null or presented_frame.? != .presented) gl.finish();
 
     // At this point the ExportedFrame is finished and can be shared.
     // A frame already presented to the window needs nothing more.
