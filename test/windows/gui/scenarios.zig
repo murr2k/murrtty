@@ -32,6 +32,7 @@ pub const all = [_]Scenario{
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
     .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
+    .{ .name = "focus-background-tab", .about = "a tab that never got the focus doesn't stay focused in the core", .run = focusBackgroundTab },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -982,6 +983,26 @@ fn backgroundClose(h: *Harness) anyerror!void {
         if (active == a) "the background window" else if (active == null) "none" else "another window",
     });
     try quit(h, &g, try h.surface(&g, b));
+}
+
+/// A tab that loses the focus before it ever reaches the core must not keep
+/// the core surface's initial "focused" state (its cursor would show as
+/// focused, and focus reporting would never tell its program): a chained
+/// binding opens a tab and goes back to the first one at once.
+fn focusBackgroundTab(h: *Harness) anyerror!void {
+    var g = try start(h, "focus-background-tab", "keybind = ctrl+shift+y=new_tab\nkeybind = chain=goto_tab:1\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'Y');
+    try waitWindowTabs(h, &g, win, 2);
+    w.Sleep(1500);
+    var d = try h.dump(&g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    try h.expect(dw.active == 0, "back on the first tab (active is {d})", .{dw.active});
+    try h.expect(dw.tabs[0].focused orelse false, "the first tab's terminal is focused", .{});
+    try h.expect(!(dw.tabs[1].focused orelse true), "the new tab's terminal is not focused", .{});
+    try quit(h, &g, try h.surface(&g, win));
 }
 
 /// The active window of the thread that owns `hwnd`.

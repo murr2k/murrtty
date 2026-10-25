@@ -64,12 +64,13 @@ high_surrogate: u16 = 0,
 ime_composing: bool = false,
 
 /// Whether this window has the keyboard focus, as Windows last said, and
-/// whether the core was last told it has. The core hears from a posted
-/// message, never inside WM_SETFOCUS/WM_KILLFOCUS: those arrive inside
-/// SetFocus, and a core callback that moves the focus (goto_split) would
-/// otherwise re-enter the surface it is running on.
+/// whether the core was last told it has (a core surface starts out
+/// focused). The core hears from a posted message, never inside
+/// WM_SETFOCUS/WM_KILLFOCUS: those arrive inside SetFocus, and a core
+/// callback that moves the focus (goto_split) would otherwise re-enter the
+/// surface it is running on.
 has_focus: bool = false,
-core_focus: bool = false,
+core_focus: bool = true,
 focus_posted: bool = false,
 
 /// Clipboard confirmations waiting to be shown, oldest first. They are
@@ -171,7 +172,9 @@ pub fn init(
         log.warn("error in size callback err={}", .{err});
     };
 
-    // Focus gained before the core surface existed reaches it now.
+    // Focus gained, or lost, before the core surface existed reaches it
+    // now.
+    if (self.has_focus) app.core_app.focusSurface(&self.core_surface);
     self.queueFocus();
 }
 
@@ -542,7 +545,6 @@ fn queueFocus(self: *Surface) void {
 fn deliverFocus(self: *Surface) void {
     if (!self.core_initialized or self.core_focus == self.has_focus) return;
     self.core_focus = self.has_focus;
-    if (self.has_focus) self.app.core_app.focusSurface(&self.core_surface);
     self.core_surface.focusCallback(self.has_focus) catch |err| {
         log.warn("error in focus callback err={}", .{err});
     };
@@ -596,6 +598,13 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
 
         c.WM_SETFOCUS, c.WM_KILLFOCUS => {
             self.has_focus = msg == c.WM_SETFOCUS;
+            // Which surface the app counts as focused (what a new tab or
+            // split inherits from) is only a pointer, so it changes at
+            // once: a click on "+" in an inactive window is handled before
+            // the posted message.
+            if (self.has_focus and self.core_initialized) {
+                self.app.core_app.focusSurface(&self.core_surface);
+            }
             self.queueFocus();
             return 0;
         },

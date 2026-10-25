@@ -193,6 +193,8 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 // corner (see OpenGL.Wgl.sample).
                 const wgl_state = &s.core_surface.renderer.api.wgl_state;
                 try out.print(alloc, ",\"scheme\":\"{t}\"", .{s.core_surface.config_conditional_state.theme});
+                // Whether the core surface thinks it has the focus.
+                try out.print(alloc, ",\"focused\":{}", .{s.core_surface.focused});
                 try out.print(alloc, ",\"cols\":{d},\"rows\":{d},\"cell\":[{d},{d}],\"padding\":[{d},{d}],\"pixel\":{d},\"probe\":{d},\"frames\":{d},\"text\":", .{
                     grid.columns,
                     grid.rows,

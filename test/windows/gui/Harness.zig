@@ -798,6 +798,8 @@ pub const Dump = struct {
         scheme: ?[]const u8 = null,
         /// Frames the renderer has presented.
         frames: ?u32 = null,
+        /// Whether the core surface thinks it has the focus.
+        focused: ?bool = null,
         text: ?[]const u8 = null,
     };
 };

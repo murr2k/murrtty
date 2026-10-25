@@ -69,7 +69,8 @@ pub fn Layout(comptime View: type) type {
             min_second: i32,
         };
 
-        /// Every pane in tree order.
+        /// Every pane: in tree order, or the zoomed one first and then the
+        /// hidden ones.
         panes: []Pane,
         /// The splits with a divider on screen (none while zoomed).
         splits: []Split,
@@ -84,7 +85,8 @@ pub fn Layout(comptime View: type) type {
         /// Lay out `tree` in `area` with dividers `divider` pixels thick.
         /// Each pane gets at least its minimum where the area allows, and
         /// at least a pixel each way where the area allows that. A zoomed
-        /// pane fills the area and the others get empty rectangles.
+        /// node fills the area and the panes outside it get empty
+        /// rectangles.
         pub fn compute(alloc: Allocator, tree: *const Tree, area: Rect, divider: i32) Allocator.Error!Self {
             var panes: std.ArrayList(Pane) = .empty;
             errdefer panes.deinit(alloc);
@@ -94,9 +96,20 @@ pub fn Layout(comptime View: type) type {
             if (!tree.isEmpty()) {
                 const mins = try alloc.alloc(Size, tree.nodes.len);
                 defer alloc.free(mins);
-                _ = minSize(tree, mins, .root, divider);
+                _ = minSize(tree, mins, .root, divider, .minimum);
+                const ones = try alloc.alloc(Size, tree.nodes.len);
+                defer alloc.free(ones);
+                _ = minSize(tree, ones, .root, divider, .pixel);
 
-                var ctx: Ctx = .{ .alloc = alloc, .tree = tree, .mins = mins, .divider = divider, .panes = &panes, .splits = &splits };
+                var ctx: Ctx = .{
+                    .alloc = alloc,
+                    .tree = tree,
+                    .mins = mins,
+                    .ones = ones,
+                    .divider = divider,
+                    .panes = &panes,
+                    .splits = &splits,
+                };
                 if (tree.zoomed) |zoomed| {
                     try ctx.place(zoomed, area);
                     // The rest are hidden.
@@ -108,14 +121,15 @@ pub fn Layout(comptime View: type) type {
                             .rect = .{},
                         });
                     }
-                    splits.clearRetainingCapacity();
                 } else {
                     try ctx.place(.root, area);
                 }
             }
 
+            const pane_slice = try panes.toOwnedSlice(alloc);
+            errdefer alloc.free(pane_slice);
             return .{
-                .panes = try panes.toOwnedSlice(alloc),
+                .panes = pane_slice,
                 .splits = try splits.toOwnedSlice(alloc),
                 .divider = divider,
             };
@@ -212,16 +226,19 @@ pub fn Layout(comptime View: type) type {
             };
         }
 
-        /// Fill `mins` with each node's minimum size and return node `h`'s.
-        fn minSize(tree: *const Tree, mins: []Size, h: Handle, divider: i32) Size {
+        /// Fill `mins` with each node's minimum size and return node `h`'s:
+        /// with every pane at its minimum (`.minimum`), or at a pixel each
+        /// way (`.pixel`), plus the dividers between them.
+        fn minSize(tree: *const Tree, mins: []Size, h: Handle, divider: i32, kind: enum { minimum, pixel }) Size {
             const size: Size = switch (tree.nodes[h.idx()]) {
                 .leaf => |v| leaf: {
+                    if (kind == .pixel) break :leaf .{ .width = 1, .height = 1 };
                     const m = v.layoutMin();
                     break :leaf .{ .width = @max(1, m.width), .height = @max(1, m.height) };
                 },
                 .split => |s| split: {
-                    const a = minSize(tree, mins, s.left, divider);
-                    const b = minSize(tree, mins, s.right, divider);
+                    const a = minSize(tree, mins, s.left, divider, kind);
+                    const b = minSize(tree, mins, s.right, divider, kind);
                     break :split switch (s.layout) {
                         .horizontal => .{ .width = a.width + divider + b.width, .height = @max(a.height, b.height) },
                         .vertical => .{ .width = @max(a.width, b.width), .height = a.height + divider + b.height },
@@ -235,7 +252,9 @@ pub fn Layout(comptime View: type) type {
         const Ctx = struct {
             alloc: Allocator,
             tree: *const Tree,
+            /// Each node's minimum, and its size with a pixel per pane.
             mins: []const Size,
+            ones: []const Size,
             divider: i32,
             panes: *std.ArrayList(Pane),
             splits: *std.ArrayList(Split),
@@ -249,7 +268,10 @@ pub fn Layout(comptime View: type) type {
                         const len = length(r, s.layout);
                         const d = @min(self.divider, @max(len, 0));
                         const avail = @max(len - d, 0);
-                        const first = firstLength(avail, s.ratio, min_first, min_second);
+                        const first = firstLength(avail, s.ratio, .{ min_first, min_second }, .{
+                            minAcross(self.ones[s.left.idx()], s.layout),
+                            minAcross(self.ones[s.right.idx()], s.layout),
+                        });
                         var a = r;
                         var line = r;
                         var b = r;
@@ -290,16 +312,17 @@ pub fn Layout(comptime View: type) type {
         }
 
         /// The first side's length out of `avail` pixels: the ratio's,
-        /// within both sides' minimums; or, when both don't fit, a share in
-        /// proportion to them with at least a pixel for each.
-        fn firstLength(avail: i32, ratio: f16, min_first: i32, min_second: i32) i32 {
+        /// within both sides' minimums (`mins`). When both don't fit, a
+        /// share in proportion to them, keeping a pixel for every pane and
+        /// room for the dividers between them on each side (`ones`) where
+        /// that fits, else a pixel for each side.
+        fn firstLength(avail: i32, ratio: f16, mins: [2]i32, ones: [2]i32) i32 {
             if (avail <= 1) return avail;
             const want: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(avail)) * @as(f32, ratio)));
-            const lo = min_first;
-            const hi = avail - min_second;
-            if (lo <= hi) return std.math.clamp(want, lo, hi);
-            const total: f32 = @floatFromInt(min_first + min_second);
-            const share: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(avail)) * @as(f32, @floatFromInt(min_first)) / total));
+            if (mins[0] <= avail - mins[1]) return std.math.clamp(want, mins[0], avail - mins[1]);
+            const total: f32 = @floatFromInt(mins[0] + mins[1]);
+            const share: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(avail)) * @as(f32, @floatFromInt(mins[0])) / total));
+            if (ones[0] <= avail - ones[1]) return std.math.clamp(share, ones[0], avail - ones[1]);
             return std.math.clamp(share, 1, avail - 1);
         }
     };
@@ -489,6 +512,62 @@ test "split_layout: minimums win over the ratio" {
     try testing.expectEqual(@as(i32, 50), paneRect(&layout, "A").width());
     try testing.expectEqual(@as(i32, 50), paneRect(&layout, "C").width());
     try testing.expectEqual(@as(i32, 50 + 1 + 50 + 1), paneRect(&layout, "B").left);
+    try expectTiles(&layout, area);
+}
+
+test "split_layout: a squeezed side keeps a pixel for each of its panes" {
+    // A | (B | C) with A's minimum far larger than the area: the right side
+    // needs 1 + 1 + 1 pixels for B, its divider and C, not just one.
+    const alloc = testing.allocator;
+    var views = [_]TestView{ .{ .label = "A", .min = .{ .width = 100 } }, .{ .label = "B" }, .{ .label = "C" } };
+    var tree = try build(alloc, &views, &.{
+        .{ .at = "A", .dir = .right },
+        .{ .at = "B", .dir = .right },
+    });
+    defer tree.deinit();
+    const area: Rect = .{ .right = 51, .bottom = 10 };
+    var layout = try L.compute(alloc, &tree, area, 1);
+    defer layout.deinit(alloc);
+    for (layout.panes) |p| try testing.expect(!p.rect.isEmpty());
+    try testing.expectEqual(@as(i32, 47), paneRect(&layout, "A").width());
+    try expectTiles(&layout, area);
+}
+
+test "split_layout: no leaks when an allocation fails" {
+    const alloc = testing.allocator;
+    var views = [_]TestView{ .{ .label = "A" }, .{ .label = "B" }, .{ .label = "C" } };
+    var tree = try build(alloc, &views, &.{
+        .{ .at = "A", .dir = .right },
+        .{ .at = "B", .dir = .down },
+    });
+    defer tree.deinit();
+    try testing.checkAllAllocationFailures(alloc, struct {
+        fn run(a: Allocator, t: *const L.Tree) !void {
+            var layout = try L.compute(a, t, .{ .right = 800, .bottom = 600 }, 1);
+            layout.deinit(a);
+        }
+    }.run, .{&tree});
+}
+
+test "split_layout: a zoomed split keeps its divider" {
+    const alloc = testing.allocator;
+    var views = [_]TestView{ .{ .label = "A" }, .{ .label = "B" }, .{ .label = "C" } };
+    var tree = try build(alloc, &views, &.{
+        .{ .at = "A", .dir = .right },
+        .{ .at = "B", .dir = .down },
+    });
+    defer tree.deinit();
+    // The split holding B and C.
+    const split: L.Handle = switch (tree.nodes[0]) {
+        .split => |s| s.right,
+        .leaf => unreachable,
+    };
+    tree.zoom(split);
+    const area: Rect = .{ .right = 800, .bottom = 601 };
+    var layout = try L.compute(alloc, &tree, area, 1);
+    defer layout.deinit(alloc);
+    try testing.expectEqual(@as(usize, 1), layout.splits.len);
+    try testing.expect(paneRect(&layout, "A").isEmpty());
     try expectTiles(&layout, area);
 }
 
