@@ -770,6 +770,26 @@ an idle Ctrl+Shift+Q quitting without a dialog. S3 found no reason to bundle
 *Done when:* an idle cmd tab closes without asking, and `cd /d D:\x` carries
 over to new tabs.
 
+*Done 2026-10-25:* `cmd` is detected like PowerShell (any case, with or
+without `.exe`), and `PROMPT` becomes `$E]133;D$E\`, the title (`$E]2;$P$E\`,
+title feature), `$E]9;9;$P$E\`, `$E]133;A$E\`, the user's prompt (`$P$G` when
+unset) and `$E]133;I$E\`: I, not B, for S3's reason, and because with no
+133;C, I lets the line feed after Enter end the input. A `PROMPT` already
+sending OSC 133 is kept. `CLINK_PATH` gains `shell-integration\cmd`, whose
+`ghostty.lua` (Clink 1.4.24 or later) strips those codes from cmd's prompt
+and sends them around Clink's final prompt through a prompt filter's
+`surround()`, with the exit status in D (`os.geterrorlevel()`), and 133;C
+from `onendedit`. Clink's own integration (`terminal.shell_integration`)
+turns on by itself only in terminals it recognizes, so it stays off here; Exec
+now drops `WT_SESSION` and `WT_PROFILE_ID`, which Clink and others read as
+running in Windows Terminal. The Debug dump counts finished commands and
+keeps the last exit code (from `command_finished`), which `pwsh-integration`
+now checks (3 from `cmd /c exit 3`, 1 from a failing cmdlet, then 0). The
+`cmd-integration` scenario runs the *Done when* items, the title, a running
+`ping` asking, and `jump_to_prompt`, with cmd's default prompt and with
+`PROMPT=[$P]$G`; its Clink part runs when `GHOSTTY_GUI_CLINK` names a Clink
+folder (the profile goes in the scenario's folder).
+
 **2.4 Directory fallback without integration, M.** For shells that send
 nothing, read the shell process's current directory from its PEB
 (`NtQueryInformationProcess`, `ReadProcessMemory` of

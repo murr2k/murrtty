@@ -1185,6 +1185,15 @@ pub fn performAction(
 
         .renderer_health => log.info("renderer health={}", .{value}),
 
+        // Not shown yet (notify-on-command-finish); kept for the GUI
+        // tests' dump.
+        .command_finished => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.commands_finished +%= 1;
+            surface.last_exit = value.exit_code;
+            return false;
+        },
+
         // The renderer draws on its own thread; nothing to schedule.
         .render => {},
 

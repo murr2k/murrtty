@@ -306,6 +306,12 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             try out.print(alloc, ",\"cursor\":[{d},{d}],\"semantic\":\"{s}\",\"at_prompt\":{}", .{
                 cursor[0], cursor[1], cursor[2], cursor[3],
             });
+            // Commands the shell reported finished, and the last exit code
+            // (-1 for none, or none given).
+            try out.print(alloc, ",\"commands\":{d},\"last_exit\":{d}", .{
+                s.commands_finished,
+                if (s.last_exit) |code| @as(i32, code) else -1,
+            });
         }
         try out.append(alloc, '}');
     }

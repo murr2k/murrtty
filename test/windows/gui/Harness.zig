@@ -845,6 +845,10 @@ pub const Dump = struct {
         cursor: ?[2]u32 = null,
         semantic: ?[]const u8 = null,
         at_prompt: ?bool = null,
+        /// Commands the shell reported finished (OSC 133;D after 133;C),
+        /// and the last exit code (-1 for none).
+        commands: u32 = 0,
+        last_exit: i32 = -1,
     };
 };
 

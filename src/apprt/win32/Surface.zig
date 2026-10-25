@@ -75,6 +75,10 @@ ime_composing: bool = false,
 escape_taken: bool = false,
 /// Key events passed to the core, for the GUI tests' state dump.
 keys_sent: u32 = 0,
+/// Commands the shell reported finished (OSC 133;D after 133;C) and the
+/// last one's exit code, for the same dump. Nothing shows them yet.
+commands_finished: u32 = 0,
+last_exit: ?u8 = null,
 
 /// Whether this window has the keyboard focus, as Windows last said, and
 /// whether the core was last told it has (a core surface starts out

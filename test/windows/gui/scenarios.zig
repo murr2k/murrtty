@@ -42,6 +42,7 @@ pub const all = [_]Scenario{
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
     .{ .name = "pwd", .about = "OSC 9;9 and OSC 7 set the working directory; new tabs start there; relative links resolve against it", .run = pwdReports },
     .{ .name = "pwsh-integration", .about = "PowerShell 7 and 5.1: the folder carries to new tabs, idle tabs close without asking, jump_to_prompt", .run = pwshIntegration },
+    .{ .name = "cmd-integration", .about = "cmd (and Clink with GHOSTTY_GUI_CLINK): the folder carries to new tabs, idle tabs close without asking", .run = cmdIntegration },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
@@ -1784,6 +1785,11 @@ fn powershellIntegration(h: *Harness, name: []const u8, command: []const u8) !vo
     try waitPwd(h, &g, 0, "C:\\Windows");
     try waitTabTitle(h, &g, 0, "C:\\Windows");
 
+    // Exit statuses: a program's code, a failing cmdlet's 1, then success.
+    try runForStatus(h, &g, first, "cmd /c exit 3", 3);
+    try runForStatus(h, &g, first, "Get-Item C:\\no-such-file", 1);
+    try runForStatus(h, &g, first, "$null", 0);
+
     // A new tab starts there, and closes at its idle prompt without asking.
     h.key(first, cs, 'T');
     try waitWindowTabs(h, &g, win, 2);
@@ -1815,11 +1821,154 @@ fn powershellIntegration(h: *Harness, name: []const u8, command: []const u8) !vo
     try waitTabLine(h, &g, 0, "45");
     w.Sleep(500);
     h.key(first, cs, w.VK_UP);
-    try waitTopLine(h, &g, 0, "'mark-b'");
+    try waitTopLine(h, &g, 0, "PS ", "'mark-b'");
     h.key(first, cs, w.VK_UP);
-    try waitTopLine(h, &g, 0, "'mark-a'");
+    try waitTopLine(h, &g, 0, "PS ", "'mark-a'");
     // At an idle prompt, quitting doesn't ask.
     try quitIdle(h, &g, first);
+}
+
+/// cmd integration (roadmap 2.3): through PROMPT with cmd's default prompt
+/// and with a user's own, then through Clink when GHOSTTY_GUI_CLINK names a
+/// folder holding clink_x64.exe (its profile goes in the scenario's folder,
+/// never the user's).
+fn cmdIntegration(h: *Harness) anyerror!void {
+    try cmdIntegrationRun(h, "cmd-integration", .plain);
+    try cmdIntegrationRun(h, "cmd-integration-prompt", .user_prompt);
+
+    var buf: [260]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_CLINK"), &buf, buf.len);
+    if (n == 0 or n >= buf.len) {
+        h.log("Clink part skipped: set GHOSTTY_GUI_CLINK to a Clink folder to run it", .{});
+        return;
+    }
+    try cmdIntegrationRun(h, "cmd-integration-clink", .{ .clink = try std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]) });
+}
+
+const CmdRun = union(enum) {
+    plain,
+    /// PROMPT=[$P]$G in Ghostty's environment.
+    user_prompt,
+    /// Clink injected from this folder.
+    clink: []const u8,
+};
+
+/// With Ghostty's PROMPT (and Clink's script): cd /d reports the folder
+/// (pwd and title) and a new tab starts there; an idle tab closes without
+/// asking while one running a command asks; jump_to_prompt moves the view
+/// to earlier prompts. With Clink, finished commands carry their status.
+fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
+    defer if (run == .clink) h.alloc.free(run.clink);
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    const extra = switch (run) {
+        .plain, .user_prompt => try h.alloc.dupe(u8, "shell-integration = detect\n"),
+        .clink => |dir| try std.fmt.allocPrint(h.alloc, "shell-integration = detect\ncommand = cmd.exe /k {s}\\clink_x64.exe inject --quiet\n", .{dir}),
+    };
+    defer h.alloc.free(extra);
+    const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
+    defer h.alloc.free(config);
+    // In the launch's folder, which a passing run removes.
+    const profile = try std.fmt.allocPrint(h.alloc, "{s}\\{s}\\clink-profile", .{ h.temp_dir, name });
+    defer h.alloc.free(profile);
+    const env: []const [2][]const u8 = switch (run) {
+        .plain => &.{},
+        .user_prompt => &.{.{ "PROMPT", "[$P]$G" }},
+        .clink => &.{.{ "CLINK_PROFILE", profile }},
+    };
+    const home_prompt = if (run == .user_prompt) "]>" else ">";
+    var g = try h.launchWith(name, config, .{ .env = env });
+    defer g.deinit();
+    try h.waitText(&g, home_prompt, 1, 20000);
+    const win = try h.mainWindow(&g);
+    const first = try h.surface(&g, win);
+    const prompt = if (run == .user_prompt) "[C:\\Windows]>" else "C:\\Windows>";
+
+    try h.typeText(first, "cd /d C:\\Windows");
+    h.enter(first);
+    try waitPwd(h, &g, 0, "C:\\Windows");
+    try waitTabTitle(h, &g, 0, "C:\\Windows");
+
+    if (run == .clink) {
+        try runForStatus(h, &g, first, "cmd /c exit 3", 3);
+        try runForStatus(h, &g, first, "cmd /c exit 0", 0);
+    }
+
+    // A new tab starts there, and closes at its idle prompt without asking.
+    h.key(first, cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    try waitTabText(h, &g, 1, prompt);
+    const second = try h.surface(&g, win);
+    h.key(second, cs, 'W');
+    try waitWindowTabs(h, &g, win, 1);
+    w.Sleep(500);
+    try h.expect(try h.dialogCount(&g) == 0, "an idle prompt closes without asking", .{});
+
+    // A running command asks.
+    try h.typeText(first, "ping -n 30 127.0.0.1 >nul");
+    h.enter(first);
+    try waitAtPrompt(h, &g, 0, false);
+    h.key(first, cs, 'W');
+    const dlg = try h.waitDialog(&g, 5000);
+    h.answer(&g, dlg, w.IDNO);
+    try waitNoDialog(h, &g);
+    try waitWindowTabs(h, &g, win, 1);
+    h.key(first, .{ .ctrl = true }, 'C');
+    try waitAtPrompt(h, &g, 0, true);
+
+    // Two commands each printing more than a screen; jump_to_prompt
+    // (Ctrl+Shift+Up) brings each one's prompt to the top of the view.
+    try h.typeText(first, "echo mark-a& for /l %i in (1,1,45) do @echo %i");
+    h.enter(first);
+    try h.typeText(first, "echo mark-b& for /l %i in (1,1,45) do @echo %i");
+    h.enter(first);
+    try waitTabLine(h, &g, 0, "45");
+    w.Sleep(500);
+    h.key(first, cs, w.VK_UP);
+    try waitTopLine(h, &g, 0, prompt, "mark-b");
+    h.key(first, cs, w.VK_UP);
+    try waitTopLine(h, &g, 0, prompt, "mark-a");
+    try quitIdle(h, &g, first);
+}
+
+/// Run `command` at the first tab's prompt and wait for the shell to report
+/// it finished with exit status `want`.
+fn runForStatus(h: *Harness, g: *Harness.Ghostty, target: w.HWND, command: []const u8, want: i32) !void {
+    const before = before: {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const p = d.value.windows[0].tabs[0].panes orelse break :before 0;
+        break :before if (p.len > 0) p[0].commands else 0;
+    };
+    try h.typeText(target, command);
+    h.enter(target);
+    var last: i32 = -1;
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.windows[0].tabs[0].panes) |p| if (p.len > 0 and p[0].commands > before) {
+            last = p[0].last_exit;
+            if (last == want) return h.expect(true, "{s} finished with status {d}", .{ command, want });
+        };
+        w.Sleep(200);
+    }
+    return h.fail("{s} didn't finish with status {d} (last {d})", .{ command, want, last });
+}
+
+/// Wait until the first window's tab `tab` is (or isn't) at a prompt, as
+/// close confirmation sees it.
+fn waitAtPrompt(h: *Harness, g: *Harness.Ghostty, tab: usize, want: bool) !void {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const win_tabs = d.value.windows[0].tabs;
+        if (tab < win_tabs.len) if (win_tabs[tab].panes) |p| if (p.len > 0) if (p[0].at_prompt) |at| {
+            if (at == want) return h.expect(true, "tab {d} {s} at a prompt", .{ tab, if (want) "is" else "isn't" });
+        };
+        w.Sleep(200);
+    }
+    return h.fail("tab {d} {s} at a prompt", .{ tab, if (want) "isn't" else "is still" });
 }
 
 /// Ctrl+Shift+Q at an idle prompt: Ghostty exits with code 0 and no dialog.
@@ -1845,8 +1994,8 @@ fn waitTabTitle(h: *Harness, g: *Harness.Ghostty, tab: usize, want: []const u8) 
 }
 
 /// Wait until the top row of the first window's tab `tab` is a prompt
-/// holding `needle`.
-fn waitTopLine(h: *Harness, g: *Harness.Ghostty, tab: usize, needle: []const u8) !void {
+/// (starting with `prompt`) holding `needle`.
+fn waitTopLine(h: *Harness, g: *Harness.Ghostty, tab: usize, prompt: []const u8, needle: []const u8) !void {
     var top_buf: [256]u8 = undefined;
     var top: []const u8 = "";
     var waited: u32 = 0;
@@ -1856,7 +2005,7 @@ fn waitTopLine(h: *Harness, g: *Harness.Ghostty, tab: usize, needle: []const u8)
         const win_tabs = d.value.windows[0].tabs;
         if (tab < win_tabs.len) if (win_tabs[tab].text) |text| {
             const line = text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len];
-            if (std.mem.startsWith(u8, line, "PS ") and std.mem.indexOf(u8, line, needle) != null) {
+            if (std.mem.startsWith(u8, line, prompt) and std.mem.indexOf(u8, line, needle) != null) {
                 return h.expect(true, "the view starts at the prompt of {s}", .{needle});
             }
             const n = @min(line.len, top_buf.len);
