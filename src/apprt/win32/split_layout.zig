@@ -152,6 +152,41 @@ pub fn Layout(comptime View: type) type {
             return null;
         }
 
+        /// The split whose divider is nearest (x, y), within `max` pixels
+        /// across it and within its length: for a point that reached the
+        /// tab's container through a pane's grip band, where bands of
+        /// neighboring dividers may overlap.
+        pub fn nearestDivider(self: *const Self, x: i32, y: i32, max: i32) ?Split {
+            var best: ?Split = null;
+            var best_distance: i32 = max + 1;
+            for (self.splits) |s| {
+                const r = s.divider;
+                const distance: i32, const along: bool = switch (s.layout) {
+                    .horizontal => .{ distanceTo(x, r.left, r.right), y >= r.top and y < r.bottom },
+                    .vertical => .{ distanceTo(y, r.top, r.bottom), x >= r.left and x < r.right },
+                };
+                if (along and distance < best_distance) {
+                    best = s;
+                    best_distance = distance;
+                }
+            }
+            return best;
+        }
+
+        fn distanceTo(v: i32, lo: i32, hi: i32) i32 {
+            if (v < lo) return lo - v;
+            if (v >= hi) return v - hi + 1;
+            return 0;
+        }
+
+        /// The smallest area `tree` fits in with every pane at its minimum.
+        pub fn minimum(alloc: Allocator, tree: *const Tree, divider: i32) Allocator.Error!Size {
+            if (tree.isEmpty()) return .{};
+            const mins = try alloc.alloc(Size, tree.nodes.len);
+            defer alloc.free(mins);
+            return minSize(tree, mins, .root, divider, .minimum);
+        }
+
         pub fn findSplit(self: *const Self, handle: Handle) ?Split {
             for (self.splits) |s| if (s.handle == handle) return s;
             return null;
@@ -617,6 +652,37 @@ test "split_layout: hit-testing panes, dividers and the grip band" {
     try testing.expectEqual(L.SplitLayout.vertical, stacked.layout);
     // On the stacked line next to the other divider's band, the line wins.
     try testing.expectEqual(L.SplitLayout.vertical, layout.dividerAt(502, 300, 2).?.layout);
+}
+
+test "split_layout: the nearest divider, and a tree's minimum" {
+    const alloc = testing.allocator;
+    var views = [_]TestView{
+        .{ .label = "A", .min = .{ .width = 80, .height = 40 } },
+        .{ .label = "B", .min = .{ .width = 50, .height = 30 } },
+        .{ .label = "C", .min = .{ .width = 60, .height = 20 } },
+    };
+    var tree = try build(alloc, &views, &.{
+        .{ .at = "A", .dir = .right },
+        .{ .at = "B", .dir = .down },
+    });
+    defer tree.deinit();
+    var layout = try L.compute(alloc, &tree, .{ .right = 1001, .bottom = 601 }, 1);
+    defer layout.deinit(alloc);
+
+    // Column 500 is the side-by-side divider; row 300 of the right half is
+    // the stacked one.
+    try testing.expectEqual(L.SplitLayout.horizontal, layout.nearestDivider(497, 100, 4).?.layout);
+    try testing.expect(layout.nearestDivider(495, 100, 4) == null);
+    try testing.expectEqual(L.SplitLayout.vertical, layout.nearestDivider(800, 303, 4).?.layout);
+    // Near both: the stacked line is 1 away, the side-by-side one 3.
+    try testing.expectEqual(L.SplitLayout.vertical, layout.nearestDivider(503, 301, 4).?.layout);
+    // Past the end of the stacked divider (left half): not it.
+    try testing.expect(layout.nearestDivider(300, 300, 4) == null);
+
+    // A | (B / C): 80 + 1 + max(50, 60) wide, max(40, 30 + 1 + 20) high.
+    const min = try L.minimum(alloc, &tree, 1);
+    try testing.expectEqual(@as(i32, 141), min.width);
+    try testing.expectEqual(@as(i32, 51), min.height);
 }
 
 test "split_layout: dragging moves the divider by the dragged distance" {

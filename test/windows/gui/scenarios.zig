@@ -35,6 +35,7 @@ pub const all = [_]Scenario{
     .{ .name = "focus-background-tab", .about = "a tab that never got the focus doesn't stay focused in the core", .run = focusBackgroundTab },
     .{ .name = "splits", .about = "Ctrl+Shift+O/E split panes that tile the tab; closing panes moves focus as designed", .run = splits },
     .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits", .run = splitCommands },
+    .{ .name = "split-mouse", .about = "dragging a divider, Esc, double-click to equalize, the grip band in the padding", .run = splitMouse },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
@@ -1341,6 +1342,75 @@ fn splitCommands(h: *Harness) anyerror!void {
     w.Sleep(800);
     try h.expect(@abs((try rootDivider(h, &g)) - before) <= 1, "equalize put it back in the middle", .{});
     try quit(h, &g, a);
+}
+
+/// Divider mouse handling, with mouse messages posted to the tab's
+/// container as Windows routes them there: a drag moves the divider by the
+/// distance dragged, Esc puts it back, a double-click equalizes; and a
+/// pane's padding next to a divider is transparent to hit-testing (so the
+/// container gets the mouse there) but not in the middle or on the outer
+/// edge.
+fn splitMouse(h: *Harness) anyerror!void {
+    var g = try start(h, "split-mouse", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    w.Sleep(1500);
+    const left_pane = try paneHwnd(h, &g, 0);
+    const right_pane = try paneHwnd(h, &g, 1);
+    const container = w.GetParent(left_pane) orelse return h.fail("pane without a container", .{});
+    const start_x = try rootDivider(h, &g);
+    const y: i32 = 200;
+
+    // Drag 120 px right.
+    postMouse(container, w.WM_LBUTTONDOWN, start_x, y);
+    postMouse(container, w.WM_MOUSEMOVE, start_x + 60, y);
+    postMouse(container, w.WM_MOUSEMOVE, start_x + 120, y);
+    postMouse(container, w.WM_LBUTTONUP, start_x + 120, y);
+    w.Sleep(600);
+    const dragged = try rootDivider(h, &g);
+    try h.expect(@abs(dragged - (start_x + 120)) <= 1, "the drag moved the divider to {d} (expected {d})", .{ dragged, start_x + 120 });
+
+    // Esc during a drag puts it back.
+    postMouse(container, w.WM_LBUTTONDOWN, dragged, y);
+    postMouse(container, w.WM_MOUSEMOVE, dragged - 200, y);
+    w.Sleep(300);
+    const mid_drag = try rootDivider(h, &g);
+    try h.expect(@abs(mid_drag - (dragged - 200)) <= 1, "mid-drag the divider follows the mouse ({d})", .{mid_drag});
+    _ = w.PostMessageW(right_pane, w.WM_KEYDOWN, w.VK_ESCAPE, 1);
+    postMouse(container, w.WM_LBUTTONUP, dragged - 200, y);
+    w.Sleep(600);
+    const after_esc = try rootDivider(h, &g);
+    try h.expect(@abs(after_esc - dragged) <= 1, "Esc put it back at {d} (is {d})", .{ dragged, after_esc });
+
+    // A double-click equalizes.
+    postMouse(container, w.WM_LBUTTONDBLCLK, after_esc, y);
+    w.Sleep(600);
+    const equalized = try rootDivider(h, &g);
+    try h.expect(@abs(equalized - start_x) <= 1, "a double-click equalized it to {d} (is {d})", .{ start_x, equalized });
+
+    // Hit-testing on the left pane: its right padding borders the divider.
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(left_pane, &r);
+    const mid_y = @divTrunc(r.top + r.bottom, 2);
+    try h.expect(hitTest(left_pane, r.right - 1, mid_y) == w.HTTRANSPARENT, "the padding next to the divider is the grip band", .{});
+    try h.expect(hitTest(left_pane, @divTrunc(r.left + r.right, 2), mid_y) == w.HTCLIENT, "the middle of the pane is the pane's", .{});
+    try h.expect(hitTest(left_pane, r.left, mid_y) == w.HTCLIENT, "the window's outer edge is the pane's", .{});
+    try quit(h, &g, right_pane);
+}
+
+fn postMouse(target: w.HWND, msg: w.UINT, x: i32, y: i32) void {
+    const lp: usize = (@as(usize, @as(u16, @bitCast(@as(i16, @intCast(y))))) << 16) | @as(u16, @bitCast(@as(i16, @intCast(x))));
+    _ = w.PostMessageW(target, msg, if (msg == w.WM_LBUTTONUP) 0 else w.MK_LBUTTON, @bitCast(lp));
+}
+
+/// WM_NCHITTEST at screen point (x, y).
+fn hitTest(target: w.HWND, x: i32, y: i32) isize {
+    const lp: usize = (@as(usize, @as(u16, @bitCast(@as(i16, @intCast(y))))) << 16) | @as(u16, @bitCast(@as(i16, @intCast(x))));
+    var result: usize = 0;
+    _ = w.SendMessageTimeoutW(target, w.WM_NCHITTEST, 0, @bitCast(lp), w.SMTO_ABORTIFHUNG, 2000, &result);
+    return @bitCast(result);
 }
 
 /// Wait until `pane` is the tab's focused pane and has the keyboard focus.

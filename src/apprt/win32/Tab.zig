@@ -39,8 +39,30 @@ generation: u64 = 0,
 /// Whether the tab is shown: its window's active tab, not minimized.
 visible: bool = true,
 
+/// A divider being dragged.
+drag: ?Drag = null,
+
+const Drag = struct {
+    /// The split whose divider moves, valid while `generation` is the
+    /// tab's (a pane closing mid-drag ends the drag).
+    split: Tree.Node.Handle,
+    generation: u64,
+    /// Where in the divider the mouse took it, across it.
+    grab: i32,
+    /// The ratio to go back to on Esc.
+    ratio: f16,
+};
+
+/// How far across a divider, in pixels, a point that reached the container
+/// still counts as on it. Points only reach it on the line itself or
+/// through a pane's grip band (its padding), so this just has to cover the
+/// widest padding.
+const grab_reach = 64;
+
 pub fn registerClass(instance: c.HINSTANCE) !void {
     const wc: c.WNDCLASSEXW = .{
+        // A double-click on a divider equalizes the panes.
+        .style = c.CS_DBLCLKS,
         .lpfnWndProc = &wndProc,
         .hInstance = instance,
         .hCursor = c.LoadCursorW(null, c.IDC_ARROW),
@@ -386,6 +408,68 @@ pub fn layoutPanes(self: *Tab) void {
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
 
+/// The split whose divider is at (x, y) in the container, if any.
+fn dividerAt(self: *Tab, x: i32, y: i32) ?Layout.Split {
+    if (!self.tree.isSplit()) return null;
+    const alloc = self.window.app.core_app.alloc;
+    var layout = Layout.compute(alloc, &self.tree, self.area(), self.dividerWidth()) catch return null;
+    defer layout.deinit(alloc);
+    return layout.nearestDivider(x, y, grab_reach);
+}
+
+fn startDrag(self: *Tab, x: i32, y: i32) void {
+    const s = self.dividerAt(x, y) orelse return;
+    const ratio = switch (self.tree.nodes[s.handle.idx()]) {
+        .split => |sp| sp.ratio,
+        .leaf => return,
+    };
+    self.drag = .{
+        .split = s.handle,
+        .generation = self.generation,
+        .grab = switch (s.layout) {
+            .horizontal => x - s.divider.left,
+            .vertical => y - s.divider.top,
+        },
+        .ratio = ratio,
+    };
+    _ = c.SetCapture(self.hwnd);
+}
+
+/// Follow the mouse: the divider moves by the distance dragged, as far as
+/// the panes' minimums allow.
+fn dragTo(self: *Tab, x: i32, y: i32) void {
+    const d = self.drag orelse return;
+    if (d.generation != self.generation) return self.endDrag();
+    const alloc = self.window.app.core_app.alloc;
+    var layout = Layout.compute(alloc, &self.tree, self.area(), self.dividerWidth()) catch return;
+    defer layout.deinit(alloc);
+    const s = layout.findSplit(d.split) orelse return self.endDrag();
+    const first = switch (s.layout) {
+        .horizontal => x - d.grab - s.rect.left,
+        .vertical => y - d.grab - s.rect.top,
+    };
+    self.tree.resizeInPlace(d.split, layout.dragRatio(s, first));
+    self.layoutPanes();
+}
+
+fn endDrag(self: *Tab) void {
+    if (self.drag == null) return;
+    self.drag = null;
+    if (c.GetCapture() == self.hwnd) _ = c.ReleaseCapture();
+}
+
+/// Esc during a drag: put the divider back. Returns whether a drag was
+/// cancelled.
+pub fn cancelDrag(self: *Tab) bool {
+    const d = self.drag orelse return false;
+    if (d.generation == self.generation) {
+        self.tree.resizeInPlace(d.split, d.ratio);
+        self.layoutPanes();
+    }
+    self.endDrag();
+    return true;
+}
+
 /// The container's client area, for the layout.
 pub fn area(self: *const Tab) split_layout.Rect {
     var r: c.RECT = .{};
@@ -471,6 +555,50 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         // focused pane is destroyed, say.
         c.WM_SETFOCUS => {
             if (!self.tree.isEmpty()) _ = c.SetFocus(self.focused.hwnd);
+            return 0;
+        },
+
+        // The mouse reaches the container on a divider, or in a pane's
+        // grip band next to one (Surface.inDividerBand).
+        c.WM_SETCURSOR => {
+            if (c.loword(lparam) != c.HTCLIENT) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            var pt = [1]c.POINT{.{}};
+            _ = c.GetCursorPos(&pt[0]);
+            _ = c.MapWindowPoints(null, hwnd, &pt, 1);
+            const s = self.dividerAt(pt[0].x, pt[0].y) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            _ = c.SetCursor(c.LoadCursorW(null, switch (s.layout) {
+                .horizontal => c.IDC_SIZEWE,
+                .vertical => c.IDC_SIZENS,
+            }));
+            return 1;
+        },
+
+        c.WM_LBUTTONDOWN => {
+            self.startDrag(c.xParam(lparam), c.yParam(lparam));
+            return 0;
+        },
+
+        c.WM_MOUSEMOVE => {
+            if (self.drag != null) self.dragTo(c.xParam(lparam), c.yParam(lparam));
+            return 0;
+        },
+
+        c.WM_LBUTTONUP => {
+            self.endDrag();
+            return 0;
+        },
+
+        // Another window took the mouse: keep where the divider got to.
+        c.WM_CAPTURECHANGED => {
+            if (lparam != @as(c.LPARAM, @bitCast(@intFromPtr(hwnd)))) self.drag = null;
+            return 0;
+        },
+
+        c.WM_LBUTTONDBLCLK => {
+            if (self.dividerAt(c.xParam(lparam), c.yParam(lparam)) != null) {
+                self.endDrag();
+                _ = self.equalize() catch false;
+            }
             return 0;
         },
 

@@ -553,6 +553,33 @@ pub fn dpiChanged(self: *Surface) void {
     };
 }
 
+/// Whether (x, y), in client pixels, is in this pane's margin on a side
+/// that borders a divider: the band a divider drag can start in. The margin
+/// is the padding before the first cell and whatever the grid leaves after
+/// the last, so the band never takes a click meant for a cell (as GTK's
+/// once took the first column's, Ghostty #3020).
+fn inDividerBand(self: *const Surface, x: i32, y: i32) bool {
+    if (!self.core_initialized) return false;
+    const parent = c.GetParent(self.hwnd) orelse return false;
+    var outer: c.RECT = .{};
+    _ = c.GetClientRect(parent, &outer);
+    var r: c.RECT = .{};
+    _ = c.GetClientRect(self.hwnd, &r);
+    var corners = [2]c.POINT{ .{ .x = 0, .y = 0 }, .{ .x = r.right, .y = r.bottom } };
+    _ = c.MapWindowPoints(self.hwnd, parent, &corners, 2);
+
+    const size = self.core_surface.size;
+    const grid = size.grid();
+    const left: i32 = @intCast(size.padding.left);
+    const top: i32 = @intCast(size.padding.top);
+    const text_right: i32 = @intCast(size.padding.left + grid.columns * size.cell.width);
+    const text_bottom: i32 = @intCast(size.padding.top + grid.rows * size.cell.height);
+    return (corners[0].x > 0 and x < left) or
+        (corners[1].x < outer.right and x >= text_right) or
+        (corners[0].y > 0 and y < top) or
+        (corners[1].y < outer.bottom and y >= text_bottom);
+}
+
 /// Post WM_FOCUS_CHANGED unless one is already queued; it reports the focus
 /// as it is when it runs, so a quick loss and regain is one message.
 fn queueFocus(self: *Surface) void {
@@ -644,7 +671,22 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             return null;
         },
 
+        // In the grip band next to a divider the mouse goes to the tab's
+        // container, which shows the resize cursor and drags the divider.
+        c.WM_NCHITTEST => {
+            var pt = [1]c.POINT{.{ .x = c.xParam(lparam), .y = c.yParam(lparam) }};
+            _ = c.MapWindowPoints(null, self.hwnd, &pt, 1);
+            if (self.inDividerBand(pt[0].x, pt[0].y)) return c.HTTRANSPARENT;
+            return null;
+        },
+
         c.WM_KEYDOWN, c.WM_SYSKEYDOWN, c.WM_KEYUP, c.WM_SYSKEYUP => {
+            // Esc cancels a divider drag (the drag never takes the focus).
+            if (msg == c.WM_KEYDOWN and wparam == c.VK_ESCAPE) {
+                if (self.window.tabIndexOf(self)) |i| {
+                    if (self.window.tabs.items[i].cancelDrag()) return 0;
+                }
+            }
             return self.handleKey(msg, wparam, lparam);
         },
 

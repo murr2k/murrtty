@@ -8,6 +8,7 @@ const configpkg = @import("../../config.zig");
 const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
+const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
@@ -250,6 +251,26 @@ pub fn surfaceFocused(self: *Window, surface: *Surface) void {
     self.invalidateTabBar();
     // The dividers follow the focused pane's background.
     _ = c.InvalidateRect(tab.hwnd, null, c.FALSE);
+}
+
+/// The smallest the tab area may be: every pane of every tab at its
+/// minimum, with the dividers between them (so no tab is squeezed below
+/// its panes' minimums), or the core's size limit before any tab exists.
+fn minimumTabArea(self: *const Window) ?split_layout.Size {
+    var min: ?split_layout.Size = null;
+    if (self.size_limit) |limit| min = .{
+        .width = @intCast(@min(limit.min_width, std.math.maxInt(u16))),
+        .height = @intCast(@min(limit.min_height, std.math.maxInt(u16))),
+    };
+    const alloc = self.app.core_app.alloc;
+    for (self.tabs.items) |t| {
+        const m = Tab.Layout.minimum(alloc, &t.tree, t.dividerWidth()) catch continue;
+        min = if (min) |cur| .{
+            .width = @max(cur.width, m.width),
+            .height = @max(cur.height, m.height),
+        } else m;
+    }
+    return min;
 }
 
 fn invalidateTabBar(self: *Window) void {
@@ -902,13 +923,10 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_GETMINMAXINFO => {
-            const limit = self.size_limit orelse return 0;
+            const min = self.minimumTabArea() orelse return 0;
             const info: *c.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
             const bar: c_int = if (self.tabBarVisible()) self.tab_bar.height() else 0;
-            var rect: c.RECT = .{
-                .right = @intCast(limit.min_width),
-                .bottom = @as(c_int, @intCast(limit.min_height)) + bar,
-            };
+            var rect: c.RECT = .{ .right = min.width, .bottom = min.height + bar };
             const style: c.DWORD = @truncate(@as(usize, @bitCast(c.GetWindowLongPtrW(hwnd, c.GWL_STYLE))));
             _ = c.AdjustWindowRectExForDpi(&rect, style, c.FALSE, c.WS_EX_APPWINDOW, c.GetDpiForWindow(hwnd));
             info.ptMinTrackSize = .{ .x = rect.right - rect.left, .y = rect.bottom - rect.top };
