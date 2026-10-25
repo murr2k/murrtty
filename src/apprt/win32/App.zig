@@ -97,6 +97,10 @@ modal_owner: ?c.HWND = null,
 /// Whether the system uses a dark app theme.
 dark: bool = false,
 
+/// Where the mouse was last seen over a pane, in screen coordinates (see
+/// Surface.followMouse).
+mouse_screen: ?c.POINT = null,
+
 /// Set once we've begun quitting so we don't quit twice.
 quitting: bool = false,
 

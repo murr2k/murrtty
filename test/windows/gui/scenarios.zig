@@ -38,7 +38,9 @@ pub const all = [_]Scenario{
     .{ .name = "split-mouse", .about = "dragging a divider, Esc (none of it reaches the program), double-click to equalize, the grip band", .run = splitMouse },
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background", .run = splitDim },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
-    .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },    .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
+    .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
+    .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
+    .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -1581,6 +1583,71 @@ fn splitGrip(h: *Harness) anyerror!void {
         try h.expect(stacked_after == stacked_y, "the stacked divider stayed at {d} (is {d})", .{ stacked_y, stacked_after });
     }
     try quit(h, &g, a);
+}
+
+/// focus-follows-mouse: moving the mouse over a pane focuses it. A pane
+/// moving under a still cursor (a divider moving) gets WM_MOUSEMOVE at the
+/// same screen position, which doesn't take the focus; nor does moving
+/// over a pane of a window that isn't active.
+fn focusFollowsMouse(h: *Harness) anyerror!void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    const f3 = 0x72;
+    const f5 = 0x74;
+    var g = try start(h, "focus-follows-mouse",
+        \\focus-follows-mouse = true
+        \\keybind = ctrl+shift+f3=goto_split:left
+        \\keybind = ctrl+shift+f5=resize_split:right,40
+        \\
+    , ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    h.key(try h.surface(&g, win), cs, 'O');
+    try waitPanes(h, &g, 2);
+    w.Sleep(1000);
+    const left = try paneHwnd(h, &g, 0);
+    const right = try paneHwnd(h, &g, 1);
+    try expectFocus(h, &g, win, right, "the new pane has the focus");
+
+    postMove(left, 100, 100);
+    try expectFocus(h, &g, win, left, "the mouse over the left pane focuses it");
+    postMove(right, 50, 100);
+    try expectFocus(h, &g, win, right, "and over the right one, that one");
+
+    // The focus goes left by key; the divider then moves right under the
+    // still cursor, and the right pane hears of the mouse at its new
+    // client position, the same place on screen.
+    h.key(right, cs, f3);
+    try expectFocus(h, &g, win, left, "goto_split:left focuses the left pane");
+    const before = try rootDivider(h, &g);
+    h.key(left, cs, f5);
+    w.Sleep(800);
+    const shift = (try rootDivider(h, &g)) - before;
+    try h.expect(shift > 0, "the divider moved right ({d} px)", .{shift});
+    postMove(right, 50 - shift, 100);
+    w.Sleep(600);
+    try h.expect(keyboardFocus(win) == left, "a pane moving under a still cursor doesn't take the focus", .{});
+    postMove(right, 60 - shift, 100);
+    try expectFocus(h, &g, win, right, "the mouse moving again does");
+
+    // A second window is the active one: the mouse over the first's panes
+    // leaves the focus, and the activation, alone.
+    h.key(right, cs, 'N');
+    w.Sleep(2500);
+    const wins = try h.windows(&g, "GhosttyWindow");
+    defer h.alloc.free(wins);
+    try h.expect(wins.len == 2, "Ctrl+Shift+N opens a second window (got {d})", .{wins.len});
+    const other = if (wins[0] == win) wins[1] else wins[0];
+    try h.expect(activeWindow(win) == other, "the new window is active", .{});
+    postMove(left, 150, 150);
+    w.Sleep(600);
+    try h.expect(activeWindow(win) == other, "the mouse over an inactive window's pane doesn't activate it", .{});
+    try h.expect(keyboardFocus(win) != left, "nor focus that pane", .{});
+    try quit(h, &g, try h.surface(&g, other));
+}
+
+/// A mouse move with no button held, at client (x, y) of `target`.
+fn postMove(target: w.HWND, x: i32, y: i32) void {
+    _ = w.PostMessageW(target, w.WM_MOUSEMOVE, 0, w.makeLParam(x, y));
 }
 
 /// The top of the stacked divider in the left part of tab `t`.

@@ -795,6 +795,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                 var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE, .hwndTrack = self.hwnd };
                 if (c.TrackMouseEvent(&tme) != 0) self.tracking_leave = true;
             }
+            self.followMouse(c.xParam(lparam), c.yParam(lparam));
             self.cursorPosCallback(@floatFromInt(c.xParam(lparam)), @floatFromInt(c.yParam(lparam)));
             return 0;
         },
@@ -850,6 +851,24 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
 
         else => return null,
     }
+}
+
+/// focus-follows-mouse: the mouse moving over the pane focuses it, in the
+/// active window only (never raising another window), and not while a
+/// button is held. Only a real move counts: a pane laid out again under a
+/// still cursor (a split, a divider moving) gets WM_MOUSEMOVE too, with
+/// new client coordinates but the same screen position, so moves are told
+/// apart in screen coordinates, across all panes.
+fn followMouse(self: *Surface, x: i32, y: i32) void {
+    var pt = [1]c.POINT{.{ .x = x, .y = y }};
+    _ = c.MapWindowPoints(self.hwnd, null, &pt, 1);
+    const app = self.app;
+    const moved = if (app.mouse_screen) |last| last.x != pt[0].x or last.y != pt[0].y else true;
+    app.mouse_screen = pt[0];
+    if (!moved or !app.config.@"focus-follows-mouse") return;
+    if (self.has_focus or self.buttons_down != 0) return;
+    if (c.GetActiveWindow() != self.window.hwnd) return;
+    _ = c.SetFocus(self.hwnd);
 }
 
 fn cursorPosCallback(self: *Surface, x: f32, y: f32) void {

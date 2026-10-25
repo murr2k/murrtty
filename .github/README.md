@@ -81,8 +81,9 @@ hosted Windows runner and then the unit tests.
   `goto_split` (`Ctrl+Alt+arrows`), `toggle_split_zoom`
   (`Ctrl+Shift+Enter`, with a magnifier on the tab), `resize_split` and
   `equalize_splits` work, dividers can be dragged with the mouse (Esc
-  cancels a drag, a double-click equalizes), and unfocused panes are dimmed
-  (`unfocused-split-opacity`, `unfocused-split-fill`).
+  cancels a drag, a double-click equalizes), unfocused panes are dimmed
+  (`unfocused-split-opacity`, `unfocused-split-fill`), and
+  `focus-follows-mouse` focuses the pane under the mouse.
 - Close confirmations. `cmd.exe` and PowerShell don't mark their prompts, so
   Ghostty can't tell an idle prompt from a running program and asks whenever
   the shell is still running. Set `confirm-close-surface = false` to turn
