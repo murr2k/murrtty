@@ -94,6 +94,34 @@ source /Applications/Ghostty.app/Contents/Resources/ghostty/shell-integration/nu
 use ghostty *
 ```
 
+### PowerShell
+
+On Windows, Ghostty starts [PowerShell](https://learn.microsoft.com/powershell/)
+(`pwsh`, and Windows PowerShell 5.1 as `powershell`) with
+`-NoExit -Command` and a command that loads `powershell/ghostty.ps1` after
+the profile, so the script wraps whatever prompt the profile set. It reads
+the script as text and runs it as a script block rather than running the
+`.ps1` file, which Windows PowerShell's default execution policy
+(`Restricted`) would refuse. Ghostty does this only when the command's
+arguments are start-up flags it knows (such as `-NoLogo`, `-NoProfile` or
+`-ExecutionPolicy <policy>`); a command, a script or `-File` runs as given.
+
+The script reports the prompt (OSC 133 A, and I where the input starts),
+the start of each command from PSReadLine's `PSConsoleHostReadLine` (OSC
+133 C), its exit status (OSC 133 D) and the working directory (OSC 7). It
+ends the prompt with I rather than B because ConPTY repaints rows with line
+feeds: after B, the input state would carry onto those rows and mark output
+as prompt continuation. The `cursor`, `title` and `path` features apply;
+`sudo` and the `ssh-*` features don't.
+
+To load it manually, at the end of your profile:
+
+```powershell
+if ($env:GHOSTTY_RESOURCES_DIR) {
+    . "$env:GHOSTTY_RESOURCES_DIR\shell-integration\powershell\ghostty.ps1"
+}
+```
+
 ### Zsh
 
 Automatic [Zsh](https://www.zsh.org/) integration works by temporarily setting

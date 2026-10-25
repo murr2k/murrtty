@@ -16,6 +16,7 @@ pub const Shell = enum {
     elvish,
     fish,
     nushell,
+    powershell,
     zsh,
 };
 
@@ -64,6 +65,12 @@ pub fn setup(
             command,
             resource_dir,
             env,
+        ),
+
+        .powershell => try setupPowerShell(
+            alloc_arena,
+            command,
+            resource_dir,
         ),
 
         .zsh => try setupZsh(
@@ -163,6 +170,17 @@ fn detectShell(alloc: Allocator, command: config.Command) !?Shell {
     if (std.mem.eql(u8, "nu", exe)) return .nushell;
     if (std.mem.eql(u8, "zsh", exe)) return .zsh;
 
+    // On Windows, PowerShell 7 (pwsh) and Windows PowerShell (powershell),
+    // with or without ".exe" and in any case, as Windows names programs.
+    // Not bash.exe: on PATH that is usually WSL's launcher in System32,
+    // where bash's injection (--posix) would skip the user's bashrc.
+    if (comptime builtin.target.os.tag == .windows) {
+        const name = if (std.ascii.endsWithIgnoreCase(exe, ".exe")) exe[0 .. exe.len - 4] else exe;
+        if (std.ascii.eqlIgnoreCase(name, "pwsh") or std.ascii.eqlIgnoreCase(name, "powershell")) {
+            return .powershell;
+        }
+    }
+
     return null;
 }
 
@@ -183,6 +201,17 @@ test detectShell {
 
     try testing.expectEqual(.bash, try detectShell(alloc, .{ .shell = "bash -c 'command'" }));
     try testing.expectEqual(.bash, try detectShell(alloc, .{ .shell = "\"/a b/bash\"" }));
+
+    if (comptime builtin.target.os.tag == .windows) {
+        try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "pwsh" }));
+        try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "pwsh.exe -NoLogo" }));
+        try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "PowerShell.EXE" }));
+        try testing.expectEqual(.powershell, try detectShell(alloc, .{ .direct = &.{"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"} }));
+        try testing.expect(try detectShell(alloc, .{ .shell = "bash.exe" }) == null);
+        try testing.expect(try detectShell(alloc, .{ .shell = "pwsh-preview" }) == null);
+    } else {
+        try testing.expect(try detectShell(alloc, .{ .shell = "pwsh" }) == null);
+    }
 }
 
 /// Set up the shell integration features environment variable.
@@ -918,6 +947,152 @@ test "nushell: missing resources" {
 /// Setup the zsh automatic shell integration. This works by setting
 /// ZDOTDIR to our resources dir so that zsh will load our config. This
 /// config then loads the true user config.
+/// Set up PowerShell (pwsh 7 and Windows PowerShell 5.1): load our script
+/// after the profile, with -NoExit -Command, so it wraps the profile's
+/// prompt. The script is read as text and run as a script block rather than
+/// run as a .ps1 file, which Windows PowerShell's default execution policy
+/// (Restricted) refuses. It is injected only when every argument is a
+/// start-up flag we know: anything else (a command, a script, -File, an
+/// option we don't know) runs as given, without the integration.
+///
+/// The result is a direct command (an argv): on Windows a shell command
+/// string is split on whitespace, which would break the -Command argument.
+fn setupPowerShell(
+    alloc: Allocator,
+    command: config.Command,
+    resource_dir: []const u8,
+) !?config.Command {
+    const script = try std.fs.path.join(alloc, &.{ resource_dir, "shell-integration", "powershell", "ghostty.ps1" });
+    std.Io.Dir.accessAbsolute(global.io(), script, .{}) catch |err| {
+        log.warn("unable to find {s}: {}", .{ script, err });
+        return null;
+    };
+
+    var args: std.ArrayList([:0]const u8) = .empty;
+    var iter = try command.argIterator(alloc);
+    defer iter.deinit();
+    const exe = iter.next() orelse return null;
+    try args.append(alloc, try alloc.dupeSentinel(u8, exe, 0));
+    var no_exit = false;
+    while (iter.next()) |arg| {
+        switch (powershellArg(arg)) {
+            .flag => {},
+            .no_exit => no_exit = true,
+            .with_value => {
+                try args.append(alloc, try alloc.dupeSentinel(u8, arg, 0));
+                const value = iter.next() orelse return null;
+                try args.append(alloc, try alloc.dupeSentinel(u8, value, 0));
+                continue;
+            },
+            .other => return null,
+        }
+        try args.append(alloc, try alloc.dupeSentinel(u8, arg, 0));
+    }
+
+    if (!no_exit) try args.append(alloc, "-NoExit");
+    try args.append(alloc, "-Command");
+    try args.append(alloc, try powershellLoadCommand(alloc, script));
+    return .{ .direct = try args.toOwnedSlice(alloc) };
+}
+
+/// The PowerShell command that loads `script`: as text into a script block,
+/// dot-sourced so its functions land in the session; a failure (a locked
+/// down language mode, say) leaves the session as it was.
+fn powershellLoadCommand(alloc: Allocator, script: []const u8) ![:0]const u8 {
+    // In a single-quoted string, a quote is written twice.
+    const quoted = try std.mem.replaceOwned(u8, alloc, script, "'", "''");
+    defer alloc.free(quoted);
+    return try std.fmt.allocPrintSentinel(
+        alloc,
+        "try {{ . ([scriptblock]::Create([IO.File]::ReadAllText('{s}'))) }} catch {{}}",
+        .{quoted},
+        0,
+    );
+}
+
+const PowerShellArg = enum { flag, no_exit, with_value, other };
+
+/// How a start-up argument affects the integration, by the names and the
+/// documented abbreviations pwsh and Windows PowerShell both take (with a
+/// leading "-", "--" or "/"). Flags that only change how the session starts
+/// keep it; anything that runs something or that we don't know doesn't.
+fn powershellArg(arg: []const u8) PowerShellArg {
+    if (arg.len < 2 or (arg[0] != '-' and arg[0] != '/')) return .other;
+    var name = arg[1..];
+    if (name[0] == '-') name = name[1..];
+    const flags = [_][]const u8{
+        "nologo",      "nol", "noprofile", "nop", "noprofileloadtime",
+        "interactive", "i",   "login",     "l",   "mta",
+        "sta",
+    };
+    const with_value = [_][]const u8{
+        "executionpolicy",  "ex", "ep",
+        "workingdirectory", "wd", "wo",
+        "windowstyle",      "w",  "settingsfile",
+    };
+    if (std.ascii.eqlIgnoreCase(name, "noexit") or std.ascii.eqlIgnoreCase(name, "noe")) return .no_exit;
+    for (flags) |f| if (std.ascii.eqlIgnoreCase(name, f)) return .flag;
+    for (with_value) |f| if (std.ascii.eqlIgnoreCase(name, f)) return .with_value;
+    return .other;
+}
+
+test "powershell: injected after start-up flags, never with a command" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var res: TmpResourcesDir = try .init(.powershell);
+    defer res.deinit();
+    const script = try std.fs.path.join(alloc, &.{ res.path, "shell-integration", "powershell", "ghostty.ps1" });
+    const load = try powershellLoadCommand(alloc, script);
+
+    {
+        const result = (try setupPowerShell(alloc, .{ .shell = "pwsh" }, res.path)).?;
+        try testing.expectEqual(@as(usize, 4), result.direct.len);
+        try testing.expectEqualStrings("pwsh", result.direct[0]);
+        try testing.expectEqualStrings("-NoExit", result.direct[1]);
+        try testing.expectEqualStrings("-Command", result.direct[2]);
+        try testing.expectEqualStrings(load, result.direct[3]);
+    }
+    {
+        // Flags stay, with their values; -NoExit isn't given twice.
+        const result = (try setupPowerShell(alloc, .{ .shell = "powershell.exe -NoLogo -nop -ExecutionPolicy Bypass --NoExit" }, res.path)).?;
+        const want = [_][]const u8{ "powershell.exe", "-NoLogo", "-nop", "-ExecutionPolicy", "Bypass", "--NoExit", "-Command" };
+        try testing.expectEqual(want.len + 1, result.direct.len);
+        for (want, result.direct[0..want.len]) |a, b| try testing.expectEqualStrings(a, b);
+    }
+    // A command, a script, an encoded command, no input, an unknown option,
+    // or a flag missing its value: left alone.
+    for ([_][:0]const u8{
+        "pwsh -Command Get-Date",
+        "pwsh -c Get-Date",
+        "pwsh -File x.ps1",
+        "pwsh -f x.ps1",
+        "pwsh x.ps1",
+        "pwsh -EncodedCommand ZQBjAGgAbwA=",
+        "pwsh -ec ZQBjAGgAbwA=",
+        "pwsh -NonInteractive",
+        "pwsh -CommandWithArgs x",
+        "pwsh -NoLog",
+        "pwsh -ExecutionPolicy",
+    }) |cmd| {
+        try testing.expect(try setupPowerShell(alloc, .{ .shell = cmd }, res.path) == null);
+    }
+    // No script, no injection.
+    try testing.expect(try setupPowerShell(alloc, .{ .shell = "pwsh" }, "/nonexistent") == null);
+}
+
+test "powershell: the load command quotes the path" {
+    const testing = std.testing;
+    const cmd = try powershellLoadCommand(testing.allocator, "C:\\it's\\ghostty.ps1");
+    defer testing.allocator.free(cmd);
+    try testing.expectEqualStrings(
+        "try { . ([scriptblock]::Create([IO.File]::ReadAllText('C:\\it''s\\ghostty.ps1'))) } catch {}",
+        cmd,
+    );
+}
+
 fn setupZsh(
     alloc: Allocator,
     command: config.Command,
@@ -1039,6 +1214,10 @@ const TmpResourcesDir = struct {
         switch (shell) {
             .bash => try tmp_dir.dir.writeFile(std.testing.io, .{
                 .sub_path = "shell-integration/bash/ghostty.bash",
+                .data = "",
+            }),
+            .powershell => try tmp_dir.dir.writeFile(std.testing.io, .{
+                .sub_path = "shell-integration/powershell/ghostty.ps1",
                 .data = "",
             }),
             else => {},

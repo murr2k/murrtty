@@ -2932,9 +2932,13 @@ keybind: Keybinds = .{},
 ///   * `none` - Do not do any automatic injection. You can still manually
 ///     configure your shell to enable the integration.
 ///
-///   * `detect` - Detect the shell based on the filename.
+///   * `detect` - Detect the shell based on the filename. On Windows this
+///     includes PowerShell: `pwsh` and `powershell`, with or without `.exe`.
 ///
-///   * `bash`, `elvish`, `fish`, `nushell`, `zsh` - Use this specific shell injection scheme.
+///   * `bash`, `elvish`, `fish`, `nushell`, `powershell`, `zsh` - Use this
+///     specific shell injection scheme. PowerShell's is injected only when
+///     the command's arguments are start-up flags such as `-NoLogo` or
+///     `-NoProfile`, not a command or a script.
 ///
 /// The default value is `detect`.
 @"shell-integration": ShellIntegration = .detect,
@@ -8920,6 +8924,7 @@ pub const ShellIntegration = enum {
     elvish,
     fish,
     nushell,
+    powershell,
     zsh,
 };
 
