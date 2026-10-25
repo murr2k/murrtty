@@ -127,6 +127,8 @@ pub const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(~@as(usize, 0));
 // Virtual keys
 pub const VK_TAB = 0x09;
 pub const VK_RETURN = 0x0D;
+pub const VK_UP = 0x26;
+pub const VK_DOWN = 0x28;
 pub const VK_SHIFT = 0x10;
 pub const VK_CONTROL = 0x11;
 pub const VK_MENU = 0x12;

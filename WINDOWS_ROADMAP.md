@@ -112,7 +112,7 @@ apply to all new code:
 |---|---|---|
 | **S1** overlay host, 1 day | Does a child window drawn over a WGL child window stay clean (no flicker, no stale pixels) while output floods and during live resize, on two GPU vendors? | Where text and interactive overlays live (3.0) |
 | **S2** transparency, 1 to 2 days, run before 3.0 | Does DWM honor per-pixel alpha from child GL windows when the top level uses `DwmEnableBlurBehindWindow` with an empty region? | Transparency path: cheap (4.1 A) or DirectComposition with `WGL_NV_DX_interop2` (4.1 B, XL). Also whether text overlays (3.0) and the tab strip (3.8, 4.3) can stay GDI, or must become composition visuals, since GDI output does not show on a Phase B window. |
-| **S3** ConPTY, 1 day | Does the inbox ConPTY forward OSC 133, OSC 7, OSC 9;9 and DECSCUSR, in order, on Windows 10 22H2 and Windows 11 23H2 to 25H2? | Whether to bundle `conpty.dll` and `OpenConsole.exe` (2.2). *Run 2026-10-25 on Windows 11 25H2 (build 26200), inbox ConPTY, flags 0 as Ghostty uses:* a child writing text markers with each sequence between them (via cmd `type`, pwsh 7 and Windows PowerShell 5.1) got all of them through: OSC 133 A, B (ST-terminated), C and D;0, OSC 7, OSC 9;9 and DECSCUSR. The OSC 133 marks keep their place in the text; OSC 7, OSC 9;9 and DECSCUSR can arrive ahead of text written before them, which doesn't matter for them. OSC 2 is absorbed and re-sent as OSC 0. Flag 0x8 (passthrough) changed nothing. So no bundling for Windows 11; Windows 10 22H2 and 23H2/24H2 not yet run (the probe needs `STARTF_USESTDHANDLES` with null handles, as `Command.zig` passes, or the child writes to the parent's handles). |
+| **S3** ConPTY, 1 day | Does the inbox ConPTY forward OSC 133, OSC 7, OSC 9;9 and DECSCUSR, in order, on Windows 10 22H2 and Windows 11 23H2 to 25H2? | Whether to bundle `conpty.dll` and `OpenConsole.exe` (2.2). *Run 2026-10-25 on Windows 11 25H2 (build 26200), inbox ConPTY, flags 0 as Ghostty uses:* a child writing text markers with each sequence between them (via cmd `type`, pwsh 7 and Windows PowerShell 5.1) got all of them through: OSC 133 A, B (ST-terminated), C and D;0, OSC 7, OSC 9;9 and DECSCUSR. The OSC 133 marks keep their place in the text; OSC 7, OSC 9;9 and DECSCUSR can arrive ahead of text written before them, which doesn't matter for them. OSC 2 is absorbed and re-sent as OSC 0. Flag 0x8 (passthrough) changed nothing. So no bundling for Windows 11; Windows 10 22H2 and 23H2/24H2 not yet run (the probe needs `STARTF_USESTDHANDLES` with null handles, as `Command.zig` passes, or the child writes to the parent's handles). *Found in 2.2:* ConPTY repaints rows as it renders, line feeds included, and after 133;B (input until 133;C) those line feeds marked output rows as prompt continuation, so `jump_to_prompt` stopped on output. Not reordering: one write arrived in place, and a pause before the prompt changed nothing. The integrations end the prompt with 133;I (input ends with the line) instead. Clearing the screen (`cls`, `Clear-Host`) arrives as a repaint, not an erase, so rows that held a prompt keep their prompt mark. |
 | **S4** many contexts, part of 1.4 | 16 panes, each flooding output: steady frames, no stale-frame recurrence, linear memory, on two vendors | Whether per-pane contexts scale. *Run 2026-10-24 on NVIDIA (RTX 2070), scenario `stress-panes`:* every pane kept presenting (1,030 to 1,210 frames each in 13 s, Debug build); memory flat while flooding; per added pane 4 threads, 31 MB resident, 90 MB committed, 64 MB of it Zig's thread stacks (0.15). They scale. AMD and Intel not yet run. *Re-run 2026-10-25 at the end of Phase 1 (15 panes dimmed by 1.7's overlay):* the slowest pane presented 994 frames in 13 s; memory per pane unchanged, and 49 MB of growth in 15 s of flooding (scrollback). |
 | **S5** reparenting, part of 4.5 | Does a GL child window keep rendering after `SetParent` to another top-level window, on NVIDIA, AMD and Intel? | Tab tear-off design |
 | **S6** OpenGL elsewhere, 1 day | What does Microsoft's OpenGL compatibility pack expose on Snapdragon X and in VMs: 4.3 core with fragment SSBOs and sRGB framebuffers? | ARM64 (7.7) and software fallback (6.3) |
@@ -742,6 +742,23 @@ Two link follow-ups from 0.1 depend on this:
   `Start-Sleep 30`.
 - `jump_to_prompt` moves between prompts.
 - After `cd C:\Windows`, a new tab opens there.
+
+*Done 2026-10-25:* the script ends the prompt with 133;I, not B (S3's
+repaint finding), reports the status as 0, the native exit code when a
+program changed it, else 1, and gives the user's prompt the last command's
+`$?` and `$LASTEXITCODE`. It sends OSC 7 only for drive paths of the
+FileSystem provider. Ghostty loads it with `-NoExit -Command` and a script
+block made from the file's text, so the default `Restricted` execution policy
+doesn't stop it, and passes the arguments as a list (a Windows command
+string splits on spaces, quotes ignored). It injects only when every argument
+is a start-up flag it knows, rather than refusing a list of known command
+forms, so anything unknown runs as given. `bash.exe` stays undetected: on
+PATH it is usually WSL's launcher in System32, where bash's `--posix`
+injection would skip the user's bashrc; Git Bash users can source the script
+themselves. The `pwsh-integration` scenario runs every *Done when* item in
+both PowerShells, plus the title following `cd` and the running command, and
+an idle Ctrl+Shift+Q quitting without a dialog. S3 found no reason to bundle
+`OpenConsole` on Windows 11.
 
 **2.3 cmd integration, M.**
 - Set `PROMPT` in the child environment to wrap the user's prompt with OSC 133

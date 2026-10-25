@@ -273,21 +273,39 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                 grid.columns,
                 grid.rows,
             });
-            const text, const pwd = text: {
+            const text, const pwd, const marks, const cursor = text: {
                 s.core_surface.renderer_state.mutex.lockUncancelable(global.io());
                 defer s.core_surface.renderer_state.mutex.unlock(global.io());
                 const terminal = &s.core_surface.io.terminal;
                 const t = try terminal.plainString(alloc);
                 errdefer alloc.free(t);
-                break :text .{ t, try alloc.dupe(u8, terminal.getPwd() orelse "") };
+                const p = try alloc.dupe(u8, terminal.getPwd() orelse "");
+                errdefer alloc.free(p);
+                const cur = terminal.screens.active.cursor;
+                break :text .{ t, p, try promptMarks(alloc, terminal), .{
+                    cur.x,
+                    cur.y,
+                    @tagName(cur.semantic_content),
+                    terminal.cursorIsAtPrompt(),
+                } };
             };
             defer alloc.free(text);
             defer alloc.free(pwd);
+            defer alloc.free(marks);
             try writeString(alloc, out, text);
             // The working directory as the shell last reported it (the
             // starting one until then).
             try out.appendSlice(alloc, ",\"pwd\":");
             try writeString(alloc, out, pwd);
+            // Each visible row's prompt mark (OSC 133): "p" a prompt's
+            // first row, "c" a continuation, "." none.
+            try out.appendSlice(alloc, ",\"marks\":");
+            try writeString(alloc, out, marks);
+            // The cursor (column, row in the active area), its semantic
+            // content and whether Ghostty takes it as at a prompt.
+            try out.print(alloc, ",\"cursor\":[{d},{d}],\"semantic\":\"{s}\",\"at_prompt\":{}", .{
+                cursor[0], cursor[1], cursor[2], cursor[3],
+            });
         }
         try out.append(alloc, '}');
     }
@@ -297,6 +315,21 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         try out.print(alloc, "[{d},{d},{d},{d}]", .{ sp.divider.left, sp.divider.top, sp.divider.right, sp.divider.bottom });
     }
     try out.append(alloc, ']');
+}
+
+/// One character per row of the viewport: its semantic prompt mark.
+fn promptMarks(alloc: Allocator, terminal: anytype) ![]u8 {
+    var marks: std.ArrayList(u8) = .empty;
+    errdefer marks.deinit(alloc);
+    var it = terminal.screens.active.pages.rowIterator(.right_down, .{ .viewport = .{} }, null);
+    while (it.next()) |pin| {
+        try marks.append(alloc, switch (pin.rowAndCell().row.semantic_prompt) {
+            .none => '.',
+            .prompt => 'p',
+            .prompt_continuation => 'c',
+        });
+    }
+    return marks.toOwnedSlice(alloc);
 }
 
 /// A COLORREF (0x00BBGGRR) as 0xRRGGBB.

@@ -704,8 +704,11 @@ pub fn key(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
     defer held.release();
 
     const sc = w.MapVirtualKeyW(vk, w.MAPVK_VK_TO_VSC);
+    // Keys of the navigation block: without the flag their scan codes read
+    // as the numeric keypad's (Up as keypad 8).
     const extended = switch (vk) {
         w.VK_PRIOR, w.VK_NEXT, w.VK_INSERT => true,
+        0x23...0x28, 0x2E => true, // End, Home, Left, Up, Right, Down, Delete
         else => false,
     };
     var flags: usize = 1 | (@as(usize, sc) << 16);
@@ -833,6 +836,15 @@ pub const Dump = struct {
         /// The terminal's working directory: the starting one until the
         /// shell reports one (OSC 7, OSC 9;9).
         pwd: ?[]const u8 = null,
+        /// Each visible row's prompt mark (OSC 133): "p" a prompt's first
+        /// row, "c" a continuation, "." none.
+        marks: ?[]const u8 = null,
+        /// The cursor (column, row of the active area), its semantic
+        /// content ("prompt", "input", "output") and whether Ghostty takes
+        /// it as at a prompt (closing then doesn't ask).
+        cursor: ?[2]u32 = null,
+        semantic: ?[]const u8 = null,
+        at_prompt: ?bool = null,
     };
 };
 

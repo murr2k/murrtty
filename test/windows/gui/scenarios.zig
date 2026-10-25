@@ -41,16 +41,20 @@ pub const all = [_]Scenario{
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
     .{ .name = "pwd", .about = "OSC 9;9 and OSC 7 set the working directory; new tabs start there; relative links resolve against it", .run = pwdReports },
+    .{ .name = "pwsh-integration", .about = "PowerShell 7 and 5.1: the folder carries to new tabs, idle tabs close without asking, jump_to_prompt", .run = pwshIntegration },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
 /// Home as the working directory: the harness's launches count as from a
 /// shell (see launch-context), which would start each terminal in its long
-/// scenario folder, and text typed after that prompt wraps.
+/// scenario folder, and text typed after that prompt wraps. No shell
+/// integration (the scenarios for it turn it on), so closing at an idle
+/// prompt still asks, as most scenarios expect.
 const base_config =
     \\command = cmd.exe
     \\window-show-tab-bar = auto
     \\working-directory = home
+    \\shell-integration = none
     \\
 ;
 
@@ -1753,6 +1757,115 @@ fn pwdReports(h: *Harness) anyerror!void {
     defer h.alloc.free(want);
     try expectLaunch(h, &g, 1, want);
     try quit(h, &g, second);
+}
+
+/// PowerShell integration (roadmap 2.2), for PowerShell 7 and Windows
+/// PowerShell 5.1.
+fn pwshIntegration(h: *Harness) anyerror!void {
+    try powershellIntegration(h, "pwsh-integration-7", "pwsh -NoLogo");
+    try powershellIntegration(h, "pwsh-integration-5", "powershell -NoLogo");
+}
+
+/// With Ghostty's script loaded: a cd reports the folder (pwd and title)
+/// and a new tab starts there; an idle tab closes without asking while one
+/// running a command asks, its title the command; jump_to_prompt moves the
+/// view to earlier prompts.
+fn powershellIntegration(h: *Harness, name: []const u8, command: []const u8) !void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    const extra = try std.fmt.allocPrint(h.alloc, "command = {s}\nshell-integration = detect\n", .{command});
+    defer h.alloc.free(extra);
+    var g = try start(h, name, extra, "PS ");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const first = try h.surface(&g, win);
+
+    try h.typeText(first, "cd C:\\Windows");
+    h.enter(first);
+    try waitPwd(h, &g, 0, "C:\\Windows");
+    try waitTabTitle(h, &g, 0, "C:\\Windows");
+
+    // A new tab starts there, and closes at its idle prompt without asking.
+    h.key(first, cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    try waitTabText(h, &g, 1, "PS C:\\Windows>");
+    const second = try h.surface(&g, win);
+    h.key(second, cs, 'W');
+    try waitWindowTabs(h, &g, win, 1);
+    w.Sleep(500);
+    try h.expect(try h.dialogCount(&g) == 0, "an idle prompt closes without asking", .{});
+
+    // A running command asks; its title is the command.
+    try h.typeText(first, "Start-Sleep 30");
+    h.enter(first);
+    try waitTabTitle(h, &g, 0, "Start-Sleep 30");
+    h.key(first, cs, 'W');
+    const dlg = try h.waitDialog(&g, 5000);
+    h.answer(&g, dlg, w.IDNO);
+    try waitNoDialog(h, &g);
+    try waitWindowTabs(h, &g, win, 1);
+    h.key(first, .{ .ctrl = true }, 'C');
+    try waitTabTitle(h, &g, 0, "C:\\Windows");
+
+    // Two commands each printing more than a screen; jump_to_prompt
+    // (Ctrl+Shift+Up) brings each one's prompt to the top of the view.
+    try h.typeText(first, "'mark-a'; 1..45");
+    h.enter(first);
+    try h.typeText(first, "'mark-b'; 1..45");
+    h.enter(first);
+    try waitTabLine(h, &g, 0, "45");
+    w.Sleep(500);
+    h.key(first, cs, w.VK_UP);
+    try waitTopLine(h, &g, 0, "'mark-b'");
+    h.key(first, cs, w.VK_UP);
+    try waitTopLine(h, &g, 0, "'mark-a'");
+    // At an idle prompt, quitting doesn't ask.
+    try quitIdle(h, &g, first);
+}
+
+/// Ctrl+Shift+Q at an idle prompt: Ghostty exits with code 0 and no dialog.
+fn quitIdle(h: *Harness, g: *Harness.Ghostty, target: w.HWND) !void {
+    h.key(target, .{ .ctrl = true, .shift = true }, 'Q');
+    const code = g.waitExit(10000);
+    try h.expect(code != null and code.? == 0, "an idle prompt quits without asking, code 0 (got {?d})", .{code});
+}
+
+/// Wait until the first window's tab `tab` has the title `want`.
+fn waitTabTitle(h: *Harness, g: *Harness.Ghostty, tab: usize, want: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const win_tabs = d.value.windows[0].tabs;
+        if (tab < win_tabs.len and std.ascii.eqlIgnoreCase(win_tabs[tab].title, want)) {
+            return h.expect(true, "tab {d}'s title is {s}", .{ tab, want });
+        }
+        w.Sleep(200);
+    }
+    return h.fail("tab {d}'s title isn't {s}", .{ tab, want });
+}
+
+/// Wait until the top row of the first window's tab `tab` is a prompt
+/// holding `needle`.
+fn waitTopLine(h: *Harness, g: *Harness.Ghostty, tab: usize, needle: []const u8) !void {
+    var top_buf: [256]u8 = undefined;
+    var top: []const u8 = "";
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const win_tabs = d.value.windows[0].tabs;
+        if (tab < win_tabs.len) if (win_tabs[tab].text) |text| {
+            const line = text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len];
+            if (std.mem.startsWith(u8, line, "PS ") and std.mem.indexOf(u8, line, needle) != null) {
+                return h.expect(true, "the view starts at the prompt of {s}", .{needle});
+            }
+            const n = @min(line.len, top_buf.len);
+            @memcpy(top_buf[0..n], line[0..n]);
+            top = top_buf[0..n];
+        };
+        w.Sleep(200);
+    }
+    return h.fail("the view's top row is '{s}', not the prompt of {s}", .{ top, needle });
 }
 
 /// Wait until the first window's tab `tab` reports `want` as its pwd.
