@@ -19,8 +19,10 @@ on:
 permissions:
   contents: read
 
+# A newer push cancels the older run; runs on other refs (dispatched by
+# hand) queue for the one runner instead.
 concurrency:
-  group: windows-port-desktop
+  group: windows-port-desktop-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

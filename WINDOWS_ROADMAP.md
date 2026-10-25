@@ -445,6 +445,101 @@ console input record.
 *Done when:* `Shift+Enter`, `Ctrl+Shift+P` and `Ctrl+Shift+Enter` reach
 `[Console]::ReadKey` with their modifiers, and a GUI scenario checks it.
 
+**0.13 Self-hosted runner on the development desktop, M.** *Planned
+2026-10-24 (decision 6), at the break before Phase 1.* A GitHub Actions runner
+on the owner's desktop runs a Debug build, the unit tests and the GUI suite on
+every push to `windows-port`. The hosted `windows-port.yml` stays as the
+manual clean-machine builder test. Facts the design rests on:
+- *Cost.* GitHub announced a $0.002/minute charge for self-hosted runners on
+  private repositories, then postponed it; as of October 2026 self-hosted
+  minutes are free and no new date is set. The owner accepts the charge if
+  it comes.
+- *The GUI suite needs a signed-in session.* A runner installed as a Windows
+  service lives in session 0, where OpenGL falls back to Microsoft's software
+  1.1 renderer ("GDI Generic"); Ghostty needs 4.3. So the runner runs in the
+  foreground of a signed-in session, started at logon by a scheduled task,
+  not as a service.
+- *The suite works in a signed-in session today:* that is how it runs from
+  development sessions, on hidden desktops. Two things still reach the
+  session: the clipboard scenarios save, use and restore its clipboard, and
+  `links-open` briefly registers a protocol and file type in its HKCU. The
+  `pixels` scenario adds a taskbar button for a moment.
+- *Trust.* The runner executes whatever workflow code is pushed. Only the
+  owner (and development sessions with the owner's credentials) push, so it
+  runs code that would run locally anyway. Third-party actions are blocked by
+  the repository policy, the workflow triggers only on pushes to
+  `windows-port` (Dependabot pushes `dependabot/*` branches, which carry
+  edited workflow files), never on pull requests, and the runner must never
+  serve a public repository.
+
+Which account the runner uses is the main decision:
+- **A, the owner's account, in the owner's session.** Proven (it is how the
+  suite runs now) and simplest. The jobs run with the owner's rights (not
+  elevated) and only while the owner is signed in; the clipboard and HKCU
+  effects above land in the owner's session. *Recommended to start.*
+- **B, a dedicated standard account in a second signed-in session** (fast
+  user switching, left signed in). Isolates files, clipboard and HKCU. Open:
+  whether the NVIDIA OpenGL driver serves a session that isn't the active
+  console one, so it starts with that experiment; and after every reboot
+  someone has to sign that account in again.
+- **C, both:** build and unit tests on a service runner under a dedicated
+  account (always on, isolated), the GUI suite on a runner in a signed-in
+  session (label `gui`). Twice the setup.
+
+Steps:
+1. *Harness.* A session-wide mutex so two GUI suites never overlap (a CI run
+   and a development run would fight over the clipboard and the HKCU
+   registrations); a way to skip scenarios (`--skip pixels`, so pushes don't
+   flash a taskbar button); a results folder the workflow can upload.
+2. *Install.* The runner from `actions/runner` releases, checksum verified,
+   in `C:\actions-runner`, registered to this repository with a one-time
+   token and the labels `self-hosted, windows, x64, gpu`; a scheduled task
+   starts it hidden at logon. Auto-update stays on (GitHub refuses runners
+   that fall behind).
+3. *Workflow* `windows-port-desktop.yml`: on pushes to `windows-port` (not
+   for Markdown-only changes) and by hand; `runs-on: [self-hosted, windows,
+   gpu]`; one run at a time, a newer push cancels the older run. Below-normal
+   priority so builds yield to the owner's work. The Zig caches live outside
+   the checkout, so checkout's clean doesn't wipe them and builds stay
+   incremental; the builder's Zig stays installed. Steps: Debug build, unit
+   tests, GUI suite without `pixels`; on failure, upload the scenario folders
+   and logs (7-day retention: artifact storage on the free plan is 500 MB).
+   The hosted workflow's guard learns to allow `windows-port*.yml`.
+4. *Upkeep.* Clear the local cache when it passes about 20 GB (it reached 14
+   GB in a day of development); note the runner in the project's CLAUDE.md
+   with how to stop, start and remove it.
+
+*Done when:* a push to `windows-port` runs the build, unit tests and GUI suite
+on the desktop runner and passes; an injected failure in a scenario turns it
+red with the scenario's logs attached; and the owner sees nothing on screen
+while it runs. Owner decisions besides the account: whether the desktop
+stays awake for runs (queued jobs wait up to 24 hours), whether to exclude
+the runner's folders from Defender scanning (faster builds, less scanning),
+and whether green runs also publish a ReleaseFast `ghostty.exe` (as an
+artifact, or installed into the project's `build\`). This also changes 7.3:
+the GUI suite runs on this runner, and Mesa llvmpipe on hosted runners
+becomes optional.
+
+*Decided 2026-10-24:* account A; green runs on `windows-port` install the
+ReleaseFast build into the project's `build\` (skipped while that Ghostty
+runs); the runner's folders are excluded from Defender scanning.
+
+*Done 2026-10-24. As built:* runner 2.338.1 (checksum verified) in
+`C:\actions-runner`, registered as `surrey-desktop`, started at logon by the
+scheduled task `ghostty-windows actions runner` in a headless console (no
+window) at task priority 7, so jobs run below normal. The workflow is
+`windows-port-desktop.yml`; the release prefix comes from the runner's
+`.env` (`GHOSTTY_INSTALL_PREFIX`), so no machine path is in the repository.
+The harness gained `--skip`, the session mutex `Local\GhosttyGuiTest` and
+`GHOSTTY_GUI_TEST_DIR`. The first run passed in 25 minutes (unit tests 17,
+GUI suite 2.5 with 17 of 17 scenarios, release install 4.3); an injected
+`launch` failure turned the next run red ("16 of 17 passed") with every
+scenario's config, dump and log in the uploaded artifact, and skipped the
+install. Most of the unit-test step is the suite running, not compiling:
+the full suite takes about 10 minutes on this machine. Every commit
+recompiles the Zig test module anyway, since the version string carries
+the commit.
+
 ---
 
 ## Phase 1: Splits (about 2.5 weeks, plus 1.10 in M2)

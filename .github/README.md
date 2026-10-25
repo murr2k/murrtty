@@ -50,11 +50,13 @@ testing drove the app with key and mouse messages sent to its windows, with
 the modifier keys set as held where needed, and checked the results with
 window captures, a Debug-build state dump and logs. Those GUI tests are in
 `test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
-desktop. The port has not yet had much use on a physical keyboard. A
-manually started workflow (`.github/workflows/windows-port.yml`) runs the
-builder on a clean Windows runner and then the unit tests. The GUI tests
-don't run there yet: they need an OpenGL 4.3 driver, which hosted runners
-lack.
+desktop. The port has not yet had much use on a physical keyboard. Every
+push to the port branch runs the unit tests and the GUI tests on a
+self-hosted runner on the development machine
+(`.github/workflows/windows-port-desktop.yml`); the GUI tests need an
+OpenGL 4.3 driver, which GitHub's hosted runners lack. A manually started
+workflow (`.github/workflows/windows-port.yml`) runs the builder on a clean
+hosted Windows runner and then the unit tests.
 
 **Tested and working**
 
@@ -276,7 +278,8 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
 | `src/renderer/OpenGL.zig`, `src/renderer/opengl/Device.zig` | WGL context per surface and `SwapBuffers` presentation on Windows |
 | `build-windows.ps1`, `build-windows.cmd` | The builder |
 | `test/windows/gui/`, `src/apprt/win32/test_hooks.zig` | GUI tests, and the Debug-only state dump they read |
-| `.github/workflows/windows-port.yml` | CI, started by hand: the builder and the unit tests on a Windows runner |
+| `.github/workflows/windows-port.yml` | CI, started by hand: the builder and the unit tests on a clean hosted Windows runner |
+| `.github/workflows/windows-port-desktop.yml` | CI on every push: unit tests and GUI tests on the self-hosted runner |
 
 Ghostty's embedding library (`include/ghostty.h`, the library the macOS app
 links) also gains a Windows platform (`GHOSTTY_PLATFORM_WINDOWS`, which takes
