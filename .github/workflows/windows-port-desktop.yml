@@ -1,0 +1,93 @@
+# Runs on the self-hosted runner on the development desktop
+# (WINDOWS_ROADMAP.md 0.13): the unit tests and the GUI suite on every push
+# to windows-port, then installs the release build where the runner's
+# GHOSTTY_INSTALL_PREFIX points. The runner runs in the owner's signed-in
+# session: the GUI suite needs the GPU's OpenGL, which a service (session 0)
+# doesn't get. windows-port.yml stays as the manual clean-machine test.
+#
+# The runner executes whatever this workflow runs, so it triggers only on
+# pushes to windows-port and by hand: never on pull requests or other
+# branches (Dependabot's branches carry edited workflow files).
+name: Windows port (desktop)
+
+on:
+  push:
+    branches: [windows-port]
+    paths-ignore: ["**.md"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-port-desktop
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: Unit tests and GUI suite (desktop)
+    runs-on: [self-hosted, windows, gpu]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Keep Zig's caches, the builder's Zig and the unpacked
+          # dependencies between runs so builds are incremental; the hosted
+          # workflow covers clean builds.
+          clean: false
+
+      # .zig-cache grows with every build (14 GB in a day of development).
+      - name: Cap the build cache
+        shell: pwsh
+        run: |
+          if (Test-Path .zig-cache) {
+            $gb = (Get-ChildItem .zig-cache -Recurse -File -Force | Measure-Object Length -Sum).Sum / 1GB
+            "build cache: {0:N1} GB" -f $gb
+            if ($gb -gt 20) { Remove-Item -Recurse -Force .zig-cache; "cleared" }
+          }
+
+      - name: Zig
+        id: zig
+        shell: cmd
+        run: .\build-windows.cmd -SetupOnly
+
+      - name: Unit tests
+        shell: pwsh
+        run: |
+          $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
+          & $zig build test -Dtarget=x86_64-windows-gnu --summary failures
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # pixels is left out: it briefly adds a taskbar button on the owner's
+      # desktop.
+      - name: GUI suite
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        shell: cmd
+        env:
+          GHOSTTY_GUI_TEST_DIR: ${{ runner.temp }}\gui-tests
+        run: test\windows\gui\run.cmd --skip pixels
+
+      - name: Upload failed GUI runs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-tests
+          path: ${{ runner.temp }}\gui-tests
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Install the release build
+        if: success() && github.ref == 'refs/heads/windows-port'
+        shell: pwsh
+        run: |
+          $prefix = $env:GHOSTTY_INSTALL_PREFIX
+          if (-not $prefix) { "GHOSTTY_INSTALL_PREFIX isn't set on this runner; skipped"; exit 0 }
+          $exe = Join-Path $prefix 'bin\ghostty.exe'
+          if (Get-Process ghostty -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }) {
+            "::notice::$exe is running, so it was not replaced"
+            exit 0
+          }
+          & .\build-windows.cmd -Prefix $prefix
+          exit $LASTEXITCODE

@@ -9,8 +9,8 @@
 # an issue for the vouch ones), and only a registered one can be disabled,
 # so until then the repository's actions policy (GitHub-owned actions
 # only) stops each at startup: all of them use third-party actions. The
-# guard job fails the run if any registered workflow but this one is
-# active, and lists the ones not registered yet.
+# guard job fails the run if any registered workflow other than the port's
+# own (windows-port*.yml) is active, and lists the ones not registered yet.
 name: Windows port
 
 on:
@@ -36,22 +36,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          self="${GITHUB_WORKFLOW_REF#"$GITHUB_REPOSITORY/"}"
-          self="${self%%@*}"
           registered=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows" \
             --jq '.workflows[] | "\(.path) \(.state)"')
           files=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows?ref=$GITHUB_SHA" \
             --jq '.[] | select(.type == "file" and (.name | test("\\.ya?ml$"))) | .path')
           bad=0
           while read -r path state; do
-            case "$path" in .github/workflows/*) ;; *) continue ;; esac
-            if [ "$path" != "$self" ] && [ "$state" = active ]; then
+            case "$path" in
+              .github/workflows/windows-port*.yml) continue ;;
+              .github/workflows/*) ;;
+              *) continue ;;
+            esac
+            if [ "$state" = active ]; then
               echo "::error::$path is active. Disable it: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
               bad=1
             fi
           done <<< "$registered"
           for path in $files; do
-            [ "$path" = "$self" ] && continue
+            case "$path" in .github/workflows/windows-port*.yml) continue ;; esac
             if ! awk -v p="$path" '$1 == p { f = 1 } END { exit !f }' <<< "$registered"; then
               echo "::notice::$path is not registered yet. Disable it once it is: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
             fi
