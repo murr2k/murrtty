@@ -1529,9 +1529,18 @@ pub const StreamHandler = struct {
             return;
         }
 
-        if (builtin.target.os.tag == .windows) {
-            log.warn("reportPwd unimplemented on windows", .{});
-            return;
+        // On Windows, OSC 9;9 (which Windows Terminal documents for shells)
+        // and iTerm2's CurrentDir send the path itself, maybe quoted; OSC 7
+        // sends a URL (below). Only a local drive path is taken.
+        if (comptime builtin.target.os.tag == .windows) {
+            if (std.mem.indexOf(u8, url, "://") == null) {
+                const path = try internal_os.cwd_report.fromRaw(self.alloc, url) orelse {
+                    log.warn("working directory report is not a local drive path", .{});
+                    return;
+                };
+                defer self.alloc.free(path);
+                return self.setReportedPwd(path);
+            }
         }
 
         // Attempt to parse this file-style URI using options appropriate
@@ -1586,8 +1595,21 @@ pub const StreamHandler = struct {
         var stack_alloc_buf: [1024]u8 = undefined;
         var stack_alloc: std.heap.BufferFirstAllocator = .init(&stack_alloc_buf, arena_alloc.allocator());
         defer arena_alloc.deinit();
-        const path = try uri.path.toRawMaybeAlloc(stack_alloc.allocator());
+        const raw_path = try uri.path.toRawMaybeAlloc(stack_alloc.allocator());
 
+        // On Windows the URL's path is /C:/dir.
+        const path: []const u8 = if (comptime builtin.target.os.tag == .windows)
+            try internal_os.cwd_report.fromUrlPath(stack_alloc.allocator(), raw_path) orelse {
+                log.warn("OSC 7 path is not a local drive path", .{});
+                return;
+            }
+        else
+            raw_path;
+        try self.setReportedPwd(path);
+    }
+
+    /// Take `path` as the terminal's working directory, as a shell reported.
+    fn setReportedPwd(self: *StreamHandler, path: []const u8) !void {
         log.debug("terminal pwd: {s}", .{path});
         try self.terminal.setPwd(path);
 

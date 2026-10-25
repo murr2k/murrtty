@@ -2194,15 +2194,7 @@ fn resolvePathForOpening(
     path: []const u8,
 ) Allocator.Error!?[]const u8 {
     if (!std.fs.path.isAbsolute(path)) {
-        // Not on Windows, where the link goes to the runtime as clicked.
-        // The pwd there is still the starting directory whatever the shell
-        // did since (OSC 7 is not handled on Windows), so resolving against
-        // it would name the wrong file. And the check below would go
-        // through std's Windows file calls, which follow links, panic in
-        // Debug builds on names Windows rejects (NUL, an over-long
-        // component) and overrun a fixed buffer on very long paths, all of
-        // which terminal output can supply.
-        if (comptime builtin.os.tag == .windows) return null;
+        if (comptime builtin.os.tag == .windows) return self.resolvePathWindows(path);
 
         const terminal_pwd = self.io.terminal.getPwd() orelse {
             return null;
@@ -2219,6 +2211,25 @@ fn resolvePathForOpening(
     }
 
     return null;
+}
+
+/// Windows: relative link text (src/main.zig, ./x, ../x) joined to the
+/// terminal's pwd by spelling alone, with no existence check. The file
+/// system calls the check would make follow links, panic in Debug builds on
+/// names Windows rejects (NUL, an over-long component) and overrun a fixed
+/// buffer on very long paths, all of which terminal output can supply; the
+/// runtime vets what this names before opening it. Text relative to another
+/// base (~, $VAR, a drive's own folder in C:x, the current drive's root in
+/// \x) resolves to nothing.
+fn resolvePathWindows(self: *Surface, path: []const u8) Allocator.Error!?[]const u8 {
+    if (path.len == 0) return null;
+    switch (path[0]) {
+        '~', '$', '/', '\\' => return null,
+        else => {},
+    }
+    if (std.mem.indexOfScalar(u8, path, ':') != null) return null;
+    const terminal_pwd = self.io.terminal.getPwd() orelse return null;
+    return try std.fs.path.resolveWindows(self.alloc, &.{ terminal_pwd, path });
 }
 
 /// Returns the x/y coordinate of where the IME (Input Method Editor)
