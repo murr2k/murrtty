@@ -110,6 +110,14 @@ pub const Backend = union(Kind) {
             .exec => |*exec| exec.getProcessInfo(info),
         };
     }
+
+    /// Windows: the shell's current directory as its process holds it, for
+    /// a shell whose cd changes that (cmd), or null. The caller owns it.
+    pub fn processCwd(self: *const Backend, alloc: Allocator) ?[]u8 {
+        return switch (self.*) {
+            .exec => |*exec| exec.processCwd(alloc),
+        };
+    }
 };
 
 /// Termio thread data. See termio.ThreadData for docs.

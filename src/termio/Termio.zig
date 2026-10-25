@@ -849,3 +849,9 @@ pub const ThreadData = struct {
 pub fn getProcessInfo(self: *Termio, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.backend.getProcessInfo(info);
 }
+
+/// Windows: the shell's current directory as its process holds it, for a
+/// shell whose cd changes that (cmd), or null. The caller owns it.
+pub fn processCwd(self: *const Termio, alloc: Allocator) ?[]u8 {
+    return self.backend.processCwd(alloc);
+}

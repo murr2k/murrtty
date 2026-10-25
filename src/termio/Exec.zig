@@ -619,6 +619,12 @@ const Subprocess = struct {
     pty: ?Pty = null,
     process: ?Process = null,
 
+    /// Windows: a handle to the shell for reading its current directory
+    /// (internal_os.process_cwd), or 0. Only for cmd, whose cd changes the
+    /// process's directory. Read from the app thread, so it is its own
+    /// handle (not the process's, which stop closes) and atomic.
+    cwd_process: std.atomic.Value(usize) = .init(0),
+
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
 
@@ -918,6 +924,10 @@ const Subprocess = struct {
     /// Clean up the subprocess. This will stop the subprocess if it is started.
     pub fn deinit(self: *Subprocess) void {
         self.stop();
+        if (comptime builtin.target.os.tag == .windows) {
+            const handle = self.cwd_process.swap(0, .acq_rel);
+            if (handle != 0) _ = windows.exp.kernel32.CloseHandle(@ptrFromInt(handle));
+        }
         if (self.pty) |*pty| pty.deinit();
         if (self.env) |*env| env.deinit();
         self.arena.deinit();
@@ -1118,6 +1128,7 @@ const Subprocess = struct {
         };
         log.info("started subcommand path={s} pid={?}", .{ self.args[0], cmd.pid });
 
+        if (comptime builtin.target.os.tag == .windows) self.keepCwdProcess(cmd.pid.?);
         self.process = .{ .fork_exec = cmd };
         return switch (builtin.target.os.tag) {
             .windows => .{
@@ -1302,7 +1313,57 @@ const Subprocess = struct {
         const pty = &(self.pty orelse return null);
         return pty.getProcessInfo(info);
     }
+
+    /// Windows: keep a handle for reading the shell's current directory
+    /// (only the rights that needs) when the shell is cmd.
+    fn keepCwdProcess(self: *Subprocess, process: windows.HANDLE) void {
+        if (!tracksProcessCwd(self.args[0])) return;
+        var dup: windows.HANDLE = undefined;
+        if (windows.exp.kernel32.DuplicateHandle(
+            windows.GetCurrentProcess(),
+            process,
+            windows.GetCurrentProcess(),
+            &dup,
+            internal_os.process_cwd.access,
+            windows.FALSE,
+            0,
+        ) == windows.FALSE) {
+            log.warn("cannot keep a handle to read the shell's directory", .{});
+            return;
+        }
+        const old = self.cwd_process.swap(@intFromPtr(dup), .acq_rel);
+        if (old != 0) _ = windows.exp.kernel32.CloseHandle(@ptrFromInt(old));
+    }
+
+    /// Windows: the shell's current directory as its process holds it, for
+    /// cmd (see cwd_process), or null. Callable from any thread.
+    pub fn processCwd(self: *const Subprocess, alloc: Allocator) ?[]u8 {
+        if (comptime builtin.target.os.tag != .windows) return null;
+        const handle = self.cwd_process.load(.acquire);
+        if (handle == 0) return null;
+        return internal_os.process_cwd.get(alloc, @ptrFromInt(handle)) catch null;
+    }
 };
+
+/// Whether the shell `exe` keeps its process's current directory where its
+/// user is: cmd's cd does. PowerShell's Set-Location doesn't, nor does WSL
+/// or ssh, whose directories aren't this computer's.
+fn tracksProcessCwd(exe: []const u8) bool {
+    const base = std.fs.path.basename(exe);
+    const name = if (std.ascii.endsWithIgnoreCase(base, ".exe")) base[0 .. base.len - 4] else base;
+    return std.ascii.eqlIgnoreCase(name, "cmd");
+}
+
+test tracksProcessCwd {
+    const testing = std.testing;
+    try testing.expect(tracksProcessCwd("cmd.exe"));
+    try testing.expect(tracksProcessCwd("C:\\WINDOWS\\system32\\CMD.EXE"));
+    try testing.expect(tracksProcessCwd("cmd"));
+    try testing.expect(!tracksProcessCwd("pwsh.exe"));
+    try testing.expect(!tracksProcessCwd("powershell"));
+    try testing.expect(!tracksProcessCwd("wsl.exe"));
+    try testing.expect(!tracksProcessCwd("cmdx.exe"));
+}
 
 /// Windows: whether a shell can start in `path`, an existing directory
 /// CreateProcessW takes (under MAX_PATH even where long paths are on). Asked
@@ -2132,6 +2193,12 @@ fn appendEnvAlways(
 /// not available on a particular platform.
 pub fn getProcessInfo(self: *Exec, comptime info: ProcessInfo) ?ProcessInfo.Type(info) {
     return self.subprocess.getProcessInfo(info);
+}
+
+/// Windows: the shell's current directory as its process holds it, when the
+/// shell is one whose cd changes that (cmd), else null. The caller owns it.
+pub fn processCwd(self: *const Exec, alloc: Allocator) ?[]u8 {
+    return self.subprocess.processCwd(alloc);
 }
 
 test "execCommand darwin: shell command" {

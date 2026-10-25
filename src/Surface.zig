@@ -2184,6 +2184,12 @@ pub fn pwd(
 ) Allocator.Error!?[]const u8 {
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
+    if (comptime builtin.os.tag == .windows) {
+        // Until the shell reports, cmd's own directory (its cd changes it).
+        if (!self.io.terminal_stream.handler.pwd_reported) {
+            if (self.io.processCwd(alloc)) |cwd| return cwd;
+        }
+    }
     const terminal_pwd = self.io.terminal.getPwd() orelse return null;
     // Windows: a shell that reported it doesn't know (empty) leaves the
     // configured directory to new terminals.
@@ -2226,9 +2232,9 @@ fn resolvePathForOpening(
 /// terminal output can supply; the runtime vets what this names before
 /// opening it. Text relative to another base (~, $VAR, a drive's own folder
 /// in C:x, the current drive's root in \x) resolves to nothing, and so does
-/// any text until the shell reports where it is: the starting directory
-/// would name the wrong file after a cd. Called with the renderer state's
-/// lock held.
+/// any text until the shell reports where it is, unless the shell is cmd,
+/// whose own directory follows its cd: the starting directory would name
+/// the wrong file after a cd. Called with the renderer state's lock held.
 fn resolvePathWindows(self: *Surface, path: []const u8) Allocator.Error!?[]const u8 {
     if (path.len == 0) return null;
     switch (path[0]) {
@@ -2236,7 +2242,11 @@ fn resolvePathWindows(self: *Surface, path: []const u8) Allocator.Error!?[]const
         else => {},
     }
     if (std.mem.indexOfScalar(u8, path, ':') != null) return null;
-    if (!self.io.terminal_stream.handler.pwd_reported) return null;
+    if (!self.io.terminal_stream.handler.pwd_reported) {
+        const cwd = self.io.processCwd(self.alloc) orelse return null;
+        defer self.alloc.free(cwd);
+        return try std.fs.path.resolveWindows(self.alloc, &.{ cwd, path });
+    }
     const terminal_pwd = self.io.terminal.getPwd() orelse return null;
     if (terminal_pwd.len == 0) return null;
     return try std.fs.path.resolveWindows(self.alloc, &.{ terminal_pwd, path });

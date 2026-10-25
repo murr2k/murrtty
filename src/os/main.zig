@@ -20,6 +20,7 @@ const kernel_info = @import("kernel_info.zig");
 // Namespaces
 pub const cgroup = @import("cgroup.zig");
 pub const cwd_report = @import("cwd_report.zig");
+pub const process_cwd = @import("process_cwd.zig");
 pub const edit = @import("edit.zig");
 pub const hostname = @import("hostname.zig");
 pub const i18n = @import("i18n.zig");
@@ -61,6 +62,7 @@ pub const getConfigEditCommand = edit.getConfigEditCommand;
 
 test {
     _ = cwd_report;
+    _ = process_cwd;
     _ = file;
     _ = stderr;
     _ = edit;

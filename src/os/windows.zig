@@ -9,6 +9,7 @@ const windows = std.os.windows;
 // external functions.
 
 // Utility functions
+pub const GetCurrentProcess = windows.GetCurrentProcess;
 pub const GetCurrentProcessId = windows.GetCurrentProcessId;
 pub const GetLastError = windows.GetLastError;
 pub const unexpectedError = windows.unexpectedError;
@@ -215,6 +216,16 @@ pub const exp = struct {
             NameType: COMPUTER_NAME_FORMAT,
             lpBuffer: ?[*]u16,
             nSize: *DWORD,
+        ) callconv(.winapi) BOOL;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-duplicatehandle
+        pub extern "kernel32" fn DuplicateHandle(
+            hSourceProcessHandle: HANDLE,
+            hSourceHandle: HANDLE,
+            hTargetProcessHandle: HANDLE,
+            lpTargetHandle: *HANDLE,
+            dwDesiredAccess: DWORD,
+            bInheritHandle: BOOL,
+            dwOptions: DWORD,
         ) callconv(.winapi) BOOL;
         /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileattributesw
         pub extern "kernel32" fn GetFileAttributesW(

@@ -836,6 +836,26 @@ Also handle the `pwd` action to keep a per-surface copy (tooltips, Open in
 File Explorer, session restore). *Done when:* with `shell-integration = none`,
 cmd's `cd` carries over.
 
+*Done 2026-10-25:* `os/process_cwd.zig` reads `CurrentDirectory.DosPath`
+from the process's PEB (`NtQueryInformationProcess`, `NtReadVirtualMemory`),
+reading the string's header again after its text in case the shell moved
+meanwhile. It skips WOW64 processes, whose directory is in their own PEB,
+and takes the result as `cwd_report` takes a report. Exec keeps its own
+handle to the shell, duplicated with only the rights that needs and held in
+an atomic for the app thread, and only when the shell is cmd. PowerShell's
+`Set-Location` and WSL leave their process's directory where they started,
+so reading it would name the wrong folder, the very thing the mid-phase
+review had relative links stop doing. Until the shell reports, the new
+terminal's directory and relative links come from it. The `pwd` action
+isn't kept per surface: the runtime asks the core's `pwd()` when it needs
+it, which includes this fallback, and a copy would miss changes no report
+announces. The `cwd-fallback` scenario covers cmd without integration (cd
+into a folder with a space, a new tab starting there, a relative link
+opening) and Windows PowerShell without it (a new tab starts where the first
+did, and a relative link is blocked). Known limit: a program cmd runs that
+changes its own directory (a nested PowerShell) still has its relative links
+resolved against cmd's.
+
 **2.5 Default shell, S.** When `command` is unset, prefer `pwsh.exe`, found
 via `SearchPathW`, App Paths or the Store alias, else `%COMSPEC%` (decision
 3). *Done when:* a fresh config opens `pwsh -NoLogo` when PowerShell 7 is

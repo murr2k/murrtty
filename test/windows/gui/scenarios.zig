@@ -43,6 +43,7 @@ pub const all = [_]Scenario{
     .{ .name = "pwd", .about = "OSC 9;9 and OSC 7 set the working directory; new tabs start there; relative links resolve against it", .run = pwdReports },
     .{ .name = "pwsh-integration", .about = "PowerShell 7 and 5.1: the folder carries to new tabs, idle tabs close without asking, jump_to_prompt", .run = pwshIntegration },
     .{ .name = "cmd-integration", .about = "cmd (and Clink with GHOSTTY_GUI_CLINK): the folder carries to new tabs, idle tabs close without asking", .run = cmdIntegration },
+    .{ .name = "cwd-fallback", .about = "without shell integration, cmd's cd still carries to new tabs and relative links", .run = cwdFallback },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
@@ -1708,7 +1709,8 @@ fn focusFollowsMouse(h: *Harness) anyerror!void {
 /// follows them and a new tab starts there; a report from another computer
 /// is ignored, and a local one that isn't a drive path (a UNC share) makes
 /// the pwd unknown. Relative link text resolves against the reported pwd,
-/// not Ghostty's own directory, and not before a shell reports one.
+/// not Ghostty's own directory (cwd-fallback covers a shell that doesn't
+/// report).
 fn pwdReports(h: *Harness) anyerror!void {
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
     var g = try start(h, "pwd", "", ">");
@@ -1779,26 +1781,7 @@ fn pwdReports(h: *Harness) anyerror!void {
     const want = try std.fmt.allocPrint(h.alloc, "default {s}", .{notes});
     defer h.alloc.free(want);
     try expectLaunch(h, &g, 1, want);
-
-    // A new tab whose shell hasn't reported: relative text resolves to
-    // nothing (the starting directory would name the wrong file after a
-    // cd), so the link is blocked as relative and nothing opens.
-    h.key(second, cs, 'T');
-    try waitWindowTabs(h, &g, win, 3);
-    const third = try h.surface(&g, win);
-    try waitTabText(h, &g, 2, ">");
-    const cd_unreported = try std.fmt.allocPrint(h.alloc, "cls & cd /d {s} & echo ./notes.txt", .{rel});
-    defer h.alloc.free(cd_unreported);
-    try h.typeText(third, cd_unreported);
-    h.enter(third);
-    try waitTabLine(h, &g, 2, "./notes.txt");
-    try ctrlClickRow(h, &g, third, "./notes.txt", 3);
-    const dlg = try h.waitDialog(&g, 5000);
-    try expectTitle(h, dlg, "Link Blocked");
-    h.answer(&g, dlg, w.IDOK);
-    try waitNoDialog(h, &g);
-    try expectLaunchCount(h, &g, 1);
-    try quit(h, &g, third);
+    try quit(h, &g, second);
 }
 
 /// PowerShell integration (roadmap 2.2), for PowerShell 7 and Windows
@@ -1995,6 +1978,99 @@ fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
     h.key(first, cs, w.VK_UP);
     try waitTopLine(h, &g, 0, prompt, "mark-a");
     try quitIdle(h, &g, first);
+}
+
+/// Without shell integration (roadmap 2.4): cmd reports nothing, but its cd
+/// changes its process's directory, which Ghostty reads, so a new tab starts
+/// there and relative links resolve against it. PowerShell's Set-Location
+/// leaves its process's directory alone, so for it neither happens (a new
+/// tab starts where the first did, and a relative link is blocked rather
+/// than resolved against the wrong folder).
+fn cwdFallback(h: *Harness) anyerror!void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\cwd-fallback-dir", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    defer h.removeDirAt(dir);
+    const notes = try std.fmt.allocPrint(h.alloc, "{s}\\notes.txt", .{dir});
+    defer h.alloc.free(notes);
+    try h.writeFileAt(notes, "notes\n");
+    defer h.deleteFile(notes);
+
+    {
+        var g = try start(h, "cwd-fallback", "", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const first = try h.surface(&g, win);
+        const prompt = try std.fmt.allocPrint(h.alloc, "{s}>", .{dir});
+        defer h.alloc.free(prompt);
+        const cd = try std.fmt.allocPrint(h.alloc, "cd /d \"{s}\"", .{dir});
+        defer h.alloc.free(cd);
+        try h.typeText(first, cd);
+        h.enter(first);
+        try waitTabText(h, &g, 0, prompt);
+
+        // A new tab starts there.
+        h.key(first, cs, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        try waitTabText(h, &g, 1, prompt);
+        const second = try h.surface(&g, win);
+
+        // A relative link resolves against it (recorded by the test hooks).
+        try h.typeText(second, "cls & echo ./notes.txt");
+        h.enter(second);
+        try waitTabLine(h, &g, 1, "./notes.txt");
+        try ctrlClickRow(h, &g, second, "./notes.txt", 3);
+        const want = try std.fmt.allocPrint(h.alloc, "default {s}", .{notes});
+        defer h.alloc.free(want);
+        try expectLaunch(h, &g, 1, want);
+        try quit(h, &g, second);
+    }
+    {
+        var g = try start(h, "cwd-fallback-pwsh", "command = powershell -NoLogo -NoProfile\n", "PS ");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const first = try h.surface(&g, win);
+        const cd = try std.fmt.allocPrint(h.alloc, "Set-Location '{s}'", .{dir});
+        defer h.alloc.free(cd);
+        try h.typeText(first, cd);
+        h.enter(first);
+        const prompt = try std.fmt.allocPrint(h.alloc, "PS {s}>", .{dir});
+        defer h.alloc.free(prompt);
+        try waitTabText(h, &g, 0, prompt);
+
+        // A new tab starts where the first did, not there.
+        h.key(first, cs, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        try waitTabText(h, &g, 1, "PS ");
+        try h.expect(!try tabShows(h, &g, 1, prompt), "PowerShell's Set-Location doesn't carry over without its integration", .{});
+        const second = try h.surface(&g, win);
+
+        // A relative link is blocked, not resolved against the wrong folder.
+        try h.typeText(second, cd);
+        h.enter(second);
+        try waitTabText(h, &g, 1, prompt);
+        try h.typeText(second, "Clear-Host; './notes.txt'");
+        h.enter(second);
+        try waitTabLine(h, &g, 1, "./notes.txt");
+        try ctrlClickRow(h, &g, second, "./notes.txt", 3);
+        const dlg = try h.waitDialog(&g, 5000);
+        try expectTitle(h, dlg, "Link Blocked");
+        h.answer(&g, dlg, w.IDOK);
+        try waitNoDialog(h, &g);
+        try expectLaunchCount(h, &g, 0);
+        try quit(h, &g, second);
+    }
+}
+
+/// Whether the first window's tab `tab` shows `needle` now.
+fn tabShows(h: *Harness, g: *Harness.Ghostty, tab: usize, needle: []const u8) !bool {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const win_tabs = d.value.windows[0].tabs;
+    if (tab >= win_tabs.len) return false;
+    const text = win_tabs[tab].text orelse return false;
+    return std.mem.indexOf(u8, text, needle) != null;
 }
 
 /// Run `command` at the first tab's prompt and wait for the shell to report
