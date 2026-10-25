@@ -13,6 +13,7 @@ const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
 const Surface = @import("Surface.zig");
+const Tab = @import("Tab.zig");
 const text_util = @import("text.zig");
 const test_hooks = @import("test_hooks.zig");
 const url = @import("url.zig");
@@ -152,6 +153,7 @@ pub fn init(
 
     const instance = c.GetModuleHandleW(null) orelse return error.NoModuleHandle;
     try Window.registerClass(instance);
+    try Tab.registerClass(instance);
     try Surface.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
@@ -260,7 +262,7 @@ fn runRequests(self: *App) void {
     while (self.modal_depth == 0 and self.requests.items.len > 0) {
         const req = self.requests.orderedRemove(0);
         switch (req) {
-            .close_surface => |v| if (self.findSurface(v.id)) |s| s.window.closeTab(s, v.process_active),
+            .close_surface => |v| if (self.findSurface(v.id)) |s| s.window.closeSurface(s, v.process_active),
             .close_tabs => |v| if (self.findSurface(v.id)) |s| s.window.closeTabs(s, v.mode),
             .close_window => |id| if (self.findWindow(id)) |w| w.requestClose(),
             .close_all_windows => if (self.confirmCloseAll(
@@ -599,7 +601,8 @@ fn resumeAfterModal(self: *App) void {
         _ = c.PostMessageW(self.wakeup_hwnd, WM_RUN_REQUESTS, 0, 0);
     }
     for (self.windows.items) |w| {
-        for (w.surfaces.items) |s| s.resumeClipboardConfirms();
+        var it = w.panes();
+        while (it.next()) |s| s.resumeClipboardConfirms();
     }
 }
 
@@ -631,7 +634,8 @@ fn findWindow(self: *App, id: u64) ?*Window {
 
 fn findSurface(self: *App, id: u64) ?*Surface {
     for (self.windows.items) |w| {
-        for (w.surfaces.items) |s| {
+        var it = w.panes();
+        while (it.next()) |s| {
             if (s.core_initialized and s.core_surface.id == id) return s;
         }
     }
@@ -760,7 +764,10 @@ fn reportColorScheme(self: *App) void {
     self.core_app.colorSchemeEvent(self, scheme) catch |err| {
         log.warn("error updating color scheme err={}", .{err});
     };
-    for (self.windows.items) |w| for (w.surfaces.items) |s| s.colorSchemeCallback(scheme);
+    for (self.windows.items) |w| {
+        var it = w.panes();
+        while (it.next()) |s| s.colorSchemeCallback(scheme);
+    }
 }
 
 fn systemDark() bool {
@@ -1027,9 +1034,10 @@ pub fn performAction(
 
         .initial_size => {
             // Only the window's first surface sizes the window; a new
-            // tab must not resize an existing window.
+            // tab must not resize an existing window. (A tab joins the
+            // list once its first pane is initialized.)
             const window = windowFromTarget(target) orelse return false;
-            if (window.surfaces.items.len > 0) return false;
+            if (window.tabs.items.len > 0) return false;
             window.setClientSize(value.width, value.height);
         },
 

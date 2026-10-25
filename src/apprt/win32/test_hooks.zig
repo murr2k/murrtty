@@ -101,20 +101,23 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (wparam == 2) app.setSystemDark(lparam != 0);
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
-        for (app.windows.items) |w| for (w.surfaces.items) |s| {
-            if (!s.core_initialized) continue;
-            const core = &s.core_surface;
-            const state = &core.renderer.api.wgl_state;
-            state.probe.store(0, .monotonic);
-            state.probe_point.store(point, .monotonic);
-            // Nothing may have changed to cause a frame, so mark the whole
-            // screen dirty (as a modifier change does) and wake the
-            // renderer.
-            core.renderer_state.mutex.lockUncancelable(global.io());
-            core.renderer_state.terminal.flags.dirty.clear = true;
-            core.renderer_state.mutex.unlock(global.io());
-            core.renderer_thread.wakeup.notify() catch {};
-        };
+        for (app.windows.items) |w| {
+            var it = w.panes();
+            while (it.next()) |s| {
+                if (!s.core_initialized) continue;
+                const core = &s.core_surface;
+                const state = &core.renderer.api.wgl_state;
+                state.probe.store(0, .monotonic);
+                state.probe_point.store(point, .monotonic);
+                // Nothing may have changed to cause a frame, so mark the
+                // whole screen dirty (as a modifier change does) and wake
+                // the renderer.
+                core.renderer_state.mutex.lockUncancelable(global.io());
+                core.renderer_state.terminal.flags.dirty.clear = true;
+                core.renderer_state.mutex.unlock(global.io());
+                core.renderer_thread.wakeup.notify() catch {};
+            }
+        }
     }
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
@@ -155,7 +158,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
 
         // Tab bar geometry in client coordinates, for clicks.
-        const n = w.surfaces.items.len;
+        const n = w.tabs.items.len;
         try out.print(alloc, "\"tab_bar\":{{\"visible\":{},\"height\":{d},\"tabs\":[", .{
             w.tabBarVisible(),
             w.tab_bar.height(),
@@ -173,7 +176,9 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             nt.left, nt.top, nt.right, nt.bottom,
         });
 
-        for (w.surfaces.items, 0..) |s, si| {
+        // Each tab as its focused pane.
+        for (w.tabs.items, 0..) |tab, si| {
+            const s = tab.focused;
             if (si > 0) try out.append(alloc, ',');
             try out.print(alloc, "{{\"hwnd\":{d},\"visible\":{},\"title\":", .{
                 @intFromPtr(s.hwnd),

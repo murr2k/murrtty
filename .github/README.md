@@ -271,6 +271,7 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
 | `src/apprt/win32/App.zig` | Message loop, a message-only window for cross-thread wakeups, action dispatch, close requests |
 | `src/apprt/win32/Window.zig` | Top-level window: tabs, size and DPI, fullscreen, close |
 | `src/apprt/win32/TabBar.zig` | The tab strip, drawn with GDI using the terminal's colors |
+| `src/apprt/win32/Tab.zig` | A tab: its terminal panes as a split tree, in a container window |
 | `src/apprt/win32/Surface.zig` | One child window per terminal: keyboard, IME, mouse, clipboard |
 | `src/apprt/win32/key.zig` | Scancode and text translation into Ghostty key events |
 | `src/apprt/win32/console.zig` | Attaches to the parent console for CLI actions |

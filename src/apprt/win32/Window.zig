@@ -1,5 +1,5 @@
-//! A top-level window. Each window hosts one or more surfaces as tabs;
-//! only the active tab's surface window is shown.
+//! A top-level window. Each window hosts one or more tabs (Tab.zig), each
+//! a container of terminal panes; only the active tab's container is shown.
 const Window = @This();
 
 const std = @import("std");
@@ -10,6 +10,7 @@ const CoreSurface = @import("../../Surface.zig");
 const c = @import("c.zig");
 const App = @import("App.zig");
 const Surface = @import("Surface.zig");
+const Tab = @import("Tab.zig");
 const TabBar = @import("TabBar.zig");
 
 const log = std.log.scoped(.win32_window);
@@ -27,7 +28,7 @@ hwnd: c.HWND,
 id: u64,
 
 /// The tabs, in display order, and the selected one.
-surfaces: std.ArrayList(*Surface) = .empty,
+tabs: std.ArrayList(*Tab) = .empty,
 active: usize = 0,
 
 tab_bar: TabBar = .{},
@@ -91,7 +92,7 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     errdefer {
         _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
         _ = c.DestroyWindow(self.hwnd);
-        self.surfaces.deinit(alloc);
+        self.tabs.deinit(alloc);
         self.tab_bar.deinit();
     }
 
@@ -114,7 +115,7 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     return self;
 }
 
-/// Add a tab after the active one and select it.
+/// Add a tab after the active one and select it. Returns its pane.
 pub fn addTab(
     self: *Window,
     parent: ?*CoreSurface,
@@ -122,77 +123,92 @@ pub fn addTab(
 ) !*Surface {
     const alloc = self.app.core_app.alloc;
 
-    // Make room for the tab bar first so the new surface starts at
-    // its final size.
-    const index = if (self.surfaces.items.len == 0) 0 else self.active + 1;
-    try self.surfaces.ensureUnusedCapacity(alloc, 1);
+    // Make room for the tab bar first so the new pane starts at its
+    // final size.
+    const index = if (self.tabs.items.len == 0) 0 else self.active + 1;
+    try self.tabs.ensureUnusedCapacity(alloc, 1);
     const had_bar = self.tabBarVisible();
 
-    const surface = try alloc.create(Surface);
-    errdefer alloc.destroy(surface);
-    try surface.init(self.app, self, context, parent, self.surfaceRect(self.surfaces.items.len + 1));
-
-    self.surfaces.insertAssumeCapacity(index, surface);
+    const tab = try Tab.create(self, self.tabRect(self.tabs.items.len + 1), parent, context);
+    self.tabs.insertAssumeCapacity(index, tab);
     if (had_bar != self.tabBarVisible()) _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
     self.select(index);
-    return surface;
+    return tab.focused;
 }
 
-/// Close a tab, confirming first if `confirm` and a process is running.
-/// Destroys the window when its last tab closes. Only call this from the
-/// message loop (see App.Request), never from inside a core callback.
-pub fn closeTab(self: *Window, surface: *Surface, confirm: bool) void {
+/// Close a pane, confirming first if `confirm` and a process is running.
+/// Closing a tab's last pane closes the tab, and the last tab the window.
+/// Only call this from the message loop (see App.Request), never from
+/// inside a core callback.
+pub fn closeSurface(self: *Window, surface: *Surface, confirm: bool) void {
     if (confirm and self.needsConfirm(surface) and !self.app.confirm(
         self.hwnd,
         "A process is still running in this terminal. Close it anyway?",
         "Ghostty: Close Tab",
     )) return;
 
-    const index = std.mem.indexOfScalar(*Surface, self.surfaces.items, surface) orelse return;
-    if (self.surfaces.items.len == 1) {
+    // Until splits land every tab has one pane, so this closes its tab.
+    const index = self.tabIndexOf(surface) orelse return;
+    _ = self.removeTab(index);
+}
+
+/// Close tabs relative to the one holding `surface`, for the close_tab
+/// action, confirming first if a process is running in any of them.
+pub fn closeTabs(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMode) void {
+    const index = self.tabIndexOf(surface) orelse return;
+    const alloc = self.app.core_app.alloc;
+    var targets: std.ArrayList(*Tab) = .empty;
+    defer targets.deinit(alloc);
+    for (self.tabs.items, 0..) |t, i| {
+        const close = switch (mode) {
+            .this => i == index,
+            .other => i != index,
+            .right => i > index,
+        };
+        if (close) targets.append(alloc, t) catch return;
+    }
+    if (targets.items.len == 0) return;
+
+    var confirm = false;
+    for (targets.items) |t| confirm = confirm or self.tabNeedsConfirm(t);
+    if (confirm and !self.app.confirm(
+        self.hwnd,
+        if (mode == .this)
+            "A process is still running in this terminal. Close it anyway?"
+        else
+            "Processes are still running in the tabs being closed. Close them anyway?",
+        if (mode == .this) "Ghostty: Close Tab" else "Ghostty: Close Tabs",
+    )) return;
+
+    for (targets.items) |t| {
+        const i = std.mem.indexOfScalar(*Tab, self.tabs.items, t) orelse continue;
+        if (self.removeTab(i) == .window_destroyed) return;
+    }
+}
+
+/// Remove tab `index` and free its panes. Removing the last tab destroys
+/// the window, which frees `self`: callers must return at once.
+fn removeTab(self: *Window, index: usize) enum { removed, window_destroyed } {
+    if (self.tabs.items.len == 1) {
         self.destroy();
-        return;
+        return .window_destroyed;
     }
 
-    _ = self.surfaces.orderedRemove(index);
-    self.freeSurface(surface);
+    const tab = self.tabs.orderedRemove(index);
+    tab.destroy(true);
 
-    if (self.active > index or self.active >= self.surfaces.items.len) {
+    if (self.active > index or self.active >= self.tabs.items.len) {
         self.active -|= 1;
     }
     self.select(self.active);
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+    return .removed;
 }
 
-/// Close tabs relative to `surface` for the close_tab action.
-pub fn closeTabs(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMode) void {
-    switch (mode) {
-        .this => self.closeTab(surface, true),
-        .other, .right => {
-            const index = std.mem.indexOfScalar(*Surface, self.surfaces.items, surface) orelse return;
-            var targets: std.ArrayList(*Surface) = .empty;
-            defer targets.deinit(self.app.core_app.alloc);
-            for (self.surfaces.items, 0..) |s, i| {
-                const close = switch (mode) {
-                    .other => i != index,
-                    .right => i > index,
-                    .this => unreachable,
-                };
-                if (close) targets.append(self.app.core_app.alloc, s) catch return;
-            }
-            if (targets.items.len == 0) return;
-
-            var confirm = false;
-            for (targets.items) |s| confirm = confirm or self.needsConfirm(s);
-            if (confirm and !self.app.confirm(
-                self.hwnd,
-                "Processes are still running in the tabs being closed. Close them anyway?",
-                "Ghostty: Close Tabs",
-            )) return;
-
-            for (targets.items) |s| self.closeTab(s, false);
-        },
-    }
+fn tabNeedsConfirm(self: *Window, tab: *const Tab) bool {
+    var it = tab.panes();
+    while (it.next()) |entry| if (self.needsConfirm(entry.view)) return true;
+    return false;
 }
 
 fn needsConfirm(self: *Window, surface: *Surface) bool {
@@ -204,19 +220,12 @@ fn needsConfirm(self: *Window, surface: *Surface) bool {
     };
 }
 
-fn freeSurface(self: *Window, surface: *Surface) void {
-    const hwnd = surface.hwnd;
-    surface.deinit();
-    self.app.core_app.alloc.destroy(surface);
-    _ = c.DestroyWindow(hwnd);
-}
-
-/// Select tab `index`: show its surface, hide the rest.
+/// Select tab `index`: show it, hide the rest.
 pub fn select(self: *Window, index: usize) void {
-    if (index >= self.surfaces.items.len) return;
+    if (index >= self.tabs.items.len) return;
     self.active = index;
     self.layout();
-    for (self.surfaces.items, 0..) |s, i| s.setVisible(i == index);
+    for (self.tabs.items, 0..) |t, i| t.setVisible(i == index);
     self.focusActive();
     self.syncTitle();
     // The chrome follows the active tab's colors.
@@ -225,7 +234,7 @@ pub fn select(self: *Window, index: usize) void {
 }
 
 pub fn gotoTab(self: *Window, tab: apprt.action.GotoTab) bool {
-    const total = self.surfaces.items.len;
+    const total = self.tabs.items.len;
     if (total == 0) return false;
     const current = self.active;
     const target: usize = switch (tab) {
@@ -245,23 +254,55 @@ pub fn gotoTab(self: *Window, tab: apprt.action.GotoTab) bool {
 }
 
 pub fn moveTab(self: *Window, surface: *Surface, amount: isize) bool {
-    const total: isize = @intCast(self.surfaces.items.len);
+    const total: isize = @intCast(self.tabs.items.len);
     if (total < 2) return false;
-    const from_u = std.mem.indexOfScalar(*Surface, self.surfaces.items, surface) orelse return false;
+    const from_u = self.tabIndexOf(surface) orelse return false;
     const from: isize = @intCast(from_u);
     const to: usize = @intCast(@mod(from + amount, total));
     if (to == from_u) return false;
 
-    _ = self.surfaces.orderedRemove(from_u);
-    self.surfaces.insertAssumeCapacity(to, surface);
+    const tab = self.tabs.orderedRemove(from_u);
+    self.tabs.insertAssumeCapacity(to, tab);
     self.select(to);
     return true;
 }
 
-pub fn activeSurface(self: *const Window) ?*Surface {
-    if (self.active >= self.surfaces.items.len) return null;
-    return self.surfaces.items[self.active];
+pub fn activeTab(self: *const Window) ?*Tab {
+    if (self.active >= self.tabs.items.len) return null;
+    return self.tabs.items[self.active];
 }
+
+/// The active tab's focused pane.
+pub fn activeSurface(self: *const Window) ?*Surface {
+    const tab = self.activeTab() orelse return null;
+    return tab.focused;
+}
+
+/// The index of the tab holding `surface`.
+pub fn tabIndexOf(self: *const Window, surface: *const Surface) ?usize {
+    for (self.tabs.items, 0..) |t, i| if (t.contains(surface)) return i;
+    return null;
+}
+
+/// Every pane of every tab.
+pub fn panes(self: *const Window) PaneIterator {
+    return .{ .tabs = self.tabs.items };
+}
+
+pub const PaneIterator = struct {
+    tabs: []const *Tab,
+    next_tab: usize = 0,
+    current: ?Tab.Tree.Iterator = null,
+
+    pub fn next(self: *PaneIterator) ?*Surface {
+        while (true) {
+            if (self.current) |*it| if (it.next()) |entry| return entry.view;
+            if (self.next_tab >= self.tabs.len) return null;
+            self.current = self.tabs[self.next_tab].panes();
+            self.next_tab += 1;
+        }
+    }
+};
 
 /// Give the active tab's surface the keyboard focus, if this window is
 /// the active one. SetFocus also activates the window it is called on, so
@@ -277,8 +318,8 @@ fn focusActiveNow(self: *Window) void {
     if (self.activeSurface()) |s| _ = c.SetFocus(s.hwnd);
 }
 
-/// Destroy the window. Its surfaces and memory are released when the
-/// window receives WM_DESTROY.
+/// Destroy the window. Its tabs and memory are released when the window
+/// receives WM_DESTROY.
 pub fn destroy(self: *Window) void {
     _ = c.DestroyWindow(self.hwnd);
 }
@@ -288,11 +329,8 @@ fn onDestroy(self: *Window) void {
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
 
     // The child windows are destroyed by the system after this.
-    for (self.surfaces.items) |surface| {
-        surface.deinit();
-        alloc.destroy(surface);
-    }
-    self.surfaces.deinit(alloc);
+    for (self.tabs.items) |tab| tab.destroy(false);
+    self.tabs.deinit(alloc);
     self.tab_bar.deinit();
 
     self.app.windowDestroyed(self);
@@ -303,10 +341,11 @@ fn onDestroy(self: *Window) void {
 /// from the message loop (see App.Request).
 pub fn requestClose(self: *Window) void {
     var confirm = false;
-    for (self.surfaces.items) |s| confirm = confirm or self.needsConfirm(s);
+    var it = self.panes();
+    while (it.next()) |s| confirm = confirm or self.needsConfirm(s);
     if (confirm and !self.app.confirm(
         self.hwnd,
-        if (self.surfaces.items.len > 1)
+        if (self.tabs.items.len > 1)
             "Processes are still running in this window's tabs. Close it anyway?"
         else
             "A process is still running in this terminal. Close it anyway?",
@@ -317,7 +356,7 @@ pub fn requestClose(self: *Window) void {
 
 /// Queue closing tab `i` (from a click on the tab bar).
 fn requestCloseTab(self: *Window, i: usize) void {
-    const s = self.surfaces.items[i];
+    const s = self.tabs.items[i].focused;
     if (!s.core_initialized) return;
     self.app.request(.{ .close_tabs = .{ .id = s.core_surface.id, .mode = .this } });
 }
@@ -351,7 +390,7 @@ fn tabBarVisibleFor(self: *const Window, count: usize) bool {
 }
 
 pub fn tabBarVisible(self: *const Window) bool {
-    return self.tabBarVisibleFor(self.surfaces.items.len);
+    return self.tabBarVisibleFor(self.tabs.items.len);
 }
 
 fn tabBarRect(self: *const Window) c.RECT {
@@ -360,27 +399,28 @@ fn tabBarRect(self: *const Window) c.RECT {
     return .{ .right = client.right, .bottom = self.tab_bar.height() };
 }
 
-/// The area surfaces occupy when the window has `count` tabs.
-fn surfaceRect(self: *const Window, count: usize) c.RECT {
+/// The area tabs occupy when the window has `count` tabs.
+fn tabRect(self: *const Window, count: usize) c.RECT {
     var r: c.RECT = .{};
     _ = c.GetClientRect(self.hwnd, &r);
     if (self.tabBarVisibleFor(count)) r.top = @min(r.bottom, self.tab_bar.height());
     return r;
 }
 
-/// Size every surface to the surface area, all in one step (so they never
-/// show at different sizes), discarding their old contents rather than
-/// copying them, which left trails while resizing; the renderer redraws.
+/// Size every tab to the tab area, all in one step (so they never show at
+/// different sizes), discarding their old contents rather than copying
+/// them, which left trails while resizing; the renderers redraw. Each tab
+/// sizes its panes as it is resized.
 fn layout(self: *Window) void {
-    const r = self.surfaceRect(self.surfaces.items.len);
+    const r = self.tabRect(self.tabs.items.len);
     const flags = c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOCOPYBITS;
-    var hdwp = c.BeginDeferWindowPos(@intCast(self.surfaces.items.len));
-    for (self.surfaces.items) |s| {
+    var hdwp = c.BeginDeferWindowPos(@intCast(self.tabs.items.len));
+    for (self.tabs.items) |t| {
         if (hdwp) |h| {
-            hdwp = c.DeferWindowPos(h, s.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
+            hdwp = c.DeferWindowPos(h, t.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
         }
         // If deferring failed (it then frees the batch), move it directly.
-        if (hdwp == null) _ = c.SetWindowPos(s.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
+        if (hdwp == null) _ = c.SetWindowPos(t.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
     }
     if (hdwp) |h| _ = c.EndDeferWindowPos(h);
 }
@@ -392,7 +432,7 @@ fn layout(self: *Window) void {
 pub fn setClientSize(self: *Window, width: u32, height: u32) void {
     if (width == 0 and height == 0) return;
     const dpi = c.GetDpiForWindow(self.hwnd);
-    const current = self.surfaceRect(self.surfaces.items.len);
+    const current = self.tabRect(self.tabs.items.len);
     // Round up so the grid doesn't lose a column or row.
     const w: c_int = if (width == 0)
         current.right - current.left
@@ -457,7 +497,7 @@ pub fn present(self: *Window) void {
 
 /// Bring the tab holding `surface` to the front.
 pub fn presentSurface(self: *Window, surface: *Surface) void {
-    if (std.mem.indexOfScalar(*Surface, self.surfaces.items, surface)) |i| {
+    if (self.tabIndexOf(surface)) |i| {
         if (i != self.active) self.select(i);
     }
     self.present();
@@ -558,16 +598,16 @@ pub fn configChanged(self: *Window) void {
 //---------------------------------------------------------------
 // Tab bar input and painting
 
-/// Paint the tab bar, and anything of the client area the surfaces don't
+/// Paint the tab bar, and anything of the client area the tabs don't
 /// cover yet (while resizing) in the terminal's background rather than
-/// leaving it black. WS_CLIPCHILDREN keeps this off the surfaces.
+/// leaving it black. WS_CLIPCHILDREN keeps this off the tabs.
 fn paint(self: *Window) void {
     var ps: c.PAINTSTRUCT = undefined;
     const hdc = c.BeginPaint(self.hwnd, &ps) orelse return;
     defer _ = c.EndPaint(self.hwnd, &ps);
 
     const colors = self.chromeColors();
-    var below = self.surfaceRect(self.surfaces.items.len);
+    var below = self.tabRect(self.tabs.items.len);
     if (c.CreateSolidBrush(c.rgb(colors.bg.r, colors.bg.g, colors.bg.b))) |brush| {
         defer _ = c.DeleteObject(brush);
         _ = c.FillRect(hdc, &below, brush);
@@ -576,9 +616,9 @@ fn paint(self: *Window) void {
 
     // Every title: the bar is laid out (and hit-tested) for all the tabs.
     const alloc = self.app.core_app.alloc;
-    const titles = alloc.alloc([]const u8, self.surfaces.items.len) catch return;
+    const titles = alloc.alloc([]const u8, self.tabs.items.len) catch return;
     defer alloc.free(titles);
-    for (self.surfaces.items, titles) |s, *t| t.* = s.title orelse "Ghostty";
+    for (self.tabs.items, titles) |tab, *t| t.* = tab.title();
 
     const r = self.tabBarRect();
     self.tab_bar.paint(hdc, r.right, titles, self.active, colors.bg, colors.fg);
@@ -589,7 +629,7 @@ fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {
     return self.tab_bar.hitTest(
         c.xParam(lparam),
         c.yParam(lparam),
-        self.surfaces.items.len,
+        self.tabs.items.len,
         self.tabBarRect().right,
     );
 }
@@ -636,7 +676,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_SIZE => {
             const minimized = wparam == c.SIZE_MINIMIZED;
             if (!minimized) self.layout();
-            if (self.activeSurface()) |s| s.setVisible(!minimized);
+            if (self.activeTab()) |t| t.setVisible(!minimized);
             return 0;
         },
 
@@ -730,7 +770,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             self.tab_bar.setDpi(c.hiword(wparam));
             const r: *const c.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
             _ = c.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
-            for (self.surfaces.items) |s| s.dpiChanged();
+            var it = self.panes();
+            while (it.next()) |s| s.dpiChanged();
             return 0;
         },
 

@@ -102,9 +102,11 @@ pub fn init(
     self: *Surface,
     app: *App,
     window: *Window,
+    /// The parent window: its tab's container.
+    parent_hwnd: c.HWND,
     context: apprt.surface.NewSurfaceContext,
     parent: ?*CoreSurface,
-    /// Initial position within the window's client area.
+    /// Initial position within the parent's client area.
     rect: c.RECT,
 ) !void {
     self.* = .{
@@ -123,7 +125,7 @@ pub fn init(
         rect.top,
         rect.right - rect.left,
         rect.bottom - rect.top,
-        window.hwnd,
+        parent_hwnd,
         null,
         app.instance,
         self,
@@ -171,6 +173,20 @@ pub fn init(
 
     // Focus gained before the core surface existed reaches it now.
     self.queueFocus();
+}
+
+/// The view interface of the tabs' split trees (Tab.Tree). References do
+/// nothing: panes are freed only by the close queue (see Tab.tree).
+pub fn ref(self: *Surface) *Surface {
+    return self;
+}
+
+pub fn unref(self: *Surface) void {
+    _ = self;
+}
+
+pub fn eql(a: *const Surface, b: *const Surface) bool {
+    return a == b;
 }
 
 /// Tear down the core surface. The window itself is destroyed along
