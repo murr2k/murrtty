@@ -188,7 +188,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 // corner (see OpenGL.Wgl.sample).
                 const wgl_state = &s.core_surface.renderer.api.wgl_state;
                 try out.print(alloc, ",\"scheme\":\"{t}\"", .{s.core_surface.config_conditional_state.theme});
-                try out.print(alloc, ",\"cols\":{d},\"rows\":{d},\"cell\":[{d},{d}],\"padding\":[{d},{d}],\"pixel\":{d},\"probe\":{d},\"text\":", .{
+                try out.print(alloc, ",\"cols\":{d},\"rows\":{d},\"cell\":[{d},{d}],\"padding\":[{d},{d}],\"pixel\":{d},\"probe\":{d},\"frames\":{d},\"text\":", .{
                     grid.columns,
                     grid.rows,
                     size.cell.width,
@@ -197,6 +197,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                     size.padding.top,
                     wgl_state.sample.load(.monotonic),
                     wgl_state.probe.load(.monotonic),
+                    wgl_state.frames.load(.monotonic),
                 });
                 const text = text: {
                     s.core_surface.renderer_state.mutex.lockUncancelable(global.io());

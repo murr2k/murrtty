@@ -796,6 +796,8 @@ pub const Dump = struct {
         probe: ?u32 = null,
         /// The color scheme the core surface has: "light" or "dark".
         scheme: ?[]const u8 = null,
+        /// Frames the renderer has presented.
+        frames: ?u32 = null,
         text: ?[]const u8 = null,
     };
 };

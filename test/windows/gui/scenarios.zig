@@ -30,6 +30,7 @@ pub const all = [_]Scenario{
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
+    .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -924,6 +925,36 @@ fn fonts(h: *Harness) anyerror!void {
         try h.expect(std.mem.eql(u8, line, case[1]), "{s} {s} (expected {s})", .{ case[0], line, case[1] });
     }
     try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+}
+
+/// Output that arrives with no key pressed must reach the screen: the
+/// thread reading the pty wakes the renderer itself. It once held a copy
+/// of the renderer's wakeup handle taken before the renderer thread waited
+/// on it, which on Windows (libxev's IOCP backend) never fired, so output
+/// was drawn only by the next key press or cursor blink, and typed text
+/// trailed behind the keys.
+fn outputFrames(h: *Harness) anyerror!void {
+    // No cursor blink, so nothing but output can draw while we wait.
+    var g = try start(h, "output-frames", "cursor-style-blink = false\n", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    // The marker prints about a second after Enter, with no input between.
+    try h.typeText(surf, "ping -n 2 127.0.0.1 >nul & echo late-out");
+    h.enter(surf);
+    w.Sleep(500);
+    const before = try framesPresented(h, &g);
+    // Once on the command line, then the output.
+    try h.waitText(&g, "late-out", 2, 10000);
+    w.Sleep(500);
+    const after = try framesPresented(h, &g);
+    try h.expect(after > before, "frames after the output: {d}, before: {d}", .{ after, before });
+    try quit(h, &g, surf);
+}
+
+fn framesPresented(h: *Harness, g: *Harness.Ghostty) !u32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    return d.value.windows[0].tabs[0].frames orelse h.fail("no frame count in the dump", .{});
 }
 
 fn windowSize(h: *Harness) anyerror!void {

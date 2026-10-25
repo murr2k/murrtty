@@ -78,6 +78,8 @@ const Wgl = struct {
     sample: std.atomic.Value(u32) = .init(0),
     probe_point: std.atomic.Value(u32) = .init(no_probe),
     probe: std.atomic.Value(u32) = .init(0),
+    /// Frames presented, so the tests can tell whether something drew.
+    frames: std.atomic.Value(u32) = .init(0),
 
     pub const no_probe = std.math.maxInt(u32);
     pub const probe_read: u32 = 1 << 24;
@@ -491,6 +493,7 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 3);
 
     if (comptime builtin.mode == .debug) if (state.sampling) {
+        _ = state.frames.fetchAdd(1, .monotonic);
         state.sample.store(readPixel(@max(win_w - 6, 0), 6), .monotonic);
         const point = state.probe_point.load(.monotonic);
         if (point != Wgl.no_probe) {
