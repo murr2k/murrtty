@@ -980,6 +980,9 @@ pub fn performAction(
             _ = try Window.create(self, parent);
         },
 
+        // Created at once, so that a chained action (new_tab then
+        // goto_tab) finds it. The core's `all:` loop copes with surfaces
+        // added while it runs.
         .new_tab => switch (target) {
             .app => _ = try Window.create(self, null),
             .surface => |core| _ = try core.rt_surface.window.addTab(core, .tab),
@@ -1046,12 +1049,18 @@ pub fn performAction(
             return window.resizeFromTerminal(value.width, value.height);
         },
 
+        // Sent once, by a surface being created (panes work out their
+        // minimums themselves, see Surface.layoutMin).
         .size_limit => {
             const surface = surfaceFromTarget(target) orelse return false;
-            surface.size_limit = value;
+            surface.window.size_limit = value;
+        },
+
+        // The font size or the DPI changed the pane's cells, and with them
+        // its minimum: lay its tab out again.
+        .cell_size => {
+            const surface = surfaceFromTarget(target) orelse return false;
             const window = surface.window;
-            window.size_limit = value;
-            // The pane's minimum changed (font size): lay its tab out again.
             if (window.tabIndexOf(surface)) |i| window.tabs.items[i].layoutPanes();
         },
 

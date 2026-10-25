@@ -34,10 +34,11 @@ pub const all = [_]Scenario{
     .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
     .{ .name = "focus-background-tab", .about = "a tab that never got the focus doesn't stay focused in the core", .run = focusBackgroundTab },
     .{ .name = "splits", .about = "Ctrl+Shift+O/E split panes that tile the tab; closing panes moves focus as designed", .run = splits },
-    .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits", .run = splitCommands },
-    .{ .name = "split-mouse", .about = "dragging a divider, Esc, double-click to equalize, the grip band in the padding", .run = splitMouse },
-    .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the focused one isn't", .run = splitDim },
-    .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
+    .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits, minimums", .run = splitCommands },
+    .{ .name = "split-mouse", .about = "dragging a divider, Esc (none of it reaches the program), double-click to equalize, the grip band", .run = splitMouse },
+    .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background", .run = splitDim },
+    .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
+    .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },    .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -1223,7 +1224,9 @@ fn paneCount(h: *Harness, g: *Harness.Ghostty) !usize {
 /// goto_split (wrapping previous/next and a direction), toggle_split_zoom
 /// (the zoomed pane fills the tab, the others are hidden and stop drawing
 /// while their output still arrives), moving to another pane ending the
-/// zoom, resize_split and equalize_splits.
+/// zoom, resize_split (stepping from where the divider is drawn) and
+/// equalize_splits; a pane's minimum following its font; a zoom ending
+/// when its pane is the last.
 fn splitCommands(h: *Harness) anyerror!void {
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
     const f1 = 0x70;
@@ -1231,12 +1234,18 @@ fn splitCommands(h: *Harness) anyerror!void {
     const f3 = 0x72;
     const f4 = 0x73;
     const f5 = 0x74;
+    const f6 = 0x75;
+    const f7 = 0x76;
+    const f8 = 0x77;
     var g = try start(h, "split-commands",
         \\keybind = ctrl+shift+f1=goto_split:previous
         \\keybind = ctrl+shift+f2=goto_split:next
         \\keybind = ctrl+shift+f3=goto_split:left
         \\keybind = ctrl+shift+f4=equalize_splits
         \\keybind = ctrl+shift+f5=resize_split:right,100
+        \\keybind = ctrl+shift+f6=resize_split:left,4000
+        \\keybind = ctrl+shift+f7=resize_split:right,20
+        \\keybind = ctrl+shift+f8=increase_font_size:4
         \\
     , ">");
     defer g.deinit();
@@ -1342,7 +1351,54 @@ fn splitCommands(h: *Harness) anyerror!void {
     h.key(a, cs, f4);
     w.Sleep(800);
     try h.expect(@abs((try rootDivider(h, &g)) - before) <= 1, "equalize put it back in the middle", .{});
+
+    // A big step left takes the ratio to 0, well past where A's minimum
+    // holds the divider; a small step right still moves it, from there.
+    h.key(a, cs, f6);
+    w.Sleep(800);
+    try expectMinimumWidth(h, &g, 0, "a big step left leaves A its minimum");
+    const held = try rootDivider(h, &g);
+    h.key(a, cs, f7);
+    w.Sleep(800);
+    const step: i32 = @intCast((20 * dpi + 48) / 96);
+    const stepped = try rootDivider(h, &g);
+    try h.expect(@abs(stepped - held - step) <= 2, "a step right from the minimum moved the divider {d} px (expected {d})", .{ stepped - held, step });
+
+    // A's minimum follows its font: larger cells widen it.
+    h.key(a, cs, f6);
+    h.key(a, cs, f8);
+    h.key(a, cs, f8);
+    w.Sleep(1000);
+    try expectMinimumWidth(h, &g, 0, "at a larger font, A keeps its minimum");
+
+    // A zoom on a pane that becomes the tab's last ends with the split.
+    h.key(a, cs, w.VK_RETURN);
+    w.Sleep(500);
+    try h.typeText(cc, "exit");
+    h.enter(cc);
+    try waitPanes(h, &g, 2);
+    // B may still be pinging.
+    h.key(b, .{ .ctrl = true }, 'C');
+    w.Sleep(500);
+    try h.typeText(b, "exit");
+    h.enter(b);
+    try waitPanes(h, &g, 1);
+    w.Sleep(300);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!(d.value.windows[0].tabs[0].zoomed orelse true), "the zoom ended with the last split", .{});
+    }
     try quit(h, &g, a);
+}
+
+/// Pane `i` is at least the core's minimum, 10 columns, at its font.
+fn expectMinimumWidth(h: *Harness, g: *Harness.Ghostty, i: usize, comptime what: []const u8) !void {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const p = d.value.windows[0].tabs[0].panes.?;
+    const cols = p[i].cols orelse 0;
+    try h.expect(cols >= 10, what ++ " (10 columns, has {d})", .{cols});
 }
 
 /// Divider mouse handling, with mouse messages posted to the tab's
@@ -1373,17 +1429,30 @@ fn splitMouse(h: *Harness) anyerror!void {
     const dragged = try rootDivider(h, &g);
     try h.expect(@abs(dragged - (start_x + 120)) <= 1, "the drag moved the divider to {d} (expected {d})", .{ dragged, start_x + 120 });
 
-    // Esc during a drag puts it back.
+    // Esc during a drag puts it back, and the program in the focused pane
+    // sees none of that keystroke, neither its auto-repeat nor its release
+    // (an Esc would clear what is typed at cmd's prompt).
+    try h.typeText(right_pane, "abc");
+    try waitPaneText(h, &g, 1, ">abc", 1);
     postMouse(container, w.WM_LBUTTONDOWN, dragged, y);
     postMouse(container, w.WM_MOUSEMOVE, dragged - 200, y);
     w.Sleep(300);
     const mid_drag = try rootDivider(h, &g);
     try h.expect(@abs(mid_drag - (dragged - 200)) <= 1, "mid-drag the divider follows the mouse ({d})", .{mid_drag});
-    _ = w.PostMessageW(right_pane, w.WM_KEYDOWN, w.VK_ESCAPE, 1);
+    const esc: usize = 1 | (@as(usize, w.MapVirtualKeyW(w.VK_ESCAPE, w.MAPVK_VK_TO_VSC)) << 16);
+    _ = w.PostMessageW(right_pane, w.WM_KEYDOWN, w.VK_ESCAPE, @bitCast(esc));
+    _ = w.PostMessageW(right_pane, w.WM_KEYDOWN, w.VK_ESCAPE, @bitCast(esc | (1 << 30)));
+    _ = w.PostMessageW(right_pane, w.WM_KEYUP, w.VK_ESCAPE, @bitCast(esc | (3 << 30)));
     postMouse(container, w.WM_LBUTTONUP, dragged - 200, y);
     w.Sleep(600);
     const after_esc = try rootDivider(h, &g);
     try h.expect(@abs(after_esc - dragged) <= 1, "Esc put it back at {d} (is {d})", .{ dragged, after_esc });
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const p = d.value.windows[0].tabs[0].panes.?;
+        try h.expect(std.mem.indexOf(u8, p[1].text orelse "", ">abc") != null, "the typed text is still at the prompt", .{});
+    }
 
     // A double-click equalizes.
     postMouse(container, w.WM_LBUTTONDBLCLK, after_esc, y);
@@ -1427,7 +1496,128 @@ fn splitDim(h: *Harness) anyerror!void {
     w.Sleep(800);
     try expectColor(h, try h.probePane(&g, 0, 1, 1), bg, "after a click the left pane isn't dimmed");
     try expectColor(h, try h.probePane(&g, 1, 1, 1), dim, "and the right one is");
+
+    // The dividers are the focused pane's background darkened (60% of a
+    // dark one, 92% of a light one), and repaint when a program changes
+    // it: OSC 11 from cmd's prompt ($E is ESC; ESC \ ends the sequence).
+    try expectDividerColor(h, &g, 0x181a1f, "the dividers darken the dark background");
+    try h.typeText(left, "prompt $E]11;#f0f0f0$E\\$G");
+    h.enter(left);
+    try expectDividerColor(h, &g, 0xdcdcdc, "after OSC 11 they follow the light one");
     try quit(h, &g, left);
+}
+
+/// Wait until the first tab's dividers were last painted `want`.
+fn expectDividerColor(h: *Harness, g: *Harness.Ghostty, want: i64, comptime what: []const u8) !void {
+    var got: i64 = -1;
+    var waited: u32 = 0;
+    while (waited <= 3000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        got = d.value.windows[0].tabs[0].divider_color orelse -1;
+        if (got == want) return h.expect(true, what, .{});
+        w.Sleep(100);
+    }
+    // -1 (never painted) shows as #ffffffff.
+    return h.fail(what ++ ": #{x:0>6} (expected #{x:0>6})", .{
+        @as(u32, @truncate(@as(u64, @bitCast(got)))),
+        @as(u32, @intCast(want)),
+    });
+}
+
+/// The grip band (a pane's margin next to a divider, where the mouse goes
+/// to the tab's container) reaches at most 64 px from the divider, so the
+/// rest of a wide padding stays the pane's; and a point in a band picks
+/// the divider on that band's side, even beside a nearer one. (A / B) | C,
+/// with a horizontal padding wider than the reach and no vertical padding.
+fn splitGrip(h: *Harness) anyerror!void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    var g = try start(h, "split-grip", "window-padding-x = 60\nwindow-padding-y = 0\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    h.key(try h.surface(&g, win), cs, 'O');
+    try waitPanes(h, &g, 2);
+    w.Sleep(800);
+    h.key(try paneHwnd(h, &g, 0), cs, 'E');
+    try waitPanes(h, &g, 3);
+    w.Sleep(1500);
+    const a = try paneHwnd(h, &g, 0);
+    const container = w.GetParent(a) orelse return h.fail("pane without a container", .{});
+
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(a, &r);
+    const mid_x = @divTrunc(r.left + r.right, 2);
+    const mid_y = @divTrunc(r.top + r.bottom, 2);
+    try h.expect(hitTest(a, r.right - 64, mid_y) == w.HTTRANSPARENT, "64 px from the divider is the grip band", .{});
+    try h.expect(hitTest(a, r.right - 65, mid_y) == w.HTCLIENT, "65 px from it, still padding, is the pane's", .{});
+
+    // A's bottom band is what its grid leaves over. Beside A's last text
+    // row, 60 px from the side-by-side divider, a point is in A's right
+    // band only, and nearer the stacked divider.
+    var bottom_band: i32 = 0;
+    while (bottom_band < 64 and hitTest(a, mid_x, r.bottom - 1 - bottom_band) != w.HTCLIENT) bottom_band += 1;
+    try h.expect(bottom_band + 1 < 60, "setup: A's bottom band ({d} px) is narrower than its right one", .{bottom_band});
+    try h.expect(hitTest(a, r.right - 60, r.bottom - 1 - bottom_band) == w.HTTRANSPARENT, "the point is in A's right band", .{});
+
+    // A drag from it moves the side-by-side divider, not the stacked one.
+    const root_x = try rootDivider(h, &g);
+    const stacked_y, const px, const py = blk: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const p = t.panes.?;
+        break :blk .{ try leftStackedDivider(h, t), p[0].rect[2] - 60, p[0].rect[3] - 1 - bottom_band };
+    };
+    postMouse(container, w.WM_LBUTTONDOWN, px, py);
+    postMouse(container, w.WM_MOUSEMOVE, px + 30, py + 30);
+    postMouse(container, w.WM_LBUTTONUP, px + 30, py + 30);
+    w.Sleep(600);
+    const root_after = try rootDivider(h, &g);
+    try h.expect(@abs(root_after - (root_x + 30)) <= 1, "the side-by-side divider moved to {d} (expected {d})", .{ root_after, root_x + 30 });
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const stacked_after = try leftStackedDivider(h, d.value.windows[0].tabs[0]);
+        try h.expect(stacked_after == stacked_y, "the stacked divider stayed at {d} (is {d})", .{ stacked_y, stacked_after });
+    }
+    try quit(h, &g, a);
+}
+
+/// The top of the stacked divider in the left part of tab `t`.
+fn leftStackedDivider(h: *Harness, t: Harness.Dump.Tab) !i32 {
+    for (t.dividers.?) |dv| if (dv[0] == 0 and dv[3] - dv[1] < t.area.?[1]) return dv[1];
+    return h.fail("no stacked divider on the left", .{});
+}
+
+/// An `all:` binding performs new_split on every surface inside the core's
+/// loop over its surface list, which each new pane joins; ten terminals
+/// fill the list's first allocation, so splitting inside that loop would
+/// move the list from under it. Every tab gets its second pane.
+fn splitAll(h: *Harness) anyerror!void {
+    const f9 = 0x78;
+    var g = try start(h, "split-all", "keybind = all:ctrl+shift+f9=new_split:right\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    for (2..11) |n| {
+        h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'T');
+        try waitWindowTabs(h, &g, win, n);
+    }
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, f9);
+    var split: usize = 0;
+    var waited: u32 = 0;
+    while (waited <= 20000) : (waited += 250) {
+        if (g.exitCode()) |code| return h.fail("Ghostty exited with code {d}", .{code});
+        var d = try h.dump(&g);
+        defer d.deinit();
+        split = 0;
+        for (d.value.windows[0].tabs) |t| {
+            if (t.panes) |p| split += @intFromBool(p.len == 2);
+        }
+        if (split == 10) break;
+        w.Sleep(250);
+    }
+    try h.expect(split == 10, "every tab was split ({d} of 10)", .{split});
+    try quit(h, &g, try h.surface(&g, win));
 }
 
 /// `fg` at `alpha` over `bg`, per channel in the stored (sRGB) values.
@@ -1605,4 +1795,22 @@ fn windowSize(h: *Harness) anyerror!void {
     const t = d.value.windows[0].tabs[0];
     try h.expect(t.cols == 86 and t.rows == 22, "grid {?d}x{?d}, expected 86x22", .{ t.cols, t.rows });
     try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+
+    // Larger than the screen: clamped to the monitor's work area, and kept
+    // inside it wherever Windows first put the window.
+    var big = try start(h, "window-size-big", "window-width = 500\nwindow-height = 200\n", ">");
+    defer big.deinit();
+    const win = try h.mainWindow(&big);
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(win, &r);
+    var mi: w.MONITORINFO = .{};
+    const monitor = w.MonitorFromWindow(win, w.MONITOR_DEFAULTTONEAREST) orelse return h.fail("no monitor", .{});
+    _ = w.GetMonitorInfoW(monitor, &mi);
+    const work = mi.rcWork;
+    try h.expect(
+        r.left >= work.left and r.top >= work.top and r.right <= work.right and r.bottom <= work.bottom,
+        "the window ({d},{d})-({d},{d}) is inside the work area ({d},{d})-({d},{d})",
+        .{ r.left, r.top, r.right, r.bottom, work.left, work.top, work.right, work.bottom },
+    );
+    try quit(h, &big, try h.surface(&big, win));
 }

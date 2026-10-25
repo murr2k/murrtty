@@ -53,10 +53,6 @@ colors: Colors = .{ .bg = .{ .r = 0, .g = 0, .b = 0 }, .fg = .{ .r = 255, .g = 2
 content_scale: apprt.ContentScale = .{ .x = 1, .y = 1 },
 size: apprt.SurfaceSize = .{ .width = 0, .height = 0 },
 
-/// The core's size limits for this pane (its minimum grid plus padding),
-/// in pixels, once it has sent them.
-size_limit: ?apprt.action.SizeLimit = null,
-
 /// Whether the pane is shown (setVisible): not in a hidden tab, a
 /// minimized window, or behind another pane's zoom.
 shown: bool = true,
@@ -75,6 +71,8 @@ mouse_hidden: bool = false,
 /// Keyboard and IME state.
 high_surrogate: u16 = 0,
 ime_composing: bool = false,
+/// An Esc press cancelled a divider drag (see escapeTaken).
+escape_taken: bool = false,
 
 /// Whether this window has the keyboard focus, as Windows last said, and
 /// whether the core was last told it has (a core surface starts out
@@ -234,12 +232,26 @@ fn forceFrame(self: *Surface) void {
     cs.renderer_thread.wakeup.notify() catch {};
 }
 
-/// The smallest the pane may be laid out (split_layout's view interface).
+/// The smallest the pane may be laid out (split_layout's view interface):
+/// the core's minimum grid at the current cell size, plus the configured
+/// padding at the current DPI. Worked out each time, since the core sends
+/// its size_limit only once and the cells change with the font size and
+/// the DPI (App relays the tab out on cell_size). The configured padding,
+/// not the balanced padding, which grows with the pane.
 pub fn layoutMin(self: *const Surface) split_layout.Size {
-    const limit = self.size_limit orelse return .{};
+    if (!self.core_initialized) return .{};
+    const cs = &self.core_surface;
+    const cfg = &cs.config;
+    const xdpi: u32 = cs.font_size.xdpi;
+    const ydpi: u32 = cs.font_size.ydpi;
+    // As the core scales padding: points to pixels, each side rounded down.
+    const width = cs.size.cell.width * CoreSurface.min_window_width_cells +
+        cfg.window_padding_left * xdpi / 72 + cfg.window_padding_right * xdpi / 72;
+    const height = cs.size.cell.height * CoreSurface.min_window_height_cells +
+        cfg.window_padding_top * ydpi / 72 + cfg.window_padding_bottom * ydpi / 72;
     return .{
-        .width = @intCast(@min(limit.min_width, std.math.maxInt(u16))),
-        .height = @intCast(@min(limit.min_height, std.math.maxInt(u16))),
+        .width = @intCast(@min(width, std.math.maxInt(u16))),
+        .height = @intCast(@min(height, std.math.maxInt(u16))),
     };
 }
 
@@ -586,14 +598,15 @@ pub fn dpiChanged(self: *Surface) void {
     };
 }
 
-/// Whether (x, y), in client pixels, is in this pane's margin on a side
-/// that borders a divider: the band a divider drag can start in. The margin
-/// is the padding before the first cell and whatever the grid leaves after
-/// the last, so the band never takes a click meant for a cell (as GTK's
-/// once took the first column's, Ghostty #3020).
-fn inDividerBand(self: *const Surface, x: i32, y: i32) bool {
-    if (!self.core_initialized) return false;
-    const parent = c.GetParent(self.hwnd) orelse return false;
+/// The sides whose grip band holds (x, y), in client pixels: the band a
+/// drag of that side's divider can start in, the pane's margin on a side
+/// that borders a divider, at most split_layout.grip_reach from the edge.
+/// The margin is the padding before the first cell and whatever the grid
+/// leaves after the last, so the band never takes a click meant for a cell
+/// (as GTK's once took the first column's, Ghostty #3020).
+pub fn dividerBand(self: *const Surface, x: i32, y: i32) split_layout.Sides {
+    if (!self.core_initialized) return .{};
+    const parent = c.GetParent(self.hwnd) orelse return .{};
     var outer: c.RECT = .{};
     _ = c.GetClientRect(parent, &outer);
     var r: c.RECT = .{};
@@ -607,10 +620,32 @@ fn inDividerBand(self: *const Surface, x: i32, y: i32) bool {
     const top: i32 = @intCast(size.padding.top);
     const text_right: i32 = @intCast(size.padding.left + grid.columns * size.cell.width);
     const text_bottom: i32 = @intCast(size.padding.top + grid.rows * size.cell.height);
-    return (corners[0].x > 0 and x < left) or
-        (corners[1].x < outer.right and x >= text_right) or
-        (corners[0].y > 0 and y < top) or
-        (corners[1].y < outer.bottom and y >= text_bottom);
+    const reach = split_layout.grip_reach;
+    return .{
+        .left = corners[0].x > 0 and x < @min(left, reach),
+        .right = corners[1].x < outer.right and x >= @max(text_right, r.right - reach),
+        .top = corners[0].y > 0 and y < @min(top, reach),
+        .bottom = corners[1].y < outer.bottom and y >= @max(text_bottom, r.bottom - reach),
+    };
+}
+
+/// Whether an Esc key message is taken for a divider drag (the drag never
+/// takes the focus): a press cancels the drag, and that keystroke's
+/// auto-repeats and release go nowhere either, so the program never sees
+/// half of it. A fresh press ends that, in case the release went elsewhere.
+fn escapeTaken(self: *Surface, msg: c.UINT, lparam: c.LPARAM) bool {
+    const up = msg == c.WM_KEYUP or msg == c.WM_SYSKEYUP;
+    const repeat = !up and c.hiword(lparam) & c.KF_REPEAT != 0;
+    if (self.escape_taken) {
+        if (up) self.escape_taken = false;
+        if (up or repeat) return true;
+        self.escape_taken = false;
+    }
+    if (msg != c.WM_KEYDOWN or repeat) return false;
+    const i = self.window.tabIndexOf(self) orelse return false;
+    if (!self.window.tabs.items[i].cancelDrag()) return false;
+    self.escape_taken = true;
+    return true;
 }
 
 /// Post WM_FOCUS_CHANGED unless one is already queued; it reports the focus
@@ -709,17 +744,12 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         c.WM_NCHITTEST => {
             var pt = [1]c.POINT{.{ .x = c.xParam(lparam), .y = c.yParam(lparam) }};
             _ = c.MapWindowPoints(null, self.hwnd, &pt, 1);
-            if (self.inDividerBand(pt[0].x, pt[0].y)) return c.HTTRANSPARENT;
+            if (self.dividerBand(pt[0].x, pt[0].y).any()) return c.HTTRANSPARENT;
             return null;
         },
 
         c.WM_KEYDOWN, c.WM_SYSKEYDOWN, c.WM_KEYUP, c.WM_SYSKEYUP => {
-            // Esc cancels a divider drag (the drag never takes the focus).
-            if (msg == c.WM_KEYDOWN and wparam == c.VK_ESCAPE) {
-                if (self.window.tabIndexOf(self)) |i| {
-                    if (self.window.tabs.items[i].cancelDrag()) return 0;
-                }
-            }
+            if (wparam == c.VK_ESCAPE and self.escapeTaken(msg, lparam)) return 0;
             return self.handleKey(msg, wparam, lparam);
         },
 

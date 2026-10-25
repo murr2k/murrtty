@@ -152,10 +152,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         });
         // The title bar as applyChrome set it; the caption as 0xRRGGBB,
         // or -1 for the system's.
-        const caption: i64 = if (w.chrome.caption) |ref|
-            @as(i64, ref & 0xFF) << 16 | @as(i64, (ref >> 8) & 0xFF) << 8 | @as(i64, (ref >> 16) & 0xFF)
-        else
-            -1;
+        const caption: i64 = if (w.chrome.caption) |ref| rgbOf(ref) else -1;
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
 
         // Tab bar geometry in client coordinates, for clicks.
@@ -241,7 +238,14 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
     unzoomed_tree.zoomed = null;
     var order = try Tab.Layout.compute(alloc, &unzoomed_tree, area, tab.dividerWidth());
     defer order.deinit(alloc);
-    try out.print(alloc, ",\"zoomed\":{},\"area\":[{d},{d}],\"panes\":[", .{ tab.tree.zoomed != null, area.right, area.bottom });
+    // The dividers' color as last painted, 0xRRGGBB, or -1 before any.
+    const divider_color: i64 = if (tab.painted_divider) |ref| rgbOf(ref) else -1;
+    try out.print(alloc, ",\"zoomed\":{},\"area\":[{d},{d}],\"divider_color\":{d},\"panes\":[", .{
+        tab.tree.zoomed != null,
+        area.right,
+        area.bottom,
+        divider_color,
+    });
     for (order.panes, 0..) |pane, i| {
         const s = pane.view;
         if (i > 0) try out.append(alloc, ',');
@@ -284,6 +288,11 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         try out.print(alloc, "[{d},{d},{d},{d}]", .{ sp.divider.left, sp.divider.top, sp.divider.right, sp.divider.bottom });
     }
     try out.append(alloc, ']');
+}
+
+/// A COLORREF (0x00BBGGRR) as 0xRRGGBB.
+fn rgbOf(ref: c.COLORREF) i64 {
+    return @as(i64, ref & 0xFF) << 16 | @as(i64, (ref >> 8) & 0xFF) << 8 | @as(i64, (ref >> 16) & 0xFF);
 }
 
 /// A JSON string literal. Invalid UTF-8 passes through unchanged; the

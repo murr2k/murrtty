@@ -42,6 +42,9 @@ visible: bool = true,
 /// A divider being dragged.
 drag: ?Drag = null,
 
+/// The dividers' color as last painted, for the GUI tests' state dump.
+painted_divider: ?c.COLORREF = null,
+
 const Drag = struct {
     /// The split whose divider moves, valid while `generation` is the
     /// tab's (a pane closing mid-drag ends the drag).
@@ -52,12 +55,6 @@ const Drag = struct {
     /// The ratio to go back to on Esc.
     ratio: f16,
 };
-
-/// How far across a divider, in pixels, a point that reached the container
-/// still counts as on it. Points only reach it on the line itself or
-/// through a pane's grip band (its padding), so this just has to cover the
-/// widest padding.
-const grab_reach = 64;
 
 pub fn registerClass(instance: c.HINSTANCE) !void {
     const wc: c.WNDCLASSEXW = .{
@@ -264,46 +261,44 @@ pub fn equalize(self: *Tab) !bool {
 }
 
 /// resize_split: move the divider nearest pane `from` across `direction`
-/// by `amount` points (scaled by the DPI). It ends a zoom. Returns false
-/// when nothing changed: one pane, or a divider already as far as the
-/// panes' minimums let it go.
+/// by `amount` points (scaled by the DPI), from where it is drawn. It ends
+/// a zoom. Returns false when nothing changed: one pane, no divider that
+/// way, or a divider already as far as the panes' minimums let it go.
 pub fn resize(self: *Tab, from: *Surface, value: apprt.action.ResizeSplit) !bool {
     if (!self.tree.isSplit() or value.amount == 0) return false;
-    const alloc = self.window.app.core_app.alloc;
     const handle = self.tree.locate(from) orelse return false;
     const px: i32 = @intCast((@as(u64, value.amount) * c.GetDpiForWindow(self.hwnd) + 48) / 96);
-    const layout: Layout.SplitLayout = switch (value.direction) {
+    const was_zoomed = self.tree.zoomed != null;
+    self.tree.zoomed = null;
+    const moved = try self.moveDivider(handle, switch (value.direction) {
         .left, .right => .horizontal,
         .up, .down => .vertical,
-    };
-    const area_ = self.area();
-    const delta = Layout.resizeDelta(area_, layout, switch (value.direction) {
+    }, switch (value.direction) {
         .left, .up => -px,
         .right, .down => px,
     });
+    if (moved or was_zoomed) self.layoutPanes();
+    return moved or was_zoomed;
+}
 
-    const was_zoomed = self.tree.zoomed != null;
-    self.tree.zoomed = null;
-    var next = try self.tree.resize(alloc, handle, layout, delta);
-    errdefer next.deinit();
-
-    // Compare where the panes are, unzoomed, before and after.
+/// Move the divider of the split resize_split picks for pane `from` by
+/// `amount` pixels. Returns whether any pane moved; if none did, the split
+/// keeps its ratio.
+fn moveDivider(self: *Tab, from: Tree.Node.Handle, layout: Layout.SplitLayout, amount: i32) !bool {
+    const alloc = self.window.app.core_app.alloc;
+    const handle = Layout.parentSplit(&self.tree, from, layout) orelse return false;
+    const area_ = self.area();
     var before = try Layout.compute(alloc, &self.tree, area_, self.dividerWidth());
     defer before.deinit(alloc);
-    var after = try Layout.compute(alloc, &next, area_, self.dividerWidth());
+    const s = before.findSplit(handle) orelse return false;
+    const ratio = self.tree.nodes[handle.idx()].split.ratio;
+    self.tree.resizeInPlace(handle, before.stepRatio(s, amount));
+    errdefer self.tree.resizeInPlace(handle, ratio);
+    var after = try Layout.compute(alloc, &self.tree, area_, self.dividerWidth());
     defer after.deinit(alloc);
-    var moved = false;
-    for (before.panes, after.panes) |a, b| moved = moved or !std.meta.eql(a.rect, b.rect);
-
-    if (!moved) {
-        next.deinit();
-        if (was_zoomed) self.layoutPanes();
-        return was_zoomed;
-    }
-    self.tree.deinit();
-    self.tree = next;
-    self.layoutPanes();
-    return true;
+    for (before.panes, after.panes) |a, b| if (!std.meta.eql(a.rect, b.rect)) return true;
+    self.tree.resizeInPlace(handle, ratio);
+    return false;
 }
 
 /// Split pane `at`: a new pane `direction` of it, inheriting from `parent`
@@ -379,6 +374,9 @@ pub fn closePane(self: *Tab, surface: *Surface) !bool {
     const next = try self.tree.remove(alloc, handle);
     self.tree.deinit();
     self.tree = next;
+    // A zoom carries over to the node that survives, even the last pane,
+    // where nothing could end it (toggleZoom needs a split).
+    if (!self.tree.isSplit()) self.tree.zoomed = null;
     self.focused = focus;
     self.generation +%= 1;
 
@@ -434,13 +432,18 @@ pub fn layoutPanes(self: *Tab) void {
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
 
-/// The split whose divider is at (x, y) in the container, if any.
+/// The split whose divider is at (x, y) in the container, if any: the line
+/// itself, or the divider beside the pane grip band (Surface.dividerBand)
+/// the point came through.
 fn dividerAt(self: *Tab, x: i32, y: i32) ?Layout.Split {
     if (!self.tree.isSplit()) return null;
     const alloc = self.window.app.core_app.alloc;
     var layout = Layout.compute(alloc, &self.tree, self.area(), self.dividerWidth()) catch return null;
     defer layout.deinit(alloc);
-    return layout.nearestDivider(x, y, grab_reach);
+    if (layout.dividerAt(x, y, 0)) |s| return s;
+    const p = layout.paneAt(x, y) orelse return null;
+    const sides = p.view.dividerBand(x - p.rect.left, y - p.rect.top);
+    return layout.bandDivider(p.rect, sides, x, y);
 }
 
 fn startDrag(self: *Tab, x: i32, y: i32) void {
@@ -542,8 +545,10 @@ fn paint(self: *Tab) void {
     const alloc = self.window.app.core_app.alloc;
     var layout = Layout.compute(alloc, &self.tree, self.area(), self.dividerWidth()) catch return;
     defer layout.deinit(alloc);
-    const brush = c.CreateSolidBrush(self.dividerColor()) orelse return;
+    const color = self.dividerColor();
+    const brush = c.CreateSolidBrush(color) orelse return;
     defer _ = c.DeleteObject(brush);
+    self.painted_divider = color;
     for (layout.splits) |s| {
         const r = toRect(s.divider);
         _ = c.FillRect(hdc, &r, brush);
@@ -585,7 +590,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         // The mouse reaches the container on a divider, or in a pane's
-        // grip band next to one (Surface.inDividerBand).
+        // grip band next to one (Surface.dividerBand).
         c.WM_SETCURSOR => {
             if (c.loword(lparam) != c.HTCLIENT) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
             var pt = [1]c.POINT{.{}};

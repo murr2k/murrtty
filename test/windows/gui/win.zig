@@ -265,6 +265,15 @@ pub extern "user32" fn GetKeyboardState(*[256]u8) callconv(.winapi) BOOL;
 pub extern "user32" fn SetKeyboardState(*const [256]u8) callconv(.winapi) BOOL;
 pub extern "user32" fn MapVirtualKeyW(UINT, UINT) callconv(.winapi) UINT;
 pub extern "user32" fn GetWindowRect(HWND, *RECT) callconv(.winapi) BOOL;
+pub const MONITORINFO = extern struct {
+    cbSize: DWORD = @sizeOf(MONITORINFO),
+    rcMonitor: RECT = .{},
+    rcWork: RECT = .{},
+    dwFlags: DWORD = 0,
+};
+pub const MONITOR_DEFAULTTONEAREST = 2;
+pub extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.winapi) ?*anyopaque;
+pub extern "user32" fn GetMonitorInfoW(*anyopaque, *MONITORINFO) callconv(.winapi) BOOL;
 pub extern "user32" fn GetParent(HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetClientRect(HWND, *RECT) callconv(.winapi) BOOL;
 pub extern "user32" fn PrintWindow(HWND, HDC, UINT) callconv(.winapi) BOOL;

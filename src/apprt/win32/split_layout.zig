@@ -42,6 +42,25 @@ pub fn dividerWidth(dpi: u32) i32 {
     return @max(1, @as(i32, @intCast((dpi + 48) / 96)));
 }
 
+/// How far from a pane's edge its grip band reaches, at most, in pixels.
+/// Next to a divider, a pane leaves the mouse to the tab's container in its
+/// margin (the padding and whatever the grid leaves over), but only this
+/// close to the edge: the rest of a wide margin stays the pane's, so a
+/// click there still focuses it and reaches the terminal.
+pub const grip_reach = 64;
+
+/// Which sides of a pane a point is in the grip band of.
+pub const Sides = struct {
+    left: bool = false,
+    right: bool = false,
+    top: bool = false,
+    bottom: bool = false,
+
+    pub fn any(self: Sides) bool {
+        return self.left or self.right or self.top or self.bottom;
+    }
+};
+
 /// The layout of a split tree of `View`s. View must have
 /// `fn layoutMin(*const View) Size`: the smallest a pane may be, in pixels.
 pub fn Layout(comptime View: type) type {
@@ -152,31 +171,43 @@ pub fn Layout(comptime View: type) type {
             return null;
         }
 
-        /// The split whose divider is nearest (x, y), within `max` pixels
-        /// across it and within its length: for a point that reached the
-        /// tab's container through a pane's grip band, where bands of
-        /// neighboring dividers may overlap.
-        pub fn nearestDivider(self: *const Self, x: i32, y: i32, max: i32) ?Split {
+        /// The split whose divider borders pane rectangle `pane` on one of
+        /// `sides`, beside (x, y): for a point in that pane's grip band on
+        /// those sides. Only a divider on a band's own side counts, however
+        /// near another one runs; at a corner, where two sides' bands meet,
+        /// the nearer divider wins.
+        pub fn bandDivider(self: *const Self, pane: Rect, sides: Sides, x: i32, y: i32) ?Split {
             var best: ?Split = null;
-            var best_distance: i32 = max + 1;
+            var best_distance: i32 = std.math.maxInt(i32);
             for (self.splits) |s| {
+                // Panes touch their dividers, so a bordering divider's line
+                // starts or ends exactly at the pane's edge.
                 const r = s.divider;
-                const distance: i32, const along: bool = switch (s.layout) {
-                    .horizontal => .{ distanceTo(x, r.left, r.right), y >= r.top and y < r.bottom },
-                    .vertical => .{ distanceTo(y, r.top, r.bottom), x >= r.left and x < r.right },
+                const across: ?i32 = switch (s.layout) {
+                    .horizontal => if (y < r.top or y >= r.bottom)
+                        null
+                    else if (sides.right and r.left == pane.right)
+                        r.left - x
+                    else if (sides.left and r.right == pane.left)
+                        x - r.right + 1
+                    else
+                        null,
+                    .vertical => if (x < r.left or x >= r.right)
+                        null
+                    else if (sides.bottom and r.top == pane.bottom)
+                        r.top - y
+                    else if (sides.top and r.bottom == pane.top)
+                        y - r.bottom + 1
+                    else
+                        null,
                 };
-                if (along and distance < best_distance) {
+                const distance = across orelse continue;
+                if (distance < best_distance) {
                     best = s;
                     best_distance = distance;
                 }
             }
             return best;
-        }
-
-        fn distanceTo(v: i32, lo: i32, hi: i32) i32 {
-            if (v < lo) return lo - v;
-            if (v >= hi) return v - hi + 1;
-            return 0;
         }
 
         /// The smallest area `tree` fits in with every pane at its minimum.
@@ -205,16 +236,33 @@ pub fn Layout(comptime View: type) type {
             return @floatCast(std.math.clamp(ratio, 0, 1));
         }
 
-        /// The ratio delta for SplitTree.resize that moves a divider by
-        /// `amount` pixels in a tab whose area is `area`: resize takes the
-        /// delta as a fraction of the whole tree's width (side by side) or
-        /// height (stacked). Clamped to [-1, 1], since resize asserts on
-        /// larger deltas.
-        pub fn resizeDelta(area: Rect, layout: SplitLayout, amount: i32) f16 {
-            const len = length(area, layout);
-            if (len <= 0) return 0;
-            const delta = @as(f32, @floatFromInt(amount)) / @as(f32, @floatFromInt(len));
-            return @floatCast(std.math.clamp(delta, -1, 1));
+        /// The ratio that moves split `s`'s divider `amount` pixels from
+        /// where it is drawn, as far as the sides' minimums allow: for
+        /// resize_split. Not from the stored ratio, which a minimum can
+        /// hold the divider away from (in a narrowed tab, say) by more than
+        /// a step, so that no step would move it.
+        pub fn stepRatio(self: *const Self, s: Split, amount: i32) f16 {
+            const first = switch (s.layout) {
+                .horizontal => s.divider.left - s.rect.left,
+                .vertical => s.divider.top - s.rect.top,
+            };
+            return self.dragRatio(s, first + amount);
+        }
+
+        /// The split resize_split moves for pane `from`, as
+        /// SplitTree.resize picks it: the nearest one above the pane that
+        /// lays out `layout`.
+        pub fn parentSplit(tree: *const Tree, from: Handle, layout: SplitLayout) ?Handle {
+            var found: ?Handle = null;
+            var at: Handle = .root;
+            while (at != from) switch (tree.nodes[at.idx()]) {
+                .leaf => return null,
+                .split => |s| {
+                    if (s.layout == layout) found = at;
+                    at = if (isWithin(tree, from, s.left)) s.left else s.right;
+                },
+            };
+            return found;
         }
 
         /// The pane to focus after closing pane `closing`: the one before
@@ -654,7 +702,7 @@ test "split_layout: hit-testing panes, dividers and the grip band" {
     try testing.expectEqual(L.SplitLayout.vertical, layout.dividerAt(502, 300, 2).?.layout);
 }
 
-test "split_layout: the nearest divider, and a tree's minimum" {
+test "split_layout: a grip band's divider is on its own side, and a tree's minimum" {
     const alloc = testing.allocator;
     var views = [_]TestView{
         .{ .label = "A", .min = .{ .width = 80, .height = 40 } },
@@ -671,13 +719,21 @@ test "split_layout: the nearest divider, and a tree's minimum" {
 
     // Column 500 is the side-by-side divider; row 300 of the right half is
     // the stacked one.
-    try testing.expectEqual(L.SplitLayout.horizontal, layout.nearestDivider(497, 100, 4).?.layout);
-    try testing.expect(layout.nearestDivider(495, 100, 4) == null);
-    try testing.expectEqual(L.SplitLayout.vertical, layout.nearestDivider(800, 303, 4).?.layout);
-    // Near both: the stacked line is 1 away, the side-by-side one 3.
-    try testing.expectEqual(L.SplitLayout.vertical, layout.nearestDivider(503, 301, 4).?.layout);
-    // Past the end of the stacked divider (left half): not it.
-    try testing.expect(layout.nearestDivider(300, 300, 4) == null);
+    const a = paneRect(&layout, "A");
+    const b = paneRect(&layout, "B");
+    const cc = paneRect(&layout, "C");
+    try testing.expectEqual(L.SplitLayout.horizontal, layout.bandDivider(a, .{ .right = true }, 497, 100).?.layout);
+    try testing.expectEqual(L.SplitLayout.vertical, layout.bandDivider(cc, .{ .top = true }, 800, 303).?.layout);
+    // At a corner, in two bands: the stacked line is 1 away, the
+    // side-by-side one 3.
+    try testing.expectEqual(L.SplitLayout.vertical, layout.bandDivider(cc, .{ .left = true, .top = true }, 503, 301).?.layout);
+    // In B's left band only, near its bottom: the side-by-side divider,
+    // though the stacked one is nearer.
+    try testing.expectEqual(L.SplitLayout.horizontal, layout.bandDivider(b, .{ .left = true }, 503, 298).?.layout);
+    // In no band, or a band on a side with no divider (the tab's edge).
+    try testing.expect(layout.bandDivider(b, .{}, 503, 298) == null);
+    try testing.expect(layout.bandDivider(a, .{ .left = true }, 2, 100) == null);
+    try testing.expect(layout.bandDivider(a, .{ .bottom = true }, 300, 599) == null);
 
     // A | (B / C): 80 + 1 + max(50, 60) wide, max(40, 30 + 1 + 20) high.
     const min = try L.minimum(alloc, &tree, 1);
@@ -720,30 +776,45 @@ test "split_layout: dragging moves the divider by the dragged distance" {
     try testing.expectEqual(@as(f32, 2460), @round(@as(f32, layout.dragRatio(s, 5000)) * 2560));
 }
 
-test "split_layout: resize deltas are a fraction of the area, at most 1" {
-    try testing.expectEqual(@as(f16, 0.1), L.resizeDelta(.{ .right = 1000, .bottom = 500 }, .horizontal, 100));
-    try testing.expectEqual(@as(f16, -0.2), L.resizeDelta(.{ .right = 1000, .bottom = 500 }, .vertical, -100));
-    try testing.expectEqual(@as(f16, 1), L.resizeDelta(.{ .right = 1000, .bottom = 500 }, .horizontal, 5000));
-    try testing.expectEqual(@as(f16, -1), L.resizeDelta(.{ .right = 1000, .bottom = 500 }, .horizontal, -5000));
-    try testing.expectEqual(@as(f16, 0), L.resizeDelta(.{}, .horizontal, 10));
-
-    // Applied with SplitTree.resize, the divider moves by that much.
+test "split_layout: a resize step moves the divider from where it is drawn" {
     const alloc = testing.allocator;
-    var views = [_]TestView{ .{ .label = "A" }, .{ .label = "B" }, .{ .label = "C" } };
+    var views = [_]TestView{
+        .{ .label = "A", .min = .{ .width = 100 } },
+        .{ .label = "B", .min = .{ .width = 100 } },
+        .{ .label = "C" },
+    };
+    // A | (B / C), the root at 0.15.
     var tree = try build(alloc, &views, &.{
-        .{ .at = "A", .dir = .right },
+        .{ .at = "A", .dir = .right, .ratio = 0.15 },
         .{ .at = "B", .dir = .down },
     });
     defer tree.deinit();
-    const area: Rect = .{ .right = 1001, .bottom = 601 };
-    var before = try L.compute(alloc, &tree, area, 1);
-    defer before.deinit(alloc);
-    var resized = try tree.resize(alloc, tree.locate(&views[2]).?, .horizontal, L.resizeDelta(area, .horizontal, 100));
-    defer resized.deinit();
-    var after = try L.compute(alloc, &resized, area, 1);
-    defer after.deinit(alloc);
-    const moved = after.findSplit(.root).?.divider.left - before.findSplit(.root).?.divider.left;
-    try testing.expect(@abs(moved - 100) <= 1);
+
+    // The split each way, as SplitTree.resize picks it.
+    const from_c = tree.locate(&views[2]).?;
+    try testing.expectEqual(L.Handle.root, L.parentSplit(&tree, from_c, .horizontal).?);
+    const stacked = L.parentSplit(&tree, from_c, .vertical).?;
+    try testing.expect(stacked != .root);
+    try testing.expectEqual(L.SplitLayout.vertical, tree.nodes[stacked.idx()].split.layout);
+    try testing.expect(L.parentSplit(&tree, tree.locate(&views[0]).?, .vertical) == null);
+
+    // 481 px wide: the ratio wants A at 72 px, its minimum holds it at 100.
+    const area: Rect = .{ .right = 481, .bottom = 300 };
+    var held = try L.compute(alloc, &tree, area, 1);
+    defer held.deinit(alloc);
+    try testing.expectEqual(@as(i32, 100), paneRect(&held, "A").width());
+
+    // A 10 px step right moves it to 110 (from the ratio, it wouldn't move).
+    tree.resizeInPlace(.root, held.stepRatio(held.findSplit(.root).?, 10));
+    var stepped = try L.compute(alloc, &tree, area, 1);
+    defer stepped.deinit(alloc);
+    try testing.expectEqual(@as(i32, 110), paneRect(&stepped, "A").width());
+
+    // A step left stops at the minimum.
+    tree.resizeInPlace(.root, stepped.stepRatio(stepped.findSplit(.root).?, -50));
+    var back = try L.compute(alloc, &tree, area, 1);
+    defer back.deinit(alloc);
+    try testing.expectEqual(@as(i32, 100), paneRect(&back, "A").width());
 }
 
 test "split_layout: closing a pane focuses the one before it, else after it" {

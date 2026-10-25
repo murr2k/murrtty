@@ -809,6 +809,9 @@ pub const Dump = struct {
         dividers: ?[]const [4]i32 = null,
         /// Whether a pane of the tab is zoomed.
         zoomed: ?bool = null,
+        /// The dividers' color as last painted, 0xRRGGBB, or -1 before
+        /// any were.
+        divider_color: ?i64 = null,
     };
 
     pub const Pane = struct {

@@ -34,7 +34,8 @@ active: usize = 0,
 
 tab_bar: TabBar = .{},
 
-/// Client size limits from the core, in device pixels.
+/// Client size limits from the core, in device pixels: from the first
+/// pane, which is initialized before its tab exists.
 size_limit: ?apprt.action.SizeLimit = null,
 
 /// Saved placement and style while fullscreen.
@@ -172,7 +173,8 @@ pub fn closeSurface(self: *Window, surface: *Surface, confirm: bool) void {
 
 /// Split `surface`'s pane for the new_split action: the new pane opens
 /// `direction` of it and takes the focus. Runs inside a core callback,
-/// which is fine for creating a pane (the core's focus change is deferred).
+/// which is fine for creating a pane (the core's focus change is deferred,
+/// and its `all:` loop copes with surfaces added while it runs).
 pub fn newSplit(self: *Window, surface: *Surface, direction: apprt.action.SplitDirection) !void {
     const index = self.tabIndexOf(surface) orelse return error.PaneNotFound;
     const tab = self.tabs.items[index];
@@ -261,11 +263,14 @@ pub fn surfaceFocused(self: *Window, surface: *Surface) void {
 /// minimum, with the dividers between them (so no tab is squeezed below
 /// its panes' minimums), or the core's size limit before any tab exists.
 fn minimumTabArea(self: *const Window) ?split_layout.Size {
+    if (self.tabs.items.len == 0) {
+        const limit = self.size_limit orelse return null;
+        return .{
+            .width = @intCast(@min(limit.min_width, std.math.maxInt(u16))),
+            .height = @intCast(@min(limit.min_height, std.math.maxInt(u16))),
+        };
+    }
     var min: ?split_layout.Size = null;
-    if (self.size_limit) |limit| min = .{
-        .width = @intCast(@min(limit.min_width, std.math.maxInt(u16))),
-        .height = @intCast(@min(limit.min_height, std.math.maxInt(u16))),
-    };
     const alloc = self.app.core_app.alloc;
     for (self.tabs.items) |t| {
         const m = Tab.Layout.minimum(alloc, &t.tree, t.dividerWidth()) catch continue;
@@ -576,22 +581,36 @@ pub fn setClientSize(self: *Window, width: u32, height: u32) void {
     _ = c.AdjustWindowRectExForDpi(&rect, style, c.FALSE, c.WS_EX_APPWINDOW, dpi);
     var win_w = rect.right - rect.left;
     var win_h = rect.bottom - rect.top;
-    // Never larger than the monitor's work area.
+    // Within the monitor's work area: never larger, and moved back in if
+    // the new size would run off its right or bottom edge. A window placed
+    // off every monitor on purpose (the GUI tests' captures) stays there.
+    var pos: c.RECT = .{};
+    _ = c.GetWindowRect(self.hwnd, &pos);
+    var x = pos.left;
+    var y = pos.top;
     var mi: c.MONITORINFO = .{};
     if (c.MonitorFromWindow(self.hwnd, c.MONITOR_DEFAULTTONEAREST)) |monitor| {
         if (c.GetMonitorInfoW(monitor, &mi) != 0) {
-            win_w = @min(win_w, mi.rcWork.right - mi.rcWork.left);
-            win_h = @min(win_h, mi.rcWork.bottom - mi.rcWork.top);
+            const work = mi.rcWork;
+            win_w = @min(win_w, work.right - work.left);
+            win_h = @min(win_h, work.bottom - work.top);
+            const on_monitor = pos.left < work.right and pos.right > work.left and
+                pos.top < work.bottom and pos.bottom > work.top;
+            if (on_monitor) {
+                x = @max(work.left, @min(x, work.right - win_w));
+                y = @max(work.top, @min(y, work.bottom - win_h));
+            }
         }
     }
+    const moved = x != pos.left or y != pos.top;
     _ = c.SetWindowPos(
         self.hwnd,
         null,
-        0,
-        0,
+        x,
+        y,
         win_w,
         win_h,
-        c.SWP_NOMOVE | c.SWP_NOZORDER | c.SWP_NOACTIVATE,
+        @as(c.UINT, if (moved) 0 else c.SWP_NOMOVE) | c.SWP_NOZORDER | c.SWP_NOACTIVATE,
     );
 }
 
@@ -599,7 +618,7 @@ pub fn setClientSize(self: *Window, width: u32, height: u32) void {
 /// `vt-window-resize-allowed` is on). As that option documents, it is
 /// ignored in a split or in a window with several tabs, and while the
 /// window is maximized or fullscreen; setClientSize keeps it within the
-/// monitor. Returns whether the window was resized.
+/// monitor's work area. Returns whether the window was resized.
 pub fn resizeFromTerminal(self: *Window, width: u32, height: u32) bool {
     if (self.tabs.items.len > 1) return false;
     if (self.activeTab()) |t| if (t.tree.isSplit()) return false;
@@ -740,20 +759,27 @@ pub fn isDark(color: configpkg.Config.Color) bool {
 
 /// A surface's colors changed (a program set them, or its config changed).
 pub fn colorsChanged(self: *Window, surface: *Surface) void {
-    // A pane dims toward its own background by default.
-    if (self.tabIndexOf(surface)) |i| self.tabs.items[i].syncDim();
+    if (self.tabIndexOf(surface)) |i| {
+        const tab = self.tabs.items[i];
+        // A pane dims toward its own background by default, and the
+        // dividers follow the focused pane's.
+        tab.syncDim();
+        if (tab.focused == surface) _ = c.InvalidateRect(tab.hwnd, null, c.FALSE);
+    }
     if (self.activeSurface() != surface) return;
     self.applyChrome();
     var r = self.tabBarRect();
     _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
 }
 
-/// The config changed: the chrome, and the tab bar's colors and
-/// visibility, may differ.
+/// The config changed: the chrome, the tab bar's colors and visibility,
+/// the panes' minimums (padding) and the dividers' color may differ.
 pub fn configChanged(self: *Window) void {
     self.applyChrome();
     for (self.tabs.items) |t| t.syncDim();
     self.layout();
+    // An unchanged tab rectangle sends the tabs no WM_SIZE.
+    for (self.tabs.items) |t| t.layoutPanes();
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
 
@@ -946,6 +972,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             _ = c.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
             var it = self.panes();
             while (it.next()) |s| s.dpiChanged();
+            // The panes' minimums follow their new cells and padding.
+            for (self.tabs.items) |t| t.layoutPanes();
             return 0;
         },
 
