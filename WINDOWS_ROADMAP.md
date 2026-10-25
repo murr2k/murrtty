@@ -637,7 +637,7 @@ runtime plus the WGL present path (1.7).
 
 | Step | Content | Effort |
 |---|---|---|
-| 1.1 | Focus plumbing: deferred core focus callback; `SetFocus` only in the active window. Fixes focus theft by closing a tab in a background window. | S |
+| 1.1 | Focus plumbing: deferred core focus callback; `SetFocus` only in the active window. Fixes focus theft by closing a tab in a background window. *Done 2026-10-24:* surfaces tell the core from a posted `WM_FOCUS_CHANGED` (coalesced, and repeated once the core surface exists); `present_terminal`, activation and the window's own focus still focus unconditionally. The `background-close` scenario failed before (the background window became active) and passes now. | S |
 | 1.2 | Tab refactor: `Tab.zig` with a one-leaf tree and a container window; every surface iteration site switches to tabs. No visible change; the full tab test set passes. | M |
 | 1.3 | `split_layout.zig` with unit tests: tiling, minimums, zoom, hit-testing, drag ratios, resize deltas, focus after close. | M |
 | 1.4 | Basic splits: `new_split`, closing panes through the queue (confirm per pane, last pane closes the tab), divider painting, titles from the focused pane, per-pane `size_limit`, `resize_window` refusals and monitor clamping (the multi-tab, maximized and fullscreen refusals fix a current bug and can land early). Removes 0.2's override for `Ctrl+Shift+O`/`E`. Includes the S4 stress run. | M |

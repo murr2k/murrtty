@@ -31,6 +31,7 @@ pub const all = [_]Scenario{
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
+    .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -949,6 +950,62 @@ fn outputFrames(h: *Harness) anyerror!void {
     const after = try framesPresented(h, &g);
     try h.expect(after > before, "frames after the output: {d}, before: {d}", .{ after, before });
     try quit(h, &g, surf);
+}
+
+/// A tab that closes in a background window must not activate it. Focusing
+/// the window's next tab once did: SetFocus activates the window it is
+/// called on, pulling the background window in front of the one in use.
+fn backgroundClose(h: *Harness) anyerror!void {
+    var g = try start(h, "background-close", "", ">");
+    defer g.deinit();
+    const a = try h.mainWindow(&g);
+    h.key(try h.surface(&g, a), .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, a, 2);
+    w.Sleep(1500);
+    // A second window, which becomes the active one.
+    h.key(try h.surface(&g, a), .{ .ctrl = true, .shift = true }, 'N');
+    w.Sleep(2500);
+    const wins = try h.windows(&g, "GhosttyWindow");
+    defer h.alloc.free(wins);
+    try h.expect(wins.len == 2, "Ctrl+Shift+N opens a second window (got {d})", .{wins.len});
+    const b = if (wins[0] == a) wins[1] else wins[0];
+    try h.expect(activeWindow(a) == b, "the new window is active", .{});
+
+    // End the background window's active tab from its shell.
+    const tab = try h.surface(&g, a);
+    try h.typeText(tab, "exit");
+    h.enter(tab);
+    try waitWindowTabs(h, &g, a, 1);
+    w.Sleep(500);
+    const active = activeWindow(a);
+    try h.expect(active == b, "the other window stays active (active is {s})", .{
+        if (active == a) "the background window" else if (active == null) "none" else "another window",
+    });
+    try quit(h, &g, try h.surface(&g, b));
+}
+
+/// The active window of the thread that owns `hwnd`.
+fn activeWindow(hwnd: w.HWND) ?w.HWND {
+    var info: w.GUITHREADINFO = .{};
+    if (w.GetGUIThreadInfo(w.GetWindowThreadProcessId(hwnd, null), &info) == 0) return null;
+    return info.hwndActive;
+}
+
+/// Wait until window `win` has `count` tabs.
+fn waitWindowTabs(h: *Harness, g: *Harness.Ghostty, win: w.HWND, count: usize) !void {
+    var waited: u32 = 0;
+    var last: usize = 0;
+    while (waited <= 10000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        for (d.value.windows) |dw| {
+            if (dw.hwnd != @intFromPtr(win)) continue;
+            last = dw.tabs.len;
+            if (last == count) return;
+        }
+        w.Sleep(200);
+    }
+    return h.fail("window has {d} tab(s), expected {d}", .{ last, count });
 }
 
 fn framesPresented(h: *Harness, g: *Harness.Ghostty) !u32 {

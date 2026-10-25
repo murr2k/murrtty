@@ -443,6 +443,7 @@ pub extern "user32" fn LoadIconW(?HINSTANCE, usize) callconv(.winapi) ?HICON;
 pub extern "user32" fn SetCursor(?HCURSOR) callconv(.winapi) ?HCURSOR;
 pub extern "user32" fn SetFocus(?HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetFocus() callconv(.winapi) ?HWND;
+pub extern "user32" fn GetActiveWindow() callconv(.winapi) ?HWND;
 pub extern "user32" fn SetCapture(HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn ReleaseCapture() callconv(.winapi) BOOL;
 pub extern "user32" fn GetKeyState(c_int) callconv(.winapi) c_short;

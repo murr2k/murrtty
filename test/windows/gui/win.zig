@@ -220,6 +220,18 @@ pub extern "user32" fn SetProcessDPIAware() callconv(.winapi) BOOL;
 pub extern "user32" fn EnumWindows(WNDENUMPROC, LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn EnumChildWindows(?HWND, WNDENUMPROC, LPARAM) callconv(.winapi) BOOL;
 pub extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.winapi) DWORD;
+pub const GUITHREADINFO = extern struct {
+    cbSize: DWORD = @sizeOf(GUITHREADINFO),
+    flags: DWORD = 0,
+    hwndActive: ?HWND = null,
+    hwndFocus: ?HWND = null,
+    hwndCapture: ?HWND = null,
+    hwndMenuOwner: ?HWND = null,
+    hwndMoveSize: ?HWND = null,
+    hwndCaret: ?HWND = null,
+    rcCaret: RECT = .{},
+};
+pub extern "user32" fn GetGUIThreadInfo(DWORD, *GUITHREADINFO) callconv(.winapi) BOOL;
 pub extern "user32" fn GetClassNameW(HWND, [*]u16, c_int) callconv(.winapi) c_int;
 pub extern "user32" fn GetWindowTextW(HWND, [*]u16, c_int) callconv(.winapi) c_int;
 pub extern "user32" fn IsWindowVisible(HWND) callconv(.winapi) BOOL;

@@ -263,7 +263,17 @@ pub fn activeSurface(self: *const Window) ?*Surface {
     return self.surfaces.items[self.active];
 }
 
+/// Give the active tab's surface the keyboard focus, if this window is
+/// the active one. SetFocus also activates the window it is called on, so
+/// closing a tab in a background window (its process exited, say) used to
+/// pull that window in front of the one in use. A background window
+/// focuses its tab when it is activated (WM_ACTIVATE).
 fn focusActive(self: *Window) void {
+    if (c.GetActiveWindow() != self.hwnd) return;
+    self.focusActiveNow();
+}
+
+fn focusActiveNow(self: *Window) void {
     if (self.activeSurface()) |s| _ = c.SetFocus(s.hwnd);
 }
 
@@ -441,7 +451,8 @@ pub fn toggleFullscreen(self: *Window) void {
 pub fn present(self: *Window) void {
     if (c.IsIconic(self.hwnd) != 0) _ = c.ShowWindow(self.hwnd, c.SW_RESTORE);
     _ = c.SetForegroundWindow(self.hwnd);
-    self.focusActive();
+    // Activating the window is the point here.
+    self.focusActiveNow();
 }
 
 /// Bring the tab holding `surface` to the front.
@@ -669,7 +680,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 if (c.IsWindowEnabled(hwnd) == 0) {
                     self.app.postRaiseModal();
                 } else {
-                    self.focusActive();
+                    self.focusActiveNow();
                 }
             }
             return 0;
@@ -691,7 +702,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_SETFOCUS => {
-            self.focusActive();
+            // Only an active window gets the focus.
+            self.focusActiveNow();
             return 0;
         },
 

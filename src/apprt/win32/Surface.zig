@@ -30,6 +30,10 @@ pub const class_name = c.L("GhosttySurface");
 /// clipboard confirmations (see clipboard_pending).
 const WM_CLIPBOARD_CONFIRM = c.WM_APP + 2;
 
+/// Private message posted to the surface window: tell the core that the
+/// keyboard focus changed (see `has_focus`).
+const WM_FOCUS_CHANGED = c.WM_APP + 3;
+
 app: *App,
 window: *Window,
 hwnd: c.HWND,
@@ -58,6 +62,15 @@ mouse_hidden: bool = false,
 /// Keyboard and IME state.
 high_surrogate: u16 = 0,
 ime_composing: bool = false,
+
+/// Whether this window has the keyboard focus, as Windows last said, and
+/// whether the core was last told it has. The core hears from a posted
+/// message, never inside WM_SETFOCUS/WM_KILLFOCUS: those arrive inside
+/// SetFocus, and a core callback that moves the focus (goto_split) would
+/// otherwise re-enter the surface it is running on.
+has_focus: bool = false,
+core_focus: bool = false,
+focus_posted: bool = false,
 
 /// Clipboard confirmations waiting to be shown, oldest first. They are
 /// shown from the message loop, never inside a core callback. The surface
@@ -155,6 +168,9 @@ pub fn init(
     self.core_surface.sizeCallback(self.size) catch |err| {
         log.warn("error in size callback err={}", .{err});
     };
+
+    // Focus gained before the core surface existed reaches it now.
+    self.queueFocus();
 }
 
 /// Tear down the core surface. The window itself is destroyed along
@@ -499,6 +515,23 @@ pub fn dpiChanged(self: *Surface) void {
     };
 }
 
+/// Post WM_FOCUS_CHANGED unless one is already queued; it reports the focus
+/// as it is when it runs, so a quick loss and regain is one message.
+fn queueFocus(self: *Surface) void {
+    if (self.focus_posted) return;
+    if (c.PostMessageW(self.hwnd, WM_FOCUS_CHANGED, 0, 0) != 0) self.focus_posted = true;
+}
+
+/// Tell the core about the focus if it changed since it last heard.
+fn deliverFocus(self: *Surface) void {
+    if (!self.core_initialized or self.core_focus == self.has_focus) return;
+    self.core_focus = self.has_focus;
+    if (self.has_focus) self.app.core_app.focusSurface(&self.core_surface);
+    self.core_surface.focusCallback(self.has_focus) catch |err| {
+        log.warn("error in focus callback err={}", .{err});
+    };
+}
+
 //---------------------------------------------------------------
 // Window procedure
 
@@ -546,13 +579,14 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         },
 
         c.WM_SETFOCUS, c.WM_KILLFOCUS => {
-            if (self.core_initialized) {
-                const focused = msg == c.WM_SETFOCUS;
-                if (focused) self.app.core_app.focusSurface(&self.core_surface);
-                self.core_surface.focusCallback(focused) catch |err| {
-                    log.warn("error in focus callback err={}", .{err});
-                };
-            }
+            self.has_focus = msg == c.WM_SETFOCUS;
+            self.queueFocus();
+            return 0;
+        },
+
+        WM_FOCUS_CHANGED => {
+            self.focus_posted = false;
+            self.deliverFocus();
             return 0;
         },
 
