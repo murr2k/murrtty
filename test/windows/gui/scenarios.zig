@@ -1314,6 +1314,7 @@ fn splitCommands(h: *Harness) anyerror!void {
         frames_hidden = p[1].frames orelse 0;
         replies = std.mem.count(u8, p[1].text orelse "", "Reply from");
     }
+    try expectZoomTitle(h, win, true);
     w.Sleep(3000);
     {
         var d = try h.dump(&g);
@@ -1334,6 +1335,7 @@ fn splitCommands(h: *Harness) anyerror!void {
         try h.expect(p[0].visible and p[1].visible and p[2].visible, "all panes shown", .{});
         try expectTiling(h, t);
     }
+    try expectZoomTitle(h, win, false);
 
     // Moving to another pane ends a zoom (split-preserve-zoom is off).
     h.key(a, cs, w.VK_RETURN);
@@ -1398,6 +1400,14 @@ fn splitCommands(h: *Harness) anyerror!void {
         try h.expect(!(d.value.windows[0].tabs[0].zoomed orelse true), "the zoom ended with the last split", .{});
     }
     try quit(h, &g, a);
+}
+
+/// The window title starts with the zoom magnifier, or doesn't.
+fn expectZoomTitle(h: *Harness, win: w.HWND, zoomed: bool) !void {
+    const t = try h.title(win);
+    defer h.alloc.free(t);
+    const marked = std.mem.startsWith(u8, t, "\u{1F50D} ");
+    try h.expect(marked == zoomed, "the window title {s} the magnifier ({s})", .{ if (zoomed) "has" else "lacks", t });
 }
 
 /// Pane `i` is at least the core's minimum, 10 columns, at its font.

@@ -165,9 +165,10 @@ pub fn closeSurface(self: *Window, surface: *Surface, confirm: bool) void {
     tab.syncDim();
     if (refocus and index == self.active) {
         self.focusActive();
-        self.syncTitle();
         self.applyChrome();
     }
+    // The title follows a new focused pane, or the zoom a last pane drops.
+    if (index == self.active) self.syncTitle();
     self.invalidateTabBar();
 }
 
@@ -206,8 +207,9 @@ pub fn gotoSplit(self: *Window, surface: *Surface, to: apprt.action.GotoSplit) b
 pub fn toggleSplitZoom(self: *Window, surface: *Surface) bool {
     const index = self.tabIndexOf(surface) orelse return false;
     if (!self.tabs.items[index].toggleZoom()) return false;
-    // The tab strip shows a magnifier on a zoomed tab.
+    // The tab strip and the title show a magnifier on a zoomed tab.
     self.invalidateTabBar();
+    if (index == self.active) self.syncTitle();
     return true;
 }
 
@@ -225,7 +227,11 @@ pub fn resizeSplit(self: *Window, surface: *Surface, value: apprt.action.ResizeS
         log.err("error resizing panes err={}", .{err});
         return false;
     };
-    if (resized) self.invalidateTabBar();
+    // Resizing ends a zoom.
+    if (resized) {
+        self.invalidateTabBar();
+        if (index == self.active) self.syncTitle();
+    }
     return resized;
 }
 
@@ -506,7 +512,11 @@ pub fn surfaceTitleChanged(self: *Window, surface: *Surface) void {
 pub fn syncTitle(self: *Window) void {
     const title: []const u8 = if (self.activeSurface()) |s| s.title orelse "Ghostty" else "Ghostty";
     const alloc = self.app.core_app.alloc;
-    const title16 = std.unicode.utf8ToUtf16LeAllocZ(alloc, title) catch return;
+    // A magnifier marks a zoomed tab, as on its tab (GTK marks both).
+    const zoomed = if (self.activeTab()) |t| t.tree.zoomed != null else false;
+    const shown = if (zoomed) (std.fmt.allocPrint(alloc, "\u{1F50D} {s}", .{title}) catch return) else title;
+    defer if (zoomed) alloc.free(shown);
+    const title16 = std.unicode.utf8ToUtf16LeAllocZ(alloc, shown) catch return;
     defer alloc.free(title16);
     _ = c.SetWindowTextW(self.hwnd, title16);
 }
