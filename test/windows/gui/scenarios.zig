@@ -2136,9 +2136,11 @@ fn runForStatus(h: *Harness, g: *Harness.Ghostty, target: w.HWND, command: []con
     };
     try h.typeText(target, command);
     h.enter(target);
+    // Generous: the command starts a process, and on a loaded machine (a
+    // build running beside a Debug Ghostty) that has taken over 10 s.
     var last: i32 = -1;
     var waited: u32 = 0;
-    while (waited <= 10000) : (waited += 200) {
+    while (waited <= 30000) : (waited += 200) {
         var d = try h.dump(g);
         defer d.deinit();
         if (d.value.windows[0].tabs[0].panes) |p| if (p.len > 0 and p[0].commands > before) {

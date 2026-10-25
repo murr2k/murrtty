@@ -1908,6 +1908,30 @@ pub const ReadThread = struct {
         return true;
     }
 
+    var pty_logs: std.atomic.Value(u32) = .init(0);
+
+    /// The file for one terminal's raw pty output, pty-<pid>-<n>.bin in the
+    /// folder GHOSTTY_PTY_LOG names, or null when it is unset.
+    fn openPtyLog() ?windows.HANDLE {
+        const alloc = std.heap.page_allocator;
+        const dir = global.environ().getAlloc(alloc, "GHOSTTY_PTY_LOG") catch return null;
+        defer alloc.free(dir);
+        const path = std.fmt.allocPrint(alloc, "{s}\\pty-{d}-{d}.bin", .{
+            dir,
+            windows.GetCurrentProcessId(),
+            pty_logs.fetchAdd(1, .monotonic),
+        }) catch return null;
+        defer alloc.free(path);
+        const path_w = std.unicode.wtf8ToWtf16LeAllocZ(alloc, path) catch return null;
+        defer alloc.free(path_w);
+        const generic_write = 0x40000000;
+        const create_always = 2;
+        const h = windows.exp.kernel32.CreateFileW(path_w.ptr, generic_write, windows.FILE_SHARE_READ, null, create_always, windows.FILE_ATTRIBUTE_NORMAL, null);
+        if (h == windows.INVALID_HANDLE_VALUE) return null;
+        log.info("raw pty output goes to {s}", .{path});
+        return h;
+    }
+
     fn threadMainWindows(fd: posix.fd_t, io: *termio.Termio, quit: posix.fd_t) void {
         // Always close our end of the pipe when we exit.
         defer closePipe(quit);
@@ -1918,6 +1942,13 @@ pub const ReadThread = struct {
             .surface = io.surface_mailbox.surface,
         };
         defer crash.sentry.thread_state = null;
+
+        // Debug builds: GHOSTTY_PTY_LOG names a folder that gets each
+        // terminal's raw pty output, for seeing what ConPTY sends.
+        const capture: ?windows.HANDLE = if (comptime builtin.mode == .debug) openPtyLog() else null;
+        defer if (capture) |h| {
+            _ = windows.exp.kernel32.CloseHandle(h);
+        };
 
         var buf: [1024]u8 = undefined;
         while (true) {
@@ -1939,6 +1970,7 @@ pub const ReadThread = struct {
                     }
                 }
 
+                if (capture) |h| _ = windows.exp.kernel32.WriteFile(h, &buf, n, null, null);
                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
 
                 // See threadMainPosix: hand the renderer state mutex

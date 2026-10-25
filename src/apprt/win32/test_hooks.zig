@@ -96,8 +96,23 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   left) from the frames it presents next ("probe").
 /// - 2: act as if the system's light/dark setting changed to dark
 ///   (`lparam` 1) or light (0), without touching the user's setting.
+/// - 3 (posted, not sent): no dump; signal the event
+///   Local\GhosttyGuiSync-<pid>. Posted after input, it is handled after
+///   that input too, so the harness knows when Ghostty has read the
+///   modifier state it set.
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
+    if (wparam == 3) {
+        var name_buf: [64]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "Local\\GhosttyGuiSync-{d}", .{c.GetCurrentProcessId()}) catch return 0;
+        var name_w: [64:0]u16 = undefined;
+        const len = std.unicode.utf8ToUtf16Le(&name_w, name) catch return 0;
+        name_w[len] = 0;
+        const event = c.OpenEventW(c.EVENT_MODIFY_STATE, c.FALSE, &name_w) orelse return 0;
+        defer _ = c.CloseHandle(event);
+        _ = c.SetEvent(event);
+        return 1;
+    }
     const alloc = app.core_app.alloc;
     if (wparam == 2) app.setSystemDark(lparam != 0);
     if (wparam == 1) {

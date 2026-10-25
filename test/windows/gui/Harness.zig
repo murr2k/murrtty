@@ -671,14 +671,31 @@ const Held = struct {
     tid: w.DWORD,
     attached: bool,
     saved: [256]u8,
+    /// To learn when Ghostty has handled what was posted (see release):
+    /// its wakeup window, the dump message and the event it signals. Null
+    /// without test hooks, and then a fixed wait has to do.
+    wakeup: ?w.HWND = null,
+    dump_msg: w.UINT,
+    synced: ?w.HANDLE = null,
 
-    fn init(target: w.HWND, mods: Mods) Held {
+    fn init(dump_msg: w.UINT, target: w.HWND, mods: Mods) Held {
+        var pid: w.DWORD = 0;
         var self: Held = .{
             .me = w.GetCurrentThreadId(),
-            .tid = w.GetWindowThreadProcessId(target, null),
+            .tid = w.GetWindowThreadProcessId(target, &pid),
             .attached = false,
             .saved = undefined,
+            .dump_msg = dump_msg,
         };
+        if (wakeupWindow(pid)) |wakeup| sync: {
+            var name_buf: [64]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "Local\\GhosttyGuiSync-{d}", .{pid}) catch break :sync;
+            var name_w: [64:0]u16 = undefined;
+            const len = std.unicode.utf8ToUtf16Le(&name_w, name) catch break :sync;
+            name_w[len] = 0;
+            self.synced = w.CreateEventW(null, w.FALSE, w.FALSE, &name_w) orelse break :sync;
+            self.wakeup = wakeup;
+        }
         self.attached = w.AttachThreadInput(self.me, self.tid, w.TRUE) != 0;
         _ = w.GetKeyboardState(&self.saved);
         var state = self.saved;
@@ -699,17 +716,40 @@ const Held = struct {
     }
 
     fn release(self: *Held) void {
-        // Ghostty reads the modifier state when it handles the messages.
-        w.Sleep(300);
+        // Ghostty reads the modifier state when it handles the messages,
+        // which can be well after they were posted (a Debug build on a busy
+        // machine): ask it to signal once it gets to a message posted after
+        // them. Posted messages are handled in order, and the wakeup window
+        // is on the same thread as the terminal windows.
+        const waited = sync: {
+            const wakeup = self.wakeup orelse break :sync false;
+            const event = self.synced orelse break :sync false;
+            if (w.PostMessageW(wakeup, self.dump_msg, 3, 0) == 0) break :sync false;
+            break :sync w.WaitForSingleObject(event, 5000) == 0;
+        };
+        if (!waited) w.Sleep(300);
+        if (self.synced) |event| _ = w.CloseHandle(event);
         _ = w.SetKeyboardState(&self.saved);
         if (self.attached) _ = w.AttachThreadInput(self.me, self.tid, w.FALSE);
     }
 };
 
+/// The message-only wakeup window of the Ghostty process `pid`, which
+/// takes the test hooks' messages (Debug builds).
+fn wakeupWindow(pid: w.DWORD) ?w.HWND {
+    var prev: ?w.HWND = null;
+    while (w.FindWindowExW(w.HWND_MESSAGE, prev, w.L("GhosttyWakeup"), null)) |cand| {
+        var cand_pid: w.DWORD = 0;
+        _ = w.GetWindowThreadProcessId(cand, &cand_pid);
+        if (cand_pid == pid) return cand;
+        prev = cand;
+    }
+    return null;
+}
+
 /// A key press with modifiers held (see Held).
 pub fn key(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
-    _ = self;
-    var held: Held = .init(target, mods);
+    var held: Held = .init(self.dump_msg, target, mods);
     defer held.release();
 
     const sc = w.MapVirtualKeyW(vk, w.MAPVK_VK_TO_VSC);
@@ -742,8 +782,7 @@ pub fn click(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: Button)
 /// Click with modifiers held from before the pointer moves there until
 /// after the button is released (see Held).
 pub fn clickMods(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: Button, mods: Mods) void {
-    _ = self;
-    var held: ?Held = if (mods.ctrl or mods.shift or mods.alt) .init(target, mods) else null;
+    var held: ?Held = if (mods.ctrl or mods.shift or mods.alt) .init(self.dump_msg, target, mods) else null;
     defer if (held) |*h| h.release();
 
     var mk: w.WPARAM = 0;
@@ -909,18 +948,7 @@ pub fn setSystemDark(self: *Harness, g: *const Ghostty, dark: bool) !void {
 }
 
 fn dumpWith(self: *Harness, g: *const Ghostty, wparam: w.WPARAM, lparam: w.LPARAM) !std.json.Parsed(Dump) {
-    var hwnd: ?w.HWND = null;
-    var prev: ?w.HWND = null;
-    while (w.FindWindowExW(w.HWND_MESSAGE, prev, w.L("GhosttyWakeup"), null)) |cand| {
-        var pid: w.DWORD = 0;
-        _ = w.GetWindowThreadProcessId(cand, &pid);
-        if (pid == g.pid) {
-            hwnd = cand;
-            break;
-        }
-        prev = cand;
-    }
-    const target = hwnd orelse return self.fail("no wakeup window (is this a Debug build?)", .{});
+    const target = wakeupWindow(g.pid) orelse return self.fail("no wakeup window (is this a Debug build?)", .{});
     var result: usize = 0;
     if (w.SendMessageTimeoutW(target, self.dump_msg, wparam, lparam, w.SMTO_ABORTIFHUNG, 5000, &result) == 0 or result != 1) {
         return self.fail("state dump failed (Debug build with test hooks needed)", .{});

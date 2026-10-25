@@ -590,6 +590,9 @@ pub extern "kernel32" fn CreateFileW(
 ) callconv(.winapi) HANDLE;
 pub extern "kernel32" fn WriteFile(HANDLE, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn OpenEventW(dwDesiredAccess: DWORD, bInheritHandle: BOOL, lpName: LPCWSTR) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
+pub const EVENT_MODIFY_STATE: DWORD = 0x0002;
 pub const INVALID_HANDLE_VALUE: HANDLE = @ptrFromInt(std.math.maxInt(usize));
 pub const GENERIC_WRITE = 0x40000000;
 pub const CREATE_ALWAYS = 2;

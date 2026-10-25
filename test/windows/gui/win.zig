@@ -173,6 +173,7 @@ pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 pub extern "kernel32" fn GetModuleFileNameW(?*anyopaque, [*]u16, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn WaitForSingleObject(HANDLE, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateMutexW(?*anyopaque, BOOL, LPCWSTR) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn CreateEventW(?*anyopaque, BOOL, BOOL, LPCWSTR) callconv(.winapi) ?HANDLE;
 pub const PROCESS_MEMORY_COUNTERS = extern struct {
     cb: DWORD = @sizeOf(PROCESS_MEMORY_COUNTERS),
     PageFaultCount: DWORD = 0,
