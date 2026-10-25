@@ -64,7 +64,9 @@ hosted Windows runner and then the unit tests.
   colors.
 - Rendering with exact colors, fallback fonts for CJK and symbols, and color
   emoji.
-- Typing, Enter, Unicode text entry, mouse selection, copy and paste.
+- Typing, Enter, Unicode text entry, mouse selection, copy and paste. On the
+  test machine Ghostty draws the echo of a key about 1.5 ms after it
+  receives the key.
 - Ctrl and Alt shortcuts: `Ctrl+C` interrupting a running program,
   `Ctrl+Shift+A`/`C`/`V` to select all, copy and paste, `Shift+Insert` to
   paste, `Ctrl+Shift+T`, `Ctrl+Shift+W`, `Ctrl+Tab` and `Ctrl+PgUp` for tabs,

@@ -540,6 +540,34 @@ the full suite takes about 10 minutes on this machine. Every commit
 recompiles the Zig test module anyway, since the version string carries
 the commit.
 
+**0.14 Typing latency, S.** *Found and fixed 2026-10-24.* The owner reported
+typed text trailing the keys: fine when typing slowly, falling behind and
+catching up in bursts when typing fast. A throwaway trace (local branch
+`perf-trace`, see the project notes) stamped each stage on the
+QueryPerformanceCounter clock: key received, pty write and read, parse,
+frame update, draw and present. Two causes:
+- *Output never woke the renderer.* Termio kept a copy of the renderer
+  thread's `xev.Async` taken before that thread waited on it, and with
+  libxev's IOCP backend a copy made then never fires. Frames came only from
+  key presses, the cursor blink, resizes and focus, so an echo was drawn
+  with the next key, or up to 600 ms later with the blink (one key in the
+  owner's trace: parsed 10 ms after its key's frame, drawn 594 ms later).
+  Termio now holds a pointer to the thread's handle. The GUI scenario
+  `output-frames` checks that output with no key pressed is drawn (frame
+  count 4 to 4 without the fix, 9 to 11 with it).
+- *`glFinish` after every presented frame.* Upstream finishes so that an
+  exported frame is complete before another thread uses it; a frame
+  presented with `SwapBuffers` has no other user. It cost about 2 ms of
+  each 3.3 ms frame, and one frame stalled 208 ms.
+
+After both, on the owner's desktop: key to drawn echo 1.5 ms on average
+(2.7 before), no key over 50 ms (606 ms before; the slower ones wait on
+ConPTY's own echo, 10 to 20 ms at times), average frame 1.4 ms (3.3).
+Open: the terminal-core unit tests are very slow on Windows (10 to 34 s
+each for some `Terminal`, `Screen` and search tests, 10 minutes for the
+suite), likely the Debug testing allocator; that is CI time, not app
+speed, and is worth a look before 7.2.
+
 ---
 
 ## Phase 1: Splits (about 2.5 weeks, plus 1.10 in M2)
