@@ -265,10 +265,11 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         if (s.core_initialized) {
             const grid = s.core_surface.size.grid();
             const wgl_state = &s.core_surface.renderer.api.wgl_state;
-            try out.print(alloc, ",\"core_focused\":{},\"frames\":{d},\"probe\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
+            try out.print(alloc, ",\"core_focused\":{},\"frames\":{d},\"probe\":{d},\"keys\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
                 s.core_surface.focused,
                 wgl_state.frames.load(.monotonic),
                 wgl_state.probe.load(.monotonic),
+                s.keys_sent,
                 grid.columns,
                 grid.rows,
             });

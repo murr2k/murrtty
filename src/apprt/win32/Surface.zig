@@ -73,6 +73,8 @@ high_surrogate: u16 = 0,
 ime_composing: bool = false,
 /// An Esc press cancelled a divider drag (see escapeTaken).
 escape_taken: bool = false,
+/// Key events passed to the core, for the GUI tests' state dump.
+keys_sent: u32 = 0,
 
 /// Whether this window has the keyboard focus, as Windows last said, and
 /// whether the core was last told it has (a core surface starts out
@@ -233,26 +235,39 @@ fn forceFrame(self: *Surface) void {
 }
 
 /// The smallest the pane may be laid out (split_layout's view interface):
-/// the core's minimum grid at the current cell size, plus the configured
-/// padding at the current DPI. Worked out each time, since the core sends
-/// its size_limit only once and the cells change with the font size and
-/// the DPI (App relays the tab out on cell_size). The configured padding,
-/// not the balanced padding, which grows with the pane.
+/// the core's minimum grid at the current cell size, plus padding. Worked
+/// out each time, since the core sends its size_limit only once and the
+/// cells change with the font size and the DPI (App relays the tab out on
+/// cell_size). The padding is the core's own, except when balanced, which
+/// grows with the pane: then the configured padding, scaled as the core
+/// scales it.
 pub fn layoutMin(self: *const Surface) split_layout.Size {
     if (!self.core_initialized) return .{};
     const cs = &self.core_surface;
     const cfg = &cs.config;
-    const xdpi: u32 = cs.font_size.xdpi;
-    const ydpi: u32 = cs.font_size.ydpi;
-    // As the core scales padding: points to pixels, each side rounded down.
-    const width = cs.size.cell.width * CoreSurface.min_window_width_cells +
-        cfg.window_padding_left * xdpi / 72 + cfg.window_padding_right * xdpi / 72;
-    const height = cs.size.cell.height * CoreSurface.min_window_height_cells +
-        cfg.window_padding_top * ydpi / 72 + cfg.window_padding_bottom * ydpi / 72;
+    const pad_x: u32, const pad_y: u32 = if (cfg.window_padding_balance == .false) .{
+        // A config reload doesn't change a terminal's padding; this does.
+        cs.size.padding.left + cs.size.padding.right,
+        cs.size.padding.top + cs.size.padding.bottom,
+    } else .{
+        scaledPadding(cfg.window_padding_left, self.content_scale.x) +
+            scaledPadding(cfg.window_padding_right, self.content_scale.x),
+        scaledPadding(cfg.window_padding_top, self.content_scale.y) +
+            scaledPadding(cfg.window_padding_bottom, self.content_scale.y),
+    };
+    const width = cs.size.cell.width * CoreSurface.min_window_width_cells + pad_x;
+    const height = cs.size.cell.height * CoreSurface.min_window_height_cells + pad_y;
     return .{
         .width = @intCast(@min(width, std.math.maxInt(u16))),
         .height = @intCast(@min(height, std.math.maxInt(u16))),
     };
+}
+
+/// Padding `points` in pixels at content scale `scale`, as the core scales
+/// window-padding-*: rounded down.
+fn scaledPadding(points: u32, scale: f32) u32 {
+    const dpi = scale * 96;
+    return @intFromFloat(@floor(@as(f32, @floatFromInt(points)) * dpi / 72));
 }
 
 /// Tear down the core surface. The window itself is destroyed along
@@ -795,7 +810,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                 var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE, .hwndTrack = self.hwnd };
                 if (c.TrackMouseEvent(&tme) != 0) self.tracking_leave = true;
             }
-            self.followMouse(c.xParam(lparam), c.yParam(lparam));
+            self.followMouse(c.xParam(lparam), c.yParam(lparam), wparam);
             self.cursorPosCallback(@floatFromInt(c.xParam(lparam)), @floatFromInt(c.yParam(lparam)));
             return 0;
         },
@@ -855,18 +870,15 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
 
 /// focus-follows-mouse: the mouse moving over the pane focuses it, in the
 /// active window only (never raising another window), and not while a
-/// button is held. Only a real move counts: a pane laid out again under a
-/// still cursor (a split, a divider moving) gets WM_MOUSEMOVE too, with
-/// new client coordinates but the same screen position, so moves are told
-/// apart in screen coordinates, across all panes.
-fn followMouse(self: *Surface, x: i32, y: i32) void {
-    var pt = [1]c.POINT{.{ .x = x, .y = y }};
-    _ = c.MapWindowPoints(self.hwnd, null, &pt, 1);
+/// button is held, wherever it was pressed (`wparam`'s MK_ flags). Only a
+/// real move counts: a pane laid out again under a still cursor (a split, a
+/// divider moving) gets WM_MOUSEMOVE too, with new client coordinates but
+/// the same screen position (App.mouseMoved).
+fn followMouse(self: *Surface, x: i32, y: i32, wparam: c.WPARAM) void {
     const app = self.app;
-    const moved = if (app.mouse_screen) |last| last.x != pt[0].x or last.y != pt[0].y else true;
-    app.mouse_screen = pt[0];
-    if (!moved or !app.config.@"focus-follows-mouse") return;
-    if (self.has_focus or self.buttons_down != 0) return;
+    if (!app.mouseMoved(self.hwnd, x, y) or !app.config.@"focus-follows-mouse") return;
+    const buttons = c.MK_LBUTTON | c.MK_RBUTTON | c.MK_MBUTTON | c.MK_XBUTTON1 | c.MK_XBUTTON2;
+    if (self.has_focus or wparam & buttons != 0) return;
     if (c.GetActiveWindow() != self.window.hwnd) return;
     _ = c.SetFocus(self.hwnd);
 }
@@ -999,6 +1011,7 @@ fn handleKey(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c
     var utf8_buf: [64]u8 = undefined;
     const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, text_slice) catch 0;
 
+    self.keys_sent +%= 1;
     const effect = self.core_surface.keyCallback(.{
         .action = action,
         .key = key.physicalKey(native),

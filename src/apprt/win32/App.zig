@@ -97,8 +97,9 @@ modal_owner: ?c.HWND = null,
 /// Whether the system uses a dark app theme.
 dark: bool = false,
 
-/// Where the mouse was last seen over a pane, in screen coordinates (see
-/// Surface.followMouse).
+/// Where the mouse was last seen, in screen coordinates: over any of
+/// Ghostty's windows, or where the cursor was when panes were last laid
+/// out (see mouseMoved and Surface.followMouse).
 mouse_screen: ?c.POINT = null,
 
 /// Set once we've begun quitting so we don't quit twice.
@@ -259,6 +260,27 @@ pub fn request(self: *App, req: Request) void {
         return;
     };
     if (self.modal_depth == 0) _ = c.PostMessageW(self.wakeup_hwnd, WM_RUN_REQUESTS, 0, 0);
+}
+
+/// A WM_MOUSEMOVE at client (x, y) of `hwnd` (a pane, a tab's container or
+/// a window's tab bar): records where the mouse is, in screen coordinates,
+/// and returns whether it moved since it was last seen. A window laid out
+/// again under a still cursor gets WM_MOUSEMOVE too, which this tells apart.
+pub fn mouseMoved(self: *App, hwnd: c.HWND, x: i32, y: i32) bool {
+    var pt = [1]c.POINT{.{ .x = x, .y = y }};
+    _ = c.MapWindowPoints(hwnd, null, &pt, 1);
+    const moved = if (self.mouse_screen) |last| last.x != pt[0].x or last.y != pt[0].y else true;
+    self.mouse_screen = pt[0];
+    return moved;
+}
+
+/// Before panes move: record where the cursor is now, so the WM_MOUSEMOVE
+/// a pane that moves under it then gets is no move, wherever the mouse was
+/// last seen (outside the window, say). GetCursorPos fails off the input
+/// desktop (the GUI tests' hidden one); what was last seen stands then.
+pub fn syncMouse(self: *App) void {
+    var pt: c.POINT = .{};
+    if (c.GetCursorPos(&pt) != 0) self.mouse_screen = pt;
 }
 
 fn runRequests(self: *App) void {

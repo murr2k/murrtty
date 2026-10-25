@@ -824,6 +824,9 @@ pub const Dump = struct {
         frames: ?u32 = null,
         /// As the tab's `probe`, for this pane.
         probe: ?u32 = null,
+        /// Key events the pane passed to the core (presses, repeats and
+        /// releases; not text from WM_CHAR alone).
+        keys: ?u32 = null,
         cols: ?u32 = null,
         rows: ?u32 = null,
         text: ?[]const u8 = null,

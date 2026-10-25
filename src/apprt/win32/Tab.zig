@@ -393,6 +393,7 @@ pub fn closePane(self: *Tab, surface: *Surface) !bool {
 /// Lay out the panes' windows in the container, all in one step, and
 /// repaint the dividers.
 pub fn layoutPanes(self: *Tab) void {
+    self.window.app.syncMouse();
     const alloc = self.window.app.core_app.alloc;
     const area_ = self.area();
     var layout = Layout.compute(alloc, &self.tree, area_, self.dividerWidth()) catch |err| {
@@ -610,6 +611,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_MOUSEMOVE => {
+            _ = self.window.app.mouseMoved(hwnd, c.xParam(lparam), c.yParam(lparam));
             if (self.drag != null) self.dragTo(c.xParam(lparam), c.yParam(lparam));
             return 0;
         },

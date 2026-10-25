@@ -35,7 +35,7 @@ pub const all = [_]Scenario{
     .{ .name = "focus-background-tab", .about = "a tab that never got the focus doesn't stay focused in the core", .run = focusBackgroundTab },
     .{ .name = "splits", .about = "Ctrl+Shift+O/E split panes that tile the tab; closing panes moves focus as designed", .run = splits },
     .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits, minimums", .run = splitCommands },
-    .{ .name = "split-mouse", .about = "dragging a divider, Esc (none of it reaches the program), double-click to equalize, the grip band", .run = splitMouse },
+    .{ .name = "split-mouse", .about = "dragging a divider, Esc (none of that keystroke reaches the core), double-click to equalize, the grip band", .run = splitMouse },
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background", .run = splitDim },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
@@ -1437,11 +1437,17 @@ fn splitMouse(h: *Harness) anyerror!void {
     const dragged = try rootDivider(h, &g);
     try h.expect(@abs(dragged - (start_x + 120)) <= 1, "the drag moved the divider to {d} (expected {d})", .{ dragged, start_x + 120 });
 
-    // Esc during a drag puts it back, and the program in the focused pane
-    // sees none of that keystroke, neither its auto-repeat nor its release
-    // (an Esc would clear what is typed at cmd's prompt).
+    // Esc during a drag puts it back, and none of that keystroke reaches
+    // the core, neither its auto-repeat nor its release: the pane's count of
+    // key events stays put (a release encodes nothing at cmd's prompt), and
+    // what is typed there stays (an Esc would clear it).
     try h.typeText(right_pane, "abc");
     try waitPaneText(h, &g, 1, ">abc", 1);
+    const keys_before = blk: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        break :blk d.value.windows[0].tabs[0].panes.?[1].keys orelse return h.fail("no key count in the dump", .{});
+    };
     postMouse(container, w.WM_LBUTTONDOWN, dragged, y);
     postMouse(container, w.WM_MOUSEMOVE, dragged - 200, y);
     w.Sleep(300);
@@ -1460,6 +1466,8 @@ fn splitMouse(h: *Harness) anyerror!void {
         defer d.deinit();
         const p = d.value.windows[0].tabs[0].panes.?;
         try h.expect(std.mem.indexOf(u8, p[1].text orelse "", ">abc") != null, "the typed text is still at the prompt", .{});
+        const keys = p[1].keys orelse 0;
+        try h.expect(keys == keys_before, "no key event of that Esc reached the core ({d} before, {d} after)", .{ keys_before, keys });
     }
 
     // A double-click equalizes.
@@ -1593,16 +1601,19 @@ fn splitGrip(h: *Harness) anyerror!void {
 
 /// focus-follows-mouse: moving the mouse over a pane focuses it. A pane
 /// moving under a still cursor (a divider moving) gets WM_MOUSEMOVE at the
-/// same screen position, which doesn't take the focus; nor does moving
-/// over a pane of a window that isn't active.
+/// same screen position, which doesn't take the focus, also when the mouse
+/// was last seen by the tab's container (resting on the divider); nor does
+/// moving over a pane of a window that isn't active.
 fn focusFollowsMouse(h: *Harness) anyerror!void {
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
     const f3 = 0x72;
     const f5 = 0x74;
+    const f6 = 0x75;
     var g = try start(h, "focus-follows-mouse",
         \\focus-follows-mouse = true
         \\keybind = ctrl+shift+f3=goto_split:left
         \\keybind = ctrl+shift+f5=resize_split:right,40
+        \\keybind = ctrl+shift+f6=resize_split:left,40
         \\
     , ">");
     defer g.deinit();
@@ -1634,6 +1645,27 @@ fn focusFollowsMouse(h: *Harness) anyerror!void {
     try h.expect(keyboardFocus(win) == left, "a pane moving under a still cursor doesn't take the focus", .{});
     postMove(right, 60 - shift, 100);
     try expectFocus(h, &g, win, right, "the mouse moving again does");
+
+    // The same with the mouse resting on the divider, where the tab's
+    // container gets it and no pane does: the divider moves left, and the
+    // right pane, now under the mouse, hears of it at the same screen point.
+    h.key(right, cs, f3);
+    try expectFocus(h, &g, win, left, "goto_split:left again");
+    const container = w.GetParent(left) orelse return h.fail("pane without a container", .{});
+    const at = try rootDivider(h, &g);
+    postMove(container, at, 100);
+    w.Sleep(300);
+    h.key(left, cs, f6);
+    w.Sleep(800);
+    const right_left = blk: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        break :blk d.value.windows[0].tabs[0].panes.?[1].rect[0];
+    };
+    try h.expect(right_left <= at, "the divider moved left, under the mouse ({d} to {d})", .{ at, right_left });
+    postMove(right, at - right_left, 100);
+    w.Sleep(600);
+    try h.expect(keyboardFocus(win) == left, "a pane moving under a mouse resting on the divider doesn't take the focus", .{});
 
     // A second window is the active one: the mouse over the first's panes
     // leaves the focus, and the activation, alone.

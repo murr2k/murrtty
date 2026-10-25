@@ -884,6 +884,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_MOUSEMOVE => {
+            _ = self.app.mouseMoved(hwnd, c.xParam(lparam), c.yParam(lparam));
             if (!self.tab_bar.tracking) {
                 var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE, .hwndTrack = hwnd };
                 if (c.TrackMouseEvent(&tme) != 0) self.tab_bar.tracking = true;
@@ -968,11 +969,14 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
 
         c.WM_DPICHANGED => {
             self.tab_bar.setDpi(c.hiword(wparam));
-            const r: *const c.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            _ = c.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+            // The panes first: the suggested size is checked against the
+            // window's minimum (WM_GETMINMAXINFO), which their cells and
+            // padding at the new DPI make up.
             var it = self.panes();
             while (it.next()) |s| s.dpiChanged();
-            // The panes' minimums follow their new cells and padding.
+            const r: *const c.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            _ = c.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+            // An unchanged size sends the tabs no WM_SIZE.
             for (self.tabs.items) |t| t.layoutPanes();
             return 0;
         },

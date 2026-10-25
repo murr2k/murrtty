@@ -86,7 +86,10 @@ hosted Windows runner and then the unit tests.
   work, dividers can be dragged with the mouse (Esc cancels a drag, a
   double-click equalizes), unfocused panes are dimmed
   (`unfocused-split-opacity`, `unfocused-split-fill`), and
-  `focus-follows-mouse` focuses the pane under the mouse.
+  `focus-follows-mouse` focuses the pane under the mouse. New panes and
+  tabs open in Ghostty's starting directory (or `working-directory`), not
+  the shell's current one: Ghostty doesn't follow the shell's directory on
+  Windows until shell integration (Phase 2).
 - Close confirmations. `cmd.exe` and PowerShell don't mark their prompts, so
   Ghostty can't tell an idle prompt from a running program and asks whenever
   the shell is still running. Set `confirm-close-surface = false` to turn
