@@ -783,6 +783,13 @@ const Subprocess = struct {
         // This is not apprt-specific, so we do it here.
         _ = env.orderedRemove("VTE_VERSION");
 
+        // The same for Windows Terminal, when it started Ghostty: programs
+        // (Clink among them) take WT_SESSION to mean they run in it.
+        if (comptime builtin.target.os.tag == .windows) {
+            _ = env.orderedRemove("WT_SESSION");
+            _ = env.orderedRemove("WT_PROFILE_ID");
+        }
+
         // Setup our shell integration, if we can.
         const shell_command: configpkg.Command = shell: {
             const default_shell_command: configpkg.Command =
@@ -810,6 +817,7 @@ const Subprocess = struct {
 
                 .detect => null,
                 .bash => .bash,
+                .cmd => .cmd,
                 .elvish => .elvish,
                 .fish => .fish,
                 .nushell => .nushell,

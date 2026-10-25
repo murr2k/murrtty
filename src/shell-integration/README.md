@@ -122,6 +122,24 @@ if ($env:GHOSTTY_RESOURCES_DIR) {
 }
 ```
 
+### cmd
+
+cmd has no start-up script, so on Windows Ghostty integrates it through its
+environment. It wraps `PROMPT` (cmd's default `$P$G` when unset) to send
+OSC 133 D, the folder as the title (OSC 2, the `title` feature), the
+working directory (OSC 9;9), then OSC 133 A, your prompt and OSC 133 I. A
+`PROMPT` that already sends OSC 133 is left as it is. cmd can't report a
+command's start or its exit status: nothing runs before a command, and a
+prompt can't show `%ERRORLEVEL%`.
+
+[Clink](https://chrisant996.github.io/clink/) (v1.4.24 or later) fills
+those in. Ghostty adds `cmd` to `%CLINK_PATH%`, so Clink loads
+`cmd/ghostty.lua`, which sends the same codes around whatever prompt Clink
+shows, custom prompts included, plus OSC 133 C when a line is accepted and
+the exit status with D (with Clink's `cmd.get_errorlevel`, on by default).
+The `cursor` feature doesn't apply to cmd; `path` isn't needed, as Ghostty
+puts its folder on the `PATH` it gives cmd.
+
 ### Zsh
 
 Automatic [Zsh](https://www.zsh.org/) integration works by temporarily setting

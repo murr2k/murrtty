@@ -13,6 +13,7 @@ const log = std.log.scoped(.shell_integration);
 /// Shell types we support
 pub const Shell = enum {
     bash,
+    cmd,
     elvish,
     fish,
     nushell,
@@ -54,6 +55,13 @@ pub fn setup(
 
     const new_command: config.Command = switch (shell) {
         .bash => try setupBash(
+            alloc_arena,
+            command,
+            resource_dir,
+            env,
+        ),
+
+        .cmd => try setupCmd(
             alloc_arena,
             command,
             resource_dir,
@@ -170,15 +178,17 @@ fn detectShell(alloc: Allocator, command: config.Command) !?Shell {
     if (std.mem.eql(u8, "nu", exe)) return .nushell;
     if (std.mem.eql(u8, "zsh", exe)) return .zsh;
 
-    // On Windows, PowerShell 7 (pwsh) and Windows PowerShell (powershell),
-    // with or without ".exe" and in any case, as Windows names programs.
-    // Not bash.exe: on PATH that is usually WSL's launcher in System32,
-    // where bash's injection (--posix) would skip the user's bashrc.
+    // On Windows, PowerShell 7 (pwsh), Windows PowerShell (powershell) and
+    // cmd, with or without ".exe" and in any case, as Windows names
+    // programs. Not bash.exe: on PATH that is usually WSL's launcher in
+    // System32, where bash's injection (--posix) would skip the user's
+    // bashrc.
     if (comptime builtin.target.os.tag == .windows) {
         const name = if (std.ascii.endsWithIgnoreCase(exe, ".exe")) exe[0 .. exe.len - 4] else exe;
         if (std.ascii.eqlIgnoreCase(name, "pwsh") or std.ascii.eqlIgnoreCase(name, "powershell")) {
             return .powershell;
         }
+        if (std.ascii.eqlIgnoreCase(name, "cmd")) return .cmd;
     }
 
     return null;
@@ -207,10 +217,14 @@ test detectShell {
         try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "pwsh.exe -NoLogo" }));
         try testing.expectEqual(.powershell, try detectShell(alloc, .{ .shell = "PowerShell.EXE" }));
         try testing.expectEqual(.powershell, try detectShell(alloc, .{ .direct = &.{"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"} }));
+        try testing.expectEqual(.cmd, try detectShell(alloc, .{ .shell = "cmd.exe" }));
+        try testing.expectEqual(.cmd, try detectShell(alloc, .{ .shell = "CMD /k echo" }));
+        try testing.expectEqual(.cmd, try detectShell(alloc, .{ .direct = &.{"C:\\WINDOWS\\system32\\cmd.exe"} }));
         try testing.expect(try detectShell(alloc, .{ .shell = "bash.exe" }) == null);
         try testing.expect(try detectShell(alloc, .{ .shell = "pwsh-preview" }) == null);
     } else {
         try testing.expect(try detectShell(alloc, .{ .shell = "pwsh" }) == null);
+        try testing.expect(try detectShell(alloc, .{ .shell = "cmd" }) == null);
     }
 }
 
@@ -944,9 +958,6 @@ test "nushell: missing resources" {
     try testing.expectEqual(0, env.count());
 }
 
-/// Setup the zsh automatic shell integration. This works by setting
-/// ZDOTDIR to our resources dir so that zsh will load our config. This
-/// config then loads the true user config.
 /// Set up PowerShell (pwsh 7 and Windows PowerShell 5.1): load our script
 /// after the profile, with -NoExit -Command, so it wraps the profile's
 /// prompt. The script is read as text and run as a script block rather than
@@ -1093,6 +1104,138 @@ test "powershell: the load command quotes the path" {
     );
 }
 
+/// Set up cmd. It has no start-up script to inject, so the integration is
+/// in its environment. PROMPT wraps the user's prompt (cmd's default, $P$G,
+/// when unset) to report the end of the last command (OSC 133;D, with no
+/// status: a prompt can't show %ERRORLEVEL%), the folder as the title (the
+/// title feature) and the working directory (OSC 9;9), then 133;A, the
+/// prompt and 133;I. cmd runs nothing before a command, so there is no
+/// 133;C; with 133;I, the line feed after Enter ends the input anyway. A
+/// PROMPT that already sends OSC 133 is left alone.
+///
+/// CLINK_PATH gains our cmd folder, so Clink (https://chrisant996.github.io/clink/),
+/// when the user runs it, loads ghostty.lua: it sends the same codes around
+/// any Clink prompt, plus 133;C and the exit status.
+fn setupCmd(
+    alloc: Allocator,
+    command: config.Command,
+    resource_dir: []const u8,
+    env: *EnvMap,
+) !?config.Command {
+    const dir = try std.fs.path.join(alloc, &.{ resource_dir, "shell-integration", "cmd" });
+    std.Io.Dir.accessAbsolute(global.io(), dir, .{}) catch |err| {
+        log.warn("unable to find {s}: {}", .{ dir, err });
+        return null;
+    };
+
+    const prompt = env.get("PROMPT") orelse "$P$G";
+    if (std.ascii.findIgnoreCase(prompt, "]133;") == null) {
+        const title = if (hasFeature(env, "title")) "$E]2;$P$E\\" else "";
+        try env.put("PROMPT", try std.mem.concat(alloc, u8, &.{
+            "$E]133;D$E\\",
+            title,
+            "$E]9;9;$P$E\\$E]133;A$E\\",
+            prompt,
+            "$E]133;I$E\\",
+        }));
+    }
+
+    if (env.get("CLINK_PATH")) |paths| {
+        var it = std.mem.tokenizeScalar(u8, paths, ';');
+        const present = while (it.next()) |p| {
+            if (std.ascii.eqlIgnoreCase(p, dir)) break true;
+        } else false;
+        if (!present) try env.put("CLINK_PATH", try std.mem.concat(alloc, u8, &.{ paths, ";", dir }));
+    } else {
+        try env.put("CLINK_PATH", dir);
+    }
+
+    return try command.clone(alloc);
+}
+
+/// Whether GHOSTTY_SHELL_FEATURES (see setupFeatures) lists `name`.
+fn hasFeature(env: *const EnvMap, name: []const u8) bool {
+    const features = env.get("GHOSTTY_SHELL_FEATURES") orelse return false;
+    var it = std.mem.splitScalar(u8, features, ',');
+    while (it.next()) |feature| {
+        const end = std.mem.indexOfScalar(u8, feature, ':') orelse feature.len;
+        if (std.mem.eql(u8, feature[0..end], name)) return true;
+    }
+    return false;
+}
+
+test "cmd: PROMPT and CLINK_PATH" {
+    const testing = std.testing;
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var res: TmpResourcesDir = try .init(.cmd);
+    defer res.deinit();
+    const dir = try std.fs.path.join(alloc, &.{ res.path, "shell-integration", "cmd" });
+
+    {
+        // cmd's default prompt, with the title.
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+        try env.put("GHOSTTY_SHELL_FEATURES", "cursor:blink,title");
+        const result = (try setupCmd(alloc, .{ .shell = "cmd.exe" }, res.path, &env)).?;
+        try testing.expectEqualStrings("cmd.exe", result.shell);
+        try testing.expectEqualStrings(
+            "$E]133;D$E\\$E]2;$P$E\\$E]9;9;$P$E\\$E]133;A$E\\$P$G$E]133;I$E\\",
+            env.get("PROMPT").?,
+        );
+        try testing.expectEqualStrings(dir, env.get("CLINK_PATH").?);
+    }
+    {
+        // The user's prompt, without the title; their Clink scripts first.
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+        try env.put("PROMPT", "$T $P$_$G");
+        try env.put("CLINK_PATH", "C:\\clink");
+        _ = (try setupCmd(alloc, .{ .shell = "cmd.exe" }, res.path, &env)).?;
+        try testing.expectEqualStrings(
+            "$E]133;D$E\\$E]9;9;$P$E\\$E]133;A$E\\$T $P$_$G$E]133;I$E\\",
+            env.get("PROMPT").?,
+        );
+        try testing.expectEqualStrings(
+            try std.mem.concat(alloc, u8, &.{ "C:\\clink;", dir }),
+            env.get("CLINK_PATH").?,
+        );
+        // Ghostty started from an integrated cmd inherits its environment:
+        // nothing doubles.
+        try env.put("PROMPT", "$e]133;A$e\\$P$G");
+        _ = (try setupCmd(alloc, .{ .shell = "cmd.exe" }, res.path, &env)).?;
+        try testing.expectEqualStrings("$e]133;A$e\\$P$G", env.get("PROMPT").?);
+        try testing.expectEqualStrings(
+            try std.mem.concat(alloc, u8, &.{ "C:\\clink;", dir }),
+            env.get("CLINK_PATH").?,
+        );
+    }
+    {
+        // No resources, no changes.
+        var env = EnvMap.init(alloc);
+        defer env.deinit();
+        try testing.expect(try setupCmd(alloc, .{ .shell = "cmd.exe" }, "/nonexistent", &env) == null);
+        try testing.expectEqual(0, env.count());
+    }
+}
+
+test hasFeature {
+    const testing = std.testing;
+    var env = EnvMap.init(testing.allocator);
+    defer env.deinit();
+    try testing.expect(!hasFeature(&env, "title"));
+    try env.put("GHOSTTY_SHELL_FEATURES", "cursor:steady,path,title");
+    try testing.expect(hasFeature(&env, "cursor"));
+    try testing.expect(hasFeature(&env, "title"));
+    try testing.expect(!hasFeature(&env, "sudo"));
+    try testing.expect(!hasFeature(&env, "tit"));
+}
+
+/// Setup the zsh automatic shell integration. This works by setting
+/// ZDOTDIR to our resources dir so that zsh will load our config. This
+/// config then loads the true user config.
 fn setupZsh(
     alloc: Allocator,
     command: config.Command,

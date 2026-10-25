@@ -2933,12 +2933,14 @@ keybind: Keybinds = .{},
 ///     configure your shell to enable the integration.
 ///
 ///   * `detect` - Detect the shell based on the filename. On Windows this
-///     includes PowerShell: `pwsh` and `powershell`, with or without `.exe`.
+///     includes PowerShell (`pwsh` and `powershell`) and `cmd`, with or
+///     without `.exe`.
 ///
-///   * `bash`, `elvish`, `fish`, `nushell`, `powershell`, `zsh` - Use this
-///     specific shell injection scheme. PowerShell's is injected only when
-///     the command's arguments are start-up flags such as `-NoLogo` or
-///     `-NoProfile`, not a command or a script.
+///   * `bash`, `cmd`, `elvish`, `fish`, `nushell`, `powershell`, `zsh` - Use
+///     this specific shell injection scheme. PowerShell's is injected only
+///     when the command's arguments are start-up flags such as `-NoLogo` or
+///     `-NoProfile`, not a command or a script. cmd's is its `PROMPT`
+///     environment variable, plus a script for Clink if you use it.
 ///
 /// The default value is `detect`.
 @"shell-integration": ShellIntegration = .detect,
@@ -8921,6 +8923,7 @@ pub const ShellIntegration = enum {
     none,
     detect,
     bash,
+    cmd,
     elvish,
     fish,
     nushell,
