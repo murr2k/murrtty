@@ -106,13 +106,18 @@ the script as text and runs it as a script block rather than running the
 arguments are start-up flags it knows (such as `-NoLogo`, `-NoProfile` or
 `-ExecutionPolicy <policy>`); a command, a script or `-File` runs as given.
 
-The script reports the prompt (OSC 133 A, and I where the input starts),
+The script reports the prompt (OSC 133 P, and I where the input starts),
 the start of each command from PSReadLine's `PSConsoleHostReadLine` (OSC
-133 C), its exit status (OSC 133 D) and the working directory (OSC 7). It
-ends the prompt with I rather than B because ConPTY repaints rows with line
-feeds: after B, the input state would carry onto those rows and mark output
-as prompt continuation. The `cursor`, `title` and `path` features apply;
-`sudo` and the `ssh-*` features don't.
+133 C), its exit status (OSC 133 D) and the working directory (OSC 7, empty
+in a location that isn't a drive path, such as `HKCU:\`). Through ConPTY
+two of the usual marks don't fit. A's fresh-line would move Ghostty's cursor
+without ConPTY's, which keeps its own, so every later repaint would land a
+row off. And B's input state would carry onto the rows ConPTY repaints with
+line feeds, marking output as prompt continuation; I ends at the line's end.
+The `cursor`, `title` and `path` features apply; `sudo` and the `ssh-*`
+features don't. The script turns strict mode off for its own code, and
+loading it again (after a profile reload replaced the prompt) wraps the new
+prompt without wrapping anything twice.
 
 To load it manually, at the end of your profile:
 
@@ -127,7 +132,7 @@ if ($env:GHOSTTY_RESOURCES_DIR) {
 cmd has no start-up script, so on Windows Ghostty integrates it through its
 environment. It wraps `PROMPT` (cmd's default `$P$G` when unset) to send
 OSC 133 D, the folder as the title (OSC 2, the `title` feature), the
-working directory (OSC 9;9), then OSC 133 A, your prompt and OSC 133 I. A
+working directory (OSC 9;9), then OSC 133 P, your prompt and OSC 133 I. A
 `PROMPT` that already sends OSC 133 is left as it is. cmd can't report a
 command's start or its exit status: nothing runs before a command, and a
 prompt can't show `%ERRORLEVEL%`.

@@ -10,9 +10,11 @@
 --                     cmd.get_errorlevel, on by default)
 --   OSC 2             the folder as the title (title feature)
 --   OSC 9;9           the working directory
---   OSC 133;A and I   around the prompt, the input running to the end of
---                     the line (I, not B: ConPTY repaints rows with line
---                     feeds, which after B would mark output as input)
+--   OSC 133;P and I   around the prompt, the input running to the end of
+--                     the line. P, not A: A's fresh-line would move
+--                     Ghostty's cursor without ConPTY's. I, not B: ConPTY
+--                     repaints rows with line feeds, which after B would
+--                     mark output as input.
 -- and OSC 133;C when a command line is accepted.
 
 if os.getenv("TERM_PROGRAM") ~= "ghostty" then return end
@@ -27,9 +29,9 @@ local command_ran = false
 local filter = clink.promptfilter(-10000)
 
 function filter:filter(prompt)
-    -- What PROMPT added: a block at the start ending with 133;A, and 133;I
+    -- What PROMPT added: a block at the start ending with 133;P, and 133;I
     -- at the end.
-    prompt = prompt:gsub("^\027%]133;D\027\\.-\027%]133;A\027\\", "", 1)
+    prompt = prompt:gsub("^\027%]133;D\027\\.-\027%]133;P;k=i\027\\", "", 1)
     prompt = prompt:gsub("\027%]133;I\027\\$", "", 1)
     return prompt
 end
@@ -45,7 +47,7 @@ function filter:surround()
         prefix = "\027]133;D" .. status .. ST
     end
     if title then prefix = prefix .. "\027]2;" .. cwd .. ST end
-    prefix = prefix .. "\027]9;9;" .. cwd .. ST .. "\027]133;A" .. ST
+    prefix = prefix .. "\027]9;9;" .. cwd .. ST .. "\027]133;P;k=i" .. ST
     return prefix, "\027]133;I" .. ST
 end
 

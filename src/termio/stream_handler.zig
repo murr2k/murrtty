@@ -93,6 +93,13 @@ pub const StreamHandler = struct {
     /// this to determine if we need to default the window title.
     seen_title: bool = false,
 
+    /// Whether the shell has reported a working directory (OSC 7, 9;9 or
+    /// iTerm2's CurrentDir), possibly an empty one (it doesn't know). Until
+    /// then the terminal's pwd is the directory the shell started in, which
+    /// on Windows relative links don't resolve against. Read with the
+    /// renderer state's lock held, as the stream runs.
+    pwd_reported: bool = false,
+
     pub const Stream = terminal.Stream(StreamHandler);
 
     /// True if we have tmux control mode built in.
@@ -1513,30 +1520,18 @@ pub const StreamHandler = struct {
         // behavior that enables some useful features. For example, the macOS
         // proxy icon can be hidden when a program reports it doesn't know
         // the pwd rather than showing a stale pwd.
-        if (url.len == 0) {
-            // Blank value can never fail because no allocs happen.
-            self.terminal.setPwd("") catch unreachable;
-
-            // If we haven't seen a title, we're using the pwd as our title.
-            // Set it to blank which will reset our title behavior.
-            if (!self.seen_title) {
-                try self.windowTitle("");
-                assert(!self.seen_title);
-            }
-
-            // Report the change.
-            self.surfaceMessageWriter(.{ .pwd_change = .{ .stable = "" } });
-            return;
-        }
+        if (url.len == 0) return self.setUnknownPwd();
 
         // On Windows, OSC 9;9 (which Windows Terminal documents for shells)
         // and iTerm2's CurrentDir send the path itself, maybe quoted; OSC 7
-        // sends a URL (below). Only a local drive path is taken.
+        // sends a URL (below). Only a local drive path is taken; another
+        // local report clears the pwd, as the shell is no longer where it
+        // was (keeping it would resolve links against the old folder).
         if (comptime builtin.target.os.tag == .windows) {
             if (std.mem.indexOf(u8, url, "://") == null) {
                 const path = try internal_os.cwd_report.fromRaw(self.alloc, url) orelse {
                     log.warn("working directory report is not a local drive path", .{});
-                    return;
+                    return self.setUnknownPwd();
                 };
                 defer self.alloc.free(path);
                 return self.setReportedPwd(path);
@@ -1562,12 +1557,26 @@ pub const StreamHandler = struct {
         }
 
         var host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
-        const host = std.Io.net.HostName.fromUri(uri, &host_buffer) catch |err| switch (err) {
+        const host_bytes: []const u8 = if (std.Io.net.HostName.fromUri(uri, &host_buffer)) |host|
+            host.bytes
+        else |err| switch (err) {
             error.UriMissingHost => {
                 log.warn("OSC 7 uri must contain a hostname: {}", .{err});
                 return;
             },
-            error.NameTooLong, error.InvalidHostName => {
+            // Windows computer names may hold characters a DNS name can't
+            // (DEV_BOX), and shells send them as they are: such a name
+            // still counts when it is this computer's.
+            error.InvalidHostName => if (comptime builtin.target.os.tag == .windows)
+                (uri.host.?.toRaw(&host_buffer) catch {
+                    log.warn("OSC 7 uri contains an invalid hostname: {}", .{err});
+                    return;
+                })
+            else {
+                log.warn("OSC 7 uri contains an invalid hostname: {}", .{err});
+                return;
+            },
+            error.NameTooLong => {
                 log.warn("OSC 7 uri contains an invalid hostname: {}", .{err});
                 return;
             },
@@ -1576,7 +1585,7 @@ pub const StreamHandler = struct {
         // OSC 7 is a little sketchy because anyone can send any value from
         // any host (such an SSH session). The best practice terminals follow
         // is to valid the hostname to be local.
-        const host_valid = internal_os.hostname.isLocal(host.bytes) catch |err| switch (err) {
+        const host_valid = internal_os.hostname.isLocal(host_bytes) catch |err| switch (err) {
             error.PermissionDenied,
             error.Unexpected,
             => {
@@ -1585,7 +1594,7 @@ pub const StreamHandler = struct {
             },
         };
         if (!host_valid) {
-            log.warn("OSC 7 host ({s}) must be local", .{host.bytes});
+            log.warn("OSC 7 host ({s}) must be local", .{host_bytes});
             return;
         }
 
@@ -1601,17 +1610,36 @@ pub const StreamHandler = struct {
         const path: []const u8 = if (comptime builtin.target.os.tag == .windows)
             try internal_os.cwd_report.fromUrlPath(stack_alloc.allocator(), raw_path) orelse {
                 log.warn("OSC 7 path is not a local drive path", .{});
-                return;
+                return self.setUnknownPwd();
             }
         else
             raw_path;
         try self.setReportedPwd(path);
     }
 
+    /// The shell reported no working directory: the empty URL (see
+    /// reportPwd) or, on Windows, a local path that isn't usable.
+    fn setUnknownPwd(self: *StreamHandler) !void {
+        // Blank value can never fail because no allocs happen.
+        self.terminal.setPwd("") catch unreachable;
+        self.pwd_reported = true;
+
+        // If we haven't seen a title, we're using the pwd as our title.
+        // Set it to blank which will reset our title behavior.
+        if (!self.seen_title) {
+            try self.windowTitle("");
+            assert(!self.seen_title);
+        }
+
+        // Report the change.
+        self.surfaceMessageWriter(.{ .pwd_change = .{ .stable = "" } });
+    }
+
     /// Take `path` as the terminal's working directory, as a shell reported.
     fn setReportedPwd(self: *StreamHandler, path: []const u8) !void {
         log.debug("terminal pwd: {s}", .{path});
         try self.terminal.setPwd(path);
+        self.pwd_reported = true;
 
         // Report it to the surface. If creating our write request fails
         // then we just ignore it.

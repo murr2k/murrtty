@@ -1010,13 +1010,31 @@ fn setupPowerShell(
 /// dot-sourced so its functions land in the session; a failure (a locked
 /// down language mode, say) leaves the session as it was.
 fn powershellLoadCommand(alloc: Allocator, script: []const u8) ![:0]const u8 {
-    // In a single-quoted string, a quote is written twice.
-    const quoted = try std.mem.replaceOwned(u8, alloc, script, "'", "''");
-    defer alloc.free(quoted);
+    // In a single-quoted string, a quote is written twice. PowerShell takes
+    // the typographic single quotes (U+2018 to U+201B) as quotes too.
+    var quoted: std.ArrayList(u8) = .empty;
+    defer quoted.deinit(alloc);
+    var i: usize = 0;
+    while (i < script.len) {
+        const len: usize = if (std.mem.startsWith(u8, script[i..], "\u{2018}") or
+            std.mem.startsWith(u8, script[i..], "\u{2019}") or
+            std.mem.startsWith(u8, script[i..], "\u{201a}") or
+            std.mem.startsWith(u8, script[i..], "\u{201b}"))
+            3
+        else if (script[i] == '\'') 1 else 0;
+        if (len > 0) {
+            try quoted.appendSlice(alloc, script[i..][0..len]);
+            try quoted.appendSlice(alloc, script[i..][0..len]);
+            i += len;
+        } else {
+            try quoted.append(alloc, script[i]);
+            i += 1;
+        }
+    }
     return try std.fmt.allocPrintSentinel(
         alloc,
         "try {{ . ([scriptblock]::Create([IO.File]::ReadAllText('{s}'))) }} catch {{}}",
-        .{quoted},
+        .{quoted.items},
         0,
     );
 }
@@ -1102,16 +1120,25 @@ test "powershell: the load command quotes the path" {
         "try { . ([scriptblock]::Create([IO.File]::ReadAllText('C:\\it''s\\ghostty.ps1'))) } catch {}",
         cmd,
     );
+    // Typographic quotes end the string too.
+    const typographic = try powershellLoadCommand(testing.allocator, "C:\\O\u{2019}Brien\\\u{2018}x\u{201b}\\ghostty.ps1");
+    defer testing.allocator.free(typographic);
+    try testing.expectEqualStrings(
+        "try { . ([scriptblock]::Create([IO.File]::ReadAllText('C:\\O\u{2019}\u{2019}Brien\\\u{2018}\u{2018}x\u{201b}\u{201b}\\ghostty.ps1'))) } catch {}",
+        typographic,
+    );
 }
 
 /// Set up cmd. It has no start-up script to inject, so the integration is
 /// in its environment. PROMPT wraps the user's prompt (cmd's default, $P$G,
 /// when unset) to report the end of the last command (OSC 133;D, with no
 /// status: a prompt can't show %ERRORLEVEL%), the folder as the title (the
-/// title feature) and the working directory (OSC 9;9), then 133;A, the
-/// prompt and 133;I. cmd runs nothing before a command, so there is no
-/// 133;C; with 133;I, the line feed after Enter ends the input anyway. A
-/// PROMPT that already sends OSC 133 is left alone.
+/// title feature) and the working directory (OSC 9;9), then 133;P;k=i, the
+/// prompt and 133;I. P rather than A: A's fresh-line moves Ghostty's cursor
+/// without ConPTY's, which keeps its own and would draw a row off from then
+/// on. cmd runs nothing before a command, so there is no 133;C; with 133;I,
+/// the line feed after Enter ends the input anyway. A PROMPT that already
+/// sends OSC 133 is left alone.
 ///
 /// CLINK_PATH gains our cmd folder, so Clink (https://chrisant996.github.io/clink/),
 /// when the user runs it, loads ghostty.lua: it sends the same codes around
@@ -1134,7 +1161,7 @@ fn setupCmd(
         try env.put("PROMPT", try std.mem.concat(alloc, u8, &.{
             "$E]133;D$E\\",
             title,
-            "$E]9;9;$P$E\\$E]133;A$E\\",
+            "$E]9;9;$P$E\\$E]133;P;k=i$E\\",
             prompt,
             "$E]133;I$E\\",
         }));
@@ -1182,7 +1209,7 @@ test "cmd: PROMPT and CLINK_PATH" {
         const result = (try setupCmd(alloc, .{ .shell = "cmd.exe" }, res.path, &env)).?;
         try testing.expectEqualStrings("cmd.exe", result.shell);
         try testing.expectEqualStrings(
-            "$E]133;D$E\\$E]2;$P$E\\$E]9;9;$P$E\\$E]133;A$E\\$P$G$E]133;I$E\\",
+            "$E]133;D$E\\$E]2;$P$E\\$E]9;9;$P$E\\$E]133;P;k=i$E\\$P$G$E]133;I$E\\",
             env.get("PROMPT").?,
         );
         try testing.expectEqualStrings(dir, env.get("CLINK_PATH").?);
@@ -1195,7 +1222,7 @@ test "cmd: PROMPT and CLINK_PATH" {
         try env.put("CLINK_PATH", "C:\\clink");
         _ = (try setupCmd(alloc, .{ .shell = "cmd.exe" }, res.path, &env)).?;
         try testing.expectEqualStrings(
-            "$E]133;D$E\\$E]9;9;$P$E\\$E]133;A$E\\$T $P$_$G$E]133;I$E\\",
+            "$E]133;D$E\\$E]9;9;$P$E\\$E]133;P;k=i$E\\$T $P$_$G$E]133;I$E\\",
             env.get("PROMPT").?,
         );
         try testing.expectEqualStrings(

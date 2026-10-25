@@ -112,7 +112,7 @@ apply to all new code:
 |---|---|---|
 | **S1** overlay host, 1 day | Does a child window drawn over a WGL child window stay clean (no flicker, no stale pixels) while output floods and during live resize, on two GPU vendors? | Where text and interactive overlays live (3.0) |
 | **S2** transparency, 1 to 2 days, run before 3.0 | Does DWM honor per-pixel alpha from child GL windows when the top level uses `DwmEnableBlurBehindWindow` with an empty region? | Transparency path: cheap (4.1 A) or DirectComposition with `WGL_NV_DX_interop2` (4.1 B, XL). Also whether text overlays (3.0) and the tab strip (3.8, 4.3) can stay GDI, or must become composition visuals, since GDI output does not show on a Phase B window. |
-| **S3** ConPTY, 1 day | Does the inbox ConPTY forward OSC 133, OSC 7, OSC 9;9 and DECSCUSR, in order, on Windows 10 22H2 and Windows 11 23H2 to 25H2? | Whether to bundle `conpty.dll` and `OpenConsole.exe` (2.2). *Run 2026-10-25 on Windows 11 25H2 (build 26200), inbox ConPTY, flags 0 as Ghostty uses:* a child writing text markers with each sequence between them (via cmd `type`, pwsh 7 and Windows PowerShell 5.1) got all of them through: OSC 133 A, B (ST-terminated), C and D;0, OSC 7, OSC 9;9 and DECSCUSR. The OSC 133 marks keep their place in the text; OSC 7, OSC 9;9 and DECSCUSR can arrive ahead of text written before them, which doesn't matter for them. OSC 2 is absorbed and re-sent as OSC 0. Flag 0x8 (passthrough) changed nothing. So no bundling for Windows 11; Windows 10 22H2 and 23H2/24H2 not yet run (the probe needs `STARTF_USESTDHANDLES` with null handles, as `Command.zig` passes, or the child writes to the parent's handles). *Found in 2.2:* ConPTY repaints rows as it renders, line feeds included, and after 133;B (input until 133;C) those line feeds marked output rows as prompt continuation, so `jump_to_prompt` stopped on output. Not reordering: one write arrived in place, and a pause before the prompt changed nothing. The integrations end the prompt with 133;I (input ends with the line) instead. Clearing the screen (`cls`, `Clear-Host`) arrives as a repaint, not an erase, so rows that held a prompt keep their prompt mark. |
+| **S3** ConPTY, 1 day | Does the inbox ConPTY forward OSC 133, OSC 7, OSC 9;9 and DECSCUSR, in order, on Windows 10 22H2 and Windows 11 23H2 to 25H2? | Whether to bundle `conpty.dll` and `OpenConsole.exe` (2.2). *Run 2026-10-25 on Windows 11 25H2 (build 26200), inbox ConPTY, flags 0 as Ghostty uses:* a child writing text markers with each sequence between them (via cmd `type`, pwsh 7 and Windows PowerShell 5.1) got all of them through: OSC 133 A, B (ST-terminated), C and D;0, OSC 7, OSC 9;9 and DECSCUSR. The OSC 133 marks keep their place in the text; OSC 7, OSC 9;9 and DECSCUSR can arrive ahead of text written before them, which doesn't matter for them. OSC 2 is absorbed and re-sent as OSC 0. Flag 0x8 (passthrough) changed nothing. So no bundling for Windows 11; Windows 10 22H2 and 23H2/24H2 not yet run (the probe needs `STARTF_USESTDHANDLES` with null handles, as `Command.zig` passes, or the child writes to the parent's handles). *Found in 2.2:* ConPTY repaints rows as it renders, line feeds included, and after 133;B (input until 133;C) those line feeds marked output rows as prompt continuation, so `jump_to_prompt` stopped on output. Not reordering: one write arrived in place, and a pause before the prompt changed nothing. The integrations end the prompt with 133;I (input ends with the line) instead. Clearing the screen (`cls`, `Clear-Host`) arrives as a repaint, not an erase, so rows that held a prompt keep their prompt mark. *Found in the mid-phase review:* 133;A's fresh-line moves Ghostty's cursor when it isn't at column 0, which ConPTY never learns of, so its later absolute moves land a row off; the integrations start prompts with 133;P;k=i, which marks the same without moving. |
 | **S4** many contexts, part of 1.4 | 16 panes, each flooding output: steady frames, no stale-frame recurrence, linear memory, on two vendors | Whether per-pane contexts scale. *Run 2026-10-24 on NVIDIA (RTX 2070), scenario `stress-panes`:* every pane kept presenting (1,030 to 1,210 frames each in 13 s, Debug build); memory flat while flooding; per added pane 4 threads, 31 MB resident, 90 MB committed, 64 MB of it Zig's thread stacks (0.15). They scale. AMD and Intel not yet run. *Re-run 2026-10-25 at the end of Phase 1 (15 panes dimmed by 1.7's overlay):* the slowest pane presented 994 frames in 13 s; memory per pane unchanged, and 49 MB of growth in 15 s of flooding (scrollback). |
 | **S5** reparenting, part of 4.5 | Does a GL child window keep rendering after `SetParent` to another top-level window, on NVIDIA, AMD and Intel? | Tab tear-off design |
 | **S6** OpenGL elsewhere, 1 day | What does Microsoft's OpenGL compatibility pack expose on Snapdragon X and in VMs: 4.3 core with fragment SSBOs and sRGB framebuffers? | ARM64 (7.7) and software fallback (6.3) |
@@ -760,6 +760,43 @@ both PowerShells, plus the title following `cd` and the running command, and
 an idle Ctrl+Shift+Q quitting without a dialog. S3 found no reason to bundle
 `OpenConsole` on Windows 11.
 
+*Mid-phase review 2026-10-25* (2.1 and 2.2; five reviewers and a skeptic
+per finding, 20 of 23 findings confirmed), fixed:
+- **Prompt marks:** prompts start with 133;P;k=i, not A. A's fresh-line
+  moved Ghostty's cursor without ConPTY's after a prompt written with
+  Write-Host (a venv's) or output without a final newline, so later repaints
+  landed a row off. The PowerShell prompt mark now goes out before the
+  user's prompt runs, so Write-Host text is inside it. cmd and Clink use P
+  too.
+- **PowerShell script:**
+  - runs with strict mode off: the profile's `Set-StrictMode` had aborted
+    it silently
+  - wraps a prompt or PSReadLine set after it loaded when loaded again
+  - reports a repeated native exit code and a failure under another prompt
+    wrapper (by `$Error[0]`)
+  - caps and guards the title (over 1023 characters it threw, and with
+    `$ErrorActionPreference = 'Stop'` lost the command)
+  - sends an empty OSC 7 where the location isn't a drive path
+  - matches `~` at a path boundary only
+  - sets the bar cursor only when its PSReadLine hook can restore it
+  - names the host `localhost` when `COMPUTERNAME` isn't a DNS label
+- **Host names:** Ghostty also accepts such a name in OSC 7 when it is this
+  computer's.
+- **Load command:** doubles the typographic single quotes (U+2018 to
+  U+201B), which PowerShell also ends strings at.
+- **Reported directories:**
+  - reject DOS device names, names over 255 UTF-16 units and `.`/`..`; std's
+    access panicked in Debug builds on the first two when a new tab inherited
+    them
+  - a local report that isn't usable makes the pwd unknown rather than
+    leaving it stale
+  - Exec checks a Windows cwd with `GetFileAttributesW` and drops one at
+    MAX_PATH or longer, which CreateProcessW refuses
+- **Relative links:** resolve only against a directory a shell reported, not
+  the starting one.
+- **GUI tests:** they wait on an end marker rather than a fixed sleep, and
+  the link check uses a folder that is neither Ghostty's nor the start.
+
 **2.3 cmd integration, M.**
 - Set `PROMPT` in the child environment to wrap the user's prompt with OSC 133
   A/B/D and OSC 9;9. cmd has no pre-execution hook, so there is no 133 C or
@@ -772,9 +809,9 @@ over to new tabs.
 
 *Done 2026-10-25:* `cmd` is detected like PowerShell (any case, with or
 without `.exe`), and `PROMPT` becomes `$E]133;D$E\`, the title (`$E]2;$P$E\`,
-title feature), `$E]9;9;$P$E\`, `$E]133;A$E\`, the user's prompt (`$P$G` when
-unset) and `$E]133;I$E\`: I, not B, for S3's reason, and because with no
-133;C, I lets the line feed after Enter end the input. A `PROMPT` already
+title feature), `$E]9;9;$P$E\`, `$E]133;P;k=i$E\`, the user's prompt (`$P$G`
+when unset) and `$E]133;I$E\`: P and I, not A and B, for S3's reasons, and
+because with no 133;C, I lets the line feed after Enter end the input. A `PROMPT` already
 sending OSC 133 is kept. `CLINK_PATH` gains `shell-integration\cmd`, whose
 `ghostty.lua` (Clink 1.4.24 or later) strips those codes from cmd's prompt
 and sends them around Clink's final prompt through a prompt filter's

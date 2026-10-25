@@ -881,6 +881,9 @@ fn textWith(h: *Harness, g: *Harness.Ghostty, needle: []const u8) ![]u8 {
 /// Explorer starts it in the home directory, and a POSIX SHELL (MSYS2, Git
 /// Bash) is not taken as the command.
 fn launchContext(h: *Harness) anyerror!void {
+    // No config here, so cmd starts with its shell integration and quitting
+    // at its idle prompt doesn't ask.
+
     // The harness starts Ghostty in the scenario's folder, as a shell would.
     {
         var g = try h.launchWith("launch-context", "", .{});
@@ -888,7 +891,7 @@ fn launchContext(h: *Harness) anyerror!void {
         const text = try textWith(h, &g, ">");
         defer h.alloc.free(text);
         try h.expect(std.ascii.findIgnoreCase(text, g.dir) != null, "started from a program, it opens in that program's directory", .{});
-        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+        try quitIdle(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
     // As a shortcut launch: the home directory.
     {
@@ -903,7 +906,7 @@ fn launchContext(h: *Harness) anyerror!void {
         const text = try textWith(h, &g, ">");
         defer h.alloc.free(text);
         try h.expect(std.ascii.findIgnoreCase(text, prompt) != null, "started from a shortcut, it opens in {s}", .{home});
-        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+        try quitIdle(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
     // SHELL from Git Bash is ignored: cmd starts.
     {
@@ -912,7 +915,7 @@ fn launchContext(h: *Harness) anyerror!void {
         const text = try textWith(h, &g, ">");
         defer h.alloc.free(text);
         try h.expect(std.ascii.findIgnoreCase(text, "Microsoft Windows") != null, "SHELL=/usr/bin/bash still starts cmd", .{});
-        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+        try quitIdle(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
 }
 
@@ -1702,8 +1705,10 @@ fn focusFollowsMouse(h: *Harness) anyerror!void {
 /// Working-directory reports (roadmap 2.1). cmd's prompt reports its folder
 /// with OSC 9;9 ($P); PowerShell sends OSC 7 naming this computer in lower
 /// case (the DNS name's usual spelling, unlike the NetBIOS name). The pwd
-/// follows them, a new tab starts there, and a report from another computer
-/// or of a UNC path is ignored. Relative link text resolves against the pwd.
+/// follows them and a new tab starts there; a report from another computer
+/// is ignored, and a local one that isn't a drive path (a UNC share) makes
+/// the pwd unknown. Relative link text resolves against the reported pwd,
+/// not Ghostty's own directory, and not before a shell reports one.
 fn pwdReports(h: *Harness) anyerror!void {
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
     var g = try start(h, "pwd", "", ">");
@@ -1731,25 +1736,42 @@ fn pwdReports(h: *Harness) anyerror!void {
     try waitTabText(h, &g, 1, "\nosc-sent-1");
     try waitPwd(h, &g, 1, "C:\\Windows\\System32");
 
-    // Another computer's OSC 7 and a UNC path in OSC 9;9 change nothing.
-    try h.typeText(second, "powershell -NoProfile -Command \"[Console]::Write([char]27+']7;file://elsewhere.invalid/C:/Temp'+[char]7+[char]27+']9;9;\\\\server\\share'+[char]7)\" & echo osc-sent-2");
+    // Another computer's OSC 7 changes nothing.
+    try h.typeText(second, "powershell -NoProfile -Command \"[Console]::Write([char]27+']7;file://elsewhere.invalid/C:/Temp'+[char]7)\" & echo osc-sent-2");
     h.enter(second);
     try waitTabText(h, &g, 1, "\nosc-sent-2");
     w.Sleep(300);
     try waitPwd(h, &g, 1, "C:\\Windows\\System32");
 
-    // Relative link text resolves against the pwd: a text file in the
-    // scenario's folder opens (recorded by the test hooks, not opened).
-    const notes = try std.fmt.allocPrint(h.alloc, "{s}\\notes.txt", .{g.dir});
+    // A UNC path in OSC 9;9: the shell is somewhere unknown.
+    try h.typeText(second, "powershell -NoProfile -Command \"[Console]::Write([char]27+']9;9;\\\\server\\share'+[char]7)\" & echo osc-sent-3");
+    h.enter(second);
+    try waitTabText(h, &g, 1, "\nosc-sent-3");
+    try waitPwd(h, &g, 1, "");
+
+    // Relative link text resolves against the reported pwd: a text file in
+    // a folder that is neither Ghostty's directory nor the tab's starting
+    // one opens (recorded by the test hooks, not opened). A decoy of the
+    // same name in Ghostty's directory catches resolving against that.
+    const rel = try std.fmt.allocPrint(h.alloc, "{s}\\rel", .{g.dir});
+    defer h.alloc.free(rel);
+    try h.makeDirAt(rel);
+    defer h.removeDirAt(rel);
+    const notes = try std.fmt.allocPrint(h.alloc, "{s}\\notes.txt", .{rel});
     defer h.alloc.free(notes);
     try h.writeFileAt(notes, "notes\n");
+    defer h.deleteFile(notes);
+    const decoy = try std.fmt.allocPrint(h.alloc, "{s}\\notes.txt", .{g.dir});
+    defer h.alloc.free(decoy);
+    try h.writeFileAt(decoy, "decoy\n");
+    defer h.deleteFile(decoy);
     try h.typeText(second, report_prompt);
     h.enter(second);
-    const cd = try std.fmt.allocPrint(h.alloc, "cd /d {s}", .{g.dir});
+    const cd = try std.fmt.allocPrint(h.alloc, "cd /d {s}", .{rel});
     defer h.alloc.free(cd);
     try h.typeText(second, cd);
     h.enter(second);
-    try waitPwd(h, &g, 1, g.dir);
+    try waitPwd(h, &g, 1, rel);
     try h.typeText(second, "cls & echo ./notes.txt");
     h.enter(second);
     try waitTabLine(h, &g, 1, "./notes.txt");
@@ -1757,7 +1779,26 @@ fn pwdReports(h: *Harness) anyerror!void {
     const want = try std.fmt.allocPrint(h.alloc, "default {s}", .{notes});
     defer h.alloc.free(want);
     try expectLaunch(h, &g, 1, want);
-    try quit(h, &g, second);
+
+    // A new tab whose shell hasn't reported: relative text resolves to
+    // nothing (the starting directory would name the wrong file after a
+    // cd), so the link is blocked as relative and nothing opens.
+    h.key(second, cs, 'T');
+    try waitWindowTabs(h, &g, win, 3);
+    const third = try h.surface(&g, win);
+    try waitTabText(h, &g, 2, ">");
+    const cd_unreported = try std.fmt.allocPrint(h.alloc, "cls & cd /d {s} & echo ./notes.txt", .{rel});
+    defer h.alloc.free(cd_unreported);
+    try h.typeText(third, cd_unreported);
+    h.enter(third);
+    try waitTabLine(h, &g, 2, "./notes.txt");
+    try ctrlClickRow(h, &g, third, "./notes.txt", 3);
+    const dlg = try h.waitDialog(&g, 5000);
+    try expectTitle(h, dlg, "Link Blocked");
+    h.answer(&g, dlg, w.IDOK);
+    try waitNoDialog(h, &g);
+    try expectLaunchCount(h, &g, 1);
+    try quit(h, &g, third);
 }
 
 /// PowerShell integration (roadmap 2.2), for PowerShell 7 and Windows
@@ -1785,7 +1826,9 @@ fn powershellIntegration(h: *Harness, name: []const u8, command: []const u8) !vo
     try waitPwd(h, &g, 0, "C:\\Windows");
     try waitTabTitle(h, &g, 0, "C:\\Windows");
 
-    // Exit statuses: a program's code, a failing cmdlet's 1, then success.
+    // Exit statuses: a program's code (twice: the same code again still
+    // counts), a failing cmdlet's 1, then success.
+    try runForStatus(h, &g, first, "cmd /c exit 3", 3);
     try runForStatus(h, &g, first, "cmd /c exit 3", 3);
     try runForStatus(h, &g, first, "Get-Item C:\\no-such-file", 1);
     try runForStatus(h, &g, first, "$null", 0);
@@ -1816,14 +1859,38 @@ fn powershellIntegration(h: *Harness, name: []const u8, command: []const u8) !vo
     // (Ctrl+Shift+Up) brings each one's prompt to the top of the view.
     try h.typeText(first, "'mark-a'; 1..45");
     h.enter(first);
-    try h.typeText(first, "'mark-b'; 1..45");
+    try h.typeText(first, "'mark-b'; 1..45; 'end-b'");
     h.enter(first);
-    try waitTabLine(h, &g, 0, "45");
-    w.Sleep(500);
+    try waitTabLine(h, &g, 0, "end-b");
     h.key(first, cs, w.VK_UP);
     try waitTopLine(h, &g, 0, "PS ", "'mark-b'");
     h.key(first, cs, w.VK_UP);
     try waitTopLine(h, &g, 0, "PS ", "'mark-a'");
+
+    // A location that isn't a drive path makes the pwd unknown.
+    try h.typeText(first, "cd HKCU:\\");
+    h.enter(first);
+    try waitPwd(h, &g, 0, "");
+    try h.typeText(first, "cd C:\\Windows");
+    h.enter(first);
+    try waitPwd(h, &g, 0, "C:\\Windows");
+
+    // The script loaded again under strict mode, after the prompt changed
+    // to one that writes with Write-Host (as a venv's does): it wraps the
+    // new prompt, which stays on one row, adds no errors, and still
+    // reports.
+    try h.typeText(first, "Set-StrictMode -Version Latest; function global:prompt { Write-Host -NoNewline '(venv) '; 'WH> ' }; " ++
+        ". ([scriptblock]::Create([IO.File]::ReadAllText(\"$env:GHOSTTY_RESOURCES_DIR\\shell-integration\\powershell\\ghostty.ps1\"))); $Error.Clear()");
+    h.enter(first);
+    try waitTabText(h, &g, 0, "(venv) WH> ");
+    try h.typeText(first, "cd C:\\Windows\\System32");
+    h.enter(first);
+    try waitPwd(h, &g, 0, "C:\\Windows\\System32");
+    try runForStatus(h, &g, first, "cmd /c exit 4", 4);
+    try h.typeText(first, "'errors=' + $Error.Count");
+    h.enter(first);
+    try waitTabLine(h, &g, 0, "errors=0");
+
     // At an idle prompt, quitting doesn't ask.
     try quitIdle(h, &g, first);
 }
@@ -1867,7 +1934,8 @@ fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
     defer h.alloc.free(extra);
     const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
     defer h.alloc.free(config);
-    // In the launch's folder, which a passing run removes.
+    // In the launch's folder, never the user's (Clink's files there keep
+    // the run folder from being removed).
     const profile = try std.fmt.allocPrint(h.alloc, "{s}\\{s}\\clink-profile", .{ h.temp_dir, name });
     defer h.alloc.free(profile);
     const env: []const [2][]const u8 = switch (run) {
@@ -1919,10 +1987,9 @@ fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
     // (Ctrl+Shift+Up) brings each one's prompt to the top of the view.
     try h.typeText(first, "echo mark-a& for /l %i in (1,1,45) do @echo %i");
     h.enter(first);
-    try h.typeText(first, "echo mark-b& for /l %i in (1,1,45) do @echo %i");
+    try h.typeText(first, "echo mark-b& (for /l %i in (1,1,45) do @echo %i)& echo end-b");
     h.enter(first);
-    try waitTabLine(h, &g, 0, "45");
-    w.Sleep(500);
+    try waitTabLine(h, &g, 0, "end-b");
     h.key(first, cs, w.VK_UP);
     try waitTopLine(h, &g, 0, prompt, "mark-b");
     h.key(first, cs, w.VK_UP);

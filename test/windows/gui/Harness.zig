@@ -460,6 +460,15 @@ pub fn deleteFile(self: *Harness, path: []const u8) void {
     removePath(self.alloc, path, "", .file);
 }
 
+/// Make a folder (fine if it exists); removeDirAt removes it once empty.
+pub fn makeDirAt(self: *Harness, path: []const u8) !void {
+    try makeDir(self.alloc, path);
+}
+
+pub fn removeDirAt(self: *Harness, path: []const u8) void {
+    removePath(self.alloc, path, "", .dir);
+}
+
 fn asciiEqlIgnoreCase16(a: []const u16, b: []const u8) bool {
     for (a, b) |x, y| {
         if (x > 127 or std.ascii.toLower(@intCast(x)) != std.ascii.toLower(y)) return false;

@@ -66,6 +66,7 @@ pub const STARTUPINFOEX = extern struct {
 
 // Well-known constant values
 pub const INFINITE = 4294967295;
+pub const INVALID_FILE_ATTRIBUTES = windows.INVALID_FILE_ATTRIBUTES;
 pub const INVALID_HANDLE_VALUE = windows.INVALID_HANDLE_VALUE;
 pub const MAX_PATH = windows.MAX_PATH;
 pub const FALSE: windows.BOOL = .fromBool(false);
@@ -76,6 +77,7 @@ pub const CREATE_UNICODE_ENVIRONMENT = 0x00000400;
 pub const DELETE = 0x00010000;
 pub const ERROR_SUCCESS = 0;
 pub const EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
+pub const FILE_ATTRIBUTE_DIRECTORY = 0x10;
 pub const FILE_ATTRIBUTE_NORMAL = 0x80;
 pub const FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;
 pub const FILE_FLAG_OVERLAPPED = 0x40000000;
@@ -214,6 +216,10 @@ pub const exp = struct {
             lpBuffer: ?[*]u16,
             nSize: *DWORD,
         ) callconv(.winapi) BOOL;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfileattributesw
+        pub extern "kernel32" fn GetFileAttributesW(
+            lpFileName: LPCWSTR,
+        ) callconv(.winapi) DWORD;
         /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppathw
         pub extern "kernel32" fn GetTempPathW(
             nBufferLength: DWORD,

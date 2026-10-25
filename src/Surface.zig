@@ -2185,6 +2185,11 @@ pub fn pwd(
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
     const terminal_pwd = self.io.terminal.getPwd() orelse return null;
+    // Windows: a shell that reported it doesn't know (empty) leaves the
+    // configured directory to new terminals.
+    if (comptime builtin.os.tag == .windows) {
+        if (terminal_pwd.len == 0) return null;
+    }
     return try alloc.dupe(u8, terminal_pwd);
 }
 
@@ -2214,13 +2219,16 @@ fn resolvePathForOpening(
 }
 
 /// Windows: relative link text (src/main.zig, ./x, ../x) joined to the
-/// terminal's pwd by spelling alone, with no existence check. The file
-/// system calls the check would make follow links, panic in Debug builds on
-/// names Windows rejects (NUL, an over-long component) and overrun a fixed
-/// buffer on very long paths, all of which terminal output can supply; the
-/// runtime vets what this names before opening it. Text relative to another
-/// base (~, $VAR, a drive's own folder in C:x, the current drive's root in
-/// \x) resolves to nothing.
+/// working directory the shell reported, by spelling alone, with no
+/// existence check. The file system calls the check would make follow
+/// links, panic in Debug builds on names Windows rejects (NUL, an over-long
+/// component) and overrun a fixed buffer on very long paths, all of which
+/// terminal output can supply; the runtime vets what this names before
+/// opening it. Text relative to another base (~, $VAR, a drive's own folder
+/// in C:x, the current drive's root in \x) resolves to nothing, and so does
+/// any text until the shell reports where it is: the starting directory
+/// would name the wrong file after a cd. Called with the renderer state's
+/// lock held.
 fn resolvePathWindows(self: *Surface, path: []const u8) Allocator.Error!?[]const u8 {
     if (path.len == 0) return null;
     switch (path[0]) {
@@ -2228,7 +2236,9 @@ fn resolvePathWindows(self: *Surface, path: []const u8) Allocator.Error!?[]const
         else => {},
     }
     if (std.mem.indexOfScalar(u8, path, ':') != null) return null;
+    if (!self.io.terminal_stream.handler.pwd_reported) return null;
     const terminal_pwd = self.io.terminal.getPwd() orelse return null;
+    if (terminal_pwd.len == 0) return null;
     return try std.fs.path.resolveWindows(self.alloc, &.{ terminal_pwd, path });
 }
 

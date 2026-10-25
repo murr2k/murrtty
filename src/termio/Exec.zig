@@ -1011,6 +1011,12 @@ const Subprocess = struct {
                 break :cwd proposed;
             }
 
+            if (comptime builtin.target.os.tag == .windows) {
+                if (windowsCwdUsable(alloc, proposed)) break :cwd proposed;
+                log.warn("cannot use cwd, ignoring: {s}", .{proposed});
+                break :cwd null;
+            }
+
             if (std.Io.Dir.cwd().access(global.io(), proposed, .{})) {
                 break :cwd proposed;
             } else |err| {
@@ -1297,6 +1303,36 @@ const Subprocess = struct {
         return pty.getProcessInfo(info);
     }
 };
+
+/// Windows: whether a shell can start in `path`, an existing directory
+/// CreateProcessW takes (under MAX_PATH even where long paths are on). Asked
+/// with GetFileAttributesW, because std's access panics in Debug builds on
+/// names Windows rejects, which a shell's working-directory report or the
+/// config can supply.
+fn windowsCwdUsable(alloc: Allocator, path: []const u8) bool {
+    const path_w = std.unicode.wtf8ToWtf16LeAllocZ(alloc, path) catch return false;
+    defer alloc.free(path_w);
+    if (path_w.len == 0) return false;
+    // MAX_PATH with the null, and the backslash Windows adds if missing.
+    const max: usize = if (path_w[path_w.len - 1] == '\\') windows.MAX_PATH - 1 else windows.MAX_PATH - 2;
+    if (path_w.len > max) return false;
+    const attrs = windows.exp.kernel32.GetFileAttributesW(path_w.ptr);
+    return attrs != windows.INVALID_FILE_ATTRIBUTES and attrs & windows.FILE_ATTRIBUTE_DIRECTORY != 0;
+}
+
+test windowsCwdUsable {
+    if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    try testing.expect(windowsCwdUsable(alloc, "C:\\"));
+    try testing.expect(windowsCwdUsable(alloc, "C:\\Windows"));
+    try testing.expect(!windowsCwdUsable(alloc, "C:\\Windows\\notepad.exe"));
+    try testing.expect(!windowsCwdUsable(alloc, ""));
+    try testing.expect(!windowsCwdUsable(alloc, "C:\\NUL"));
+    const long: [300]u8 = @splat('a');
+    try testing.expect(!windowsCwdUsable(alloc, "C:\\" ++ long));
+    try testing.expect(!windowsCwdUsable(alloc, "C:\\Windows\\" ++ long[0..256]));
+}
 
 /// The read thread works with a companion gather thread to form a two-stage
 /// pipeline that moves pty output into the terminal:
