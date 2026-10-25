@@ -12,6 +12,7 @@ pub fn preInit() void {
 
 test {
     _ = @import("win32/key.zig");
+    _ = @import("win32/split_layout.zig");
     _ = @import("win32/TabBar.zig");
     _ = @import("win32/text.zig");
     _ = @import("win32/url.zig");
