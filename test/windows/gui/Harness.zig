@@ -16,7 +16,8 @@ const w = @import("win.zig");
 alloc: Allocator,
 /// ghostty.exe, absolute.
 exe: [:0]const u16,
-/// A per-run folder under %TEMP% for configs and dumps.
+/// A per-run folder for configs and dumps, under GHOSTTY_GUI_TEST_DIR if
+/// set (CI uploads that folder when a run fails), else under %TEMP%.
 temp_dir: []const u8,
 /// The hidden desktop, or null to run on the user's desktop.
 desktop: ?w.HDESK = null,
@@ -41,8 +42,20 @@ pub fn init(alloc: Allocator, exe: []const u8, hidden: bool) !Harness {
     _ = w.SetProcessDPIAware();
 
     var tmp: [261]u16 = undefined;
-    const tlen = w.GetTempPathW(tmp.len, &tmp);
-    if (tlen == 0) return error.LaunchFailed;
+    var tlen = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_TEST_DIR"), &tmp, tmp.len - 1);
+    if (tlen >= tmp.len - 1) return error.LaunchFailed;
+    if (tlen > 0) {
+        tmp[tlen] = 0;
+        // Made if missing; its parent must exist.
+        _ = w.CreateDirectoryW(tmp[0..tlen :0].ptr, null);
+        if (tmp[tlen - 1] != '\\') {
+            tmp[tlen] = '\\';
+            tlen += 1;
+        }
+    } else {
+        tlen = w.GetTempPathW(tmp.len, &tmp);
+        if (tlen == 0) return error.LaunchFailed;
+    }
     const base = try std.unicode.utf16LeToUtf8Alloc(alloc, tmp[0..tlen]);
     defer alloc.free(base);
     // Failed runs keep their folders, and process ids are reused, so the

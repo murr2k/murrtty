@@ -2,11 +2,14 @@
 //!
 //!   ghostty-gui-test --ghostty <path to a Debug ghostty.exe> [options] [scenario...]
 //!
-//!   --visible   run on the user's desktop instead of a hidden one
-//!   --verbose   print every passing check
-//!   --list      list the scenarios
+//!   --visible      run on the user's desktop instead of a hidden one
+//!   --verbose      print every passing check
+//!   --list         list the scenarios
+//!   --skip <name>  leave a scenario out (repeatable)
 //!
-//! With no scenario names, all run. Exit code 0 when all pass.
+//! With no scenario names, all run. Exit code 0 when all pass. One run at a
+//! time per session: a second run waits for the first. Each run's folder is
+//! made under GHOSTTY_GUI_TEST_DIR if set, else %TEMP%.
 const std = @import("std");
 const w = @import("win.zig");
 const Harness = @import("Harness.zig");
@@ -31,12 +34,18 @@ pub fn main(init: std.process.Init) !u8 {
     var verbose = false;
     var only: std.ArrayList([]const u8) = .empty;
     defer only.deinit(alloc);
+    var skip: std.ArrayList([]const u8) = .empty;
+    defer skip.deinit(alloc);
     var i: usize = 0;
     while (i < args.items.len) : (i += 1) {
         const a = args.items[i];
         if (std.mem.eql(u8, a, "--ghostty") and i + 1 < args.items.len) {
             i += 1;
             exe = args.items[i];
+        } else if (std.mem.eql(u8, a, "--skip") and i + 1 < args.items.len) {
+            i += 1;
+            if (!known(args.items[i])) return 2;
+            try skip.append(alloc, args.items[i]);
         } else if (std.mem.eql(u8, a, "--visible")) {
             visible = true;
         } else if (std.mem.eql(u8, a, "--verbose")) {
@@ -45,19 +54,33 @@ pub fn main(init: std.process.Init) !u8 {
             for (scenarios.all) |s| std.debug.print("{s:<16} {s}\n", .{ s.name, s.about });
             return 0;
         } else {
-            for (scenarios.all) |s| {
-                if (std.mem.eql(u8, s.name, a)) break;
-            } else {
-                std.debug.print("unknown scenario '{s}' (try --list)\n", .{a});
-                return 2;
-            }
+            if (!known(a)) return 2;
             try only.append(alloc, a);
         }
     }
     const ghostty = exe orelse {
-        std.debug.print("usage: ghostty-gui-test --ghostty <Debug ghostty.exe> [--visible] [--verbose] [scenario...]\n", .{});
+        std.debug.print("usage: ghostty-gui-test --ghostty <Debug ghostty.exe> [--visible] [--verbose] [--skip <name>] [scenario...]\n", .{});
         return 2;
     };
+
+    // Runs in one session share its clipboard and the HKCU registrations
+    // the link scenarios make, so a second run (CI next to a development
+    // run) waits for the first.
+    const lock = w.CreateMutexW(null, w.FALSE, w.L("Local\\GhosttyGuiTest")) orelse {
+        std.debug.print("CreateMutexW failed ({d})\n", .{w.GetLastError()});
+        return 2;
+    };
+    defer _ = w.CloseHandle(lock);
+    var waited = w.WaitForSingleObject(lock, 0);
+    if (waited == w.WAIT_TIMEOUT) {
+        std.debug.print("waiting for another GUI test run in this session\n", .{});
+        waited = w.WaitForSingleObject(lock, 60 * 60 * 1000);
+    }
+    if (waited != w.WAIT_OBJECT_0 and waited != w.WAIT_ABANDONED) {
+        std.debug.print("gave up waiting for the other GUI test run\n", .{});
+        return 2;
+    }
+    defer _ = w.ReleaseMutex(lock);
 
     var h = Harness.init(alloc, ghostty, !visible) catch |err| {
         std.debug.print("could not set up the harness: {t}\n", .{err});
@@ -70,11 +93,14 @@ pub fn main(init: std.process.Init) !u8 {
     var failed: usize = 0;
     var skipped: usize = 0;
     var ran: usize = 0;
-    for (scenarios.all) |s| {
+    scenario: for (scenarios.all) |s| {
         if (only.items.len > 0) {
             for (only.items) |o| {
                 if (std.mem.eql(u8, o, s.name)) break;
             } else continue;
+        }
+        for (skip.items) |o| {
+            if (std.mem.eql(u8, o, s.name)) continue :scenario;
         }
         ran += 1;
         std.debug.print("{s:<16} ", .{s.name});
@@ -101,4 +127,13 @@ pub fn main(init: std.process.Init) !u8 {
     }
     std.debug.print("configs, state dumps and logs kept in {s}\n", .{h.temp_dir});
     return 1;
+}
+
+/// Whether `name` is a scenario; prints an error if not.
+fn known(name: []const u8) bool {
+    for (scenarios.all) |s| {
+        if (std.mem.eql(u8, s.name, name)) return true;
+    }
+    std.debug.print("unknown scenario '{s}' (try --list)\n", .{name});
+    return false;
 }

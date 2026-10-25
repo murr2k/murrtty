@@ -105,6 +105,8 @@ pub const IDNO = 7;
 pub const CREATE_UNICODE_ENVIRONMENT = 0x00000400;
 pub const INFINITE: DWORD = 0xFFFFFFFF;
 pub const WAIT_OBJECT_0 = 0;
+pub const WAIT_ABANDONED = 0x80;
+pub const WAIT_TIMEOUT = 0x102;
 pub const STILL_ACTIVE = 259;
 pub const GENERIC_READ = 0x80000000;
 pub const GENERIC_WRITE = 0x40000000;
@@ -163,6 +165,8 @@ pub extern "kernel32" fn DeleteProcThreadAttributeList(*anyopaque) callconv(.win
 pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 pub extern "kernel32" fn GetModuleFileNameW(?*anyopaque, [*]u16, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn WaitForSingleObject(HANDLE, DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn CreateMutexW(?*anyopaque, BOOL, LPCWSTR) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn ReleaseMutex(HANDLE) callconv(.winapi) BOOL;
 pub const THREAD_START_ROUTINE = *const fn (?*anyopaque) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateThread(?*anyopaque, usize, THREAD_START_ROUTINE, ?*anyopaque, DWORD, ?*DWORD) callconv(.winapi) ?HANDLE;
 pub const STARTF_USEPOSITION = 0x00000004;
