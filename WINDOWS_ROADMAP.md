@@ -112,7 +112,7 @@ apply to all new code:
 |---|---|---|
 | **S1** overlay host, 1 day | Does a child window drawn over a WGL child window stay clean (no flicker, no stale pixels) while output floods and during live resize, on two GPU vendors? | Where text and interactive overlays live (3.0) |
 | **S2** transparency, 1 to 2 days, run before 3.0 | Does DWM honor per-pixel alpha from child GL windows when the top level uses `DwmEnableBlurBehindWindow` with an empty region? | Transparency path: cheap (4.1 A) or DirectComposition with `WGL_NV_DX_interop2` (4.1 B, XL). Also whether text overlays (3.0) and the tab strip (3.8, 4.3) can stay GDI, or must become composition visuals, since GDI output does not show on a Phase B window. |
-| **S3** ConPTY, 1 day | Does the inbox ConPTY forward OSC 133, OSC 7, OSC 9;9 and DECSCUSR, in order, on Windows 10 22H2 and Windows 11 23H2 to 25H2? | Whether to bundle `conpty.dll` and `OpenConsole.exe` (2.2) |
+| **S3** ConPTY, 1 day | Does the inbox ConPTY forward OSC 133, OSC 7, OSC 9;9 and DECSCUSR, in order, on Windows 10 22H2 and Windows 11 23H2 to 25H2? | Whether to bundle `conpty.dll` and `OpenConsole.exe` (2.2). *Run 2026-10-25 on Windows 11 25H2 (build 26200), inbox ConPTY, flags 0 as Ghostty uses:* a child writing text markers with each sequence between them (via cmd `type`, pwsh 7 and Windows PowerShell 5.1) got all of them through: OSC 133 A, B (ST-terminated), C and D;0, OSC 7, OSC 9;9 and DECSCUSR. The OSC 133 marks keep their place in the text; OSC 7, OSC 9;9 and DECSCUSR can arrive ahead of text written before them, which doesn't matter for them. OSC 2 is absorbed and re-sent as OSC 0. Flag 0x8 (passthrough) changed nothing. So no bundling for Windows 11; Windows 10 22H2 and 23H2/24H2 not yet run (the probe needs `STARTF_USESTDHANDLES` with null handles, as `Command.zig` passes, or the child writes to the parent's handles). |
 | **S4** many contexts, part of 1.4 | 16 panes, each flooding output: steady frames, no stale-frame recurrence, linear memory, on two vendors | Whether per-pane contexts scale. *Run 2026-10-24 on NVIDIA (RTX 2070), scenario `stress-panes`:* every pane kept presenting (1,030 to 1,210 frames each in 13 s, Debug build); memory flat while flooding; per added pane 4 threads, 31 MB resident, 90 MB committed, 64 MB of it Zig's thread stacks (0.15). They scale. AMD and Intel not yet run. *Re-run 2026-10-25 at the end of Phase 1 (15 panes dimmed by 1.7's overlay):* the slowest pane presented 994 frames in 13 s; memory per pane unchanged, and 49 MB of growth in 15 s of flooding (scrollback). |
 | **S5** reparenting, part of 4.5 | Does a GL child window keep rendering after `SetParent` to another top-level window, on NVIDIA, AMD and Intel? | Tab tear-off design |
 | **S6** OpenGL elsewhere, 1 day | What does Microsoft's OpenGL compatibility pack expose on Snapdragon X and in VMs: 4.3 core with fragment SSBOs and sRGB framebuffers? | ARM64 (7.7) and software fallback (6.3) |
@@ -760,7 +760,9 @@ installed.
 
 ## Phase 3: Core Ghostty UI (about 6 to 7 weeks)
 
-The overlays and menus users meet every day.
+The overlays and menus users meet every day. Notes marked *GTK, observed*
+come from running upstream's GTK app (`main` of 2026-10-14) under WSL on
+2026-10-25 and driving every menu, overlay and dialog.
 
 **3.0 Foundations, M.** Builds on 0.0 (the modal scope, TaskDialog, OLE) and
 waits for spikes S1 and S2.
@@ -790,8 +792,10 @@ result (`Surface.zig:686-690`). When a right press is not consumed, open
 GTK's menu:
 - Copy and Paste (grayed when unavailable), Notify on Next Command Finish
   (grayed until 5.3), Clear, Reset.
-- Submenus: Split (Split Up, Down, Left, Right, Close Split), Tab, Window,
-  Config.
+- Submenus: Split (Change Title… for the pane, then Split Up, Down, Left,
+  Right, Close Split), Tab and Window (each Change Title…, New, Close), and
+  Config (Open Configuration in OS Editor, Open Configuration in New Window,
+  Reload Configuration). Every item shows its binding (*GTK, observed*).
 
 Run it in a modal scope that leaves other windows enabled
 (`disable_others = false`) and use dark menus where available. Open it only
@@ -817,6 +821,11 @@ a counter, and `search_selection` prefills it.
   terminal" entry per surface.
 - Fuzzy matching, keyboard navigation. Actions run after the palette hides,
   never from inside its window procedure.
+- *GTK, observed:* modal, dimming the window behind; each row shows the
+  title with the action name beneath (`prompt_tab_title`) and the binding as
+  keycaps; entries the runtime can't perform are hidden. Its per-terminal
+  rows read only "Focus: <title>", so terminals with the same title look
+  alike: add the tab and window number.
 
 Remove 0.2's override for `Ctrl+Shift+P`. *Done when:* the palette filters,
 runs actions, and jumps to terminals in other windows.
@@ -849,15 +858,18 @@ clearing the name restores the program's title.
 - the child-exited banner (`show_child_exited`);
 - a renderer-unhealthy panel (`renderer_health`);
 - in-app toasts (`app-notifications`: "Copied to clipboard" and "Reloaded the
-  configuration", both on by default), a bottom-center pill for about 3 s.
-  Update the option's documentation, which says it applies only to GTK.
+  configuration", both on by default), a bottom-center pill for about 3 s
+  with a close button; copying an empty selection shows "Cleared clipboard"
+  (*GTK, observed*). Update the option's documentation, which says it
+  applies only to GTK.
 
 *Done when:* each appears and hides under the same conditions as on GTK.
 
 **3.7 Bell, M.** Implement the `title`, `audio` and `border` bell features
 with per-pane ringing state, cleared on focus or input. `title` is in the
 default `bell-features`, so its part (S) is in M1; audio and border are M2.
-- `title`: a bell glyph on the tab and caption.
+- `title`: a bell glyph on the tab and caption, and an attention marker on
+  a background tab (GTK underlines it, *observed*).
 - `audio`: Media Foundation playback with `bell-audio-volume`, or `PlaySoundW`
   as a first cut.
 - `border`: a border overlay.
@@ -867,23 +879,36 @@ file plays at the configured volume.
 
 **3.8 Tab bar, M to L.**
 - Right-click menu: Rename, Close, Close Others, Close to the Right, Move to
-  New Window.
-- Overflow: chevrons, wheel scrolling and a tab list. That list also serves
-  `toggle_tab_overview` when `window-show-tab-bar = never`.
-- Tooltips with full titles, `window-title-font-family`,
-  `window-new-tab-position`, a small icon for high DPI, and the progress and
-  read-only indicators (the bell glyph comes from 3.7, the zoom magnifier from
-  Phase 1).
+  New Window. *Decided 2026-10-25:* kept, though GTK's offers only Change Tab
+  Title (*observed*): Windows users expect the fuller menu, and each item is
+  an existing action.
+- Overflow: wheel scrolling (with chevrons) and a tab list with a filter box,
+  opened from a list button that is always visible. That list also serves
+  `toggle_tab_overview`, including with `window-show-tab-bar = never`.
+  *Decided 2026-10-25:* a list, not GTK's overview of live thumbnails with a
+  search box (*observed*), which would need a snapshot of every pane.
+- Tooltips with the title and, once Phase 2 reports it, the working
+  directory (*decided 2026-10-25*; GTK's tooltip shows only the directory,
+  *observed*). Also `window-title-font-family`, `window-new-tab-position`, a
+  small icon for high DPI, and the progress and read-only indicators (the
+  bell glyph comes from 3.7, the zoom magnifier from Phase 1).
 - The affordances GTK's header bar shows by default: a menu button at the
-  right of the strip opening the main menu (the same items as the system
-  menu), a tab-list button, and a dropdown on `+` with Split Right, Down, Left
-  and Up once Phase 1 lands.
+  right of the strip opening the main menu, the list button, and a dropdown
+  on `+` with Split Up, Down, Left and Right. GTK's main menu (*observed*):
+  Copy, Paste; Change Window Title…, New Window, Close Window; Change Tab
+  Title…, New Tab, Close Tab; Split ▸; Clear, Reset; Command Palette,
+  Terminal Inspector, Config ▸; About Ghostty, Quit. The system menu gets the
+  same items.
 
 *Done when:* 40 tabs are all reachable, right-click Close Others works, and
 the menu button and `+` dropdown work.
 
 **3.9 Dialog polish, S.**
-- Replace `MessageBox` confirmations with TaskDialogs.
+- Replace `MessageBox` confirmations with TaskDialogs, worded as GTK's
+  (*observed*): "Close Tab?" / "All terminal sessions in this tab will be
+  terminated." with Cancel and a destructive Close; the rename prompt
+  "Change Tab Title" / "Leave blank to restore the default title." with the
+  current title selected.
 - Make the clipboard dialog show the full text in a scrollable monospace box,
   default to Deny, and offer "remember for this terminal" (GTK parity).
 - Add Ghostty items and About to the system menu (`Alt+Space`). The system
