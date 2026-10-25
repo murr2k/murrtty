@@ -506,8 +506,13 @@ pub fn performAllAction(
         ),
 
         // Surface-scoped actions are performed on all surfaces. Errors
-        // are logged but processing continues.
-        .surface => for (self.surfaces.items) |surface| {
+        // are logged but processing continues. The list is indexed afresh
+        // each time round: an action can add a surface (new_split, or
+        // new_tab, on a runtime that creates it at once), and growing the
+        // list can move it. The surfaces added aren't visited.
+        .surface => for (0..self.surfaces.items.len) |i| {
+            if (i >= self.surfaces.items.len) break;
+            const surface = self.surfaces.items[i];
             _ = surface.core().performBindingAction(action) catch |err| {
                 log.warn("error performing binding action on surface id={x} err={}", .{
                     surface.core().id,
