@@ -6912,6 +6912,22 @@ pub const Keybinds = struct {
                 .{ .goto_split = .next },
                 .{ .performable = true },
             );
+            // Windows can hold Win+Ctrl+[ and ] as system hotkeys, which
+            // never reach Ghostty; these are also kitty's.
+            if (comptime builtin.target.os.tag == .windows) {
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .unicode = '[' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .goto_split = .previous },
+                    .{ .performable = true },
+                );
+                try self.set.putFlags(
+                    alloc,
+                    .{ .key = .{ .unicode = ']' }, .mods = .{ .ctrl = true, .shift = true } },
+                    .{ .goto_split = .next },
+                    .{ .performable = true },
+                );
+            }
             try self.set.putFlags(
                 alloc,
                 .{ .key = .{ .physical = .arrow_up }, .mods = .{ .ctrl = true, .alt = true } },
@@ -10772,6 +10788,22 @@ test "windows: defaults for actions the runtime lacks are performable" {
             inline .leaf, .leaf_chained => |*l| l.generic(),
         };
         try testing.expect(!leaf.flags.performable);
+    }
+
+    // Ctrl+Shift+[ and ] stand in for Win+Ctrl+[ and ], which Windows can
+    // hold; performable, as those are, so with one pane they reach programs.
+    for ([_]struct { u21, inputpkg.Binding.Action.SplitFocusDirection }{
+        .{ '[', .previous },
+        .{ ']', .next },
+    }) |case| {
+        const entry = config.keybind.set.get(.{ .key = .{ .unicode = case[0] }, .mods = ctrl_shift }) orelse
+            return error.TestUnexpectedResult;
+        const leaf = switch (entry.value_ptr.*) {
+            .leaf => |l| l,
+            else => return error.TestUnexpectedResult,
+        };
+        try testing.expect(leaf.flags.performable);
+        try testing.expect(leaf.action == .goto_split and leaf.action.goto_split == case[1]);
     }
 }
 

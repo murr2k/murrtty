@@ -43,10 +43,12 @@ These change the work. Each has a recommendation.
    then arrive in about two and a half weeks, and DirectComposition (4.1,
    Phase B) can still give each pane its own visual later.
 2. **`Ctrl+Shift+W`.** Upstream's non-macOS defaults bind it to
-   `close_surface` and then rebind it to `close_tab` (`Config.zig:6832-6856`),
+   `close_surface` and then rebind it to `close_tab` (`Config.zig:6844-6868`),
    so Windows and Linux have no default key that closes one pane. *Recommended:
    keep upstream's behavior and document `keybind = ctrl+shift+w=close_surface`
-   for users who want Windows Terminal semantics.*
+   for users who want Windows Terminal semantics.* *Decided 2026-10-25 (1.9):
+   as recommended; the README documents the keybinding, and the
+   `split-commands` scenario closes a pane with it.*
 3. **Default shell.** Upstream uses `cmd.exe`. *Recommended: PowerShell 7 when
    installed, else cmd* (2.5). It is what Windows users run, and Phase 2 gives
    it shell integration.
@@ -584,7 +586,8 @@ pane adds under 40 MB of commit.
 
 ## Phase 1: Splits (about 2.5 weeks, plus 1.10 in M2)
 
-The full design is below; the steps land one at a time. Upstream's generic
+The full design is below; the steps land one at a time. Steps 1.1 to 1.9 are
+done (2026-10-25); 1.10 is part of M2. Upstream's generic
 split tree (`src/datastruct/split_tree.zig`) already compiles for Windows and
 provides every operation (split, remove, equalize, resize, in-place ratio
 drag, zoom, wrapped and spatial navigation), so the work is in the Win32
@@ -657,7 +660,7 @@ runtime plus the WGL present path (1.7).
 | 1.6 | Mouse: divider hover cursors, drag, Esc, double-click equalize, window minimum from the tree. *Done 2026-10-25:* a pane answers `WM_NCHITTEST` with `HTTRANSPARENT` in its margin on a side that borders a divider (the padding before the first cell or what the grid leaves after the last, never a cell), so the container gets the mouse there and on the line; Esc reaches the drag through the focused pane, since a drag never moves the focus; the window's minimum is the largest of its tabs' tree minimums. The `split-mouse` scenario checks a drag landing on the pixel, Esc, double-click and the grip band's hit-testing. | M |
 | 1.7 | Renderer: a rectangle list drawn in 0.3's present pass, written by the UI thread and read by the render thread. The dim overlay is its first user; 3.0's shape overlays reuse it. *Done 2026-10-25:* `OpenGL.setOverlay` (up to 16 rectangles, under a mutex) and a solid-color pass after the frame, premultiplied, with sRGB writes off; a pane that changes its dimming forces a frame (as the tests' probe does). `Tab.syncDim` runs whenever the focused pane, the panes, the colors or the config change. The `split-dim` scenario reads back a dimmed pane's background (half red over `#282c34`, within one step) and the focused pane's, before and after a click moves the focus. | M |
 | 1.8 | `focus-follows-mouse`, deduplicated on screen position so a relayout under a still cursor does not move focus. *Done 2026-10-25:* a pane's `WM_MOUSEMOVE` maps its own client point to the screen and compares it with the last one seen over any pane (not `GetCursorPos`, so posted test moves count as moves); it focuses the pane only in the active window and with no button held. The `focus-follows-mouse` scenario checks moves focusing each pane, a divider moving the pane under a still cursor (no focus change), and a pane of an inactive window (neither focused nor activated). | S |
-| 1.9 | Defaults and docs: check whether the Windows shell or graphics-driver hotkeys intercept the defaults (`ctrl+super+[`, `super+ctrl+shift+arrows`, and `ctrl+alt+arrows`, which some Intel drivers use for screen rotation) and add fallbacks if so; record decision 2; update the README. | S |
+| 1.9 | Defaults and docs: check whether the Windows shell or graphics-driver hotkeys intercept the defaults (`ctrl+super+[`, `super+ctrl+shift+arrows`, and `ctrl+alt+arrows`, which some Intel drivers use for screen rotation) and add fallbacks if so; record decision 2; update the README. *Done 2026-10-25:* checked with `RegisterHotKey` on the Windows 11 desktop, which fails for a combination another program holds (Explorer's `Win+E` as the control): `Win+Ctrl+[` and `]` are held (alongside Explorer's `Win+Ctrl` digits, `C`, `D`, `O`, `V`), so Windows gets `Ctrl+Shift+[`/`]` for `goto_split:previous`/`next` (kitty's keys) in addition to upstream's, performable as those are. `Win+Ctrl+Shift+arrows`, `Ctrl+Alt+arrows` and Ghostty's other split keys are free there. Intel's rotation hotkeys could not be checked (no Intel GPU); the README says how to turn them off. A probe only sees hotkeys registered with `RegisterHotKey`, not keyboard hooks, and no real key presses were sent (they would reach the owner's foreground window). | S |
 | 1.10 | In M2: drag panes between drop zones and between tabs, with the per-pane handle from `drag-handle` (default `auto`: shown when the tab is split, as on GTK; macOS shows it on hover instead). M1 ships without it. | L |
 
 New-split working-directory inheritance needs 2.1 plus a source of reports:

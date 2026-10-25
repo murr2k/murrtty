@@ -75,13 +75,16 @@ hosted Windows runner and then the unit tests.
 - Tabs: a tab strip themed from your terminal colors, new tab (the `+`
   button or a keybinding), switching tabs (clicking or a keybinding), and
   closing a tab (its close button, a middle-click or a keybinding).
-- Splits, so far: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane
-  right and down, panes close with their shell or `Ctrl+Shift+W` (the last
-  one closes the tab), and the tab shows the focused pane's title.
-  `goto_split` (`Ctrl+Alt+arrows`), `toggle_split_zoom`
-  (`Ctrl+Shift+Enter`, with a magnifier on the tab), `resize_split` and
-  `equalize_splits` work, dividers can be dragged with the mouse (Esc
-  cancels a drag, a double-click equalizes), unfocused panes are dimmed
+- Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
+  and down, a pane closes with its shell (the last one closes the tab), and
+  the tab shows the focused pane's title. `Ctrl+Shift+W` closes the whole
+  tab, as in upstream's defaults; add `keybind = ctrl+shift+w=close_surface`
+  to close just the focused pane, as Windows Terminal does. `goto_split`
+  (`Ctrl+Alt+arrows`, and `Ctrl+Shift+[`/`]` for the previous and next
+  pane), `toggle_split_zoom` (`Ctrl+Shift+Enter`, with a magnifier on the
+  tab), `resize_split` (`Ctrl+Shift+Win+arrows`) and `equalize_splits`
+  work, dividers can be dragged with the mouse (Esc cancels a drag, a
+  double-click equalizes), unfocused panes are dimmed
   (`unfocused-split-opacity`, `unfocused-split-fill`), and
   `focus-follows-mouse` focuses the pane under the mouse.
 - Close confirmations. `cmd.exe` and PowerShell don't mark their prompts, so
@@ -137,11 +140,12 @@ hosted Windows runner and then the unit tests.
 - Transparency: with `background-opacity` the window stays opaque and shows
   the background color as configured. Also background blur and the
   `window-decoration` options.
-- Dragging tabs with the mouse, and moving a tab to a new window.
+- Dragging tabs with the mouse, and moving a tab to a new window. Dragging
+  panes to rearrange splits.
 - Sending commands to an already running instance (`ghostty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the rest of splits.
+with shell integration and the working directory (Phase 2).
 
 **Known issues**
 
@@ -261,7 +265,12 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
 - **Keybindings** are Ghostty's defaults for non-macOS platforms, for example
   `Ctrl+Shift+C`/`Ctrl+Shift+V` to copy and paste, `Ctrl+Shift+T` for a new
   tab, `Ctrl+Shift+W` to close it, and `Ctrl+Tab` or `Ctrl+PgUp`/`Ctrl+PgDn` to
-  switch tabs. `ghostty +list-keybinds` prints them all.
+  switch tabs. `ghostty +list-keybinds` prints them all. One addition:
+  `Ctrl+Shift+[`/`]` go to the previous and next pane, because Windows can
+  hold upstream's `Ctrl+Win+[`/`]` as system hotkeys, which then never reach
+  Ghostty. Some Intel graphics drivers rotate the screen on
+  `Ctrl+Alt+arrows`; if yours does, turn its hotkeys off in Intel Graphics
+  Command Center (System, Hotkeys) or bind `goto_split` to other keys.
 - **Mouse.** Middle-click doesn't paste by default: the default
   `middle-click-action = primary-paste` uses the selection clipboard of Linux,
   which Windows doesn't have. Set `middle-click-action = clipboard-paste` to

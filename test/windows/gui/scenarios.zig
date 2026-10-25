@@ -1223,7 +1223,8 @@ fn paneCount(h: *Harness, g: *Harness.Ghostty) !usize {
     return if (dw.tabs[dw.active].panes) |p| p.len else 0;
 }
 
-/// goto_split (wrapping previous/next and a direction), toggle_split_zoom
+/// goto_split (wrapping previous/next, also on Windows's Ctrl+Shift+[ and ],
+/// and a direction), toggle_split_zoom
 /// (the zoomed pane fills the tab, the others are hidden and stop drawing
 /// while their output still arrives), moving to another pane ending the
 /// zoom, resize_split (stepping from where the divider is drawn) and
@@ -1248,6 +1249,7 @@ fn splitCommands(h: *Harness) anyerror!void {
         \\keybind = ctrl+shift+f6=resize_split:left,4000
         \\keybind = ctrl+shift+f7=resize_split:right,20
         \\keybind = ctrl+shift+f8=increase_font_size:4
+        \\keybind = ctrl+shift+w=close_surface
         \\
     , ">");
     defer g.deinit();
@@ -1278,6 +1280,11 @@ fn splitCommands(h: *Harness) anyerror!void {
     try expectFocus(h, &g, win, cc, "back to C");
     h.key(cc, cs, f3);
     try expectFocus(h, &g, win, a, "left from C: A");
+    // Windows's own defaults for next and previous: Ctrl+Shift+] and [.
+    h.key(a, cs, 0xDD);
+    try expectFocus(h, &g, win, b, "Ctrl+Shift+] (next) from A: B");
+    h.key(b, cs, 0xDB);
+    try expectFocus(h, &g, win, a, "Ctrl+Shift+[ (previous) from B: A");
 
     // B gets output once a second; then A is zoomed.
     try h.typeText(b, "ping -n 30 127.0.0.1");
@@ -1374,16 +1381,15 @@ fn splitCommands(h: *Harness) anyerror!void {
     try expectMinimumWidth(h, &g, 0, "at a larger font, A keeps its minimum");
 
     // A zoom on a pane that becomes the tab's last ends with the split.
+    // B goes with the README's keybinding for closing one pane, which asks
+    // first (its shell is running).
     h.key(a, cs, w.VK_RETURN);
     w.Sleep(500);
     try h.typeText(cc, "exit");
     h.enter(cc);
     try waitPanes(h, &g, 2);
-    // B may still be pinging.
-    h.key(b, .{ .ctrl = true }, 'C');
-    w.Sleep(500);
-    try h.typeText(b, "exit");
-    h.enter(b);
+    h.key(b, cs, 'W');
+    h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
     try waitPanes(h, &g, 1);
     w.Sleep(300);
     {
