@@ -435,6 +435,7 @@ pub extern "user32" fn SetWindowLongPtrW(HWND, c_int, isize) callconv(.winapi) i
 pub extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.winapi) isize;
 pub extern "user32" fn GetClientRect(HWND, *RECT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetWindowRect(HWND, *RECT) callconv(.winapi) BOOL;
+pub extern "user32" fn MapWindowPoints(?HWND, ?HWND, [*]POINT, UINT) callconv(.winapi) c_int;
 pub extern "user32" fn SetWindowPos(HWND, ?HWND, c_int, c_int, c_int, c_int, UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn MoveWindow(HWND, c_int, c_int, c_int, c_int, BOOL) callconv(.winapi) BOOL;
 pub extern "user32" fn SetWindowTextW(HWND, LPCWSTR) callconv(.winapi) BOOL;

@@ -166,6 +166,20 @@ pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 pub extern "kernel32" fn GetModuleFileNameW(?*anyopaque, [*]u16, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn WaitForSingleObject(HANDLE, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateMutexW(?*anyopaque, BOOL, LPCWSTR) callconv(.winapi) ?HANDLE;
+pub const PROCESS_MEMORY_COUNTERS = extern struct {
+    cb: DWORD = @sizeOf(PROCESS_MEMORY_COUNTERS),
+    PageFaultCount: DWORD = 0,
+    PeakWorkingSetSize: usize = 0,
+    WorkingSetSize: usize = 0,
+    QuotaPeakPagedPoolUsage: usize = 0,
+    QuotaPagedPoolUsage: usize = 0,
+    QuotaPeakNonPagedPoolUsage: usize = 0,
+    QuotaNonPagedPoolUsage: usize = 0,
+    /// Private committed bytes.
+    PagefileUsage: usize = 0,
+    PeakPagefileUsage: usize = 0,
+};
+pub extern "kernel32" fn K32GetProcessMemoryInfo(HANDLE, *PROCESS_MEMORY_COUNTERS, DWORD) callconv(.winapi) BOOL;
 pub extern "kernel32" fn ReleaseMutex(HANDLE) callconv(.winapi) BOOL;
 pub const THREAD_START_ROUTINE = *const fn (?*anyopaque) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateThread(?*anyopaque, usize, THREAD_START_ROUTINE, ?*anyopaque, DWORD, ?*DWORD) callconv(.winapi) ?HANDLE;

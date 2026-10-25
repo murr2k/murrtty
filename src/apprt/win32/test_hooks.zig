@@ -20,6 +20,7 @@ const Allocator = std.mem.Allocator;
 const c = @import("c.zig");
 const global = @import("../../global.zig");
 const App = @import("App.zig");
+const Tab = @import("Tab.zig");
 
 const log = std.log.scoped(.win32_test_hooks);
 
@@ -214,6 +215,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 defer alloc.free(text);
                 try writeString(alloc, out, text);
             }
+            try writePanes(alloc, out, tab);
             try out.append(alloc, '}');
         }
         try out.appendSlice(alloc, "]}");
@@ -224,6 +226,56 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try writeString(alloc, out, l);
     }
     try out.appendSlice(alloc, "]}");
+}
+
+/// A tab's panes in layout order (left to right, top to bottom, as the
+/// tree nests them), where their windows really are in the tab's
+/// container, and its dividers as the layout places them.
+fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
+    const area = tab.area();
+    var layout = try Tab.Layout.compute(alloc, &tab.tree, area, tab.dividerWidth());
+    defer layout.deinit(alloc);
+    try out.print(alloc, ",\"area\":[{d},{d}],\"panes\":[", .{ area.right, area.bottom });
+    for (layout.panes, 0..) |pane, i| {
+        const s = pane.view;
+        if (i > 0) try out.append(alloc, ',');
+        var r: c.RECT = .{};
+        _ = c.GetClientRect(s.hwnd, &r);
+        var corners = [2]c.POINT{ .{ .x = r.left, .y = r.top }, .{ .x = r.right, .y = r.bottom } };
+        _ = c.MapWindowPoints(s.hwnd, tab.hwnd, &corners, 2);
+        try out.print(alloc, "{{\"hwnd\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
+            @intFromPtr(s.hwnd),
+            corners[0].x,
+            corners[0].y,
+            corners[1].x,
+            corners[1].y,
+            tab.focused == s,
+            c.IsWindowVisible(s.hwnd) != 0,
+        });
+        if (s.core_initialized) {
+            const grid = s.core_surface.size.grid();
+            try out.print(alloc, ",\"core_focused\":{},\"frames\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
+                s.core_surface.focused,
+                s.core_surface.renderer.api.wgl_state.frames.load(.monotonic),
+                grid.columns,
+                grid.rows,
+            });
+            const text = text: {
+                s.core_surface.renderer_state.mutex.lockUncancelable(global.io());
+                defer s.core_surface.renderer_state.mutex.unlock(global.io());
+                break :text try s.core_surface.io.terminal.plainString(alloc);
+            };
+            defer alloc.free(text);
+            try writeString(alloc, out, text);
+        }
+        try out.append(alloc, '}');
+    }
+    try out.appendSlice(alloc, "],\"dividers\":[");
+    for (layout.splits, 0..) |sp, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.print(alloc, "[{d},{d},{d},{d}]", .{ sp.divider.left, sp.divider.top, sp.divider.right, sp.divider.bottom });
+    }
+    try out.append(alloc, ']');
 }
 
 /// A JSON string literal. Invalid UTF-8 passes through unchanged; the

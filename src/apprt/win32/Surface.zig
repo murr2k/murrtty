@@ -17,6 +17,7 @@ const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
 const key = @import("key.zig");
+const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
 const Window = @import("Window.zig");
 const test_hooks = @import("test_hooks.zig");
@@ -51,6 +52,10 @@ colors: Colors = .{ .bg = .{ .r = 0, .g = 0, .b = 0 }, .fg = .{ .r = 255, .g = 2
 
 content_scale: apprt.ContentScale = .{ .x = 1, .y = 1 },
 size: apprt.SurfaceSize = .{ .width = 0, .height = 0 },
+
+/// The core's size limits for this pane (its minimum grid plus padding),
+/// in pixels, once it has sent them.
+size_limit: ?apprt.action.SizeLimit = null,
 cursor_pos: apprt.CursorPos = .{ .x = -1, .y = -1 },
 
 /// Mouse state.
@@ -190,6 +195,15 @@ pub fn unref(self: *Surface) void {
 
 pub fn eql(a: *const Surface, b: *const Surface) bool {
     return a == b;
+}
+
+/// The smallest the pane may be laid out (split_layout's view interface).
+pub fn layoutMin(self: *const Surface) split_layout.Size {
+    const limit = self.size_limit orelse return .{};
+    return .{
+        .width = @intCast(@min(limit.min_width, std.math.maxInt(u16))),
+        .height = @intCast(@min(limit.min_height, std.math.maxInt(u16))),
+    };
 }
 
 /// Tear down the core surface. The window itself is destroyed along
@@ -605,6 +619,8 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             if (self.has_focus and self.core_initialized) {
                 self.app.core_app.focusSurface(&self.core_surface);
             }
+            // The tab's focused pane, whose title and colors it shows.
+            if (self.has_focus) self.window.surfaceFocused(self);
             self.queueFocus();
             return 0;
         },

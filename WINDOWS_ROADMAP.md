@@ -111,7 +111,7 @@ apply to all new code:
 | **S1** overlay host, 1 day | Does a child window drawn over a WGL child window stay clean (no flicker, no stale pixels) while output floods and during live resize, on two GPU vendors? | Where text and interactive overlays live (3.0) |
 | **S2** transparency, 1 to 2 days, run before 3.0 | Does DWM honor per-pixel alpha from child GL windows when the top level uses `DwmEnableBlurBehindWindow` with an empty region? | Transparency path: cheap (4.1 A) or DirectComposition with `WGL_NV_DX_interop2` (4.1 B, XL). Also whether text overlays (3.0) and the tab strip (3.8, 4.3) can stay GDI, or must become composition visuals, since GDI output does not show on a Phase B window. |
 | **S3** ConPTY, 1 day | Does the inbox ConPTY forward OSC 133, OSC 7, OSC 9;9 and DECSCUSR, in order, on Windows 10 22H2 and Windows 11 23H2 to 25H2? | Whether to bundle `conpty.dll` and `OpenConsole.exe` (2.2) |
-| **S4** many contexts, part of 1.4 | 16 panes, each flooding output: steady frames, no stale-frame recurrence, linear memory, on two vendors | Whether per-pane contexts scale |
+| **S4** many contexts, part of 1.4 | 16 panes, each flooding output: steady frames, no stale-frame recurrence, linear memory, on two vendors | Whether per-pane contexts scale. *Run 2026-10-24 on NVIDIA (RTX 2070), scenario `stress-panes`:* every pane kept presenting (1,030 to 1,210 frames each in 13 s, Debug build); memory flat while flooding; per added pane 4 threads, 31 MB resident, 90 MB committed, 64 MB of it Zig's thread stacks (0.15). They scale. AMD and Intel not yet run. |
 | **S5** reparenting, part of 4.5 | Does a GL child window keep rendering after `SetParent` to another top-level window, on NVIDIA, AMD and Intel? | Tab tear-off design |
 | **S6** OpenGL elsewhere, 1 day | What does Microsoft's OpenGL compatibility pack expose on Snapdragon X and in VMs: 4.3 core with fragment SSBOs and sRGB framebuffers? | ARM64 (7.7) and software fallback (6.3) |
 
@@ -568,6 +568,18 @@ each for some `Terminal`, `Screen` and search tests, 10 minutes for the
 suite), likely the Debug testing allocator; that is CI time, not app
 speed, and is worth a look before 7.2.
 
+**0.15 Thread stack commit, S.** *Found 2026-10-24 in S4; not yet
+scheduled.* Every pane (and so every tab) starts four threads: the renderer,
+termio's IO thread, the pty reader and one more. Zig 0.17's `std.Thread` on
+Windows passes its stack size, 16 MB by default, to `NtCreateThreadEx` as the
+stack's commit size rather than a reservation, so each thread commits 16 MB
+up front: 64 MB of the 90 MB each pane adds to the commit charge, though only
+31 MB of a pane is resident. Many panes or tabs on a machine with a small
+page file can hit the commit limit. Pass a smaller `stack_size` for the
+per-surface threads on Windows (measure the deepest stacks first: shaping,
+parsing, image decoding), or fix the reservation in Zig. *Done when:* a
+pane adds under 40 MB of commit.
+
 ---
 
 ## Phase 1: Splits (about 2.5 weeks, plus 1.10 in M2)
@@ -640,7 +652,7 @@ runtime plus the WGL present path (1.7).
 | 1.1 | Focus plumbing: deferred core focus callback; `SetFocus` only in the active window. Fixes focus theft by closing a tab in a background window. *Done 2026-10-24:* surfaces tell the core from a posted `WM_FOCUS_CHANGED` (coalesced, and repeated once the core surface exists); `present_terminal`, activation and the window's own focus still focus unconditionally. The `background-close` scenario failed before (the background window became active) and passes now. | S |
 | 1.2 | Tab refactor: `Tab.zig` with a one-leaf tree and a container window; every surface iteration site switches to tabs. No visible change; the full tab test set passes. *Done 2026-10-24:* `Window.tabs`, `Window.panes()` for every pane, `closeSurface` (closes the pane's tab until 1.4) and `removeTab`; the dump still lists each tab as its focused pane. All 19 GUI scenarios pass unchanged. | M |
 | 1.3 | `split_layout.zig` with unit tests: tiling, minimums, zoom, hit-testing, drag ratios, resize deltas, focus after close. *Done 2026-10-24:* `Layout(View)` over any split tree whose view has `layoutMin()`; 9 unit tests, including exact tiling at several sizes and divider widths, drags landing within a pixel, and `SplitTree.resize` moving a divider by the requested pixels (its delta is a fraction of the whole tree, not of the split). | M |
-| 1.4 | Basic splits: `new_split`, closing panes through the queue (confirm per pane, last pane closes the tab), divider painting, titles from the focused pane, per-pane `size_limit`, `resize_window` refusals and monitor clamping (the multi-tab, maximized and fullscreen refusals fix a current bug and can land early). Removes 0.2's override for `Ctrl+Shift+O`/`E`. Includes the S4 stress run. | M |
+| 1.4 | Basic splits: `new_split`, closing panes through the queue (confirm per pane, last pane closes the tab), divider painting, titles from the focused pane, per-pane `size_limit`, `resize_window` refusals and monitor clamping (the multi-tab, maximized and fullscreen refusals fix a current bug and can land early). Removes 0.2's override for `Ctrl+Shift+O`/`E`. Includes the S4 stress run. *Done 2026-10-24:* a new pane is created at the rectangle a trial layout gives it; closing the focused pane focuses the one before it, else after it; a background pane's close leaves the focus alone. The dump lists each tab's panes (layout order, real window rectangles) and dividers; the `splits` scenario checks exact tiling, focus (window, keyboard and core) and both close rules; S4 in `stress-panes`. `resize_window` can't be reached through ConPTY, so its refusals are untested. | M |
 | 1.5 | Navigation and commands: `goto_split`, zoom, equalize, `resize_split`, `split-preserve-zoom`, `present_terminal`. Removes 0.2's override for `Ctrl+Shift+Enter`. | S to M |
 | 1.6 | Mouse: divider hover cursors, drag, Esc, double-click equalize, window minimum from the tree. | M |
 | 1.7 | Renderer: a rectangle list drawn in 0.3's present pass, written by the UI thread and read by the render thread. The dim overlay is its first user; 3.0's shape overlays reuse it. | M |

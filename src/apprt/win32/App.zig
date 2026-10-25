@@ -1043,12 +1043,21 @@ pub fn performAction(
 
         .resize_window => {
             const window = windowFromTarget(target) orelse return false;
-            window.setClientSize(value.width, value.height);
+            return window.resizeFromTerminal(value.width, value.height);
         },
 
         .size_limit => {
-            const window = windowFromTarget(target) orelse return false;
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.size_limit = value;
+            const window = surface.window;
             window.size_limit = value;
+            // The pane's minimum changed (font size): lay its tab out again.
+            if (window.tabIndexOf(surface)) |i| window.tabs.items[i].layoutPanes();
+        },
+
+        .new_split => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            try surface.window.newSplit(surface, value);
         },
 
         .present_terminal => {

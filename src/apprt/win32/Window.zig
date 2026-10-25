@@ -147,9 +147,63 @@ pub fn closeSurface(self: *Window, surface: *Surface, confirm: bool) void {
         "Ghostty: Close Tab",
     )) return;
 
-    // Until splits land every tab has one pane, so this closes its tab.
     const index = self.tabIndexOf(surface) orelse return;
-    _ = self.removeTab(index);
+    const tab = self.tabs.items[index];
+    if (!tab.tree.isSplit()) {
+        _ = self.removeTab(index);
+        return;
+    }
+
+    // Closing a background pane leaves the focus alone; the focused pane's
+    // passes to its neighbor.
+    const refocus = tab.closePane(surface) catch |err| {
+        log.err("error closing pane err={}", .{err});
+        return;
+    };
+    if (refocus and index == self.active) {
+        self.focusActive();
+        self.syncTitle();
+        self.applyChrome();
+    }
+    self.invalidateTabBar();
+}
+
+/// Split `surface`'s pane for the new_split action: the new pane opens
+/// `direction` of it and takes the focus. Runs inside a core callback,
+/// which is fine for creating a pane (the core's focus change is deferred).
+pub fn newSplit(self: *Window, surface: *Surface, direction: apprt.action.SplitDirection) !void {
+    const index = self.tabIndexOf(surface) orelse return error.PaneNotFound;
+    const tab = self.tabs.items[index];
+    const pane = try tab.newSplit(surface, direction, &surface.core_surface);
+    tab.focused = pane;
+    if (index == self.active) {
+        self.focusActive();
+        self.syncTitle();
+        self.applyChrome();
+    }
+    self.invalidateTabBar();
+}
+
+/// A pane got the keyboard focus: it becomes its tab's focused pane, whose
+/// title and colors the tab and the window show.
+pub fn surfaceFocused(self: *Window, surface: *Surface) void {
+    const index = self.tabIndexOf(surface) orelse return;
+    const tab = self.tabs.items[index];
+    if (tab.focused == surface) return;
+    tab.focused = surface;
+    if (index == self.active) {
+        self.syncTitle();
+        self.applyChrome();
+    }
+    self.invalidateTabBar();
+    // The dividers follow the focused pane's background.
+    _ = c.InvalidateRect(tab.hwnd, null, c.FALSE);
+}
+
+fn invalidateTabBar(self: *Window) void {
+    if (!self.tabBarVisible()) return;
+    var r = self.tabBarRect();
+    _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
 }
 
 /// Close tabs relative to the one holding `surface`, for the close_tab
@@ -364,10 +418,7 @@ fn requestCloseTab(self: *Window, i: usize) void {
 /// Called by a surface when its title changes.
 pub fn surfaceTitleChanged(self: *Window, surface: *Surface) void {
     if (self.activeSurface() == surface) self.syncTitle();
-    if (self.tabBarVisible()) {
-        var r = self.tabBarRect();
-        _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
-    }
+    self.invalidateTabBar();
 }
 
 pub fn syncTitle(self: *Window) void {
@@ -446,15 +497,38 @@ pub fn setClientSize(self: *Window, width: u32, height: u32) void {
     var rect: c.RECT = .{ .right = w, .bottom = h + bar };
     const style: c.DWORD = @truncate(@as(usize, @bitCast(c.GetWindowLongPtrW(self.hwnd, c.GWL_STYLE))));
     _ = c.AdjustWindowRectExForDpi(&rect, style, c.FALSE, c.WS_EX_APPWINDOW, dpi);
+    var win_w = rect.right - rect.left;
+    var win_h = rect.bottom - rect.top;
+    // Never larger than the monitor's work area.
+    var mi: c.MONITORINFO = .{};
+    if (c.MonitorFromWindow(self.hwnd, c.MONITOR_DEFAULTTONEAREST)) |monitor| {
+        if (c.GetMonitorInfoW(monitor, &mi) != 0) {
+            win_w = @min(win_w, mi.rcWork.right - mi.rcWork.left);
+            win_h = @min(win_h, mi.rcWork.bottom - mi.rcWork.top);
+        }
+    }
     _ = c.SetWindowPos(
         self.hwnd,
         null,
         0,
         0,
-        rect.right - rect.left,
-        rect.bottom - rect.top,
+        win_w,
+        win_h,
         c.SWP_NOMOVE | c.SWP_NOZORDER | c.SWP_NOACTIVATE,
     );
+}
+
+/// A program asked to resize the window (resize_window, from CSI 8 t when
+/// `vt-window-resize-allowed` is on). As that option documents, it is
+/// ignored in a split or in a window with several tabs, and while the
+/// window is maximized or fullscreen; setClientSize keeps it within the
+/// monitor. Returns whether the window was resized.
+pub fn resizeFromTerminal(self: *Window, width: u32, height: u32) bool {
+    if (self.tabs.items.len > 1) return false;
+    if (self.activeTab()) |t| if (t.tree.isSplit()) return false;
+    if (c.IsZoomed(self.hwnd) != 0 or self.fullscreen != null) return false;
+    self.setClientSize(width, height);
+    return true;
 }
 
 pub fn toggleMaximize(self: *Window) void {
@@ -571,7 +645,7 @@ fn rgbRef(color: configpkg.Config.Color) c.COLORREF {
     return c.rgb(color.r, color.g, color.b);
 }
 
-fn isDark(color: configpkg.Config.Color) bool {
+pub fn isDark(color: configpkg.Config.Color) bool {
     const r: f64 = @floatFromInt(color.r);
     const g: f64 = @floatFromInt(color.g);
     const b: f64 = @floatFromInt(color.b);

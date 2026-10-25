@@ -6890,17 +6890,15 @@ pub const Keybinds = struct {
                 .{ .next_tab = {} },
                 .{ .performable = true },
             );
-            try self.set.putFlags(
+            try self.set.put(
                 alloc,
                 .{ .key = .{ .unicode = 'o' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_split = .right },
-                windows_unimplemented,
             );
-            try self.set.putFlags(
+            try self.set.put(
                 alloc,
                 .{ .key = .{ .unicode = 'e' }, .mods = .{ .ctrl = true, .shift = true } },
                 .{ .new_split = .down },
-                windows_unimplemented,
             );
             try self.set.putFlags(
                 alloc,
@@ -10753,8 +10751,6 @@ test "windows: defaults for actions the runtime lacks are performable" {
     const triggers = [_]inputpkg.Binding.Trigger{
         .{ .key = .{ .unicode = 'p' }, .mods = ctrl_shift }, // command palette
         .{ .key = .{ .unicode = 'i' }, .mods = ctrl_shift }, // inspector
-        .{ .key = .{ .unicode = 'o' }, .mods = ctrl_shift }, // new split
-        .{ .key = .{ .unicode = 'e' }, .mods = ctrl_shift }, // new split
         .{ .key = .{ .physical = .enter }, .mods = ctrl_shift }, // split zoom
     };
     for (triggers) |t| {
@@ -10764,6 +10760,19 @@ test "windows: defaults for actions the runtime lacks are performable" {
             inline .leaf, .leaf_chained => |*l| l.generic(),
         };
         try testing.expect(leaf.flags.performable);
+    }
+
+    // Splits are implemented, so their keys are consumed as upstream's.
+    for ([_]inputpkg.Binding.Trigger{
+        .{ .key = .{ .unicode = 'o' }, .mods = ctrl_shift },
+        .{ .key = .{ .unicode = 'e' }, .mods = ctrl_shift },
+    }) |t| {
+        const entry = config.keybind.set.get(t) orelse return error.TestUnexpectedResult;
+        const leaf = switch (entry.value_ptr.*) {
+            .leader => return error.TestUnexpectedResult,
+            inline .leaf, .leaf_chained => |*l| l.generic(),
+        };
+        try testing.expect(!leaf.flags.performable);
     }
 }
 

@@ -801,6 +801,25 @@ pub const Dump = struct {
         /// Whether the core surface thinks it has the focus.
         focused: ?bool = null,
         text: ?[]const u8 = null,
+        /// The tab's container size, its panes (left to right, top to
+        /// bottom, as the splits nest) and its dividers, in the container's
+        /// client coordinates.
+        area: ?[2]i32 = null,
+        panes: ?[]const Pane = null,
+        dividers: ?[]const [4]i32 = null,
+    };
+
+    pub const Pane = struct {
+        hwnd: u64,
+        rect: [4]i32,
+        /// The tab's focused pane.
+        focused: bool,
+        visible: bool,
+        core_focused: ?bool = null,
+        frames: ?u32 = null,
+        cols: ?u32 = null,
+        rows: ?u32 = null,
+        text: ?[]const u8 = null,
     };
 };
 

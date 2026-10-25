@@ -33,6 +33,8 @@ pub const all = [_]Scenario{
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
     .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
     .{ .name = "focus-background-tab", .about = "a tab that never got the focus doesn't stay focused in the core", .run = focusBackgroundTab },
+    .{ .name = "splits", .about = "Ctrl+Shift+O/E split panes that tile the tab; closing panes moves focus as designed", .run = splits },
+    .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -1003,6 +1005,293 @@ fn focusBackgroundTab(h: *Harness) anyerror!void {
     try h.expect(dw.tabs[0].focused orelse false, "the first tab's terminal is focused", .{});
     try h.expect(!(dw.tabs[1].focused orelse true), "the new tab's terminal is not focused", .{});
     try quit(h, &g, try h.surface(&g, win));
+}
+
+/// Splitting and closing panes: Ctrl+Shift+O puts a new pane right of the
+/// focused one, Ctrl+Shift+E below it; the panes and dividers tile the tab
+/// exactly; the new pane takes the focus (the window's and the core's);
+/// `exit` in a background pane leaves the focus alone, and in the focused
+/// pane hands it to the pane before it.
+fn splits(h: *Harness) anyerror!void {
+    var g = try start(h, "splits", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const first = try h.surface(&g, win);
+
+    // Side by side.
+    h.key(first, .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    w.Sleep(1500);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const p = t.panes.?;
+        const area = t.area.?;
+        try expectTiling(h, t);
+        try h.expect(p[0].rect[2] < p[1].rect[0], "the new pane is right of the first", .{});
+        const w0 = p[0].rect[2] - p[0].rect[0];
+        const w1 = p[1].rect[2] - p[1].rect[0];
+        try h.expect(@abs(w0 - w1) <= 1, "halves of the width: {d} and {d}", .{ w0, w1 });
+        try h.expect(p[0].rect[3] - p[0].rect[1] == area[1], "full height", .{});
+        try h.expect(p[1].focused and !p[0].focused, "the new pane is the tab's focused pane", .{});
+        try h.expect(p[1].core_focused orelse false, "the new pane's core is focused", .{});
+        try h.expect(!(p[0].core_focused orelse true), "the first pane's core is not", .{});
+        try h.expect(keyboardFocus(win) == hwndOf(p[1].hwnd), "the new pane has the keyboard focus", .{});
+    }
+
+    // Typed text reaches the focused pane only.
+    const second = try paneHwnd(h, &g, 1);
+    try h.typeText(second, "echo pane-two-out");
+    h.enter(second);
+    try waitPaneText(h, &g, 1, "pane-two-out", 2);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const p = d.value.windows[0].tabs[0].panes.?;
+        try h.expect(std.mem.indexOf(u8, p[0].text orelse "", "pane-two-out") == null, "the first pane didn't get it", .{});
+    }
+
+    // Below the second: tree order is first, second, third.
+    h.key(second, .{ .ctrl = true, .shift = true }, 'E');
+    try waitPanes(h, &g, 3);
+    w.Sleep(1500);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const p = t.panes.?;
+        try expectTiling(h, t);
+        try h.expect(p[1].rect[0] == p[2].rect[0] and p[1].rect[2] == p[2].rect[2], "the third pane is under the second", .{});
+        try h.expect(p[1].rect[3] < p[2].rect[1], "stacked", .{});
+        try h.expect(p[2].focused, "the third pane is focused", .{});
+    }
+    const third = try paneHwnd(h, &g, 2);
+
+    // `exit` in the first (background) pane: the focus stays on the third.
+    const first_pane = try paneHwnd(h, &g, 0);
+    try h.typeText(first_pane, "exit");
+    h.enter(first_pane);
+    try waitPanes(h, &g, 2);
+    w.Sleep(800);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const p = t.panes.?;
+        try expectTiling(h, t);
+        try h.expect(hwndOf(p[1].hwnd) == third and p[1].focused, "the third pane keeps the tab's focus", .{});
+        try h.expect(keyboardFocus(win) == third, "and the keyboard focus", .{});
+    }
+
+    // `exit` in the focused third pane: the focus goes to the one before it.
+    try h.typeText(third, "exit");
+    h.enter(third);
+    try waitPanes(h, &g, 1);
+    w.Sleep(800);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const p = t.panes.?;
+        try h.expect(hwndOf(p[0].hwnd) == second and p[0].focused, "the second pane is focused", .{});
+        try h.expect(keyboardFocus(win) == second, "and has the keyboard focus", .{});
+        try h.expect(p[0].rect[0] == 0 and p[0].rect[2] == t.area.?[0], "and fills the tab", .{});
+        try h.expect(t.dividers.?.len == 0, "no dividers", .{});
+    }
+    try quit(h, &g, second);
+}
+
+/// Roadmap S4: sixteen panes, each with its own GL context and render
+/// thread, all flooding output, keep presenting frames, and memory grows
+/// with their scrollback rather than without bound. Long and heavy, so it
+/// runs only with GHOSTTY_GUI_STRESS=1, and it prints what it measured. In
+/// a Debug build every frame also reads back a pixel for the tests, so the
+/// frame counts say whether all panes keep up, not how fast a release
+/// build is.
+fn stressPanes(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_STRESS"), null, 0) == 0) {
+        return h.skip("set GHOSTTY_GUI_STRESS=1 to run it", .{});
+    }
+    var g = try start(h, "stress-panes", "window-width = 160\nwindow-height = 48\n", ">");
+    defer g.deinit();
+    w.Sleep(1000);
+    const mem_one = privateBytes(&g);
+    const ws_one = workingSet(&g);
+
+    // Four columns, then each pane halved twice: a 4 x 4 grid. Panes are
+    // split from the last one back, so earlier indices stay put.
+    try splitPane(h, &g, 0, 'O');
+    try splitPane(h, &g, 0, 'O');
+    try splitPane(h, &g, 2, 'O');
+    for (0..2) |_| {
+        var i = try paneCount(h, &g);
+        while (i > 0) {
+            i -= 1;
+            try splitPane(h, &g, i, 'E');
+        }
+    }
+    const count = try paneCount(h, &g);
+    try h.expect(count == 16, "sixteen panes (got {d})", .{count});
+    w.Sleep(3000);
+    const mem_sixteen = privateBytes(&g);
+    const ws_sixteen = workingSet(&g);
+    std.debug.print("\n    private memory: one pane {d} MB, sixteen idle panes {d} MB ({d} MB a pane)", .{
+        mem_one >> 20,
+        mem_sixteen >> 20,
+        ((mem_sixteen -| mem_one) / 15) >> 20,
+    });
+    std.debug.print("\n    working set: one pane {d} MB, sixteen idle panes {d} MB ({d} MB a pane)", .{
+        ws_one >> 20,
+        ws_sixteen >> 20,
+        ((ws_sixteen -| ws_one) / 15) >> 20,
+    });
+
+    var panes: [16]w.HWND = undefined;
+    for (&panes, 0..) |*p, i| p.* = try paneHwnd(h, &g, i);
+    for (panes) |p| {
+        try h.typeText(p, "for /l %i in (1,1,200000) do @echo flood-line-%i");
+        h.enter(p);
+    }
+
+    // Once a second: frames per pane and private memory.
+    var first: [16]u32 = undefined;
+    var last: [16]u32 = undefined;
+    var mem_first: usize = 0;
+    var mem_last: usize = 0;
+    const seconds = 15;
+    for (0..seconds) |s| {
+        w.Sleep(1000);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const p = d.value.windows[0].tabs[0].panes.?;
+        var mem: w.PROCESS_MEMORY_COUNTERS = .{};
+        _ = w.K32GetProcessMemoryInfo(g.proc, &mem, @sizeOf(w.PROCESS_MEMORY_COUNTERS));
+        var min_frames: u32 = std.math.maxInt(u32);
+        for (p, 0..) |pane, i| {
+            last[i] = pane.frames orelse 0;
+            if (s == 1) first[i] = last[i];
+            min_frames = @min(min_frames, last[i]);
+        }
+        if (s == 1) mem_first = mem.PagefileUsage;
+        mem_last = mem.PagefileUsage;
+        std.debug.print("\n    t={d:>2}s  private {d:>5} MB  fewest frames in a pane {d}", .{ s + 1, mem.PagefileUsage >> 20, min_frames });
+    }
+    std.debug.print("\n", .{});
+
+    // Every pane kept presenting while all of them flooded.
+    for (first, last, 0..) |a, b, i| {
+        try h.expect(b - a >= 10, "pane {d} presented {d} frames in {d} s", .{ i, b - a, seconds - 2 });
+    }
+    try h.expect(g.exitCode() == null, "still running", .{});
+    h.log("private memory {d} MB after a second of flooding, {d} MB at the end", .{ mem_first >> 20, mem_last >> 20 });
+    // Sixteen 10 MB scrollbacks and their renderers: generous, but bounded.
+    try h.expect(mem_last < 2048 << 20, "private memory under 2 GB (got {d} MB)", .{mem_last >> 20});
+}
+
+/// Ghostty's private committed memory, in bytes.
+fn privateBytes(g: *Harness.Ghostty) usize {
+    var mem: w.PROCESS_MEMORY_COUNTERS = .{};
+    if (w.K32GetProcessMemoryInfo(g.proc, &mem, @sizeOf(w.PROCESS_MEMORY_COUNTERS)) == 0) return 0;
+    return mem.PagefileUsage;
+}
+
+/// Ghostty's working set (resident memory), in bytes.
+fn workingSet(g: *Harness.Ghostty) usize {
+    var mem: w.PROCESS_MEMORY_COUNTERS = .{};
+    if (w.K32GetProcessMemoryInfo(g.proc, &mem, @sizeOf(w.PROCESS_MEMORY_COUNTERS)) == 0) return 0;
+    return mem.WorkingSetSize;
+}
+
+/// Press Ctrl+Shift+`key` on pane `i` and wait for the new pane.
+fn splitPane(h: *Harness, g: *Harness.Ghostty, i: usize, key: u8) !void {
+    const before = try paneCount(h, g);
+    h.key(try paneHwnd(h, g, i), .{ .ctrl = true, .shift = true }, key);
+    try waitPanes(h, g, before + 1);
+}
+
+fn paneCount(h: *Harness, g: *Harness.Ghostty) !usize {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    return if (dw.tabs[dw.active].panes) |p| p.len else 0;
+}
+
+/// The panes and dividers of tab `t` cover its area exactly, without
+/// overlapping.
+fn expectTiling(h: *Harness, t: Harness.Dump.Tab) !void {
+    const area = t.area.?;
+    var rects: [32][4]i32 = undefined;
+    var n: usize = 0;
+    for (t.panes.?) |p| {
+        rects[n] = p.rect;
+        n += 1;
+    }
+    for (t.dividers.?) |d| {
+        rects[n] = d;
+        n += 1;
+    }
+    var total: i64 = 0;
+    for (rects[0..n], 0..) |a, i| {
+        try h.expect(a[0] >= 0 and a[1] >= 0 and a[2] <= area[0] and a[3] <= area[1], "inside the tab: {any}", .{a});
+        total += @as(i64, a[2] - a[0]) * (a[3] - a[1]);
+        for (rects[i + 1 .. n]) |b| {
+            const overlap = a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3];
+            try h.expect(!overlap, "{any} and {any} don't overlap", .{ a, b });
+        }
+    }
+    try h.expect(total == @as(i64, area[0]) * area[1], "panes and dividers cover the tab exactly ({d} of {d} pixels)", .{ total, @as(i64, area[0]) * area[1] });
+}
+
+fn hwndOf(v: u64) w.HWND {
+    return @ptrFromInt(v);
+}
+
+/// Pane `i` of the first window's active tab.
+fn paneHwnd(h: *Harness, g: *Harness.Ghostty, i: usize) !w.HWND {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    const p = dw.tabs[dw.active].panes orelse return h.fail("no panes in the dump", .{});
+    if (i >= p.len) return h.fail("no pane {d}", .{i});
+    return hwndOf(p[i].hwnd);
+}
+
+/// Wait until the first window's active tab has `count` panes.
+fn waitPanes(h: *Harness, g: *Harness.Ghostty, count: usize) !void {
+    var waited: u32 = 0;
+    var last: usize = 0;
+    while (waited <= 10000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const dw = d.value.windows[0];
+        last = if (dw.tabs[dw.active].panes) |p| p.len else 0;
+        if (last == count) return;
+        w.Sleep(200);
+    }
+    return h.fail("the tab has {d} pane(s), expected {d}", .{ last, count });
+}
+
+/// Wait until pane `i`'s text contains `needle` at least `count` times.
+fn waitPaneText(h: *Harness, g: *Harness.Ghostty, i: usize, needle: []const u8, count: usize) !void {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const dw = d.value.windows[0];
+        if (dw.tabs[dw.active].panes) |p| if (i < p.len) {
+            if (std.mem.count(u8, p[i].text orelse "", needle) >= count) return;
+        };
+        w.Sleep(200);
+    }
+    return h.fail("pane {d} doesn't show '{s}' {d} time(s)", .{ i, needle, count });
+}
+
+/// The keyboard focus of the thread that owns `hwnd`.
+fn keyboardFocus(hwnd: w.HWND) ?w.HWND {
+    var info: w.GUITHREADINFO = .{};
+    if (w.GetGUIThreadInfo(w.GetWindowThreadProcessId(hwnd, null), &info) == 0) return null;
+    return info.hwndFocus;
 }
 
 /// The active window of the thread that owns `hwnd`.
