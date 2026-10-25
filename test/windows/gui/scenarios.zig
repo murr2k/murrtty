@@ -880,10 +880,11 @@ fn textWith(h: *Harness, g: *Harness.Ghostty, needle: []const u8) ![]u8 {
 /// Where Ghostty starts depends on how it was launched (roadmap 0.7): a
 /// shell (anything but the desktop) passes its directory on, a shortcut or
 /// Explorer starts it in the home directory, and a POSIX SHELL (MSYS2, Git
-/// Bash) is not taken as the command.
+/// Bash) is not taken as the command. With no config, the shell is
+/// PowerShell 7 (roadmap 2.5; the GUI tests need it installed).
 fn launchContext(h: *Harness) anyerror!void {
-    // No config here, so cmd starts with its shell integration and quitting
-    // at its idle prompt doesn't ask.
+    // PowerShell starts with its shell integration, so quitting at its
+    // idle prompt doesn't ask.
 
     // The harness starts Ghostty in the scenario's folder, as a shell would.
     {
@@ -892,7 +893,12 @@ fn launchContext(h: *Harness) anyerror!void {
         const text = try textWith(h, &g, ">");
         defer h.alloc.free(text);
         try h.expect(std.ascii.findIgnoreCase(text, g.dir) != null, "started from a program, it opens in that program's directory", .{});
-        try quitIdle(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+        try h.expect(std.mem.indexOf(u8, text, "PS ") != null and std.mem.indexOf(u8, text, "PowerShell 7.") == null, "no config starts PowerShell, with no banner (-NoLogo)", .{});
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try h.typeText(surf, "'major=' + $PSVersionTable.PSVersion.Major");
+        h.enter(surf);
+        try waitTabLine(h, &g, 0, "major=7");
+        try quitIdle(h, &g, surf);
     }
     // As a shortcut launch: the home directory.
     {
@@ -909,13 +915,13 @@ fn launchContext(h: *Harness) anyerror!void {
         try h.expect(std.ascii.findIgnoreCase(text, prompt) != null, "started from a shortcut, it opens in {s}", .{home});
         try quitIdle(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
-    // SHELL from Git Bash is ignored: cmd starts.
+    // SHELL from Git Bash is ignored: the default shell starts.
     {
         var g = try h.launchWith("launch-context-shell", "", .{ .env = &.{.{ "SHELL", "/usr/bin/bash" }} });
         defer g.deinit();
         const text = try textWith(h, &g, ">");
         defer h.alloc.free(text);
-        try h.expect(std.ascii.findIgnoreCase(text, "Microsoft Windows") != null, "SHELL=/usr/bin/bash still starts cmd", .{});
+        try h.expect(std.mem.indexOf(u8, text, "PS ") != null, "SHELL=/usr/bin/bash still starts PowerShell", .{});
         try quitIdle(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
 }

@@ -60,8 +60,15 @@ hosted Windows runner and then the unit tests.
 
 **Tested and working**
 
-- Shells through ConPTY: `cmd.exe` and PowerShell 7, including PSReadLine's
-  colors.
+- Shells through ConPTY: PowerShell 7 (the default when installed), Windows
+  PowerShell 5.1 and `cmd.exe`, including PSReadLine's colors.
+- Shell integration for PowerShell 7, Windows PowerShell 5.1 and `cmd`, on by
+  default: Ghostty knows where each prompt is (`jump_to_prompt` with
+  `Ctrl+Shift+Up`/`Down`; closing at an idle prompt doesn't ask), follows the
+  shell's directory (new tabs and splits open there, relative links resolve
+  against it), and shows the folder, or PowerShell's running command, as the
+  tab title. See `src/shell-integration/README.md`. Without integration, cmd's
+  directory is still followed by reading it from the cmd process.
 - Rendering with exact colors, fallback fonts for CJK and symbols, and color
   emoji.
 - Typing, Enter, Unicode text entry, mouse selection, copy and paste. On the
@@ -87,13 +94,12 @@ hosted Windows runner and then the unit tests.
   double-click equalizes), unfocused panes are dimmed
   (`unfocused-split-opacity`, `unfocused-split-fill`), and
   `focus-follows-mouse` focuses the pane under the mouse. New panes and
-  tabs open in Ghostty's starting directory (or `working-directory`), not
-  the shell's current one: Ghostty doesn't follow the shell's directory on
-  Windows until shell integration (Phase 2).
-- Close confirmations. `cmd.exe` and PowerShell don't mark their prompts, so
-  Ghostty can't tell an idle prompt from a running program and asks whenever
-  the shell is still running. Set `confirm-close-surface = false` to turn
-  this off. Closing all windows asks too.
+  tabs open in the shell's current directory (see shell integration above).
+- Close confirmations. With shell integration, closing a tab, pane or
+  window at an idle prompt doesn't ask and a running command does. Without
+  it (another shell, or PowerShell started with a command) Ghostty can't
+  tell an idle prompt from a running program and asks whenever the shell is
+  still running. Set `confirm-close-surface = false` to turn this off.
 - OSC 52 clipboard writes with `clipboard-write = ask`: a burst of requests
   is confirmed one dialog at a time.
 - Configuration errors: a dialog lists them at startup and after a reload,
@@ -104,9 +110,10 @@ hosted Windows runner and then the unit tests.
   PDF) open. Links from terminal output to programs, scripts, shortcuts,
   network paths or a few abused protocols are blocked, with the reason.
   Other files and protocols ask first, naming the program that would open
-  them. Relative paths, and `file://` links that name this computer (as
-  `ls --hyperlink` writes them), are blocked for now: Ghostty doesn't track
-  the shell's directory on Windows yet.
+  them. Relative paths resolve against the shell's directory once Ghostty
+  knows it (shell integration, or cmd's own), and are blocked otherwise.
+  `file://` links that name this computer (as `ls --hyperlink` writes them)
+  open like local paths.
 - Resizing, the initial size from `window-width`/`window-height`, closing
   windows and tabs cleanly, quitting when the last window closes.
 - CLI actions such as `ghostty +version` print to the console they were
@@ -131,6 +138,9 @@ hosted Windows runner and then the unit tests.
   Ghostty asks Windows for, not yet what appears on screen.
 - Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell and paste
   protection.
+- cmd's integration through [Clink](https://chrisant996.github.io/clink/),
+  which adds the command's start and exit status (Ghostty doesn't show exit
+  statuses yet).
 
 **Not implemented yet**
 
@@ -148,7 +158,8 @@ hosted Windows runner and then the unit tests.
 - Sending commands to an already running instance (`ghostty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with shell integration and the working directory (Phase 2).
+with the everyday UI: context menu, scrollbar, search and command palette
+(Phase 3).
 
 **Known issues**
 
@@ -158,6 +169,14 @@ with shell integration and the working directory (Phase 2).
   not been reproduced since, including in release builds.
 - Output of CLI actions run from `cmd` or PowerShell appears after the prompt
   returns, because shells don't wait for GUI programs to exit.
+- After `cls` or `Clear-Host`, `jump_to_prompt` can stop on blank rows where
+  prompts were: ConPTY clears the screen by repainting it, and the rows keep
+  their prompt marks.
+- In shells whose directory Ghostty can't see (PowerShell without its
+  integration, WSL, ssh), new tabs open where the first one started, and
+  relative links are blocked. Inside cmd, a program that changes its own
+  directory (a nested PowerShell, say) still has relative links resolved
+  against cmd's.
 - Some modified keys never reach programs: `Shift+Enter`,
   `Ctrl+Shift+<letter>` and others that Ghostty sends as escape sequences
   Windows' ConPTY layer can't translate. Plain keys and `Ctrl+<letter>`
@@ -258,10 +277,13 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
   `system` and `attention` work). Ghostty always opens a window at startup and
   always exits when its last window closes, whatever `initial-window` and
   `quit-after-last-window-closed` say.
-- **Shell.** The default is `cmd.exe`, as in upstream Ghostty. For
-  PowerShell 7 add `command = pwsh`. Shell integration isn't available for
-  `cmd` or PowerShell (upstream doesn't support them either). A `SHELL`
-  variable (from MSYS2 or Git Bash) is ignored.
+- **Shell.** The default is PowerShell 7 (`pwsh.exe -NoLogo`) when it is
+  installed, else `cmd.exe` (`%COMSPEC%`); `command` picks another. Shell
+  integration is automatic for PowerShell 7, Windows PowerShell and `cmd`
+  (`shell-integration = none` turns it off). For PowerShell it applies only
+  when the command's arguments are start-up flags such as `-NoLogo` or
+  `-NoProfile`, not a command or a script; it loads after your profile. A
+  `SHELL` variable (from MSYS2 or Git Bash) is ignored.
 - **Starting directory.** Started from a shell or another program, Ghostty
   opens in that program's directory; started from the Start menu, a shortcut
   or Explorer, in your home folder. `working-directory` overrides both.

@@ -861,6 +861,18 @@ via `SearchPathW`, App Paths or the Store alias, else `%COMSPEC%` (decision
 3). *Done when:* a fresh config opens `pwsh -NoLogo` when PowerShell 7 is
 installed.
 
+*Done 2026-10-25:* `os/default_shell.zig` looks for `pwsh.exe` on `PATH`
+(drive paths only: a relative entry would search wherever Ghostty started,
+and a network one could stall it), then the Store's alias in
+`%LOCALAPPDATA%\Microsoft\WindowsApps`, then `%ProgramFiles%\PowerShell\7`.
+The default command is then `pwsh.exe -NoLogo` as an argument list (the
+path may hold spaces), else `%COMSPEC%`. `SearchPathW` wasn't used because it
+searches the current directory too. App Paths wasn't used because a Store
+install's entry names the package's own `pwsh.exe` under
+`Program Files\WindowsApps`, which can't be started directly. The
+`launch-context` scenario, which runs with no config, checks a `PS` prompt
+without the banner and `$PSVersionTable.PSVersion.Major` of 7.
+
 ---
 
 ## Phase 3: Core Ghostty UI (about 6 to 7 weeks)

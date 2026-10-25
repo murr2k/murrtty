@@ -1135,6 +1135,11 @@ palette: Palette = .{},
 ///
 ///   * `passwd` entry (user information)
 ///
+/// On Windows, the default is PowerShell 7 (`pwsh.exe -NoLogo`) when it is
+/// installed (on the `PATH`, as the Microsoft Store's alias, or in
+/// `%ProgramFiles%\PowerShell\7`), else `%COMSPEC%` (cmd). `SHELL` is not
+/// used there: MSYS2, Cygwin and Git Bash set it to a POSIX path.
+///
 /// This can contain additional arguments to run the command with. If additional
 /// arguments are provided, the command will be executed using `/bin/sh -c`
 /// to offload shell argument expansion.
@@ -4852,9 +4857,25 @@ pub fn finalize(self: *Config) !void {
 
             switch (builtin.target.os.tag) {
                 .windows => {
+                    // PowerShell 7 when it is installed, else COMSPEC (cmd).
                     if (self.command == null) {
-                        log.warn("no default shell found, will default to using cmd", .{});
-                        self.command = .{ .shell = "cmd.exe" };
+                        var environ_map = try global.environMap();
+                        defer environ_map.deinit();
+                        if (try internal_os.default_shell.findPwsh(alloc, &environ_map)) |pwsh| {
+                            log.info("default shell src=pwsh value={s}", .{pwsh});
+                            const argv = try alloc.alloc([:0]const u8, 2);
+                            argv[0] = try alloc.dupeSentinel(u8, pwsh, 0);
+                            argv[1] = "-NoLogo";
+                            self.command = .{ .direct = argv };
+                        } else if (environ_map.get("COMSPEC")) |comspec| {
+                            log.info("default shell src=COMSPEC value={s}", .{comspec});
+                            const argv = try alloc.alloc([:0]const u8, 1);
+                            argv[0] = try alloc.dupeSentinel(u8, comspec, 0);
+                            self.command = .{ .direct = argv };
+                        } else {
+                            log.warn("no default shell found, will default to using cmd", .{});
+                            self.command = .{ .shell = "cmd.exe" };
+                        }
                     }
 
                     if (wd == .home) {
