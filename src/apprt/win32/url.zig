@@ -31,6 +31,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const hostname = @import("../../os/hostname.zig");
+
 const c = @import("c.zig");
 const text_util = @import("text.zig");
 
@@ -275,7 +277,9 @@ fn fileUrlClass(alloc: Allocator, rest: []const u8) Allocator.Error!Class {
         const host = after[0..host_end];
         if (std.mem.eql(u8, host, ".") or std.mem.eql(u8, host, "?")) return .{ .deny = .special_path };
         // file://server/share is a UNC path: opening it connects there.
-        if (host.len > 0 and !std.ascii.eqlIgnoreCase(host, "localhost")) return .{ .deny = .remote_file };
+        // This computer's own name is local, as `ls --hyperlink` and
+        // ripgrep write it (any case, NetBIOS or DNS).
+        if (host.len > 0 and !(hostname.isLocal(host) catch false)) return .{ .deny = .remote_file };
         path = after[host_end..];
     }
 
@@ -939,6 +943,23 @@ test "url: file URLs and paths" {
     try expectPath("C:\\", "C:\\");
     // An escaped backslash is still a backslash.
     try expectPath("C:\\a\\b", "file:///C:%5Ca%5Cb");
+    try expectPath("C:\\a\\b", "file://LOCALHOST/C:/a/b");
+}
+
+test "url: file URLs naming this computer are local" {
+    // As `ls --hyperlink` writes them: the computer's name, in any case.
+    const windows = @import("../../os/windows.zig");
+    var buf: [256]u16 = undefined;
+    var len: windows.DWORD = buf.len;
+    try std.testing.expect(windows.exp.kernel32.GetComputerNameExW(.DnsHostname, &buf, &len) != windows.FALSE);
+    var name8: [buf.len * 3]u8 = undefined;
+    const name = name8[0..try std.unicode.utf16LeToUtf8(&name8, buf[0..len])];
+    var lower: [name8.len]u8 = undefined;
+    for ([_][]const u8{ name, std.ascii.lowerString(&lower, name) }) |host| {
+        var url_buf: [1024]u8 = undefined;
+        const url = try std.fmt.bufPrint(&url_buf, "file://{s}/C:/a/b", .{host});
+        try expectPath("C:\\a\\b", url);
+    }
 }
 
 test "url: remote, special and relative paths are denied" {

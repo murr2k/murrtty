@@ -40,6 +40,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
+    .{ .name = "pwd", .about = "OSC 9;9 and OSC 7 set the working directory; new tabs start there; relative links resolve against it", .run = pwdReports },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
@@ -1691,6 +1692,118 @@ fn focusFollowsMouse(h: *Harness) anyerror!void {
     try h.expect(activeWindow(win) == other, "the mouse over an inactive window's pane doesn't activate it", .{});
     try h.expect(keyboardFocus(win) != left, "nor focus that pane", .{});
     try quit(h, &g, try h.surface(&g, other));
+}
+
+/// Working-directory reports (roadmap 2.1). cmd's prompt reports its folder
+/// with OSC 9;9 ($P); PowerShell sends OSC 7 naming this computer in lower
+/// case (the DNS name's usual spelling, unlike the NetBIOS name). The pwd
+/// follows them, a new tab starts there, and a report from another computer
+/// or of a UNC path is ignored. Relative link text resolves against the pwd.
+fn pwdReports(h: *Harness) anyerror!void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    var g = try start(h, "pwd", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const first = try h.surface(&g, win);
+
+    const report_prompt = "prompt $E]9;9;\"$P\"$E\\$P$G";
+    try h.typeText(first, report_prompt);
+    h.enter(first);
+    try h.typeText(first, "cd /d C:\\Windows");
+    h.enter(first);
+    try waitPwd(h, &g, 0, "C:\\Windows");
+
+    // A new tab starts where the shell last reported.
+    h.key(first, cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    try waitTabText(h, &g, 1, "C:\\Windows>");
+    try waitPwd(h, &g, 1, "C:\\Windows");
+    const second = try h.surface(&g, win);
+
+    // OSC 7 from PowerShell, naming this computer in lower case.
+    try h.typeText(second, "powershell -NoProfile -Command \"[Console]::Write([char]27+']7;file://'+$env:COMPUTERNAME.ToLower()+'/C:/Windows/System32'+[char]7)\" & echo osc-sent-1");
+    h.enter(second);
+    try waitTabText(h, &g, 1, "\nosc-sent-1");
+    try waitPwd(h, &g, 1, "C:\\Windows\\System32");
+
+    // Another computer's OSC 7 and a UNC path in OSC 9;9 change nothing.
+    try h.typeText(second, "powershell -NoProfile -Command \"[Console]::Write([char]27+']7;file://elsewhere.invalid/C:/Temp'+[char]7+[char]27+']9;9;\\\\server\\share'+[char]7)\" & echo osc-sent-2");
+    h.enter(second);
+    try waitTabText(h, &g, 1, "\nosc-sent-2");
+    w.Sleep(300);
+    try waitPwd(h, &g, 1, "C:\\Windows\\System32");
+
+    // Relative link text resolves against the pwd: a text file in the
+    // scenario's folder opens (recorded by the test hooks, not opened).
+    const notes = try std.fmt.allocPrint(h.alloc, "{s}\\notes.txt", .{g.dir});
+    defer h.alloc.free(notes);
+    try h.writeFileAt(notes, "notes\n");
+    try h.typeText(second, report_prompt);
+    h.enter(second);
+    const cd = try std.fmt.allocPrint(h.alloc, "cd /d {s}", .{g.dir});
+    defer h.alloc.free(cd);
+    try h.typeText(second, cd);
+    h.enter(second);
+    try waitPwd(h, &g, 1, g.dir);
+    try h.typeText(second, "cls & echo ./notes.txt");
+    h.enter(second);
+    try waitTabLine(h, &g, 1, "./notes.txt");
+    try ctrlClickRow(h, &g, second, "./notes.txt", 3);
+    const want = try std.fmt.allocPrint(h.alloc, "default {s}", .{notes});
+    defer h.alloc.free(want);
+    try expectLaunch(h, &g, 1, want);
+    try quit(h, &g, second);
+}
+
+/// Wait until the first window's tab `tab` reports `want` as its pwd.
+fn waitPwd(h: *Harness, g: *Harness.Ghostty, tab: usize, want: []const u8) !void {
+    var last_buf: [512]u8 = undefined;
+    var last: []const u8 = "(none)";
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const win_tabs = d.value.windows[0].tabs;
+        if (tab < win_tabs.len) if (win_tabs[tab].panes) |p| if (p.len > 0) if (p[0].pwd) |pwd| {
+            if (std.ascii.eqlIgnoreCase(pwd, want)) return h.expect(true, "tab {d}'s pwd is {s}", .{ tab, want });
+            const n = @min(pwd.len, last_buf.len);
+            @memcpy(last_buf[0..n], pwd[0..n]);
+            last = last_buf[0..n];
+        };
+        w.Sleep(200);
+    }
+    return h.fail("tab {d}'s pwd is {s}, expected {s}", .{ tab, last, want });
+}
+
+/// Wait until the first window's tab `tab` shows `needle`.
+fn waitTabText(h: *Harness, g: *Harness.Ghostty, tab: usize, needle: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 15000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const win_tabs = d.value.windows[0].tabs;
+        if (tab < win_tabs.len) if (win_tabs[tab].text) |text| {
+            if (std.mem.indexOf(u8, text, needle) != null) return;
+        };
+        w.Sleep(200);
+    }
+    return h.fail("tab {d} doesn't show '{s}'", .{ tab, needle });
+}
+
+/// Wait until a row of the first window's tab `tab` starts with `prefix`.
+fn waitTabLine(h: *Harness, g: *Harness.Ghostty, tab: usize, prefix: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 15000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const win_tabs = d.value.windows[0].tabs;
+        if (tab < win_tabs.len) if (win_tabs[tab].text) |text| {
+            var lines = std.mem.splitScalar(u8, text, '\n');
+            while (lines.next()) |line| if (std.mem.startsWith(u8, line, prefix)) return;
+        };
+        w.Sleep(200);
+    }
+    return h.fail("no row of tab {d} starts with '{s}'", .{ tab, prefix });
 }
 
 /// A mouse move with no button held, at client (x, y) of `target`.

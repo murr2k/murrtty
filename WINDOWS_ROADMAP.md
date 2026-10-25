@@ -699,6 +699,17 @@ Check the host case-insensitively against the DNS and NetBIOS computer names;
 `os/hostname.zig` `isLocal` compares bytes exactly against `GetComputerNameA`
 and needs fixing. Written to be upstreamable. *Done when:* unit tests cover
 the path conversion, and a new tab opens where the shell last reported.
+*Done 2026-10-25:* `os/cwd_report.zig` turns OSC 7's `/C:/dir` and the raw
+(optionally quoted) paths of OSC 9;9 and iTerm2's `CurrentDir` into drive
+paths, taking only `X:\...` (no UNC or device paths, nothing a directory name
+can't contain), by spelling alone. `isLocal` compares without case against
+the NetBIOS, DNS and fully qualified names (`hostname`'s tests weren't in the
+test build; they are now). Relative link text resolves against the pwd by
+spelling (`resolveWindows`, no file system), and `url.zig` vets the result
+and takes this computer's name as a `file://` host. The `pwd` scenario covers
+OSC 9;9 from cmd's prompt, OSC 7 with the lower-case name, a new tab starting
+there, another computer's report and a UNC path ignored, and a relative link
+opening; the dump reports each pane's pwd.
 
 Two link follow-ups from 0.1 depend on this:
 - Re-enable relative link text. `resolvePathForOpening` returns null on

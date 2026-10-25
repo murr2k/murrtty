@@ -273,13 +273,21 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                 grid.columns,
                 grid.rows,
             });
-            const text = text: {
+            const text, const pwd = text: {
                 s.core_surface.renderer_state.mutex.lockUncancelable(global.io());
                 defer s.core_surface.renderer_state.mutex.unlock(global.io());
-                break :text try s.core_surface.io.terminal.plainString(alloc);
+                const terminal = &s.core_surface.io.terminal;
+                const t = try terminal.plainString(alloc);
+                errdefer alloc.free(t);
+                break :text .{ t, try alloc.dupe(u8, terminal.getPwd() orelse "") };
             };
             defer alloc.free(text);
+            defer alloc.free(pwd);
             try writeString(alloc, out, text);
+            // The working directory as the shell last reported it (the
+            // starting one until then).
+            try out.appendSlice(alloc, ",\"pwd\":");
+            try writeString(alloc, out, pwd);
         }
         try out.append(alloc, '}');
     }

@@ -830,6 +830,9 @@ pub const Dump = struct {
         cols: ?u32 = null,
         rows: ?u32 = null,
         text: ?[]const u8 = null,
+        /// The terminal's working directory: the starting one until the
+        /// shell reports one (OSC 7, OSC 9;9).
+        pwd: ?[]const u8 = null,
     };
 };
 
