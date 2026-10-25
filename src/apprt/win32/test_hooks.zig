@@ -260,9 +260,11 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         });
         if (s.core_initialized) {
             const grid = s.core_surface.size.grid();
-            try out.print(alloc, ",\"core_focused\":{},\"frames\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
+            const wgl_state = &s.core_surface.renderer.api.wgl_state;
+            try out.print(alloc, ",\"core_focused\":{},\"frames\":{d},\"probe\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
                 s.core_surface.focused,
-                s.core_surface.renderer.api.wgl_state.frames.load(.monotonic),
+                wgl_state.frames.load(.monotonic),
+                wgl_state.probe.load(.monotonic),
                 grid.columns,
                 grid.rows,
             });

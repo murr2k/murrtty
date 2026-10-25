@@ -171,6 +171,32 @@ pub fn setVisible(self: *Tab, visible: bool) void {
     if (!visible) _ = c.ShowWindow(self.hwnd, c.SW_HIDE);
 }
 
+/// Dim the panes other than the focused one while the tab is split, with
+/// `unfocused-split-fill` (the pane's background by default) at
+/// `1 - unfocused-split-opacity`. It keys on the tab's focused pane, not
+/// on the core's focus (which every pane loses when the window is
+/// inactive), so the last focused pane stays bright, as on macOS.
+pub fn syncDim(self: *Tab) void {
+    const config = &self.window.app.config;
+    const alpha: f32 = @floatCast(1.0 - config.@"unfocused-split-opacity");
+    const split = self.tree.isSplit();
+    var it = self.tree.iterator();
+    while (it.next()) |entry| {
+        const s = entry.view;
+        if (!split or s == self.focused or alpha <= 0) {
+            s.setDim(null);
+            continue;
+        }
+        const fill = config.@"unfocused-split-fill" orelse s.colors.bg;
+        s.setDim(.{
+            @as(f32, @floatFromInt(fill.r)) / 255.0,
+            @as(f32, @floatFromInt(fill.g)) / 255.0,
+            @as(f32, @floatFromInt(fill.b)) / 255.0,
+            alpha,
+        });
+    }
+}
+
 /// Show the panes that should be, hide the rest.
 fn syncPaneVisibility(self: *Tab) void {
     var it = self.tree.iterator();

@@ -819,6 +819,8 @@ pub const Dump = struct {
         visible: bool,
         core_focused: ?bool = null,
         frames: ?u32 = null,
+        /// As the tab's `probe`, for this pane.
+        probe: ?u32 = null,
         cols: ?u32 = null,
         rows: ?u32 = null,
         text: ?[]const u8 = null,
@@ -845,6 +847,24 @@ pub fn probe(self: *Harness, g: *const Ghostty, x: u32, y: u32) !u32 {
         w.Sleep(100);
     }
     return self.fail("no frame was presented after asking for pixel ({d},{d})", .{ x, y });
+}
+
+/// The pixel at (x, y) of pane `i` of the first window's active tab, read
+/// back from the next frame it presents (every pane is asked).
+pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u32 {
+    var d = try self.dumpWith(g, 1, @bitCast(@as(usize, y << 16 | x)));
+    d.deinit();
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var dd = try self.dump(g);
+        defer dd.deinit();
+        const win = dd.value.windows[0];
+        if (win.tabs[win.active].panes) |p| if (i < p.len) if (p[i].probe) |v| {
+            if (v & (1 << 24) != 0) return v & 0xFFFFFF;
+        };
+        w.Sleep(100);
+    }
+    return self.fail("pane {d} presented no frame after asking for pixel ({d},{d})", .{ i, x, y });
 }
 
 /// Make Ghostty act as if the system's light/dark setting changed, without

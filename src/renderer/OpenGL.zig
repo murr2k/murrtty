@@ -10,6 +10,7 @@ const wgl = gl.wgl;
 const shadertoy = @import("shadertoy.zig");
 const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
+const global = @import("../global.zig");
 const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
 const Renderer = rendererpkg.GenericRenderer(OpenGL);
@@ -81,9 +82,46 @@ const Wgl = struct {
     /// Frames presented, so the tests can tell whether something drew.
     frames: std.atomic.Value(u32) = .init(0),
 
+    /// Rectangles drawn over the frame in the present pass, set by the UI
+    /// thread (the dimming of an unfocused split pane) and read here.
+    overlay_mutex: std.Io.Mutex = .init,
+    overlay: Overlay = .{},
+    overlay_program: ?struct { program: gl.Program, vao: gl.VertexArray } = null,
+
     pub const no_probe = std.math.maxInt(u32);
     pub const probe_read: u32 = 1 << 24;
 };
+
+/// Solid rectangles the Windows present pass draws over the frame, blending
+/// in the stored (sRGB) values as GTK's CSS overlays do.
+pub const Overlay = struct {
+    pub const max = 16;
+
+    rects: [max]Rect = undefined,
+    len: usize = 0,
+
+    pub const Rect = struct {
+        /// In the window's pixels from its top left corner.
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        /// sRGB, straight (not premultiplied) alpha.
+        color: [4]f32,
+    };
+};
+
+/// Replace the rectangles drawn over this surface's frames (Windows). They
+/// show from the next frame, so a caller that needs them now forces one.
+pub fn setOverlay(self: *OpenGL, rects: []const Overlay.Rect) void {
+    if (comptime !is_windows) return;
+    const state = &self.wgl_state;
+    state.overlay_mutex.lockUncancelable(global.io());
+    defer state.overlay_mutex.unlock(global.io());
+    const n = @min(rects.len, Overlay.max);
+    @memcpy(state.overlay.rects[0..n], rects[0..n]);
+    state.overlay.len = n;
+}
 
 /// The terminal background, which the Windows present pass composites the
 /// frame over.
@@ -330,6 +368,11 @@ pub fn threadExit(self: *OpenGL) void {
             p.vao.destroy();
             self.wgl_state.present = null;
         }
+        if (self.wgl_state.overlay_program) |o| {
+            o.program.destroy();
+            o.vao.destroy();
+            self.wgl_state.overlay_program = null;
+        }
         _ = wgl.wglMakeCurrent(null, null);
         gl.glad.unload();
         return;
@@ -492,6 +535,14 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     defer if (!background.linear) ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
     ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 3);
 
+    var overlay: Overlay = undefined;
+    {
+        state.overlay_mutex.lockUncancelable(global.io());
+        defer state.overlay_mutex.unlock(global.io());
+        overlay = state.overlay;
+    }
+    if (overlay.len > 0) try drawOverlay(state, &overlay, win_w, win_h);
+
     if (comptime builtin.mode == .debug) if (state.sampling) {
         _ = state.frames.fetchAdd(1, .monotonic);
         state.sample.store(readPixel(@max(win_w - 6, 0), 6), .monotonic);
@@ -507,6 +558,66 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
 
     if (wgl.SwapBuffers(state.hdc) == 0) return error.WglSwapBuffersFailed;
 }
+
+/// Draw the overlay's rectangles onto the back buffer, blending in its
+/// stored sRGB values (sRGB writes off), as GTK's CSS does.
+fn drawOverlay(state: *Wgl, overlay: *const Overlay, win_w: gl.c.GLint, win_h: gl.c.GLint) !void {
+    const ctx = &gl.glad.context;
+    const o = state.overlay_program orelse made: {
+        const program = try gl.Program.createVF(overlay_vertex, overlay_fragment);
+        errdefer program.destroy();
+        const vao = try gl.VertexArray.create();
+        state.overlay_program = .{ .program = program, .vao = vao };
+        break :made state.overlay_program.?;
+    };
+    const pbind = try o.program.use();
+    defer pbind.unbind();
+    const vbind = try o.vao.bind();
+    defer vbind.unbind();
+
+    ctx.Disable.?(gl.c.GL_FRAMEBUFFER_SRGB);
+    defer ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
+    // Premultiplied, as the render passes blend (they set this per pass).
+    ctx.Enable.?(gl.c.GL_BLEND);
+    defer ctx.Disable.?(gl.c.GL_BLEND);
+    ctx.BlendFunc.?(gl.c.GL_ONE, gl.c.GL_ONE_MINUS_SRC_ALPHA);
+
+    try o.program.setUniform("window_size", @Vector(2, f32){ @floatFromInt(win_w), @floatFromInt(win_h) });
+    for (overlay.rects[0..overlay.len]) |r| {
+        try o.program.setUniform("rect", @Vector(4, f32){
+            @floatFromInt(r.x),
+            @floatFromInt(r.y),
+            @floatFromInt(r.width),
+            @floatFromInt(r.height),
+        });
+        const a = r.color[3];
+        try o.program.setUniform("color", @Vector(4, f32){ r.color[0] * a, r.color[1] * a, r.color[2] * a, a });
+        ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 6);
+    }
+}
+
+/// Two triangles covering `rect` (window pixels from the top left).
+const overlay_vertex =
+    \\#version 430 core
+    \\uniform vec4 rect;
+    \\uniform vec2 window_size;
+    \\void main() {
+    \\    int v = gl_VertexID;
+    \\    vec2 corner = vec2((v == 1 || v == 2 || v == 4) ? 1.0 : 0.0,
+    \\                       (v == 2 || v == 4 || v == 5) ? 1.0 : 0.0);
+    \\    vec2 px = rect.xy + corner * rect.zw;
+    \\    gl_Position = vec4(px.x / window_size.x * 2.0 - 1.0, 1.0 - px.y / window_size.y * 2.0, 0.0, 1.0);
+    \\}
+;
+
+const overlay_fragment =
+    \\#version 430 core
+    \\uniform vec4 color;
+    \\layout(location = 0) out vec4 out_color;
+    \\void main() {
+    \\    out_color = color;
+    \\}
+;
 
 /// The back buffer's pixel at GL coordinates (origin bottom left) as
 /// 0x00RRGGBB, as stored.

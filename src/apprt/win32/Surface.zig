@@ -60,6 +60,10 @@ size_limit: ?apprt.action.SizeLimit = null,
 /// Whether the pane is shown (setVisible): not in a hidden tab, a
 /// minimized window, or behind another pane's zoom.
 shown: bool = true,
+
+/// The color (sRGB, alpha) the pane is dimmed with as an unfocused pane of
+/// a split tab, or null (Tab.syncDim).
+dim_color: ?[4]f32 = null,
 cursor_pos: apprt.CursorPos = .{ .x = -1, .y = -1 },
 
 /// Mouse state.
@@ -199,6 +203,35 @@ pub fn unref(self: *Surface) void {
 
 pub fn eql(a: *const Surface, b: *const Surface) bool {
     return a == b;
+}
+
+/// Dim the pane with a translucent `color` over its frames, or stop
+/// (null). Forces a frame so the change shows at once.
+pub fn setDim(self: *Surface, color: ?[4]f32) void {
+    if (std.meta.eql(self.dim_color, color)) return;
+    self.dim_color = color;
+    if (!self.core_initialized) return;
+    const api = &self.core_surface.renderer.api;
+    const Rect = @TypeOf(api.*).Overlay.Rect;
+    // The whole window, whatever its size later.
+    const rects: []const Rect = if (color) |col| &.{.{
+        .x = 0,
+        .y = 0,
+        .width = std.math.maxInt(i16),
+        .height = std.math.maxInt(i16),
+        .color = col,
+    }} else &.{};
+    api.setOverlay(rects);
+    self.forceFrame();
+}
+
+/// Make the renderer draw a frame though the terminal didn't change.
+fn forceFrame(self: *Surface) void {
+    const cs = &self.core_surface;
+    cs.renderer_state.mutex.lockUncancelable(global.io());
+    cs.renderer_state.terminal.flags.dirty.clear = true;
+    cs.renderer_state.mutex.unlock(global.io());
+    cs.renderer_thread.wakeup.notify() catch {};
 }
 
 /// The smallest the pane may be laid out (split_layout's view interface).

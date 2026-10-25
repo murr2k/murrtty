@@ -161,6 +161,7 @@ pub fn closeSurface(self: *Window, surface: *Surface, confirm: bool) void {
         log.err("error closing pane err={}", .{err});
         return;
     };
+    tab.syncDim();
     if (refocus and index == self.active) {
         self.focusActive();
         self.syncTitle();
@@ -177,6 +178,7 @@ pub fn newSplit(self: *Window, surface: *Surface, direction: apprt.action.SplitD
     const tab = self.tabs.items[index];
     const pane = try tab.newSplit(surface, direction, &surface.core_surface);
     tab.focused = pane;
+    tab.syncDim();
     if (index == self.active) {
         self.focusActive();
         self.syncTitle();
@@ -228,6 +230,7 @@ pub fn resizeSplit(self: *Window, surface: *Surface, value: apprt.action.ResizeS
 /// The focused pane of tab `index` changed: give it the keyboard focus if
 /// it is this active window's active tab, and follow its title and colors.
 fn focusedPaneChanged(self: *Window, index: usize) void {
+    self.tabs.items[index].syncDim();
     if (index == self.active) {
         self.focusActive();
         self.syncTitle();
@@ -244,6 +247,7 @@ pub fn surfaceFocused(self: *Window, surface: *Surface) void {
     const tab = self.tabs.items[index];
     if (tab.focused == surface) return;
     tab.focused = surface;
+    tab.syncDim();
     if (index == self.active) {
         self.syncTitle();
         self.applyChrome();
@@ -736,6 +740,8 @@ pub fn isDark(color: configpkg.Config.Color) bool {
 
 /// A surface's colors changed (a program set them, or its config changed).
 pub fn colorsChanged(self: *Window, surface: *Surface) void {
+    // A pane dims toward its own background by default.
+    if (self.tabIndexOf(surface)) |i| self.tabs.items[i].syncDim();
     if (self.activeSurface() != surface) return;
     self.applyChrome();
     var r = self.tabBarRect();
@@ -746,6 +752,7 @@ pub fn colorsChanged(self: *Window, surface: *Surface) void {
 /// visibility, may differ.
 pub fn configChanged(self: *Window) void {
     self.applyChrome();
+    for (self.tabs.items) |t| t.syncDim();
     self.layout();
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }

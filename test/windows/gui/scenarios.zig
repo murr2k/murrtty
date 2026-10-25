@@ -36,6 +36,7 @@ pub const all = [_]Scenario{
     .{ .name = "splits", .about = "Ctrl+Shift+O/E split panes that tile the tab; closing panes moves focus as designed", .run = splits },
     .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits", .run = splitCommands },
     .{ .name = "split-mouse", .about = "dragging a divider, Esc, double-click to equalize, the grip band in the padding", .run = splitMouse },
+    .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the focused one isn't", .run = splitDim },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
@@ -1398,6 +1399,56 @@ fn splitMouse(h: *Harness) anyerror!void {
     try h.expect(hitTest(left_pane, @divTrunc(r.left + r.right, 2), mid_y) == w.HTCLIENT, "the middle of the pane is the pane's", .{});
     try h.expect(hitTest(left_pane, r.left, mid_y) == w.HTCLIENT, "the window's outer edge is the pane's", .{});
     try quit(h, &g, right_pane);
+}
+
+/// Unfocused panes of a split tab are dimmed: a translucent
+/// unfocused-split-fill over them at 1 - unfocused-split-opacity, blended
+/// in sRGB. Read back from the renderers in a padding pixel (the
+/// background): half red over #282c34 in the dimmed pane, the background
+/// alone in the focused one; moving the focus moves the dimming.
+fn splitDim(h: *Harness) anyerror!void {
+    var g = try start(h, "split-dim", "unfocused-split-fill = #ff0000\nunfocused-split-opacity = 0.5\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const bg: u32 = 0x282c34;
+    try h.expect(try h.probePane(&g, 0, 1, 1) == bg, "one pane: not dimmed", .{});
+
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    w.Sleep(1500);
+    // The new (right) pane is focused; the left one is dimmed.
+    const dim = blendSrgb(0xff0000, bg, 0.5);
+    try expectColor(h, try h.probePane(&g, 0, 1, 1), dim, "the unfocused pane is dimmed");
+    try expectColor(h, try h.probePane(&g, 1, 1, 1), bg, "the focused pane isn't");
+
+    // Clicking the left pane moves the focus, and the dimming with it.
+    const left = try paneHwnd(h, &g, 0);
+    h.click(left, 200, 200, .left);
+    w.Sleep(800);
+    try expectColor(h, try h.probePane(&g, 0, 1, 1), bg, "after a click the left pane isn't dimmed");
+    try expectColor(h, try h.probePane(&g, 1, 1, 1), dim, "and the right one is");
+    try quit(h, &g, left);
+}
+
+/// `fg` at `alpha` over `bg`, per channel in the stored (sRGB) values.
+fn blendSrgb(fg: u32, bg: u32, alpha: f32) u32 {
+    var out: u32 = 0;
+    inline for (.{ 16, 8, 0 }) |shift| {
+        const f: f32 = @floatFromInt((fg >> shift) & 0xFF);
+        const b: f32 = @floatFromInt((bg >> shift) & 0xFF);
+        out |= @as(u32, @intFromFloat(@round(f * alpha + b * (1 - alpha)))) << shift;
+    }
+    return out;
+}
+
+fn expectColor(h: *Harness, got: u32, want: u32, comptime what: []const u8) !void {
+    var close = true;
+    inline for (.{ 16, 8, 0 }) |shift| {
+        const a: i32 = @intCast((got >> shift) & 0xFF);
+        const b: i32 = @intCast((want >> shift) & 0xFF);
+        if (@abs(a - b) > 2) close = false;
+    }
+    try h.expect(close, what ++ ": #{x:0>6} (expected #{x:0>6})", .{ got, want });
 }
 
 fn postMouse(target: w.HWND, msg: w.UINT, x: i32, y: i32) void {
