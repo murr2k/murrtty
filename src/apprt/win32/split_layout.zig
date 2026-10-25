@@ -218,7 +218,7 @@ pub fn Layout(comptime View: type) type {
         }
 
         /// Whether node `h` is `ancestor` or below it.
-        fn isWithin(tree: *const Tree, h: Handle, ancestor: Handle) bool {
+        pub fn isWithin(tree: *const Tree, h: Handle, ancestor: Handle) bool {
             if (h == ancestor) return true;
             return switch (tree.nodes[ancestor.idx()]) {
                 .leaf => false,

@@ -56,6 +56,10 @@ size: apprt.SurfaceSize = .{ .width = 0, .height = 0 },
 /// The core's size limits for this pane (its minimum grid plus padding),
 /// in pixels, once it has sent them.
 size_limit: ?apprt.action.SizeLimit = null,
+
+/// Whether the pane is shown (setVisible): not in a hidden tab, a
+/// minimized window, or behind another pane's zoom.
+shown: bool = true,
 cursor_pos: apprt.CursorPos = .{ .x = -1, .y = -1 },
 
 /// Mouse state.
@@ -477,6 +481,7 @@ pub fn setTitle(self: *Surface, title: [:0]const u8) void {
 /// Show or hide this surface (tab switches, minimize). Hidden surfaces
 /// tell the core they are occluded so their renderer stops drawing.
 pub fn setVisible(self: *Surface, visible: bool) void {
+    self.shown = visible;
     _ = c.ShowWindow(self.hwnd, if (visible) c.SW_SHOW else c.SW_HIDE);
     if (!self.core_initialized) return;
     self.core_surface.occlusionCallback(visible) catch |err| {

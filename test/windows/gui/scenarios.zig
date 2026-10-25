@@ -34,6 +34,7 @@ pub const all = [_]Scenario{
     .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
     .{ .name = "focus-background-tab", .about = "a tab that never got the focus doesn't stay focused in the core", .run = focusBackgroundTab },
     .{ .name = "splits", .about = "Ctrl+Shift+O/E split panes that tile the tab; closing panes moves focus as designed", .run = splits },
+    .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits", .run = splitCommands },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
 };
 
@@ -1215,6 +1216,157 @@ fn paneCount(h: *Harness, g: *Harness.Ghostty) !usize {
     defer d.deinit();
     const dw = d.value.windows[0];
     return if (dw.tabs[dw.active].panes) |p| p.len else 0;
+}
+
+/// goto_split (wrapping previous/next and a direction), toggle_split_zoom
+/// (the zoomed pane fills the tab, the others are hidden and stop drawing
+/// while their output still arrives), moving to another pane ending the
+/// zoom, resize_split and equalize_splits.
+fn splitCommands(h: *Harness) anyerror!void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    const f1 = 0x70;
+    const f2 = 0x71;
+    const f3 = 0x72;
+    const f4 = 0x73;
+    const f5 = 0x74;
+    var g = try start(h, "split-commands",
+        \\keybind = ctrl+shift+f1=goto_split:previous
+        \\keybind = ctrl+shift+f2=goto_split:next
+        \\keybind = ctrl+shift+f3=goto_split:left
+        \\keybind = ctrl+shift+f4=equalize_splits
+        \\keybind = ctrl+shift+f5=resize_split:right,100
+        \\
+    , ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+
+    // A | (B / C), with C focused.
+    h.key(try h.surface(&g, win), cs, 'O');
+    try waitPanes(h, &g, 2);
+    w.Sleep(800);
+    h.key(try paneHwnd(h, &g, 1), cs, 'E');
+    try waitPanes(h, &g, 3);
+    w.Sleep(1500);
+    const a = try paneHwnd(h, &g, 0);
+    const b = try paneHwnd(h, &g, 1);
+    const cc = try paneHwnd(h, &g, 2);
+    try expectFocus(h, &g, win, cc, "C after the splits");
+
+    // Previous and next, wrapping.
+    h.key(cc, cs, f1);
+    try expectFocus(h, &g, win, b, "previous from C: B");
+    h.key(b, cs, f2);
+    try expectFocus(h, &g, win, cc, "next from B: C");
+    h.key(cc, cs, f2);
+    try expectFocus(h, &g, win, a, "next from C wraps to A");
+    // A direction: from C, left is A.
+    h.key(a, cs, f2);
+    h.key(b, cs, f2);
+    try expectFocus(h, &g, win, cc, "back to C");
+    h.key(cc, cs, f3);
+    try expectFocus(h, &g, win, a, "left from C: A");
+
+    // B gets output once a second; then A is zoomed.
+    try h.typeText(b, "ping -n 30 127.0.0.1");
+    h.enter(b);
+    try waitPaneText(h, &g, 1, "Reply from", 1);
+    var grid_b: [2]u32 = undefined;
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const p = d.value.windows[0].tabs[0].panes.?;
+        grid_b = .{ p[1].cols orelse 0, p[1].rows orelse 0 };
+    }
+    h.key(a, cs, w.VK_RETURN);
+    w.Sleep(800);
+    var frames_hidden: u32 = 0;
+    var replies: usize = 0;
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const p = t.panes.?;
+        try h.expect(t.zoomed orelse false, "the tab is zoomed", .{});
+        try h.expect(p[0].visible and !p[1].visible and !p[2].visible, "only A is shown", .{});
+        try h.expect(p[0].rect[0] == 0 and p[0].rect[2] == t.area.?[0] and p[0].rect[3] == t.area.?[1], "A fills the tab", .{});
+        // A hidden pane keeps its size: shrinking it would reflow its text.
+        try h.expect((p[1].cols orelse 0) == grid_b[0] and (p[1].rows orelse 0) == grid_b[1], "hidden B keeps its {d}x{d} grid (has {?d}x{?d})", .{ grid_b[0], grid_b[1], p[1].cols, p[1].rows });
+        frames_hidden = p[1].frames orelse 0;
+        replies = std.mem.count(u8, p[1].text orelse "", "Reply from");
+    }
+    w.Sleep(3000);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const p = d.value.windows[0].tabs[0].panes.?;
+        const more = std.mem.count(u8, p[1].text orelse "", "Reply from");
+        try h.expect(more > replies, "B's output still arrives ({d} replies, then {d})", .{ replies, more });
+        try h.expect((p[1].frames orelse 0) == frames_hidden, "but B draws nothing while hidden ({d} frames, then {d})", .{ frames_hidden, p[1].frames orelse 0 });
+    }
+    h.key(a, cs, w.VK_RETURN);
+    w.Sleep(800);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const p = t.panes.?;
+        try h.expect(!(t.zoomed orelse true), "unzoomed", .{});
+        try h.expect(p[0].visible and p[1].visible and p[2].visible, "all panes shown", .{});
+        try expectTiling(h, t);
+    }
+
+    // Moving to another pane ends a zoom (split-preserve-zoom is off).
+    h.key(a, cs, w.VK_RETURN);
+    w.Sleep(500);
+    h.key(a, cs, f2);
+    try expectFocus(h, &g, win, b, "next from the zoomed A: B");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!(d.value.windows[0].tabs[0].zoomed orelse true), "and the zoom ended", .{});
+    }
+
+    // Resize from A: the divider moves right by 100 points; equalize
+    // brings it back to the middle.
+    h.key(b, cs, f3);
+    try expectFocus(h, &g, win, a, "left from B: A");
+    const before = try rootDivider(h, &g);
+    h.key(a, cs, f5);
+    w.Sleep(800);
+    const after = try rootDivider(h, &g);
+    const dpi = w.GetDpiForWindow(win);
+    const want: i32 = @intCast((100 * dpi + 48) / 96);
+    try h.expect(@abs(after - before - want) <= 2, "resize moved the divider {d} px (expected {d})", .{ after - before, want });
+    h.key(a, cs, f4);
+    w.Sleep(800);
+    try h.expect(@abs((try rootDivider(h, &g)) - before) <= 1, "equalize put it back in the middle", .{});
+    try quit(h, &g, a);
+}
+
+/// Wait until `pane` is the tab's focused pane and has the keyboard focus.
+fn expectFocus(h: *Harness, g: *Harness.Ghostty, win: w.HWND, pane: w.HWND, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 3000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const dw = d.value.windows[0];
+        for (dw.tabs[dw.active].panes.?) |p| {
+            if (p.focused and hwndOf(p.hwnd) == pane and keyboardFocus(win) == pane) {
+                return h.expect(true, what, .{});
+            }
+        }
+        w.Sleep(100);
+    }
+    return h.fail(what ++ " (focus didn't get there)", .{});
+}
+
+/// The left edge of the divider that spans the tab's full height.
+fn rootDivider(h: *Harness, g: *Harness.Ghostty) !i32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const t = d.value.windows[0].tabs[0];
+    for (t.dividers.?) |dv| if (dv[1] == 0 and dv[3] == t.area.?[1]) return dv[0];
+    return h.fail("no full-height divider", .{});
 }
 
 /// The panes and dividers of tab `t` cover its area exactly, without

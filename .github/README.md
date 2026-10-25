@@ -77,8 +77,10 @@ hosted Windows runner and then the unit tests.
   closing a tab (its close button, a middle-click or a keybinding).
 - Splits, so far: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane
   right and down, panes close with their shell or `Ctrl+Shift+W` (the last
-  one closes the tab), and the tab shows the focused pane's title. Moving
-  between panes, resizing, zooming and dragging dividers are next.
+  one closes the tab), and the tab shows the focused pane's title.
+  `goto_split` (`Ctrl+Alt+arrows`), `toggle_split_zoom`
+  (`Ctrl+Shift+Enter`, with a magnifier on the tab), `resize_split` and
+  `equalize_splits` work. Dragging dividers with the mouse is next.
 - Close confirmations. `cmd.exe` and PowerShell don't mark their prompts, so
   Ghostty can't tell an idle prompt from a running program and asks whenever
   the shell is still running. Set `confirm-close-surface = false` to turn
@@ -123,9 +125,7 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- Split navigation, resizing and zoom (`goto_split`, `resize_split`,
-  `equalize_splits`, `toggle_split_zoom`), dragging dividers, dimming
-  unfocused panes.
+- Dragging split dividers with the mouse, dimming unfocused panes.
 - The right-click context menu. With the default
   `right-click-action = context-menu`, a right-click only selects the word
   under the cursor. Set `right-click-action = copy-or-paste` (copy if there is

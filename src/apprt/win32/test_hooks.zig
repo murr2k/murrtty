@@ -229,14 +229,20 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
 }
 
 /// A tab's panes in layout order (left to right, top to bottom, as the
-/// tree nests them), where their windows really are in the tab's
-/// container, and its dividers as the layout places them.
+/// tree nests them, the same while one is zoomed), where their windows
+/// really are in the tab's container, and its dividers as the layout
+/// places them.
 fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
     const area = tab.area();
     var layout = try Tab.Layout.compute(alloc, &tab.tree, area, tab.dividerWidth());
     defer layout.deinit(alloc);
-    try out.print(alloc, ",\"area\":[{d},{d}],\"panes\":[", .{ area.right, area.bottom });
-    for (layout.panes, 0..) |pane, i| {
+    // The order without the zoom (a copy sharing the nodes).
+    var unzoomed_tree = tab.tree;
+    unzoomed_tree.zoomed = null;
+    var order = try Tab.Layout.compute(alloc, &unzoomed_tree, area, tab.dividerWidth());
+    defer order.deinit(alloc);
+    try out.print(alloc, ",\"zoomed\":{},\"area\":[{d},{d}],\"panes\":[", .{ tab.tree.zoomed != null, area.right, area.bottom });
+    for (order.panes, 0..) |pane, i| {
         const s = pane.view;
         if (i > 0) try out.append(alloc, ',');
         var r: c.RECT = .{};

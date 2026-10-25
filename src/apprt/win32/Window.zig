@@ -184,6 +184,58 @@ pub fn newSplit(self: *Window, surface: *Surface, direction: apprt.action.SplitD
     self.invalidateTabBar();
 }
 
+/// goto_split from `surface`. Returns false when the focus doesn't move,
+/// so the key reaches the program.
+pub fn gotoSplit(self: *Window, surface: *Surface, to: apprt.action.GotoSplit) bool {
+    const index = self.tabIndexOf(surface) orelse return false;
+    const tab = self.tabs.items[index];
+    _ = (tab.goto(surface, to) catch |err| {
+        log.err("error moving between panes err={}", .{err});
+        return false;
+    }) orelse return false;
+    self.focusedPaneChanged(index);
+    return true;
+}
+
+/// toggle_split_zoom for `surface`'s tab.
+pub fn toggleSplitZoom(self: *Window, surface: *Surface) bool {
+    const index = self.tabIndexOf(surface) orelse return false;
+    if (!self.tabs.items[index].toggleZoom()) return false;
+    // The tab strip shows a magnifier on a zoomed tab.
+    self.invalidateTabBar();
+    return true;
+}
+
+pub fn equalizeSplits(self: *Window, surface: *Surface) bool {
+    const index = self.tabIndexOf(surface) orelse return false;
+    return self.tabs.items[index].equalize() catch |err| {
+        log.err("error equalizing panes err={}", .{err});
+        return false;
+    };
+}
+
+pub fn resizeSplit(self: *Window, surface: *Surface, value: apprt.action.ResizeSplit) bool {
+    const index = self.tabIndexOf(surface) orelse return false;
+    const resized = self.tabs.items[index].resize(surface, value) catch |err| {
+        log.err("error resizing panes err={}", .{err});
+        return false;
+    };
+    if (resized) self.invalidateTabBar();
+    return resized;
+}
+
+/// The focused pane of tab `index` changed: give it the keyboard focus if
+/// it is this active window's active tab, and follow its title and colors.
+fn focusedPaneChanged(self: *Window, index: usize) void {
+    if (index == self.active) {
+        self.focusActive();
+        self.syncTitle();
+        self.applyChrome();
+    }
+    self.invalidateTabBar();
+    _ = c.InvalidateRect(self.tabs.items[index].hwnd, null, c.FALSE);
+}
+
 /// A pane got the keyboard focus: it becomes its tab's focused pane, whose
 /// title and colors the tab and the window show.
 pub fn surfaceFocused(self: *Window, surface: *Surface) void {
@@ -572,7 +624,15 @@ pub fn present(self: *Window) void {
 /// Bring the tab holding `surface` to the front.
 pub fn presentSurface(self: *Window, surface: *Surface) void {
     if (self.tabIndexOf(surface)) |i| {
+        const tab = self.tabs.items[i];
+        // End a zoom that hides the pane, and focus it.
+        if (tab.tree.zoomed) |zoomed| {
+            const handle = tab.tree.locate(surface).?;
+            if (!Tab.Layout.isWithin(&tab.tree, handle, zoomed)) _ = tab.unzoom();
+        }
+        tab.focused = surface;
         if (i != self.active) self.select(i);
+        self.focusedPaneChanged(i);
     }
     self.present();
 }
@@ -692,7 +752,22 @@ fn paint(self: *Window) void {
     const alloc = self.app.core_app.alloc;
     const titles = alloc.alloc([]const u8, self.tabs.items.len) catch return;
     defer alloc.free(titles);
-    for (self.tabs.items, titles) |tab, *t| t.* = tab.title();
+    var zoomed_titles: std.ArrayList([]u8) = .empty;
+    defer {
+        for (zoomed_titles.items) |z| alloc.free(z);
+        zoomed_titles.deinit(alloc);
+    }
+    for (self.tabs.items, titles) |tab, *t| {
+        t.* = tab.title();
+        // A magnifier marks a zoomed tab.
+        if (tab.tree.zoomed == null) continue;
+        const z = std.fmt.allocPrint(alloc, "\u{1F50D} {s}", .{t.*}) catch continue;
+        zoomed_titles.append(alloc, z) catch {
+            alloc.free(z);
+            continue;
+        };
+        t.* = z;
+    }
 
     const r = self.tabBarRect();
     self.tab_bar.paint(hdc, r.right, titles, self.active, colors.bg, colors.fg);

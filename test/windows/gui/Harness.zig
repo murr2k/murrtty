@@ -807,6 +807,8 @@ pub const Dump = struct {
         area: ?[2]i32 = null,
         panes: ?[]const Pane = null,
         dividers: ?[]const [4]i32 = null,
+        /// Whether a pane of the tab is zoomed.
+        zoomed: ?bool = null,
     };
 
     pub const Pane = struct {

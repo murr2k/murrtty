@@ -7128,11 +7128,10 @@ pub const Keybinds = struct {
         );
 
         // Toggle zoom a split
-        try self.set.putFlags(
+        try self.set.put(
             alloc,
             .{ .key = .{ .physical = .enter }, .mods = inputpkg.ctrlOrSuper(.{ .shift = true }) },
             .{ .toggle_split_zoom = {} },
-            windows_unimplemented,
         );
 
         // Toggle command palette, matches VSCode
@@ -10751,7 +10750,6 @@ test "windows: defaults for actions the runtime lacks are performable" {
     const triggers = [_]inputpkg.Binding.Trigger{
         .{ .key = .{ .unicode = 'p' }, .mods = ctrl_shift }, // command palette
         .{ .key = .{ .unicode = 'i' }, .mods = ctrl_shift }, // inspector
-        .{ .key = .{ .physical = .enter }, .mods = ctrl_shift }, // split zoom
     };
     for (triggers) |t| {
         const entry = config.keybind.set.get(t) orelse return error.TestUnexpectedResult;
@@ -10766,6 +10764,7 @@ test "windows: defaults for actions the runtime lacks are performable" {
     for ([_]inputpkg.Binding.Trigger{
         .{ .key = .{ .unicode = 'o' }, .mods = ctrl_shift },
         .{ .key = .{ .unicode = 'e' }, .mods = ctrl_shift },
+        .{ .key = .{ .physical = .enter }, .mods = ctrl_shift },
     }) |t| {
         const entry = config.keybind.set.get(t) orelse return error.TestUnexpectedResult;
         const leaf = switch (entry.value_ptr.*) {

@@ -1060,6 +1060,28 @@ pub fn performAction(
             try surface.window.newSplit(surface, value);
         },
 
+        // Each returns false when it does nothing (one pane, nowhere to
+        // go), so a performable key reaches the program.
+        .goto_split => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            return surface.window.gotoSplit(surface, value);
+        },
+
+        .toggle_split_zoom => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            return surface.window.toggleSplitZoom(surface);
+        },
+
+        .equalize_splits => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            return surface.window.equalizeSplits(surface);
+        },
+
+        .resize_split => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            return surface.window.resizeSplit(surface, value);
+        },
+
         .present_terminal => {
             const surface = surfaceFromTarget(target) orelse return false;
             surface.window.presentSurface(surface);

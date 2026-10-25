@@ -36,6 +36,9 @@ focused: *Surface,
 /// started before (a divider drag) can tell that its panes changed.
 generation: u64 = 0,
 
+/// Whether the tab is shown: its window's active tab, not minimized.
+visible: bool = true,
+
 pub fn registerClass(instance: c.HINSTANCE) !void {
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wndProc,
@@ -136,13 +139,123 @@ pub fn title(self: *const Tab) []const u8 {
     return self.focused.title orelse "Ghostty";
 }
 
-/// Show or hide the tab (tab switches, minimize). Hidden panes tell the
-/// core they are occluded, so their renderers stop drawing.
+/// Show or hide the tab (tab switches, minimize). Hidden panes, and panes
+/// behind another's zoom, tell the core they are occluded, so their
+/// renderers stop drawing.
 pub fn setVisible(self: *Tab, visible: bool) void {
+    self.visible = visible;
     if (visible) _ = c.ShowWindow(self.hwnd, c.SW_SHOW);
-    var it = self.tree.iterator();
-    while (it.next()) |entry| entry.view.setVisible(visible);
+    self.syncPaneVisibility();
     if (!visible) _ = c.ShowWindow(self.hwnd, c.SW_HIDE);
+}
+
+/// Show the panes that should be, hide the rest.
+fn syncPaneVisibility(self: *Tab) void {
+    var it = self.tree.iterator();
+    while (it.next()) |entry| {
+        const zoomed_away = if (self.tree.zoomed) |z| !Layout.isWithin(&self.tree, entry.handle, z) else false;
+        const want = self.visible and !zoomed_away;
+        if (entry.view.shown != want) entry.view.setVisible(want);
+    }
+}
+
+/// Move the focus from pane `from` for goto_split: the pane before or
+/// after it (wrapping), or the nearest one in a direction. Returns the
+/// pane that becomes the tab's focused one, or null when nothing moves (so
+/// the key reaches the program). A zoom moves to it with
+/// `split-preserve-zoom = navigation`, and ends otherwise.
+pub fn goto(self: *Tab, from: *Surface, to: apprt.action.GotoSplit) !?*Surface {
+    const alloc = self.window.app.core_app.alloc;
+    const handle = self.tree.locate(from) orelse return null;
+    const target = try self.tree.goto(alloc, handle, switch (to) {
+        .previous => .previous_wrapped,
+        .next => .next_wrapped,
+        .up => .{ .spatial = .up },
+        .down => .{ .spatial = .down },
+        .left => .{ .spatial = .left },
+        .right => .{ .spatial = .right },
+    }) orelse return null;
+    if (target == handle) return null;
+    const surface = switch (self.tree.nodes[target.idx()]) {
+        .leaf => |v| v,
+        .split => return null,
+    };
+    self.focused = surface;
+    if (self.tree.zoomed != null) {
+        self.tree.zoom(if (self.window.app.config.@"split-preserve-zoom".navigation) target else null);
+        self.layoutPanes();
+    }
+    return surface;
+}
+
+/// toggle_split_zoom: zoom the focused pane to fill the tab, or end the
+/// zoom. False when the tab has one pane (the key reaches the program).
+pub fn toggleZoom(self: *Tab) bool {
+    if (!self.tree.isSplit()) return false;
+    self.tree.zoom(if (self.tree.zoomed != null) null else self.tree.locate(self.focused));
+    self.layoutPanes();
+    return true;
+}
+
+/// End a zoom. Returns whether there was one.
+pub fn unzoom(self: *Tab) bool {
+    if (self.tree.zoomed == null) return false;
+    self.tree.zoom(null);
+    self.layoutPanes();
+    return true;
+}
+
+/// equalize_splits. False when the tab has one pane.
+pub fn equalize(self: *Tab) !bool {
+    if (!self.tree.isSplit()) return false;
+    const next = try self.tree.equalize(self.window.app.core_app.alloc);
+    self.tree.deinit();
+    self.tree = next;
+    self.layoutPanes();
+    return true;
+}
+
+/// resize_split: move the divider nearest pane `from` across `direction`
+/// by `amount` points (scaled by the DPI). It ends a zoom. Returns false
+/// when nothing changed: one pane, or a divider already as far as the
+/// panes' minimums let it go.
+pub fn resize(self: *Tab, from: *Surface, value: apprt.action.ResizeSplit) !bool {
+    if (!self.tree.isSplit() or value.amount == 0) return false;
+    const alloc = self.window.app.core_app.alloc;
+    const handle = self.tree.locate(from) orelse return false;
+    const px: i32 = @intCast((@as(u64, value.amount) * c.GetDpiForWindow(self.hwnd) + 48) / 96);
+    const layout: Layout.SplitLayout = switch (value.direction) {
+        .left, .right => .horizontal,
+        .up, .down => .vertical,
+    };
+    const area_ = self.area();
+    const delta = Layout.resizeDelta(area_, layout, switch (value.direction) {
+        .left, .up => -px,
+        .right, .down => px,
+    });
+
+    const was_zoomed = self.tree.zoomed != null;
+    self.tree.zoomed = null;
+    var next = try self.tree.resize(alloc, handle, layout, delta);
+    errdefer next.deinit();
+
+    // Compare where the panes are, unzoomed, before and after.
+    var before = try Layout.compute(alloc, &self.tree, area_, self.dividerWidth());
+    defer before.deinit(alloc);
+    var after = try Layout.compute(alloc, &next, area_, self.dividerWidth());
+    defer after.deinit(alloc);
+    var moved = false;
+    for (before.panes, after.panes) |a, b| moved = moved or !std.meta.eql(a.rect, b.rect);
+
+    if (!moved) {
+        next.deinit();
+        if (was_zoomed) self.layoutPanes();
+        return was_zoomed;
+    }
+    self.tree.deinit();
+    self.tree = next;
+    self.layoutPanes();
+    return true;
 }
 
 /// Split pane `at`: a new pane `direction` of it, inheriting from `parent`
@@ -235,16 +348,32 @@ pub fn closePane(self: *Tab, surface: *Surface) !bool {
 /// repaint the dividers.
 pub fn layoutPanes(self: *Tab) void {
     const alloc = self.window.app.core_app.alloc;
-    var layout = Layout.compute(alloc, &self.tree, self.area(), self.dividerWidth()) catch |err| {
+    const area_ = self.area();
+    var layout = Layout.compute(alloc, &self.tree, area_, self.dividerWidth()) catch |err| {
         log.err("error laying out panes err={}", .{err});
         return;
     };
     defer layout.deinit(alloc);
 
+    // Panes hidden behind a zoom keep the size they have unzoomed: the
+    // layout's empty rectangle would shrink their terminals to one cell,
+    // reflowing their text into one column and telling their programs.
+    var unzoomed: ?Layout = null;
+    defer if (unzoomed) |*u| u.deinit(alloc);
+    if (self.tree.zoomed != null) {
+        var copy = self.tree;
+        copy.zoomed = null;
+        unzoomed = Layout.compute(alloc, &copy, area_, self.dividerWidth()) catch null;
+    }
+
     const flags = c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOCOPYBITS;
     var hdwp = c.BeginDeferWindowPos(@intCast(layout.panes.len));
     for (layout.panes) |p| {
-        const r = toRect(p.rect);
+        var placed = p.rect;
+        if (placed.isEmpty()) if (unzoomed) |u| for (u.panes) |q| {
+            if (q.view == p.view) placed = q.rect;
+        };
+        const r = toRect(placed);
         if (hdwp) |h| {
             hdwp = c.DeferWindowPos(h, p.view.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
         }
@@ -252,6 +381,7 @@ pub fn layoutPanes(self: *Tab) void {
         if (hdwp == null) _ = c.SetWindowPos(p.view.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
     }
     if (hdwp) |h| _ = c.EndDeferWindowPos(h);
+    self.syncPaneVisibility();
     // WS_CLIPCHILDREN limits this to the dividers and any gap.
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
