@@ -1,7 +1,11 @@
-# Windows port roadmap
+# murrtty roadmap
 
-The plan for finishing the native Windows port of Ghostty: what is missing,
-in what order to build it, how, and how to tell it is done. It was written
+murrtty is a native Windows terminal forked from Ghostty: Ghostty's core,
+renderer, fonts and configuration with a Win32 runtime, diverging from
+upstream where Windows or its own features call for it (see "The fork"
+below). This is the plan for it: what is missing, in what order to build it,
+how, and how to tell it is done. It began as the plan for a native Windows
+port of Ghostty, and was written
 from a read of the code at `84e810a3e` (port, in the history before the
 2026-10-25 regroup: tag `port/pre-regroup`) on upstream `22f100c63`,
 comparing the Win32 runtime (`src/apprt/win32/`) against the core, the GTK
@@ -24,11 +28,11 @@ and IMEs, several GPU vendors, Windows 10 and 11.
 |---|---|---|
 | **M1: Feels like Ghostty** | All of Phase 0; splits 1.1 to 1.9 (Phase 1); shell integration (Phase 2); and the Phase 3 core UI. The Phase 3 core is 3.0 foundations, context menu, search, command palette, scrollbar, titles, status overlays and toasts, and the bell's `title` indicator. Plus a first pass of keyboard and IME validation (6.2) once splits move focus. | 12 to 14 weeks |
 | **M2: Daily-driver parity** | Pane drag and drop (1.10); the rest of Phase 3 (bell audio and border, tab bar, dialogs); all of Phase 4; and Phase 5 items 5.1 to 5.9: IPC, notifications, command-finished notices, taskbar progress, global keybinds, tray, quick terminal, drag and drop, selection clipboard | a further 16 to 20 weeks |
-| **M3: Public release** | Phase 7 except 7.8 and 7.9 (upstream-facing upkeep, full CI, GUI tests in CI, packaging, signing, crash reports, updates, ARM64) and the rest of Phase 6 (DirectWrite fonts, the 6.2 keyboard and IME re-run, OpenGL fallbacks, small fidelity items), in parallel with M2 | 5 to 10 weeks, overlapping M2 |
+| **M3: Public release** | Phase 7 except 7.8 (upstream merges, full CI, GUI tests in CI, packaging, signing, crash reports, updates, ARM64) and the rest of Phase 6 (DirectWrite fonts, the 6.2 keyboard and IME re-run, OpenGL fallbacks, small fidelity items), in parallel with M2 | 5 to 10 weeks, overlapping M2 |
 | **M4: Complete** | Session restore (5.10), undo of closes (5.11), terminal inspector (5.12) | about 4 to 5 weeks |
 
-Not in these estimates: a Direct3D 11 renderer (7.8, XL), UI Automation
-accessibility (6.4, XL) and upstream review time (7.9). Spikes S1, S2, S3 and
+Not in these estimates: a Direct3D 11 renderer (7.8, XL) and UI Automation
+accessibility (6.4, XL). Spikes S1, S2, S3 and
 S6 add about a week, before the items they decide. The phase headings below
 give each phase's own total; the milestones regroup them by user value.
 
@@ -60,7 +64,7 @@ These change the work. Each has a recommendation.
 5. **Identifiers.** The AppUserModelID, pipe names, winget package ID and the
    installer's mutex should be fork-specific, not `com.mitchellh.ghostty`, and
    picked before the first release: changing an AppUserModelID later breaks
-   pinned taskbar icons.
+   pinned taskbar icons. *Decided 2026-10-26: murrtty's own (R3).*
 6. **CI on a private repository.** Actions minutes are billed for private
    repos, and Windows runners count double. *Recommended: a single port-owned
    workflow (0.11, later 7.2), started manually or on release tags at first.*
@@ -78,11 +82,56 @@ These change the work. Each has a recommendation.
    repository.
 7. **Upstreaming.** Whether to pursue in-tree support (7.9). It decides how
    carefully history is kept (0.10) and which fixes are written to be
-   upstreamable first (Windows `reportPwd`, font style matching).
+   upstreamable first (Windows `reportPwd`, font style matching). *Decided
+   2026-10-26: no.* Ghostty's maintainers said on their Discord that they
+   won't add more runtimes to Ghostty and suggested building a Windows
+   terminal on libghostty-vt instead. The owner kept the fork, renamed it
+   murrtty, and lets it diverge (see "The fork").
 8. **Visibility.** The repository is private. winget and the update appcast
    (7.4, 7.6) need publicly downloadable artifacts. *Decide before M3* whether
    the repository goes public then, or releases are hosted elsewhere. Going
    public also makes standard Actions runners free, which changes decision 6.
+   *Decided 2026-10-26: public.* murrtty's code goes to a new public
+   repository, `murr2k/murrtty`, under the MIT license like Ghostty; the
+   private repository stays as a mirror that every push also goes to, so the
+   self-hosted GPU runner never serves a public repository (R4).
+
+## The fork
+
+*Decided 2026-10-26.* murrtty is open source, MIT-licensed like Ghostty, and
+not affiliated with the Ghostty project.
+
+- **Divergence.** Upstream's design no longer limits murrtty: Windows-native
+  behavior and new features may change shared code where that is the right
+  place. Shared-code changes stay small and self-contained where it costs
+  nothing, because upstream is still merged in (below).
+- **Upstream.** Ghostty's `main` is merged into murrtty periodically (per
+  upstream release, or when a fix is wanted), replacing the rebases of 0.10:
+  a diverging history rebased every time would replay ever more commits.
+  `rerere` stays on. Internal names in shared code (`Ghostty*` types, the
+  `GHOSTTY_*` variables the shell integration uses, the `ghostty` resource
+  folder) stay as they are, so those merges stay cheap.
+- **What stays compatible.** The configuration format (and, by default, an
+  existing Ghostty configuration, R3), `TERM=xterm-ghostty` and its terminfo
+  (programs get the capabilities the shared core implements), the shell
+  integration, themes and key bindings.
+- **What is murrtty's own.** The executable `murrtty.exe`, window classes,
+  `TERM_PROGRAM=murrtty` (so programs' bug reports reach murrtty, not
+  Ghostty), the configuration folder `%LOCALAPPDATA%\murrtty`, the
+  identifiers of decision 5, and the icon: Ghostty's name and logo belong to
+  the Ghostty project and are used only to say what murrtty is based on.
+
+Fork items, ahead of the rest of Phase 3:
+- **R1, S.** Record the decision (this section, the README). *Done
+  2026-10-26.*
+- **R2, S.** A trial merge of current upstream `main` on a local branch, to
+  measure what each merge costs.
+- **R3, M.** Rename and brand: the identifiers above, a placeholder icon,
+  the builder, harness, CI and README, and a copyright line for murrtty's
+  changes beside Ghostty's in `LICENSE`.
+- **R4, S.** Publish `murr2k/murrtty`: an audit for secrets and personal
+  data, upstream's workflows kept from running there, the desktop workflow
+  limited to the private mirror, and pushes going to both repositories.
 
 ## Rules every item keeps
 
@@ -389,6 +438,8 @@ branch `windows-port-regrouped` (seven area commits, same tree); replacing
   builder, docs) and enable `rerere`.
 - Rebase per upstream tag on a `rebase/<date>` branch, tagging the previous
   tip for rollback. This is an ongoing practice from here on, not a one-off.
+  *Superseded 2026-10-26 by the fork decision:* upstream is merged, not
+  rebased onto (see "The fork").
 
 **0.11 Minimal CI, M.** *Done 2026-10-24.* One port-owned workflow, started manually: the Windows
 build, the Windows unit tests, and the builder under PowerShell 5.1. Before
@@ -1320,11 +1371,14 @@ waiting for M3.
 
 ## Phase 7: Release engineering (about 3 to 7 weeks, finished for M3, plus 7.8)
 
-Rebase hygiene and minimal CI moved to Phase 0 (0.10, 0.11), since the fork
-rebases many times before M3.
+History hygiene and minimal CI moved to Phase 0 (0.10, 0.11), since the fork
+takes in upstream many times before M3.
 
-**7.1 Upstream-facing upkeep, S.** Propose upstream an `else => void` default
-for the GTK-only runtime switches, so a new runtime needs no core edits.
+**7.1 Upstream merges, S each.** Merge Ghostty's `main` per upstream
+release (see "The fork"): build, unit tests and the GUI suite on a
+`merge/<date>` branch before it lands. *Replaced 2026-10-26:* this was a
+proposal to upstream an `else => void` default for the GTK-only runtime
+switches, which no longer applies.
 
 **7.2 Full CI, M.** Extend 0.11: run on pushes and pull requests (once
 decisions 6 and 8 allow the minutes), upload
@@ -1372,15 +1426,9 @@ DirectComposition transparency. It removes the OpenGL 4.3 requirement, which
 is expected to be the main cause of start failures (VMs, Remote Desktop,
 Windows on ARM).
 
-**7.9 Upstreaming.** Per upstream's `CONTRIBUTING.md` and `AI_POLICY.md`:
-1. A vouch request, then a discussion in the owner's own words.
-2. Small, independently useful PRs first: the Exec pipe-handle fix, Windows
-   `reportPwd`, font style matching, build enablers.
-3. Full libghostty on Windows.
-4. The runtime only after parity, with an owner for Windows issues.
-
-Every PR discloses the AI assistance, and its human author can explain every
-line.
+**7.9 Upstreaming.** *Dropped 2026-10-26 (decision 7):* Ghostty won't take
+another runtime. A fix that matters to Ghostty itself can still be offered
+upstream on its own, under upstream's `CONTRIBUTING.md` and `AI_POLICY.md`.
 
 ---
 

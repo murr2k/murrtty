@@ -358,8 +358,11 @@ detail.
 to the base commit above, plus the commits that add Windows support. Upstream
 itself is [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty).
 
-The port is meant to stay a small set of commits on top of upstream, rebased
-as upstream moves. It has not been submitted to upstream Ghostty.
+Ghostty's maintainers won't add more runtimes to Ghostty, so this fork is
+becoming its own terminal, **murrtty**: a native Windows work-alike of
+Ghostty that diverges where Windows or its own features call for it. Upstream
+is merged in from time to time rather than rebased onto; the plan is in
+[WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) under "The fork".
 
 ## AI assistance
 
@@ -367,8 +370,8 @@ This port was developed by the repository owner using Claude Code
 (Anthropic's AI coding agent): at the owner's direction, the agent wrote the
 code, the commit messages and this README, and ran the testing described
 under Status. Ghostty's [AI usage policy](../AI_POLICY.md) governs contributions
-to Ghostty itself; this fork has not been submitted upstream, and any future
-upstream contribution would have to meet that policy.
+to Ghostty itself; this fork isn't submitted upstream, and any fix offered
+to Ghostty on its own would have to meet that policy.
 
 ## License
 
