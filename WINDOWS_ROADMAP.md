@@ -149,6 +149,14 @@ Fork items, ahead of the rest of Phase 3:
 - **R4, S.** Publish `murr2k/murrtty`: an audit for secrets and personal
   data, upstream's workflows kept from running there, the desktop workflow
   limited to the private mirror, and pushes going to both repositories.
+  *Prepared 2026-10-26, held by the owner.* The audit found no secrets or
+  credential patterns in the fork's commits or messages; what becomes
+  visible is the commits' author identity and this roadmap's description of
+  the desktop runner. The desktop workflow already runs only in the private
+  repository. Steps when the owner says go: create the public repository,
+  turn Actions off there before the first push (upstream's workflows would
+  run otherwise), push `windows-port` as its `main` and nothing else (never
+  `perf-trace`, no tags), then push to both repositories from then on.
 
 ## Rules every item keeps
 
