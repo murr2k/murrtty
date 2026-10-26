@@ -1706,6 +1706,13 @@ reference design. Critical for screen-reader users.
 - A `secure_input` badge.
 - Version numbers: fill in `FILEVERSION`, `PRODUCTVERSION` and `FileVersion`
   in the existing version resource (`dist/windows/ghostty.rc`).
+- `+validate-config` exits 1 and prints nothing when its output is a pipe
+  (PowerShell capturing it), even for an empty file; into a file it exits 0.
+  *Found 2026-10-26.* Suspect its closing `stdout_writer.end()`
+  (`cli/validate_config.zig`), which truncates the output and may fail on a
+  Windows pipe; `+version`, `+show-config` and `+list-themes`, which exit 0
+  there, don't end their output that way. An error there would also
+  swallow the diagnostics it found.
 
 **6.6 Bare command names, S.** `Command.zig` starts the shell with a null
 `lpApplicationName`, so for a bare name Windows searches Ghostty's own

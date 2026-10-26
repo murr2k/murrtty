@@ -45,7 +45,7 @@ pub const all = [_]Scenario{
     .{ .name = "splits", .about = "Ctrl+Shift+O/E split panes that tile the tab; closing panes moves focus as designed", .run = splits },
     .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits, minimums", .run = splitCommands },
     .{ .name = "split-mouse", .about = "dragging a divider, Esc (none of that keystroke reaches the core), double-click to equalize, the grip band", .run = splitMouse },
-    .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background", .run = splitDim },
+    .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
@@ -3572,9 +3572,11 @@ fn splitMouse(h: *Harness) anyerror!void {
 /// unfocused-split-fill over them at 1 - unfocused-split-opacity, blended
 /// in sRGB. Read back from the renderers in a padding pixel (the
 /// background): half red over #282c34 in the dimmed pane, the background
-/// alone in the focused one; moving the focus moves the dimming.
+/// alone in the focused one; moving the focus moves the dimming. The
+/// dividers follow the background unless `split-divider-color` sets them.
 fn splitDim(h: *Harness) anyerror!void {
-    var g = try start(h, "split-dim", "unfocused-split-fill = #ff0000\nunfocused-split-opacity = 0.5\n", ">");
+    const dim_config = "unfocused-split-fill = #ff0000\nunfocused-split-opacity = 0.5\n";
+    var g = try start(h, "split-dim", dim_config, ">");
     defer g.deinit();
     const win = try h.mainWindow(&g);
     const bg: u32 = 0x282c34;
@@ -3602,6 +3604,14 @@ fn splitDim(h: *Harness) anyerror!void {
     try h.typeText(left, "prompt $E]11;#f0f0f0$E\\$G");
     h.enter(left);
     try expectDividerColor(h, &g, 0xdcdcdc, "after OSC 11 they follow the light one");
+
+    // split-divider-color sets them over that rule: written to the running
+    // instance's configuration, then reloaded (Ctrl+Shift+,).
+    const cfg_path = try std.fmt.allocPrint(h.alloc, "{s}\\split-dim\\murrtty\\config.ghostty", .{h.temp_dir});
+    defer h.alloc.free(cfg_path);
+    try h.writeFileAt(cfg_path, base_config ++ dim_config ++ "split-divider-color = #ffffff\n");
+    h.key(left, .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
+    try expectDividerColor(h, &g, 0xffffff, "split-divider-color sets them, whatever the background");
     try quit(h, &g, left);
 }
 
