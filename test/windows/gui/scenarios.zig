@@ -1235,7 +1235,8 @@ fn commandPalette(h: *Harness) anyerror!void {
     try h.expect(p.count > 20, "it lists the commands ({d})", .{p.count});
     try h.expect(p.has("New Tab"), "New Tab is there", .{});
     try h.expect(p.hasPrefix("Focus: "), "and a jump to the terminal", .{});
-    try h.expect(!p.has("Toggle Inspector") and !p.has("Change Tab Title\u{2026}"), "commands this runtime lacks are not", .{});
+    try h.expect(!p.has("Toggle Inspector") and !p.has("Move Tab to New Window"), "commands this runtime lacks are not", .{});
+    try h.expect(p.has("Change Tab Title\u{2026}"), "the title prompts are (roadmap 3.5)", .{});
     try h.expect(!p.has("Copy Selection as HTML to Clipboard") and !p.has("Paste from Selection"), "nor ones whose argument it can't honor", .{});
 
     // The app's config changes while it is open, again and again (the app
