@@ -145,6 +145,12 @@ hosted Windows runner and then the unit tests.
   `Shift+Enter`, or the arrow buttons, go to the next and previous match;
   `Esc` or the close button ends the search. `search_selection` (unbound by
   default on Windows) opens it with the selected text.
+- The command palette (`Ctrl+Shift+P`): every command murrtty can perform
+  (the `command-palette-entry` list), each with its action and key binding,
+  and a "Focus:" entry for each terminal in every window that says where it
+  is ("Window 2, tab 1: C:\src"). Typing filters by title, by the line
+  beneath it, or by letters in order; `Up`/`Down` choose, `Enter` or a
+  click runs, `Esc` or a click outside closes.
 - CLI actions such as `murrtty +version` print to the console they were
   started from.
 
@@ -170,8 +176,7 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- Scrollbar, command palette, terminal inspector, quick terminal,
-  desktop notifications.
+- Scrollbar, terminal inspector, quick terminal, desktop notifications.
 - Transparency: with `background-opacity` the window stays opaque and shows
   the background color as configured. Also background blur and the
   `window-decoration` options.
@@ -180,8 +185,8 @@ hosted Windows runner and then the unit tests.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the everyday UI: context menu, scrollbar, search and command palette
-(Phase 3).
+with the rest of the everyday UI: scrollbar, titles, status overlays and
+toasts (Phase 3).
 
 **Known issues**
 

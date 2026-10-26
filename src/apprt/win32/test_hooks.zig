@@ -177,6 +177,37 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         const caption: i64 = if (w.chrome.caption) |ref| rgbOf(ref) else -1;
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
 
+        // The command palette: open, whether it has the keyboard, its
+        // windows (to type into and click), a row's height, the filter's
+        // text, the listed titles (best match first) with the lines beneath
+        // them, and the selected row.
+        {
+            const p = &w.palette;
+            var text_buf: [1024]u8 = undefined;
+            const selected: i64 = if (p.selected()) |s| @intCast(s) else -1;
+            try out.print(alloc, "\"palette\":{{\"open\":{},\"focused\":{},\"edit\":{d},\"list\":{d},\"dim\":{d},\"row_height\":{d},\"selected\":{d},\"text\":", .{
+                p.isOpen(),
+                p.ownsFocus(),
+                if (p.edit) |e| @intFromPtr(e) else 0,
+                if (p.list) |l| @intFromPtr(l) else 0,
+                if (p.dim) |d| @intFromPtr(d) else 0,
+                p.rowHeight(),
+                selected,
+            });
+            try writeString(alloc, out, p.filterText(&text_buf));
+            try out.appendSlice(alloc, ",\"items\":[");
+            for (0..p.shownCount()) |i| {
+                if (i > 0) try out.append(alloc, ',');
+                try writeString(alloc, out, p.shownTitle(i));
+            }
+            try out.appendSlice(alloc, "],\"details\":[");
+            for (0..p.shownCount()) |i| {
+                if (i > 0) try out.append(alloc, ',');
+                try writeString(alloc, out, p.shownDetail(i));
+            }
+            try out.appendSlice(alloc, "]},");
+        }
+
         // Tab bar geometry in client coordinates, for clicks.
         const n = w.tabs.items.len;
         try out.print(alloc, "\"tab_bar\":{{\"visible\":{},\"height\":{d},\"tabs\":[", .{

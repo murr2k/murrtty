@@ -1129,6 +1129,30 @@ each pane's `search`.
 Remove 0.2's override for `Ctrl+Shift+P`. *Done when:* the palette filters,
 runs actions, and jumps to terminals in other windows.
 
+*Done 2026-10-26.* `win32/CommandPalette.zig`, one per window: a layered
+child box (S1's host) at the window's top center, under the tab bar, over a
+layered dimming child that covers the client area and closes the palette on
+a click. The box holds a real `EDIT` filter over an owner-drawn `LISTBOX`.
+Rows are GTK's: the title with the action beneath in monospace
+(`new_split:right`) and the binding as keycaps. The entries are the
+`command-palette-entry` items `App.supportsAction` allows (75 of the
+defaults), sorted as GTK sorts them, and a "Focus:" entry per terminal in
+every window. GTK leaves those without a line beneath; here it reads "Tab 2:
+C:\src", or "Window 2, tab 1: ..." with several windows (the directory from
+`Surface.pwd`, unless the title shows it). Typing ranks title matches, then
+matches of the line beneath (GTK's two filters), then titles holding the
+typed letters in order. The field's wrapped procedure moves the selection
+with Up, Down, Page Up and Page Down, Enter runs and Escape closes; a click
+on a row runs it on release (GTK's single-click activation). What was
+chosen runs from a posted message after the palette has closed: an action
+on the pane it opened over (or the window's active pane, if that one has
+closed), a jump through `Window.presentSurface` once the pane is checked to
+still exist. While it is open `Window.focusActiveNow` gives it the
+keyboard. 0.2's override for `Ctrl+Shift+P` is gone (the inspector's
+remains). Scenario `command-palette`, which also jumps from a second window;
+the dump reports each window's `palette`. Not done: GTK's description
+tooltips (the owner-drawn list has no per-row tooltips yet).
+
 **3.4 Scrollbar, M.** An overlay scrollbar from the core's `scrollbar` action:
 - A thin thumb that widens on hover and fades when idle, drawn through 3.0's
   shape layer so the grid does not shrink.

@@ -30,6 +30,7 @@ pub const all = [_]Scenario{
     .{ .name = "resize-overlay", .about = "the grid size shows while a pane resizes: after-first, never, always, position, duration", .run = resizeOverlay },
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
+    .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "config-folder", .about = "murrtty's own config wins, Ghostty's is read when it has none, Ctrl+, opens the file in effect; TERM_PROGRAM is murrtty", .run = configFolder },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
@@ -1124,6 +1125,200 @@ fn waitCounter(h: *Harness, g: *Harness.Ghostty, suffix: []const u8) !SearchStat
         w.Sleep(100);
     }
     return h.fail("the counter reads '{s}', not '{s}'", .{ last.counterSlice(), suffix });
+}
+
+/// The command palette (roadmap 3.3): Ctrl+Shift+P opens it over the
+/// window with the keyboard in its filter, listing the commands this
+/// runtime performs (each with its action beneath) and a "Focus:" entry
+/// per terminal (with where it is); typing filters; Enter runs the
+/// selected command (New Tab) once it has closed; a jump entry brings its
+/// terminal's tab forward, also in another window; a click on a row runs
+/// it; Escape and a click on the dimmed window close it and give the
+/// keyboard back.
+fn commandPalette(h: *Harness) anyerror!void {
+    var g = try start(h, "command-palette", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
+    var p = try waitPalette(h, &g, win, true);
+    try h.expect(p.focused, "Ctrl+Shift+P opens it with the keyboard in its filter", .{});
+    try h.expect(p.count > 20, "it lists the commands ({d})", .{p.count});
+    try h.expect(p.has("New Tab"), "New Tab is there", .{});
+    try h.expect(p.hasPrefix("Focus: "), "and a jump to the terminal", .{});
+    try h.expect(!p.has("Toggle Inspector") and !p.has("Change Tab Title\u{2026}"), "commands this runtime lacks are not", .{});
+
+    try h.typeText(hwndOf(p.edit), "new tab");
+    p = try waitPaletteFirst(h, &g, win, "New Tab");
+    try h.expect(std.mem.eql(u8, p.firstDetail(), "new_tab"), "with its action beneath ('{s}')", .{p.firstDetail()});
+    h.key(hwndOf(p.edit), .{}, w.VK_RETURN);
+    _ = try waitPalette(h, &g, win, false);
+    try waitWindowTabs(h, &g, win, 2);
+    w.Sleep(500);
+    const second = try h.surface(&g, win);
+    try h.expect(keyboardFocus(win) == second, "Enter runs New Tab, and its pane has the keyboard", .{});
+
+    // The first tab's terminal sorts first among the jumps: its title, or
+    // the same title and the earlier tab.
+    h.key(second, .{ .ctrl = true, .shift = true }, 'P');
+    p = try waitPalette(h, &g, win, true);
+    try h.typeText(hwndOf(p.edit), "focus:");
+    p = try waitPaletteFirst(h, &g, win, "Focus: ");
+    try h.expect(std.mem.startsWith(u8, p.firstDetail(), "Tab 1"), "a jump says where its terminal is ('{s}')", .{p.firstDetail()});
+    h.key(hwndOf(p.edit), .{}, w.VK_RETURN);
+    _ = try waitPalette(h, &g, win, false);
+    try waitActiveTab(h, &g, win, 0);
+    try h.expect(keyboardFocus(win) == surf, "a jump entry brings its tab forward with the keyboard in its pane", .{});
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
+    p = try waitPalette(h, &g, win, true);
+    h.key(hwndOf(p.edit), .{}, w.VK_ESCAPE);
+    _ = try waitPalette(h, &g, win, false);
+    try h.expect(keyboardFocus(win) == surf, "Escape closes it and gives the keyboard back", .{});
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
+    p = try waitPalette(h, &g, win, true);
+    _ = w.PostMessageW(hwndOf(p.dim), w.WM_LBUTTONDOWN, w.MK_LBUTTON, 10 << 16 | 10);
+    _ = try waitPalette(h, &g, win, false);
+    try h.expect(keyboardFocus(win) == surf, "a click outside it closes it too", .{});
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
+    p = try waitPalette(h, &g, win, true);
+    try h.typeText(hwndOf(p.edit), "new tab");
+    p = try waitPaletteFirst(h, &g, win, "New Tab");
+    const at: isize = @as(isize, @divTrunc(p.row_height, 2)) << 16 | 20;
+    _ = w.PostMessageW(hwndOf(p.list), w.WM_LBUTTONDOWN, w.MK_LBUTTON, at);
+    _ = w.PostMessageW(hwndOf(p.list), w.WM_LBUTTONUP, 0, at);
+    _ = try waitPalette(h, &g, win, false);
+    try waitWindowTabs(h, &g, win, 3);
+    try h.expect(true, "a click on a row runs it", .{});
+    w.Sleep(500);
+
+    // From a second window, a jump to the first window's second tab:
+    // found by where it is, it brings that window forward on that tab.
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'N');
+    w.Sleep(2500);
+    const wins = try h.windows(&g, "MurrttyWindow");
+    defer h.alloc.free(wins);
+    try h.expect(wins.len == 2, "Ctrl+Shift+N opens a second window (got {d})", .{wins.len});
+    const other = if (wins[0] == win) wins[1] else wins[0];
+    h.key(try h.surface(&g, other), .{ .ctrl = true, .shift = true }, 'P');
+    p = try waitPalette(h, &g, other, true);
+    try h.typeText(hwndOf(p.edit), "window 1, tab 2");
+    p = try waitPaletteFirst(h, &g, other, "Focus: ");
+    try h.expect(std.mem.startsWith(u8, p.firstDetail(), "Window 1, tab 2"), "the filter matches where a terminal is ('{s}')", .{p.firstDetail()});
+    h.key(hwndOf(p.edit), .{}, w.VK_RETURN);
+    _ = try waitPalette(h, &g, other, false);
+    try waitActiveTab(h, &g, win, 1);
+    try h.expect(activeWindow(win) == win, "a jump to another window's terminal brings that window forward", .{});
+    try quit(h, &g, try h.surface(&g, win));
+}
+
+const PaletteState = struct {
+    open: bool = false,
+    focused: bool = false,
+    edit: u64 = 0,
+    list: u64 = 0,
+    dim: u64 = 0,
+    row_height: i32 = 0,
+    count: usize = 0,
+    /// The listed titles, each followed by a line feed.
+    titles: [8192]u8 = undefined,
+    titles_len: usize = 0,
+    /// The line beneath the first row's title.
+    detail: [256]u8 = undefined,
+    detail_len: usize = 0,
+
+    fn firstDetail(self: *const PaletteState) []const u8 {
+        return self.detail[0..self.detail_len];
+    }
+
+    fn has(self: *const PaletteState, title: []const u8) bool {
+        var it = std.mem.splitScalar(u8, self.titles[0..self.titles_len], '\n');
+        while (it.next()) |t| if (std.mem.eql(u8, t, title)) return true;
+        return false;
+    }
+    fn hasPrefix(self: *const PaletteState, prefix: []const u8) bool {
+        var it = std.mem.splitScalar(u8, self.titles[0..self.titles_len], '\n');
+        while (it.next()) |t| if (std.mem.startsWith(u8, t, prefix)) return true;
+        return false;
+    }
+    fn first(self: *const PaletteState) []const u8 {
+        const titles = self.titles[0..self.titles_len];
+        return titles[0 .. std.mem.indexOfScalar(u8, titles, '\n') orelse titles.len];
+    }
+};
+
+/// Window `win`'s command palette, from a fresh dump.
+fn paletteState(h: *Harness, g: *Harness.Ghostty, win: w.HWND) !PaletteState {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = for (d.value.windows) |dw| {
+        if (dw.hwnd == @intFromPtr(win)) break dw;
+    } else return h.fail("the window isn't in the dump", .{});
+    const p = dw.palette orelse return h.fail("no palette in the dump", .{});
+    var r: PaletteState = .{
+        .open = p.open,
+        .focused = p.focused,
+        .edit = p.edit,
+        .list = p.list,
+        .dim = p.dim,
+        .row_height = p.row_height,
+        .count = p.items.len,
+    };
+    for (p.items) |t| {
+        if (r.titles_len + t.len + 1 > r.titles.len) break;
+        @memcpy(r.titles[r.titles_len..][0..t.len], t);
+        r.titles[r.titles_len + t.len] = '\n';
+        r.titles_len += t.len + 1;
+    }
+    if (p.details.len > 0) {
+        r.detail_len = @min(p.details[0].len, r.detail.len);
+        @memcpy(r.detail[0..r.detail_len], p.details[0][0..r.detail_len]);
+    }
+    return r;
+}
+
+fn waitPalette(h: *Harness, g: *Harness.Ghostty, win: w.HWND, open: bool) !PaletteState {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        const p = try paletteState(h, g, win);
+        if (p.open == open) return p;
+        w.Sleep(100);
+    }
+    return h.fail("the command palette didn't {s}", .{if (open) "open" else "close"});
+}
+
+/// Wait until the palette's first row starts with `prefix`.
+fn waitPaletteFirst(h: *Harness, g: *Harness.Ghostty, win: w.HWND, prefix: []const u8) !PaletteState {
+    var last: PaletteState = .{};
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        last = try paletteState(h, g, win);
+        if (last.open and std.mem.startsWith(u8, last.first(), prefix)) {
+            try h.expect(true, "the filter puts '{s}' first", .{last.first()});
+            return last;
+        }
+        w.Sleep(100);
+    }
+    return h.fail("the palette's first row is '{s}', not '{s}...'", .{ last.first(), prefix });
+}
+
+/// Wait until window `win`'s tab `index` is the active one.
+fn waitActiveTab(h: *Harness, g: *Harness.Ghostty, win: w.HWND, index: usize) !void {
+    var active: usize = 0;
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        for (d.value.windows) |dw| if (dw.hwnd == @intFromPtr(win)) {
+            active = dw.active;
+        };
+        if (active == index) return;
+        w.Sleep(100);
+    }
+    return h.fail("tab {d} is active, not {d}", .{ active, index });
 }
 
 /// The first tab's cell size in pixels.

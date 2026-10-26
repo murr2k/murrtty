@@ -964,6 +964,23 @@ pub const Dump = struct {
         /// The title bar as Ghostty set it: dark or light, and the caption
         /// color (0xRRGGBB) or -1 for the system's.
         chrome: ?struct { dark: bool, caption: i64 } = null,
+        /// The command palette: open, whether it has the keyboard, its
+        /// filter field, list and dimming windows, a row's height, the
+        /// selected row (-1 for none), the filter's text and the listed
+        /// titles, best match first, with the lines beneath them (the
+        /// action, or where a terminal is).
+        palette: ?struct {
+            open: bool,
+            focused: bool,
+            edit: u64,
+            list: u64,
+            dim: u64,
+            row_height: i32,
+            selected: i64,
+            text: []const u8,
+            items: []const []const u8,
+            details: []const []const u8,
+        } = null,
         tab_bar: TabBar,
         tabs: []const Tab,
     };

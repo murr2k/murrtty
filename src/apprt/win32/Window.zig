@@ -10,6 +10,7 @@ const CoreSurface = @import("../../Surface.zig");
 const c = @import("c.zig");
 const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
+const CommandPalette = @import("CommandPalette.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 const TabBar = @import("TabBar.zig");
@@ -33,6 +34,9 @@ tabs: std.ArrayList(*Tab) = .empty,
 active: usize = 0,
 
 tab_bar: TabBar = .{},
+
+/// The command palette (toggle_command_palette).
+palette: CommandPalette = .{},
 
 /// Client size limits from the core, in device pixels: from the first
 /// pane, which is initialized before its tab exists.
@@ -457,6 +461,11 @@ fn focusActive(self: *Window) void {
 }
 
 fn focusActiveNow(self: *Window) void {
+    // An open command palette keeps the keyboard.
+    if (self.palette.focusTarget()) |f| {
+        _ = c.SetFocus(f);
+        return;
+    }
     if (self.activeSurface()) |s| _ = c.SetFocus(s.focusTarget());
 }
 
@@ -474,6 +483,7 @@ fn onDestroy(self: *Window) void {
     for (self.tabs.items) |tab| tab.destroy(false);
     self.tabs.deinit(alloc);
     self.tab_bar.deinit();
+    self.palette.deinit(alloc);
 
     self.app.windowDestroyed(self);
     alloc.destroy(self);
@@ -566,6 +576,7 @@ fn layout(self: *Window) void {
         if (hdwp == null) _ = c.SetWindowPos(t.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
     }
     if (hdwp) |h| _ = c.EndDeferWindowPos(h);
+    if (self.palette.isOpen()) self.palette.layout();
 }
 
 /// Resize the window so its surface area is the given size in points

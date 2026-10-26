@@ -74,12 +74,13 @@ pub fn registerClass(instance: c.HINSTANCE) !void {
 }
 
 pub fn deinit(self: *SearchBox) void {
-    // The windows go with their parent, the surface.
+    // The windows go with their parent, the surface. The field gets its
+    // own procedure back, so it still frees its state when destroyed.
     if (self.hwnd) |h| {
         _ = c.KillTimer(h, search_timer);
         _ = c.SetWindowLongPtrW(h, c.GWLP_USERDATA, 0);
     }
-    if (self.edit) |e| _ = c.SetWindowLongPtrW(e, c.GWLP_USERDATA, 0);
+    if (self.edit) |e| _ = c.SetWindowLongPtrW(e, c.GWLP_WNDPROC, self.edit_proc);
     self.hwnd = null;
     self.edit = null;
     for ([_]?c.HGDIOBJ{ self.font, self.glyph_font, self.field_brush }) |obj| {

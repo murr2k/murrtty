@@ -7193,11 +7193,10 @@ pub const Keybinds = struct {
         );
 
         // Toggle command palette, matches VSCode
-        try self.set.putFlags(
+        try self.set.put(
             alloc,
             .{ .key = .{ .unicode = 'p' }, .mods = inputpkg.ctrlOrSuper(.{ .shift = true }) },
             .toggle_command_palette,
-            windows_unimplemented,
         );
 
         // Mac-specific keyboard bindings.
@@ -10808,7 +10807,6 @@ test "windows: defaults for actions the runtime lacks are performable" {
     // Windows runtime does nothing with them.
     const ctrl_shift: inputpkg.Mods = .{ .ctrl = true, .shift = true };
     const triggers = [_]inputpkg.Binding.Trigger{
-        .{ .key = .{ .unicode = 'p' }, .mods = ctrl_shift }, // command palette
         .{ .key = .{ .unicode = 'i' }, .mods = ctrl_shift }, // inspector
     };
     for (triggers) |t| {
@@ -10820,8 +10818,10 @@ test "windows: defaults for actions the runtime lacks are performable" {
         try testing.expect(leaf.flags.performable);
     }
 
-    // Splits are implemented, so their keys are consumed as upstream's.
+    // Splits and the command palette are implemented, so their keys are
+    // consumed as upstream's.
     for ([_]inputpkg.Binding.Trigger{
+        .{ .key = .{ .unicode = 'p' }, .mods = ctrl_shift },
         .{ .key = .{ .unicode = 'o' }, .mods = ctrl_shift },
         .{ .key = .{ .unicode = 'e' }, .mods = ctrl_shift },
         .{ .key = .{ .physical = .enter }, .mods = ctrl_shift },

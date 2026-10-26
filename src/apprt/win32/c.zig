@@ -596,6 +596,28 @@ pub extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.winapi
 pub extern "user32" fn CallWindowProcW(isize, HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
 pub extern "gdi32" fn SetBkColor(HDC, COLORREF) callconv(.winapi) COLORREF;
 
+// The command palette's list
+pub const HWND_TOP: ?HWND = null;
+pub const WS_VSCROLL = 0x00200000;
+pub const LBS_NOTIFY = 0x0001;
+pub const LBS_OWNERDRAWFIXED = 0x0010;
+pub const LBS_NOINTEGRALHEIGHT = 0x0100;
+pub const LB_ADDSTRING = 0x0180;
+pub const LB_RESETCONTENT = 0x0184;
+pub const LB_SETCURSEL = 0x0186;
+pub const LB_GETCURSEL = 0x0188;
+pub const LB_GETCOUNT = 0x018B;
+pub const LB_SETITEMHEIGHT = 0x01A0;
+pub const LB_GETITEMHEIGHT = 0x01A1;
+pub const DT_TOP = 0x00000000;
+pub const DT_BOTTOM = 0x00000008;
+pub const VK_PRIOR = 0x21;
+pub const VK_NEXT = 0x22;
+pub const VK_UP = 0x26;
+pub const VK_DOWN = 0x28;
+pub extern "user32" fn IsChild(HWND, HWND) callconv(.winapi) BOOL;
+pub extern "uxtheme" fn SetWindowTheme(HWND, ?LPCWSTR, ?LPCWSTR) callconv(.winapi) HRESULT;
+
 // Popup menus
 pub const MF_STRING = 0x0000;
 pub const MF_GRAYED = 0x0001;

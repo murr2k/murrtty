@@ -12,6 +12,7 @@ const CoreApp = @import("../../App.zig");
 const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
+const CommandPalette = @import("CommandPalette.zig");
 const Overlay = @import("Overlay.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -173,6 +174,7 @@ pub fn init(
     try Surface.registerClass(instance);
     try Overlay.registerClass(instance);
     try SearchBox.registerClass(instance);
+    try CommandPalette.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wakeupWndProc,
@@ -1228,6 +1230,12 @@ pub fn performAction(
             surface.search.setSelected(value.selected);
         },
 
+        // The command palette (roadmap 3.3), one per window.
+        .toggle_command_palette => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.window.palette.toggle(surface.window, surface);
+        },
+
         else => {
             log.debug("unimplemented action={}", .{action});
             return false;
@@ -1277,7 +1285,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         .toggle_window_decorations,
         .toggle_window_float_on_top,
         .toggle_secure_input,
-        .toggle_command_palette,
         .toggle_quick_terminal,
         .toggle_visibility,
         .toggle_background_opacity,
