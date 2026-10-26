@@ -41,6 +41,10 @@ const WM_CLIPBOARD_CONFIRM = c.WM_APP + 2;
 /// keyboard focus changed (see `has_focus`).
 const WM_FOCUS_CHANGED = c.WM_APP + 3;
 
+/// Private message posted to the surface window: draw a frame for the
+/// shapes over it (see updateOverlay).
+const WM_FORCE_FRAME = c.WM_APP + 4;
+
 app: *App,
 window: *Window,
 hwnd: c.HWND,
@@ -124,6 +128,8 @@ last_exit: ?u8 = null,
 has_focus: bool = false,
 core_focus: bool = true,
 focus_posted: bool = false,
+/// A WM_FORCE_FRAME is queued.
+frame_posted: bool = false,
 
 /// Clipboard confirmations waiting to be shown, oldest first. They are
 /// shown from the message loop, never inside a core callback. The surface
@@ -255,8 +261,12 @@ pub fn setDim(self: *Surface, color: ?[4]f32) void {
 }
 
 /// Hand the renderer the shapes it draws over the pane's frames (3.0's
-/// shape layer): the scrollbar, then the dimming over it all. Forces a
-/// frame so the change shows at once.
+/// shape layer): the scrollbar, then the dimming over it all. A frame
+/// follows from the message loop (WM_FORCE_FRAME), one for any number of
+/// changes before it, and never with the terminal's lock taken here: this
+/// runs from WM_SIZE and setting changes, which a cross-process sent
+/// message can bring while the core holds that lock (copy-on-select writes
+/// the clipboard with it held).
 pub fn updateOverlay(self: *Surface) void {
     if (!self.core_initialized) return;
     const api = &self.core_surface.renderer.api;
@@ -275,7 +285,8 @@ pub fn updateOverlay(self: *Surface) void {
         n += 1;
     }
     api.setOverlay(rects[0..n]);
-    self.forceFrame();
+    if (self.frame_posted) return;
+    if (c.PostMessageW(self.hwnd, WM_FORCE_FRAME, 0, 0) != 0) self.frame_posted = true;
 }
 
 /// The window that takes the keyboard when this pane is focused: the pane
@@ -309,7 +320,8 @@ fn showResizeOverlay(self: *Surface) void {
     const fg = self.colors.fg;
     o.bg = c.rgb(mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b));
     o.fg = c.rgb(fg.r, fg.g, fg.b);
-    o.show(self.hwnd, text, config.@"resize-overlay-duration".asMilliseconds());
+    // At least a millisecond: 0 would show it until hidden.
+    o.show(self.hwnd, text, @max(config.@"resize-overlay-duration".asMilliseconds(), 1));
 }
 
 /// 15% of the way from `a` to `b`: a background a little off the
@@ -502,12 +514,13 @@ fn closeFromBanner(ctx: *anyopaque) void {
     self.app.request(.{ .close_surface = .{ .id = self.core_surface.id, .process_active = false } });
 }
 
-/// Place the status overlays again (the pane resized).
+/// Place the status overlays again (the pane resized), also those of a
+/// tab in the background, which isn't laid out again when it comes back.
 fn layoutOverlays(self: *Surface) void {
     for ([_]*Overlay{ &self.link_overlay, &self.readonly_overlay, &self.key_overlay, &self.health_overlay }) |o| {
-        if (o.visible()) o.layout();
+        if (o.shown()) o.layout();
     }
-    if (self.banner.visible()) self.banner.layout();
+    if (self.banner.shown()) self.banner.layout();
 }
 
 //---------------------------------------------------------------
@@ -783,16 +796,21 @@ pub fn setTitleOverride(self: *Surface, title: ?[]const u8) void {
     self.window.surfaceTitleChanged(self);
 }
 
-/// The bell rang here (ring_bell, bell-features title): a bell before the
-/// tab's title and the caption until the pane has the keyboard or input,
-/// and on a background tab, a mark until it is selected.
+/// The bell rang here (ring_bell), GTK's way: in a background tab, a mark
+/// on the tab until it is selected, whatever bell-features says; with its
+/// `title`, a bell before the tab's title and the caption until the pane
+/// gets the keyboard, a key or a click, though not for the pane that has
+/// the keyboard now (a shell's bell on Tab completion).
 pub fn ringBell(self: *Surface) void {
-    if (!self.app.config.@"bell-features".title) return;
-    self.bell_ringing = true;
     const window = self.window;
     if (window.tabIndexOf(self)) |i| {
-        if (i != window.active) window.tabs.items[i].attention = true;
+        if (i != window.active and !window.tabs.items[i].attention) {
+            window.tabs.items[i].attention = true;
+            window.invalidateTabBar();
+        }
     }
+    if (!self.app.config.@"bell-features".title or self.has_focus) return;
+    self.bell_ringing = true;
     window.surfaceTitleChanged(self);
 }
 
@@ -1036,6 +1054,12 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             return 0;
         },
 
+        WM_FORCE_FRAME => {
+            self.frame_posted = false;
+            if (self.core_initialized) self.forceFrame();
+            return 0;
+        },
+
         c.WM_SETCURSOR => {
             // Over the pane itself; the search box's controls (which ask
             // their parent first) show their own.
@@ -1059,6 +1083,9 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         c.WM_NCHITTEST => {
             var pt = [1]c.POINT{.{ .x = c.xParam(lparam), .y = c.yParam(lparam) }};
             _ = c.MapWindowPoints(null, self.hwnd, &pt, 1);
+            // Except over the scrollbar's band, which lies in the right grip
+            // band (the pane's margin) and the bottom one's corner.
+            if (self.scrollbar.takesMouse(self, pt[0].x)) return null;
             if (self.dividerBand(pt[0].x, pt[0].y).any()) return c.HTTRANSPARENT;
             return null;
         },
@@ -1235,6 +1262,8 @@ fn mouseButton(
     const bit: u8 = @as(u8, 1) << @intCast(@intFromEnum(button) & 7);
     switch (action) {
         .press => {
+            // A click answers the bell (GTK's).
+            self.clearBell();
             if (self.buttons_down == 0) _ = c.SetCapture(self.hwnd);
             self.buttons_down |= bit;
             if (c.GetFocus() != self.hwnd) _ = c.SetFocus(self.hwnd);

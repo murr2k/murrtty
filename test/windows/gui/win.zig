@@ -332,6 +332,9 @@ pub extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.winapi) ?*anyopa
 pub extern "user32" fn GetMonitorInfoW(*anyopaque, *MONITORINFO) callconv(.winapi) BOOL;
 pub extern "user32" fn GetParent(HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetDlgItem(?HWND, c_int) callconv(.winapi) ?HWND;
+pub extern "user32" fn GetClassLongPtrW(HWND, c_int) callconv(.winapi) usize;
+pub const GCL_STYLE = -26;
+pub const CS_DBLCLKS = 0x0008;
 pub extern "user32" fn ChildWindowFromPointEx(HWND, POINT, UINT) callconv(.winapi) ?HWND;
 pub const CWP_SKIPINVISIBLE = 0x0001;
 pub extern "user32" fn GetClientRect(HWND, *RECT) callconv(.winapi) BOOL;

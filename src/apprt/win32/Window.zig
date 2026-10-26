@@ -47,6 +47,15 @@ title_override: ?[:0]u8 = null,
 /// bottom center for 3 seconds, the latest replacing the one before.
 toast: Overlay = .{ .position = .@"bottom-center", .margin = 24, .pad_x = 16, .pad_y = 8, .radius = -1 },
 
+/// What the last press on the tab bar hit: a double click renames a tab
+/// only if both its presses were on it.
+last_press: TabBar.Hit = .none,
+
+/// The tabs (by index, the first 64) whose label the tab bar last painted
+/// with the bell, and with the bell's mark, for the GUI tests' dump.
+painted_bell: u64 = 0,
+painted_attention: u64 = 0,
+
 /// Client size limits from the core, in device pixels: from the first
 /// pane, which is initialized before its tab exists.
 size_limit: ?apprt.action.SizeLimit = null,
@@ -609,7 +618,11 @@ fn layout(self: *Window) void {
     }
     if (hdwp) |h| _ = c.EndDeferWindowPos(h);
     if (self.palette.isOpen()) self.palette.layout();
-    if (self.toast.visible()) self.toast.layout();
+    if (self.toast.visible()) {
+        self.toast.layout();
+        // Above a tab created after it.
+        self.toast.raise();
+    }
 }
 
 /// Show an in-app notification (GTK's toast) for 3 seconds, in the active
@@ -895,6 +908,14 @@ fn paint(self: *Window) void {
 
     const r = self.tabBarRect();
     self.tab_bar.paint(hdc, r.right, titles, attention, self.active, colors.bg, colors.fg);
+    self.painted_bell = 0;
+    self.painted_attention = 0;
+    for (titles, attention, 0..) |t, a, i| {
+        if (i >= 64) break;
+        const bit = @as(u64, 1) << @intCast(i);
+        if (std.mem.startsWith(u8, t, "\u{1F514}")) self.painted_bell |= bit;
+        if (a) self.painted_attention |= bit;
+    }
 }
 
 fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {
@@ -970,7 +991,9 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_LBUTTONDOWN => {
-            switch (self.tabBarHit(lparam)) {
+            const hit = self.tabBarHit(lparam);
+            self.last_press = hit;
+            switch (hit) {
                 .none => {},
                 .tab => |i| self.select(i),
                 .close => |i| self.requestCloseTab(i),
@@ -979,15 +1002,22 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             return 0;
         },
 
-        // The second press of a double click: on a tab it renames the
-        // tab (from the message loop, as any prompt); on the buttons it is
-        // just another click.
+        // The second press of a double click: on the tab the first press
+        // was on, it renames the tab (murrtty's; from the message loop, as
+        // any prompt). Anything else is just another click: the first
+        // press may have moved the tabs ("+" adds one, "x" closes one).
         c.WM_LBUTTONDBLCLK => {
-            switch (self.tabBarHit(lparam)) {
+            const hit = self.tabBarHit(lparam);
+            const same_tab = switch (hit) {
+                .tab => |i| std.meta.eql(self.last_press, TabBar.Hit{ .tab = i }),
+                else => false,
+            };
+            self.last_press = hit;
+            switch (hit) {
                 .none => {},
                 .tab => |i| {
                     self.select(i);
-                    if (self.activeSurface()) |s| self.app.promptTitle(s, .tab);
+                    if (same_tab) if (self.activeSurface()) |s| self.app.promptTitle(s, .tab);
                 },
                 .close => |i| self.requestCloseTab(i),
                 .new_tab => self.newTabFromActive(),

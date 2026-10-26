@@ -152,18 +152,24 @@ hosted Windows runner and then the unit tests.
   is ("Window 2, tab 1: C:\src"). Typing filters by title, by the line
   beneath it, or by letters in order; `Up`/`Down` choose, `Enter` or a
   click runs, `Esc`, a click outside or `Ctrl+Shift+P` again closes.
-- Renaming, as in Ghostty's GTK app: a tab (double-click it, or the
-  context menu's Tab > Change Tab Title..., or `prompt_tab_title`), a
-  terminal (`prompt_surface_title`) or a window (`prompt_window_title`,
-  `set_window_title`). A name stays while programs set their titles; a
-  blank one restores theirs. `copy_title_to_clipboard` copies the title.
+- Renaming, as in Ghostty's GTK app: a tab (the context menu's Tab >
+  Change Tab Title..., or `prompt_tab_title`; murrtty also renames a tab
+  you double-click), a terminal (`prompt_surface_title`) or a window
+  (`prompt_window_title`, `set_window_title`). A name stays while programs
+  set their titles; a blank one restores theirs. A window's name is its
+  caption, so the taskbar shows it too (GTK's header bar shows it, its
+  window list the tab's title). `copy_title_to_clipboard` copies the title.
 - Ghostty's status overlays: the URL under the mouse (`link-previews`), a
   "Read-only" badge (`toggle_readonly`), the key sequence and key tables in
   progress, a banner when the program ends ("Command Succeeded" or "Command
-  Failed", with Close), a panel if the renderer fails, and toasts for
-  copying and for reloading the configuration (`app-notifications`).
+  Failed", with Close; it stays after a quick failure, see
+  `abnormal-command-exit-runtime`, or with `wait-after-command`, and
+  otherwise the terminal closes), a panel if the renderer fails, and toasts
+  for copying and for reloading the configuration (`app-notifications`).
 - The bell's `title` feature: a 🔔 before the tab's title and the caption
-  until you answer it, and a mark on a background tab until you select it.
+  when a terminal rings while it doesn't have the keyboard, until it gets
+  the keyboard, a key or a click; and a mark on a background tab until you
+  select it.
 - An overlay scrollbar, as in Ghostty's GTK app: a thin thumb at the right
   edge shows while you scroll or move the mouse, widens under the mouse,
   drags, and pages with a click on the track; it fades when idle (not when
@@ -192,8 +198,8 @@ hosted Windows runner and then the unit tests.
   `light` and `dark` use the system's caption. Caption colors need Windows
   11; Windows 10 gets a light or dark caption. The GUI tests check what
   murrtty asks Windows for, not yet what appears on screen.
-- Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell and paste
-  protection.
+- Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, the bell's
+  `system` and `attention` features, and paste protection.
 
 **Not implemented yet**
 
@@ -325,8 +331,8 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   apps implement in their own user interface mostly have no effect here,
   besides the missing features listed above. Among them:
   `window-position-x`/`-y`, `window-save-state`, `window-new-tab-position`,
-  and the `title`, `audio` and `border` bell features (only
-  `system` and `attention` work). murrtty always opens a window at startup and
+  and the `audio` and `border` bell features (`system`, `attention` and
+  `title` work). murrtty always opens a window at startup and
   always exits when its last window closes, whatever `initial-window` and
   `quit-after-last-window-closed` say.
 - **Shell.** The default is PowerShell 7 (`pwsh.exe -NoLogo`) when it is

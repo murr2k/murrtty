@@ -1212,8 +1212,8 @@ apps show no thumb.
 
 *Done 2026-10-26.* `win32/Scrollbar.zig`, one per pane, from the core's
 `scrollbar` action (rows in all, the viewport's first row and height):
-GTK's overlay indicator, a 3 DIP thumb at the right edge that a scroll or
-any mouse move over the pane shows, 8 DIP with a faint track while the
+GTK's overlay indicator, a 3 DIP thumb at the right edge that a scroll (not
+new output alone) or any mouse move over the pane shows, 8 DIP with a faint track while the
 mouse is over the 14 DIP band at the edge or pressed there, in the
 terminal's foreground, fading over 200 ms a second after the last reason to
 show. It is drawn in the present pass (`Surface.updateOverlay` composes it
@@ -1221,8 +1221,9 @@ with the split dimming), so the grid keeps its width. The band takes the
 mouse from the core (which sees the mouse leave), except while the
 terminal drags a selection: a press on the thumb drags it (`scroll_to_row`
 for each new row), a press on the track pages. Nothing shows without
-scrollback, which covers the alternate screen (ConPTY passes a program's
-switch to it through). `scrollbar = never` turns it off; with Windows'
+scrollback, which covers the alternate screen (Windows 11's ConPTY passes
+a program's switch to it through, checked on 25H2; Windows 10's not yet).
+The band wins over a divider beside it. `scrollbar = never` turns it off; with Windows'
 "Always show scrollbars" (`DynamicScrollbars` 0, read again on any
 WM_SETTINGCHANGE) it doesn't fade. Scenario `scrollbar` (the thumb's pixels
 from the renderer's read-back, the drag, the page, the fade, a
@@ -1251,8 +1252,12 @@ a template built in memory ("Change Terminal Title", "Change Tab Title" or
 current title, selected; OK and Cancel), so Enter, Escape and Tab work as in
 any dialog. It runs from the message loop as an `App.Request`
 (`prompt_title`), in a modal scope, never inside the core's key handling.
-A double click on a tab renames it (the window class takes double clicks;
-on the close and new-tab buttons a double click is two clicks).
+A double click on a tab renames it, murrtty's own (GTK's tabs don't): the
+window class takes double clicks, both presses must hit the same tab, and
+on the close and new-tab buttons a double click is two clicks. A window's
+name is its caption, which the taskbar also shows; GTK's goes only to the
+header bar's title widget, its window list keeping the tab's title. Kept:
+on Windows the caption is the window's title.
 `copy_title_to_clipboard` copies the pane's effective title; the palette's
 Focus: entries and the context menu's Change Title items use these too.
 Scenario `titles` (rename, a program's title under a name, blank, Cancel,
@@ -1294,9 +1299,12 @@ parent's width, or wrapped), with these users, each from the core's action:
   macOS's text in the middle of the pane while the renderer is unhealthy.
 - **Child-exited banner** (`show_child_exited`, `win32/Banner.zig`): GTK's
   bar across the bottom, "Command Succeeded" on a green wash or "Command
-  Failed" on a red one, with a real Close button (an `App.Request` close).
-  Returning true keeps an abnormal exit's pane open, as on GTK, instead of
-  the core's text in the terminal.
+  Failed" on a red one (by exit code), with a real Close button (an
+  `App.Request` close). The core asks for it on every exit; returning true
+  replaces its text in the terminal. It stays after an abnormal exit
+  (non-zero within `abnormal-command-exit-runtime`), whose pane the core
+  keeps open, and with `wait-after-command`; otherwise the pane closes at
+  once, as on GTK.
 - **Toasts** (`app-notifications`): "Copied to clipboard" or "Cleared
   clipboard" for every write to the clipboard without a confirmation (or
   once one is allowed), "Reloaded the configuration" in every window on any
@@ -1323,13 +1331,60 @@ default `bell-features`, so its part (S) is in M1; audio and border are M2.
 file plays at the configured volume.
 
 *3.7a (`title`) done 2026-10-26.* A BEL with `bell-features = title` (the
-default) puts "🔔 " before the tab's title, and the caption, while the
-pane's bell rings (`Surface.bell_ringing`), until the pane gets the keyboard
-or a key; GTK's order, before the zoom's "🔍 " (`Tab.label`, which the tab
-bar and caption show; `Tab.title` stays plain for the rename prompt). A bell
-in a background tab also underlines the tab (`Tab.attention`) until it is
-selected. Scenario `bell`; the dump reports each tab's `bell` and
-`attention`. Audio and border (the rest of 3.7) are M2.
+default) in a pane that doesn't have the keyboard puts "🔔 " before the
+tab's title, and the caption, while the pane's bell rings
+(`Surface.bell_ringing`), until the pane gets the keyboard, a key or a
+press; GTK's order, before the zoom's "🔍 " (`Tab.label`, which the tab
+bar and caption show; `Tab.title` stays plain for the rename prompt). A
+bell in the pane with the keyboard shows nothing. Any bell in a background
+tab also underlines the tab (`Tab.attention`) until it is selected.
+Scenario `bell`; the dump reports each tab's `bell` and `attention`, and
+what the tab bar last painted (`painted_bell`, `painted_attention`). Audio
+and border (the rest of 3.7) are M2.
+
+*End-of-phase review, 2026-10-26.* Three independent reviews of 3.4 to
+3.7a and the icon (Win32 lifetimes and reentrancy, parity with GTK and the
+core, and the tests) found, and these were fixed:
+- **The banner's Close never closed** once the button gave the keyboard
+  back while pressed (a fix made in this round, caught by the scenario): a
+  button that loses the keyboard mid-press drops the click. The keyboard
+  now goes back to the pane when the press is over (a subclass acting
+  after the button's own `WM_LBUTTONUP` or capture loss); a press dragged
+  off it is checked to take the keyboard, close nothing and give the
+  keyboard back (a release with no held move first still clicks, as the
+  button stays pushed until a move leaves it).
+- GTK parity: no bell for the pane with the keyboard, and a press answers
+  one; a background tab's mark on any bell; `resize-overlay-duration = 0`
+  hides at once instead of keeping the overlay; the scrollbar wakes on a
+  scroll, not on output that only grows the scrollback; the toast stays
+  above panes laid out after it; a soft config reload aimed at one pane
+  reloads that pane, not the app.
+- Win32: the scrollbar's band takes the mouse before a divider beside it;
+  a double click renames only if both presses hit the same tab (not one
+  moved under the second); `Scrollbar.update` returns early when nothing
+  changed (it runs on every scroll message); the overlays and banner of a
+  background tab are laid out again by their own visibility
+  (`Overlay.shown`, `Banner.shown`) rather than the hidden pane's;
+  `Surface.updateOverlay` posts a frame request (`WM_FORCE_FRAME`,
+  coalesced) instead of taking the terminal's lock, since it runs from
+  `WM_SIZE` and setting changes, which a message sent from another process
+  can bring while the core holds that lock (copy-on-select writes the
+  clipboard with it held); the rename prompt's text converts lossily, and
+  an entered title that can't be converted counts as Cancel; `KeyState`
+  frees a key it couldn't append; the dump survives a caption cut inside a
+  surrogate pair.
+- Tests: the scrollbar's first checks rewritten (hover with the mouse
+  pinned, the thumb probed while pressed, the alternate screen probed where
+  the thumb was, syncs instead of sleeps, "always" mode); `titles` covers
+  `prompt_window_title`, `set_tab_title` layering, the modal scope, Enter
+  in the field, and a double click on "+"; `bell` covers the focused pane,
+  persistence, keys in another tab and the painted bits; `status-overlays`
+  shows read-only held input back with a command typed after it, unpins
+  the mouse, and fails on a dump error instead of retrying it;
+  `context-menu` guards an empty item list.
+
+Still open: GTK's click-to-warp and track repeat on the scrollbar; GTK's
+toast queue and close button; the key state's spinner.
 
 **3.8 Tab bar, M to L.**
 - Right-click menu: Rename, Close, Close Others, Close to the Right, Move to

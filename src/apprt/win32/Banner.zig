@@ -61,6 +61,13 @@ pub fn visible(self: *const Banner) bool {
     return c.IsWindowVisible(h) != 0;
 }
 
+/// Whether it is shown, though its pane may be hidden (a background tab).
+pub fn shown(self: *const Banner) bool {
+    const h = self.hwnd orelse return false;
+    const style: usize = @bitCast(c.GetWindowLongPtrW(h, c.GWL_STYLE));
+    return style & c.WS_VISIBLE != 0;
+}
+
 /// GTK's title for it.
 pub fn title(self: *const Banner) []const u8 {
     return if (self.failed) "Command Failed" else "Command Succeeded";
@@ -83,7 +90,11 @@ pub fn show(self: *Banner, parent: c.HWND, exit_code: u32, bg: [3]u8, fg: [3]u8)
         };
         _ = c.SetWindowLongPtrW(h, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
         _ = c.SetLayeredWindowAttributes(h, 0, opacity, c.LWA_ALPHA);
-        self.button = c.CreateWindowExW(0, c.L("BUTTON"), c.L("Close"), c.WS_CHILD | c.WS_VISIBLE | c.WS_TABSTOP, 0, 0, 1, 1, h, @ptrFromInt(id_close), instance, null);
+        self.button = c.CreateWindowExW(0, c.L("BUTTON"), c.L("Close"), c.WS_CHILD | c.WS_VISIBLE, 0, 0, 1, 1, h, @ptrFromInt(id_close), instance, null);
+        if (self.button) |b| {
+            const old = c.SetWindowLongPtrW(b, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&buttonProc)));
+            if (button_proc == 0) button_proc = old;
+        }
         self.hwnd = h;
         break :created h;
     };
@@ -173,11 +184,34 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             self.paint(hwnd);
             return 0;
         },
-        c.WM_COMMAND => if (c.loword(wparam) == id_close and c.hiword(wparam) == c.BN_CLICKED) {
-            if (self.on_close) |f| if (self.ctx) |ctx| f(ctx);
-            return 0;
+        c.WM_COMMAND => if (c.loword(wparam) == id_close) switch (c.hiword(wparam)) {
+            c.BN_CLICKED => {
+                if (self.on_close) |f| if (self.ctx) |ctx| f(ctx);
+                return 0;
+            },
+            else => {},
         },
         else => {},
     }
     return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+/// The button class's own procedure (every BUTTON shares it).
+var button_proc: isize = 0;
+
+/// A press on Close takes the keyboard from the pane, where a key closes it
+/// once its program has ended: give it back when the press is over. Not
+/// sooner: a button that loses the keyboard while pressed drops the click.
+/// Needs no Banner, so it is safe while the pane is torn down.
+fn buttonProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    const result = c.CallWindowProcW(button_proc, hwnd, msg, wparam, lparam);
+    switch (msg) {
+        c.WM_LBUTTONUP, c.WM_CAPTURECHANGED => if (c.GetFocus() == hwnd) {
+            if (c.GetParent(hwnd)) |banner| if (c.GetParent(banner)) |pane| {
+                _ = c.SetFocus(pane);
+            };
+        },
+        else => {},
+    }
+    return result;
 }

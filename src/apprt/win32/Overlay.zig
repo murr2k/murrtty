@@ -78,6 +78,20 @@ pub fn visible(self: *const Overlay) bool {
     return c.IsWindowVisible(h) != 0;
 }
 
+/// Whether it is shown, though its parent may be hidden (a background
+/// tab's pane): it still needs placing when the parent resizes.
+pub fn shown(self: *const Overlay) bool {
+    const h = self.hwnd orelse return false;
+    const style: usize = @bitCast(c.GetWindowLongPtrW(h, c.GWL_STYLE));
+    return style & c.WS_VISIBLE != 0;
+}
+
+/// Back on top of its siblings (a tab created after it).
+pub fn raise(self: *const Overlay) void {
+    const h = self.hwnd orelse return;
+    _ = c.SetWindowPos(h, c.HWND_TOP, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE | c.SWP_NOACTIVATE);
+}
+
 /// The text, for the GUI tests' dump.
 pub fn textUtf16(self: *const Overlay) []const u16 {
     return self.text[0..self.text_len];

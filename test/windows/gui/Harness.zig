@@ -1065,6 +1065,9 @@ pub const Dump = struct {
         /// a bell while it was in the background.
         bell: bool = false,
         attention: bool = false,
+        /// What the tab bar last painted: the label with the bell, the mark.
+        painted_bell: bool = false,
+        painted_attention: bool = false,
         cols: ?u32 = null,
         rows: ?u32 = null,
         /// Cell size and padding in pixels.
@@ -1214,6 +1217,12 @@ pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u
 /// hover state (a link's preview).
 pub fn pinMouse(self: *Harness, g: *const Ghostty, pinned: bool) !void {
     var d = try self.dumpWith(g, 7, @intFromBool(pinned));
+    d.deinit();
+}
+
+/// Make Ghostty act as if Windows' "Always show scrollbars" changed.
+pub fn setScrollbarsAlways(self: *Harness, g: *const Ghostty, always: bool) !void {
+    var d = try self.dumpWith(g, 8, @intFromBool(always));
     d.deinit();
 }
 

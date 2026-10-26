@@ -81,18 +81,24 @@ fn enabled(surface: *const Surface) bool {
     return surface.app.config.scrollbar != .never;
 }
 
-/// The core reported the scrollable area.
+/// The core reported the scrollable area. It shows when the view scrolls
+/// (GTK's overlay indicator), not when only the scrollback grows under a
+/// view that stays or the page resizes; it is redrawn only if it shows.
 pub fn update(self: *Scrollbar, surface: *Surface, value: terminal.Scrollbar) void {
-    if (value.total == self.total and value.offset == self.offset and value.len == self.len) return;
+    const scrolled = value.offset != self.offset;
+    if (!scrolled and value.total == self.total and value.len == self.len) return;
     self.total = value.total;
     self.offset = value.offset;
     self.len = value.len;
+    if (!enabled(surface)) return;
     if (!self.scrollable()) {
+        const was_shown = self.alpha > 0 or self.pressed;
         self.reset(surface);
-    } else {
-        _ = self.wake(surface);
+        if (was_shown) surface.updateOverlay();
+        return;
     }
-    surface.updateOverlay();
+    if (scrolled) _ = self.wake(surface);
+    if (self.alpha > 0) surface.updateOverlay();
 }
 
 /// Show it fully and restart the idle clock. Returns whether that changed
@@ -148,6 +154,7 @@ pub fn tick(self: *Scrollbar, surface: *Surface) void {
 
 /// Windows' "always show scroll bars" changed, or the config did.
 pub fn settingsChanged(self: *Scrollbar, surface: *Surface) void {
+    const was = self.alpha;
     if (!enabled(surface)) {
         self.reset(surface);
     } else if (surface.app.scrollbars_always and self.scrollable()) {
@@ -156,7 +163,7 @@ pub fn settingsChanged(self: *Scrollbar, surface: *Surface) void {
     } else if (self.alpha > 0) {
         _ = self.wake(surface);
     }
-    surface.updateOverlay();
+    if (was != self.alpha or self.alpha > 0) surface.updateOverlay();
 }
 
 fn px(v: c_int, dpi: c.UINT) c_int {
@@ -290,9 +297,9 @@ pub fn mouseLeave(self: *Scrollbar, surface: *Surface) void {
 /// it.
 pub fn mouseDown(self: *Scrollbar, surface: *Surface, x: i32, y: i32) bool {
     if (!self.takesMouse(surface, x)) return false;
+    const g = self.geometry(surface) orelse return false;
     self.hover = true;
     _ = self.wake(surface);
-    const g = self.geometry(surface) orelse return false;
     self.pressed = true;
     _ = c.SetCapture(surface.hwnd);
     if (y >= g.thumb.top and y < g.thumb.bottom) {

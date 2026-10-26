@@ -984,7 +984,9 @@ fn contextMenu(h: *Harness) anyerror!void {
     {
         const items = try h.menuItems(sub);
         defer h.freeMenuItems(items);
-        try h.expect(items.len == 3 and !items[0].grayed and std.mem.startsWith(u8, items[0].text, "Change Tab &Title..."), "Tab: Change Tab Title, enabled ('{s}', {d} items)", .{ items[0].text, items.len });
+        // (Never index an empty list: a panic skips the clipboard's restore.)
+        if (items.len != 3) return h.fail("the Tab submenu has {d} items, not 3", .{items.len});
+        try h.expect(!items[0].grayed and std.mem.startsWith(u8, items[0].text, "Change Tab &Title..."), "Tab: Change Tab Title, enabled ('{s}')", .{items[0].text});
         try h.expect(std.mem.eql(u8, items[1].text, "&New Tab\tCtrl+Shift+T") and !items[1].grayed, "New Tab with its binding ('{s}')", .{items[1].text});
     }
     h.menuKey(sub, 'n');
@@ -1363,31 +1365,65 @@ fn commandPalette(h: *Harness) anyerror!void {
     try quit(h, &g, second);
 }
 
-/// The bell's title feature (roadmap 3.7a, GTK's): a BEL in the active
-/// pane puts a bell before its tab's title and the caption until a key
-/// goes to it; in a background tab it also marks the tab until the tab is
-/// selected, which (giving its pane the keyboard) answers the bell.
+/// The bell (roadmap 3.7a, GTK's): a BEL in the pane that has the keyboard
+/// shows nothing; while the keyboard is elsewhere (the pane's search
+/// field), a bell before its tab's title and the caption stays until the
+/// pane has it again; in a background tab the bell also marks the tab,
+/// painted on the tab bar, through keys in another tab, until the tab is
+/// selected, which (giving its pane the keyboard) answers it too.
 fn bell(h: *Harness) anyerror!void {
     var g = try start(h, "bell", "bell-features = title,no-attention,no-system\n", ">");
     defer g.deinit();
     const win = try h.mainWindow(&g);
     const first = try h.surface(&g, win);
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
 
-    try h.typeText(first, "powershell -NoProfile -Command \"[Console]::Write([char]7)\"");
+    // The pane with the keyboard: nothing.
+    try h.typeText(first, "powershell -NoProfile -Command \"[Console]::Write([char]7)\" & echo rang-here");
     h.enter(first);
-    var t = try waitTabState(h, &g, 0, TabState.ringing, "the bell");
+    try h.waitText(&g, "rang-here", 2, 15000);
+    // The bell reaches the app thread through the core's mailbox, which can
+    // trail the text.
+    h.sync(first);
+    w.Sleep(300);
+    var t = try tabState(h, &g, 0);
+    try h.expect(!t.bell and !std.mem.startsWith(u8, t.caption(), "\u{1F514}"), "a bell in the pane with the keyboard shows nothing", .{});
+
+    // The keyboard in the search field when it rings: the bell stays.
+    try h.typeText(first, "powershell -NoProfile -Command \"Start-Sleep 3; [Console]::Write([char]7)\"");
+    h.enter(first);
+    h.key(first, cs, 'F');
+    t = try waitTabStateFor(h, &g, 0, TabState.ringing, "the bell", 15000);
     try h.expect(std.mem.startsWith(u8, t.label(), "\u{1F514} ") and std.mem.startsWith(u8, t.caption(), "\u{1F514} "), "a bell before the tab's title and the caption ('{s}')", .{t.caption()});
-    h.key(first, .{}, w.VK_SPACE);
+    h.sync(first);
+    w.Sleep(1000);
+    t = try tabState(h, &g, 0);
+    // One tab, so no tab bar (`auto`): the caption shows it.
+    try h.expect(t.bell and std.mem.startsWith(u8, t.caption(), "\u{1F514} "), "it stays until answered", .{});
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{});
+        const s = panes[0].search orelse return h.fail("no search box", .{});
+        h.key(hwndOf(s.edit), .{}, w.VK_ESCAPE);
+    }
     t = try waitTabState(h, &g, 0, TabState.quiet, "the bell answered");
-    try h.expect(!std.mem.startsWith(u8, t.caption(), "\u{1F514}"), "a key answers it", .{});
+    try h.expect(!std.mem.startsWith(u8, t.caption(), "\u{1F514}"), "the pane getting the keyboard back answers it", .{});
 
     // In a background tab: a bell a little later, from the first tab.
     try h.typeText(first, "powershell -NoProfile -Command \"Start-Sleep 3; [Console]::Write([char]7)\"");
     h.enter(first);
-    h.key(first, .{ .ctrl = true, .shift = true }, 'T');
+    h.key(first, cs, 'T');
     try waitWindowTabs(h, &g, win, 2);
     t = try waitTabStateFor(h, &g, 0, TabState.marked, "the background tab's mark", 15000);
     try h.expect(std.mem.startsWith(u8, t.label(), "\u{1F514} "), "a background tab's bell marks it ('{s}')", .{t.label()});
+    // Keys in the other tab leave it.
+    const second = try h.surface(&g, win);
+    h.key(second, .{}, w.VK_SPACE);
+    h.sync(second);
+    w.Sleep(500);
+    t = try tabState(h, &g, 0);
+    try h.expect(t.attention and t.bell and t.painted_attention and t.painted_bell, "it stays through keys in another tab, painted on the tab bar", .{});
     {
         var d = try h.dump(&g);
         defer d.deinit();
@@ -1409,6 +1445,8 @@ const TabState = struct {
     caption_len: usize = 0,
     bell: bool = false,
     attention: bool = false,
+    painted_bell: bool = false,
+    painted_attention: bool = false,
 
     fn label(s: *const TabState) []const u8 {
         return s.label_buf[0..s.label_len];
@@ -1436,7 +1474,12 @@ fn tabState(h: *Harness, g: *Harness.Ghostty, index: usize) !TabState {
     const dw = d.value.windows[0];
     if (index >= dw.tabs.len) return .{};
     const tab = dw.tabs[index];
-    var r: TabState = .{ .bell = tab.bell, .attention = tab.attention };
+    var r: TabState = .{
+        .bell = tab.bell,
+        .attention = tab.attention,
+        .painted_bell = tab.painted_bell,
+        .painted_attention = tab.painted_attention,
+    };
     r.label_len = copyInto(&r.label_buf, tab.label);
     r.caption_len = copyInto(&r.caption_buf, dw.caption);
     return r;
@@ -1496,21 +1539,24 @@ fn statusOverlays(h: *Harness) anyerror!void {
         h.move(surf, at.x + 3, at.y, false);
         st = try waitStatus(h, &g, "", StatusState.linkIs, "no preview without Ctrl");
         try h.expect(true, "without Ctrl it goes", .{});
+        try h.pinMouse(&g, false);
 
-        // Read-only: the badge, and typing reaches nothing.
+        // Read-only: the badge, and typing reaches nothing (shown by a
+        // command typed after it ends, which would carry anything held).
         h.key(surf, cs, w.VK_F7);
         st = try waitStatus(h, &g, "", StatusState.isReadonly, "the read-only badge");
         try h.typeText(surf, "echo held-back");
-        w.Sleep(800);
+        h.key(surf, cs, w.VK_F7);
+        st = try waitStatus(h, &g, "", StatusState.notReadonly, "no read-only badge");
+        try h.typeText(surf, "echo after-ro");
+        h.enter(surf);
+        try h.waitText(&g, "after-ro", 2, 10000);
         {
             var d = try h.dump(&g);
             defer d.deinit();
             const text = d.value.windows[0].tabs[0].text orelse "";
-            try h.expect(std.mem.indexOf(u8, text, "held-back") == null, "read-only shows its badge and holds input back", .{});
+            try h.expect(std.mem.indexOf(u8, text, "held-back") == null, "read-only shows its badge, holds input back, and the badge goes when it ends", .{});
         }
-        h.key(surf, cs, w.VK_F7);
-        st = try waitStatus(h, &g, "", StatusState.notReadonly, "no read-only badge");
-        try h.expect(true, "and the badge goes when it ends", .{});
 
         // The key state: a sequence's leader, then a key table.
         h.key(surf, cs, w.VK_F8);
@@ -1572,6 +1618,19 @@ fn statusOverlays(h: *Harness) anyerror!void {
         _ = try waitStatusFor(h, &g, "Command Succeeded", StatusState.bannerIs, "the succeeded banner", 15000);
         const surf = try h.surface(&g, try h.mainWindow(&g));
         try h.expect(true, "with wait-after-command, 'Command Succeeded'", .{});
+        // A press on Close dragged off and let go: nothing closes, and the
+        // keyboard, which the press took, is the pane's again. (The button
+        // stays pushed until a held move leaves it, as a real drag does.)
+        const banner = h.child(&g, surf, "MurrttyBanner") orelse return h.fail("no banner window", .{});
+        const close = h.child(&g, banner, "Button") orelse return h.fail("no Close button", .{});
+        h.press(close, 5, 5);
+        h.sync(surf);
+        try h.expect(keyboardFocus(surf) == close, "a press on Close takes the keyboard", .{});
+        h.move(close, -40, -40, true);
+        h.release(close, -40, -40);
+        h.sync(surf);
+        try h.expect(g.waitExit(300) == null, "dragged off and let go, it closes nothing", .{});
+        try h.expect(keyboardFocus(surf) == surf, "and the keyboard is the pane's again", .{});
         h.key(surf, .{}, 'A');
         const code = g.waitExit(10000);
         try h.expect(code != null and code.? == 0, "and a key closes it (exit {?d})", .{code});
@@ -1658,7 +1717,7 @@ fn waitStatusFor(h: *Harness, g: *Harness.Ghostty, want: []const u8, cond: fn (*
     var last: StatusState = .{};
     var waited: u32 = 0;
     while (waited <= ms) : (waited += 100) {
-        last = statusState(h, g) catch last;
+        last = try statusState(h, g);
         if (cond(&last, want)) return last;
         w.Sleep(100);
     }
@@ -1681,6 +1740,9 @@ fn titles(h: *Harness) anyerror!void {
         \\keybind = ctrl+shift+f4=set_window_title:
         \\keybind = ctrl+shift+f5=prompt_surface_title
         \\keybind = ctrl+shift+f6=copy_title_to_clipboard
+        \\keybind = ctrl+shift+f7=prompt_window_title
+        \\keybind = ctrl+shift+f8=set_tab_title:tab-name
+        \\keybind = ctrl+shift+f9=set_tab_title:
         \\
     , ">");
     defer g.deinit();
@@ -1692,12 +1754,19 @@ fn titles(h: *Harness) anyerror!void {
     h.enter(surf);
     _ = try waitTitles(h, &g, "program-one", "program-one");
 
-    // Rename the tab.
+    // Rename the tab: the prompt runs in a modal scope (closes wait), and
+    // Enter in its field is OK (the dialog's own handling).
     h.key(surf, cs, w.VK_F2);
     var dlg = try h.waitDialog(&g, 5000);
     try expectTitleDialog(h, dlg, "Change Tab Title", "program-one");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.modal_depth == 1, "the prompt runs in a modal scope", .{});
+    }
     try setDialogText(h, dlg, "renamed");
-    h.answer(&g, dlg, w.IDOK);
+    const field = w.GetDlgItem(dlg, 100) orelse return h.fail("the prompt has no field", .{});
+    h.key(field, .{}, w.VK_RETURN);
     try waitNoDialog(h, &g);
     _ = try waitTitles(h, &g, "renamed", "renamed");
 
@@ -1744,7 +1813,24 @@ fn titles(h: *Harness) anyerror!void {
     h.key(surf, cs, w.VK_F6);
     try waitClipboard(h, "pane-name");
 
-    // A double click on a tab opens its prompt (two tabs show the bar).
+    // A tab's name over the pane's (set_tab_title); empty clears it.
+    h.key(surf, cs, w.VK_F8);
+    _ = try waitTitles(h, &g, "tab-name", "tab-name");
+    h.key(surf, cs, w.VK_F9);
+    _ = try waitTitles(h, &g, "pane-name", "pane-name");
+
+    // The window's prompt: the caption only.
+    h.key(surf, cs, w.VK_F7);
+    dlg = try h.waitDialog(&g, 5000);
+    try expectTitleDialog(h, dlg, "Change Window Title", "pane-name");
+    try setDialogText(h, dlg, "win-name");
+    h.answer(&g, dlg, w.IDOK);
+    try waitNoDialog(h, &g);
+    _ = try waitTitles(h, &g, "pane-name", "win-name");
+
+    // A double click on a tab opens its prompt (two tabs show the bar);
+    // the window class takes double clicks, which real ones need.
+    try h.expect(w.GetClassLongPtrW(win, w.GCL_STYLE) & w.CS_DBLCLKS != 0, "the window takes double clicks", .{});
     h.key(surf, cs, 'T');
     try waitWindowTabs(h, &g, win, 2);
     w.Sleep(500);
@@ -1758,6 +1844,19 @@ fn titles(h: *Harness) anyerror!void {
     try expectTitleDialog(h, dlg, "Change Tab Title", "pane-name");
     h.answer(&g, dlg, w.IDCANCEL);
     try waitNoDialog(h, &g);
+
+    // A double click on "+" is two clicks that add tabs, never a rename
+    // (its first press moves the tabs under the second).
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const r = d.value.windows[0].tab_bar.new_tab;
+        h.doubleClick(win, @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2));
+    }
+    try waitWindowTabsAtLeast(h, &g, win, 3);
+    h.sync(win);
+    w.Sleep(300);
+    try h.expect(try h.dialogCount(&g) == 0, "a double click on \"+\" adds a tab and renames nothing", .{});
     try quit(h, &g, try h.surface(&g, win));
 }
 
@@ -1868,14 +1967,18 @@ fn scrollbar(h: *Harness) anyerror!void {
         const win = try h.mainWindow(&g);
         const surf = try h.surface(&g, win);
         var sb = try scrollState(h, &g);
-        try h.expect(sb.total == sb.len and !sb.visible, "no scrollback, no scrollbar ({d} of {d} rows)", .{ sb.len, sb.total });
+        try h.expect(sb.len > 0 and sb.total == sb.len and !sb.visible, "no scrollback, no scrollbar ({d} of {d} rows)", .{ sb.len, sb.total });
+        const cols = try paneCols(h, &g);
 
         try h.typeText(surf, "for /l %i in (1,1,150) do @echo line-%i");
         h.enter(surf);
         try h.waitText(&g, "line-150", 1, 15000);
         sb = try waitScroll(h, &g, ScrollState.atBottom, "scrollback, viewed at the bottom", 5000);
+        // The output scrolled it into view: let it fade first.
+        sb = try waitScroll(h, &g, ScrollState.hidden, "faded after the output", 5000);
 
-        // A move over the terminal shows it: thin, its thumb at the bottom.
+        // A move over the terminal shows it: thin, its thumb at the bottom,
+        // over the grid (which keeps its width).
         var rect: w.RECT = .{};
         _ = w.GetClientRect(surf, &rect);
         const mid_x = @divTrunc(rect.right, 2);
@@ -1883,28 +1986,39 @@ fn scrollbar(h: *Harness) anyerror!void {
         h.move(surf, mid_x, mid_y, false);
         sb = try waitScroll(h, &g, ScrollState.shown, "shown after a move", 5000);
         const thin = sb.thumb[2] - sb.thumb[0];
-        try h.expect(sb.thumb[3] >= rect.bottom - 10 and sb.thumb[2] >= rect.right - 10, "a thin thumb ({d} px) at the bottom right", .{thin});
+        try h.expect(sb.thumb[3] >= rect.bottom - 10 and sb.thumb[2] >= rect.right - 10, "a move shows a thin thumb ({d} px) at the bottom right", .{thin});
+        try h.expect(try paneCols(h, &g) == cols, "the grid keeps its {d} columns", .{cols});
+
+        // Over the band at the right edge it widens (the mouse kept over
+        // the pane: on the hidden desktop it would "leave" at once).
+        const x = rect.right - 5;
+        try h.pinMouse(&g, true);
+        h.move(surf, x, mid_y, false);
+        sb = try waitScroll(h, &g, ScrollState.isHovered, "widened over the edge", 5000);
+        try h.expect(sb.thumb[2] - sb.thumb[0] > thin, "over the edge it widens ({d} px)", .{sb.thumb[2] - sb.thumb[0]});
+        h.move(surf, mid_x, mid_y, false);
+        try h.pinMouse(&g, false);
+
+        // Pressed on the thumb (kept shown while pressed): drawn over the
+        // frame, it differs from beside it (the renderer's read-back); then
+        // dragged to the top, the viewport shows the first row and the
+        // thumb the top of the track.
+        const grab_y = @divTrunc(sb.thumb[1] + sb.thumb[3], 2);
+        h.press(surf, x, grab_y);
+        sb = try waitScroll(h, &g, ScrollState.isPressed, "pressed", 5000);
+        try h.expect(sb.thumb[2] - sb.thumb[0] > thin, "pressed, the thumb is wide ({d} px)", .{sb.thumb[2] - sb.thumb[0]});
+        const thumb_rect = sb.thumb;
         {
-            // Drawn over the frame (the renderer's read-back, which the
-            // present pass's shapes are part of): it differs from beside it.
             const cy: u32 = @intCast(@divTrunc(sb.thumb[1] + sb.thumb[3], 2));
             const on = try h.probe(&g, @intCast(@divTrunc(sb.thumb[0] + sb.thumb[2], 2)), cy);
             const beside = try h.probe(&g, @intCast(sb.thumb[0] - 6), cy);
             try h.expect(on != beside, "the thumb is drawn (#{x:0>6} beside #{x:0>6})", .{ on, beside });
         }
-
-        // Pressed in the band at the right edge, the thumb widens; dragged
-        // to the top, the viewport shows the first row.
-        const x = rect.right - 5;
-        const grab_y = @divTrunc(sb.thumb[1] + sb.thumb[3], 2);
-        h.press(surf, x, grab_y);
-        sb = try waitScroll(h, &g, ScrollState.isPressed, "pressed", 5000);
-        try h.expect(sb.thumb[2] - sb.thumb[0] > thin, "pressed, the thumb widens ({d} px)", .{sb.thumb[2] - sb.thumb[0]});
         h.move(surf, x, @divTrunc(grab_y, 2), true);
         h.move(surf, x, 0, true);
         h.release(surf, x, 0);
         sb = try waitScroll(h, &g, ScrollState.atTop, "scrolled to the top", 5000);
-        try h.expect(!sb.pressed, "dragging the thumb to the top scrolls to the first row", .{});
+        try h.expect(!sb.pressed and sb.thumb[1] < 12, "dragging the thumb to the top scrolls to the first row (thumb at {d})", .{sb.thumb[1]});
 
         // A click on the track below the thumb pages down.
         h.click(surf, x, rect.bottom - 10, .left);
@@ -1916,14 +2030,30 @@ fn scrollbar(h: *Harness) anyerror!void {
         sb = try waitScroll(h, &g, ScrollState.hidden, "faded", 5000);
         try h.expect(true, "it fades when idle", .{});
 
-        // A program on the alternate screen: no scrollback there.
+        // With Windows set to always show scroll bars, it stays.
+        try h.setScrollbarsAlways(&g, true);
+        h.move(surf, mid_x, mid_y, false);
+        sb = try waitScroll(h, &g, ScrollState.shown, "shown, always", 5000);
+        w.Sleep(2500);
+        sb = try scrollState(h, &g);
+        try h.expect(sb.visible, "with \"always show scrollbars\" it doesn't fade", .{});
+        try h.setScrollbarsAlways(&g, false);
+        sb = try waitScroll(h, &g, ScrollState.hidden, "faded again", 5000);
+
+        // A program on the alternate screen: no scrollback there, and
+        // nothing drawn where the thumb was.
         try h.typeText(surf, "powershell -NoProfile -Command \"[Console]::Write([char]27+'[?1049h'); Start-Sleep 5; [Console]::Write([char]27+'[?1049l')\"");
         h.enter(surf);
         sb = try waitScroll(h, &g, ScrollState.nothingToScroll, "nothing to scroll on the alternate screen", 10000);
         h.move(surf, mid_x, mid_y, false);
-        w.Sleep(300);
+        h.sync(surf);
         sb = try scrollState(h, &g);
-        try h.expect(!sb.visible, "the alternate screen shows no thumb", .{});
+        {
+            const cy: u32 = @intCast(@divTrunc(thumb_rect[1] + thumb_rect[3], 2));
+            const on = try h.probe(&g, @intCast(@divTrunc(thumb_rect[0] + thumb_rect[2], 2)), cy);
+            const beside = try h.probe(&g, @intCast(thumb_rect[0] - 6), cy);
+            try h.expect(!sb.visible and on == beside, "the alternate screen shows no thumb (#{x:0>6}, beside #{x:0>6})", .{ on, beside });
+        }
         sb = try waitScroll(h, &g, ScrollState.scrollable, "scrollback again after it", 15000);
         try quit(h, &g, surf);
     }
@@ -1938,7 +2068,7 @@ fn scrollbar(h: *Harness) anyerror!void {
         var rect: w.RECT = .{};
         _ = w.GetClientRect(surf, &rect);
         h.move(surf, rect.right - 5, @divTrunc(rect.bottom, 2), false);
-        w.Sleep(300);
+        h.sync(surf);
         const sb = try scrollState(h, &g);
         try h.expect(!sb.visible, "scrollbar = never shows nothing", .{});
         try quit(h, &g, surf);
@@ -1978,7 +2108,18 @@ const ScrollState = struct {
     fn isPressed(s: ScrollState) bool {
         return s.pressed;
     }
+    fn isHovered(s: ScrollState) bool {
+        return s.hover and s.visible;
+    }
 };
+
+/// The first window's active tab's columns.
+fn paneCols(h: *Harness, g: *Harness.Ghostty) !u32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    return dw.tabs[dw.active].cols orelse h.fail("no columns in the dump", .{});
+}
 
 /// The first window's active pane's scrollbar, from a fresh dump.
 fn scrollState(h: *Harness, g: *Harness.Ghostty) !ScrollState {
@@ -4365,6 +4506,23 @@ fn activeWindow(hwnd: w.HWND) ?w.HWND {
     var info: w.GUITHREADINFO = .{};
     if (w.GetGUIThreadInfo(w.GetWindowThreadProcessId(hwnd, null), &info) == 0) return null;
     return info.hwndActive;
+}
+
+/// Wait until window `win` has at least `count` tabs.
+fn waitWindowTabsAtLeast(h: *Harness, g: *Harness.Ghostty, win: w.HWND, count: usize) !void {
+    var waited: u32 = 0;
+    var last: usize = 0;
+    while (waited <= 10000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        for (d.value.windows) |dw| {
+            if (dw.hwnd != @intFromPtr(win)) continue;
+            last = dw.tabs.len;
+            if (last >= count) return;
+        }
+        w.Sleep(200);
+    }
+    return h.fail("window has {d} tab(s), expected at least {d}", .{ last, count });
 }
 
 /// Wait until window `win` has `count` tabs.

@@ -10,6 +10,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const apprt = @import("../../apprt.zig");
 const c = @import("c.zig");
+const text_util = @import("text.zig");
 
 const log = std.log.scoped(.win32_title_dialog);
 
@@ -22,6 +23,9 @@ const State = struct {
     initial: []const u8,
     /// What OK left in the field, as UTF-8.
     result: ?[]u8 = null,
+    /// The field couldn't be read (out of memory, a lone surrogate): taken
+    /// as Cancel, never as a blank name that would clear the title.
+    failed: bool = false,
 };
 
 /// The dialog's heading, GTK's.
@@ -58,7 +62,7 @@ pub fn ask(
         log.warn("title dialog failed err={}", .{c.GetLastError()});
         return null;
     }
-    if (ret != c.IDOK) {
+    if (ret != c.IDOK or state.failed) {
         if (state.result) |r| alloc.free(r);
         return null;
     }
@@ -127,8 +131,9 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             const state: *State = @ptrFromInt(@as(usize, @bitCast(lparam)));
             _ = c.SetWindowLongPtrW(hwnd, c.GWLP_USERDATA, lparam);
             const edit = c.GetDlgItem(hwnd, id_edit) orelse return 1;
-            // The current title, selected, with the keyboard in it.
-            const wide = std.unicode.utf8ToUtf16LeAllocZ(state.alloc, state.initial) catch null;
+            // The current title, selected, with the keyboard in it (a
+            // program's title may hold invalid UTF-8: U+FFFD for it).
+            const wide = text_util.utf16Lossy(state.alloc, state.initial) catch null;
             defer if (wide) |w| state.alloc.free(w);
             if (wide) |w| _ = c.SetWindowTextW(edit, w.ptr);
             _ = c.SendMessageW(edit, c.EM_SETSEL, 0, -1);
@@ -142,7 +147,10 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
                 if (fromHwnd(hwnd)) |state| if (c.GetDlgItem(hwnd, id_edit)) |edit| {
                     var buf: [1024]u16 = undefined;
                     const n: usize = @intCast(@max(c.GetWindowTextW(edit, &buf, buf.len), 0));
-                    state.result = std.unicode.utf16LeToUtf8Alloc(state.alloc, buf[0..n]) catch null;
+                    state.result = std.unicode.utf16LeToUtf8Alloc(state.alloc, buf[0..n]) catch blk: {
+                        state.failed = true;
+                        break :blk null;
+                    };
                 };
                 _ = c.EndDialog(hwnd, c.IDOK);
                 return 1;

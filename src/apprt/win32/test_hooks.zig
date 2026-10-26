@@ -117,6 +117,10 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   a layered child of it (3).
 /// - 5: spike S2's transparency (see setTransparent) on (`lparam` 1) or
 ///   off (0).
+/// - 6: every pane's renderer failed (`lparam` 1) or recovered (0), through
+///   the core's renderer_health action.
+/// - 7: panes ignore WM_MOUSELEAVE (`lparam` 1) or act on it (0).
+/// - 8: Windows' "Always show scrollbars" on (`lparam` 1) or off (0).
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
     if (wparam == 3) {
@@ -134,11 +138,17 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (wparam == 2) app.setSystemDark(lparam != 0);
     if (wparam == 7) app.test_state.pin_mouse = lparam != 0;
     // As if every renderer failed (lparam 1) or recovered (0): the renderer
-    // panel (roadmap 3.6), which no test can bring about for real.
+    // panel (roadmap 3.6), which no test can bring about for real. Through
+    // the core's action, as the renderer's report comes.
     if (wparam == 6) for (app.windows.items) |w| {
         var it = w.panes();
-        while (it.next()) |s| s.setRendererHealth(if (lparam != 0) .unhealthy else .healthy);
+        while (it.next()) |s| {
+            if (!s.core_initialized) continue;
+            _ = app.performAction(.{ .surface = &s.core_surface }, .renderer_health, if (lparam != 0) .unhealthy else .healthy) catch {};
+        }
     };
+    // As if Windows' "Always show scrollbars" changed (lparam 1 on).
+    if (wparam == 8) app.setScrollbarsAlways(lparam != 0);
     if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
@@ -193,7 +203,8 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         {
             var wide: [512]u16 = undefined;
             const n: usize = @intCast(@max(c.GetWindowTextW(w.hwnd, &wide, wide.len), 0));
-            const text = try std.unicode.utf16LeToUtf8Alloc(alloc, wide[0..n]);
+            // A long title may be cut inside a surrogate pair.
+            const text = std.unicode.utf16LeToUtf8Alloc(alloc, wide[0..n]) catch try alloc.dupe(u8, "?");
             defer alloc.free(text);
             try out.appendSlice(alloc, "\"caption\":");
             try writeString(alloc, out, text);
@@ -273,8 +284,15 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             try out.appendSlice(alloc, ",\"label\":");
             try writeString(alloc, out, label);
             // The bell (roadmap 3.7a): ringing in the focused pane, and the
-            // tab's mark for a bell while it was in the background.
-            try out.print(alloc, ",\"bell\":{},\"attention\":{}", .{ s.bell_ringing, tab.attention });
+            // tab's mark for a bell while it was in the background; and
+            // what the tab bar last painted of them.
+            const bit = if (si < 64) @as(u64, 1) << @intCast(si) else 0;
+            try out.print(alloc, ",\"bell\":{},\"attention\":{},\"painted_bell\":{},\"painted_attention\":{}", .{
+                s.bell_ringing,
+                tab.attention,
+                w.painted_bell & bit != 0,
+                w.painted_attention & bit != 0,
+            });
             try out.appendSlice(alloc, ",\"tab_name\":");
             try writeString(alloc, out, tab.title_override orelse "");
             try out.appendSlice(alloc, ",\"pane_name\":");
@@ -684,13 +702,13 @@ fn promptMarks(alloc: Allocator, terminal: anytype) ![]u8 {
     return marks.toOwnedSlice(alloc);
 }
 
-/// A COLORREF (0x00BBGGRR) as 0xRRGGBB.
 /// An overlay's text as UTF-8, or "" while it is hidden.
 fn overlayText(alloc: Allocator, o: anytype) ![]u8 {
     if (!o.visible()) return alloc.dupe(u8, "");
     return std.unicode.utf16LeToUtf8Alloc(alloc, o.textUtf16()) catch alloc.dupe(u8, "?");
 }
 
+/// A COLORREF (0x00BBGGRR) as 0xRRGGBB.
 fn rgbOf(ref: c.COLORREF) i64 {
     return @as(i64, ref & 0xFF) << 16 | @as(i64, (ref >> 8) & 0xFF) << 8 | @as(i64, (ref >> 16) & 0xFF);
 }

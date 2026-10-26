@@ -36,7 +36,9 @@ pub fn sequenceKey(self: *KeyState, alloc: Allocator, trigger: input.Binding.Tri
         w.deinit();
         return;
     };
-    try self.sequence.append(alloc, try w.toOwnedSlice());
+    const key = try w.toOwnedSlice();
+    errdefer alloc.free(key);
+    try self.sequence.append(alloc, key);
 }
 
 /// The sequence ended (key_sequence .end).

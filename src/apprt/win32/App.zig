@@ -876,7 +876,11 @@ fn systemDark() bool {
 /// A system setting changed (WM_SETTINGCHANGE, which names few of them):
 /// read again the one the scrollbar follows.
 pub fn systemSettingChanged(self: *App) void {
-    const always = scrollbarsAlwaysShown();
+    self.setScrollbarsAlways(scrollbarsAlwaysShown());
+}
+
+/// Whether Windows always shows scroll bars (or the GUI tests say so).
+pub fn setScrollbarsAlways(self: *App, always: bool) void {
     if (always == self.scrollbars_always) return;
     self.scrollbars_always = always;
     for (self.windows.items) |w| {
@@ -916,7 +920,13 @@ fn windowFromTarget(target: apprt.Target) ?*Window {
 
 fn reloadConfig(self: *App, target: apprt.Target, soft: bool) !void {
     if (soft) {
-        try self.core_app.updateConfig(self, &self.config);
+        // As GTK does: a pane's soft reload (its conditional state changed,
+        // say its color scheme) updates that pane alone, not the whole app
+        // (which, on a light/dark switch, every pane asks for).
+        switch (target) {
+            .app => try self.core_app.updateConfig(self, &self.config),
+            .surface => |core| try core.updateConfig(&self.config),
+        }
         return;
     }
 
