@@ -31,6 +31,8 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
+    .{ .name = "bell", .about = "bell-features title: a bell before the tab's title and caption until input; a background tab's mark until selected", .run = bell },
+    .{ .name = "status-overlays", .about = "link preview, read-only badge, key sequence and table, renderer panel, toasts (copy, reload), child-exited banner (Close, any key)", .run = statusOverlays },
     .{ .name = "titles", .about = "rename prompts (tab, terminal) over program titles, blank restores, Cancel, set_window_title, copy_title_to_clipboard, double-click a tab", .run = titles },
     .{ .name = "scrollbar", .about = "overlay scrollbar: none without scrollback, shows on a move, widens pressed, drag to the top, track click pages, fades, none on the alternate screen, scrollbar = never", .run = scrollbar },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
@@ -1359,6 +1361,308 @@ fn commandPalette(h: *Harness) anyerror!void {
     try waitKeyboard(h, win, second, "the jump puts the keyboard in that pane");
     try h.expect(activeWindow(win) == win, "and brings its window forward", .{});
     try quit(h, &g, second);
+}
+
+/// The bell's title feature (roadmap 3.7a, GTK's): a BEL in the active
+/// pane puts a bell before its tab's title and the caption until a key
+/// goes to it; in a background tab it also marks the tab until the tab is
+/// selected, which (giving its pane the keyboard) answers the bell.
+fn bell(h: *Harness) anyerror!void {
+    var g = try start(h, "bell", "bell-features = title,no-attention,no-system\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const first = try h.surface(&g, win);
+
+    try h.typeText(first, "powershell -NoProfile -Command \"[Console]::Write([char]7)\"");
+    h.enter(first);
+    var t = try waitTabState(h, &g, 0, TabState.ringing, "the bell");
+    try h.expect(std.mem.startsWith(u8, t.label(), "\u{1F514} ") and std.mem.startsWith(u8, t.caption(), "\u{1F514} "), "a bell before the tab's title and the caption ('{s}')", .{t.caption()});
+    h.key(first, .{}, w.VK_SPACE);
+    t = try waitTabState(h, &g, 0, TabState.quiet, "the bell answered");
+    try h.expect(!std.mem.startsWith(u8, t.caption(), "\u{1F514}"), "a key answers it", .{});
+
+    // In a background tab: a bell a little later, from the first tab.
+    try h.typeText(first, "powershell -NoProfile -Command \"Start-Sleep 3; [Console]::Write([char]7)\"");
+    h.enter(first);
+    h.key(first, .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    t = try waitTabStateFor(h, &g, 0, TabState.marked, "the background tab's mark", 15000);
+    try h.expect(std.mem.startsWith(u8, t.label(), "\u{1F514} "), "a background tab's bell marks it ('{s}')", .{t.label()});
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const dw = d.value.windows[0];
+        try h.expect(dw.active == 1 and !std.mem.startsWith(u8, dw.caption, "\u{1F514}"), "the caption (the active tab's) has no bell", .{});
+        const r = dw.tab_bar.tabs[0].rect;
+        h.click(win, @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2), .left);
+    }
+    t = try waitTabState(h, &g, 0, TabState.seen, "the tab seen");
+    try h.expect(true, "selecting it clears the mark and answers the bell", .{});
+    try quit(h, &g, first);
+}
+
+/// A tab's label, the bell's state, and the window's caption (copies).
+const TabState = struct {
+    label_buf: [256]u8 = undefined,
+    label_len: usize = 0,
+    caption_buf: [256]u8 = undefined,
+    caption_len: usize = 0,
+    bell: bool = false,
+    attention: bool = false,
+
+    fn label(s: *const TabState) []const u8 {
+        return s.label_buf[0..s.label_len];
+    }
+    fn caption(s: *const TabState) []const u8 {
+        return s.caption_buf[0..s.caption_len];
+    }
+    fn ringing(s: *const TabState) bool {
+        return s.bell;
+    }
+    fn quiet(s: *const TabState) bool {
+        return !s.bell;
+    }
+    fn marked(s: *const TabState) bool {
+        return s.attention and s.bell;
+    }
+    fn seen(s: *const TabState) bool {
+        return !s.attention and !s.bell;
+    }
+};
+
+fn tabState(h: *Harness, g: *Harness.Ghostty, index: usize) !TabState {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    if (index >= dw.tabs.len) return .{};
+    const tab = dw.tabs[index];
+    var r: TabState = .{ .bell = tab.bell, .attention = tab.attention };
+    r.label_len = copyInto(&r.label_buf, tab.label);
+    r.caption_len = copyInto(&r.caption_buf, dw.caption);
+    return r;
+}
+
+fn waitTabState(h: *Harness, g: *Harness.Ghostty, index: usize, cond: fn (*const TabState) bool, comptime what: []const u8) !TabState {
+    return waitTabStateFor(h, g, index, cond, what, 10000);
+}
+
+fn waitTabStateFor(h: *Harness, g: *Harness.Ghostty, index: usize, cond: fn (*const TabState) bool, comptime what: []const u8, ms: u32) !TabState {
+    var last: TabState = .{};
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        last = try tabState(h, g, index);
+        if (cond(&last)) return last;
+        w.Sleep(100);
+    }
+    return h.fail("never " ++ what ++ " (tab {d} '{s}', bell {}, mark {}, caption '{s}')", .{ index, last.label(), last.bell, last.attention, last.caption() });
+}
+
+/// The status overlays (roadmap 3.6, GTK's): a URL under the mouse with
+/// Ctrl held shows at the bottom left, and goes with Ctrl; the read-only
+/// badge shows while toggle_readonly holds input back; the key state shows
+/// a pending sequence's keys and an active key table; the renderer panel
+/// shows while the renderer is unhealthy; toasts follow a copy and a
+/// config reload (none at start); a pane whose program fails keeps a
+/// "Command Failed" banner whose Close closes it, and with
+/// wait-after-command a "Command Succeeded" one that any key closes.
+fn statusOverlays(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    {
+        var g = try start(h, "status-overlays",
+            \\keybind = ctrl+shift+f7=toggle_readonly
+            \\keybind = ctrl+shift+f8>x=scroll_to_bottom
+            \\keybind = ctrl+shift+f9=activate_key_table:mytable
+            \\keybind = mytable/escape=deactivate_key_table
+            \\
+        , ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const surf = try h.surface(&g, win);
+        var st = try statusState(h, &g);
+        try h.expect(st.toast().len == 0 and st.link().len == 0 and !st.readonly and !st.health and st.banner().len == 0, "nothing shows at start (no toast)", .{});
+
+        // A link: Ctrl held over it previews it.
+        const url = "https://example.com/murrtty-preview";
+        try h.typeText(surf, "echo " ++ url);
+        h.enter(surf);
+        try h.waitText(&g, url, 2, 10000);
+        const at = try cellPoint(h, &g, url);
+        try h.pinMouse(&g, true);
+        h.moveMods(surf, at.x, at.y, .{ .ctrl = true });
+        st = try waitStatus(h, &g, url, StatusState.linkIs, "the link's preview");
+        try h.expect(!st.link_right, "the URL under the mouse with Ctrl shows at the bottom left", .{});
+        h.move(surf, at.x + 3, at.y, false);
+        st = try waitStatus(h, &g, "", StatusState.linkIs, "no preview without Ctrl");
+        try h.expect(true, "without Ctrl it goes", .{});
+
+        // Read-only: the badge, and typing reaches nothing.
+        h.key(surf, cs, w.VK_F7);
+        st = try waitStatus(h, &g, "", StatusState.isReadonly, "the read-only badge");
+        try h.typeText(surf, "echo held-back");
+        w.Sleep(800);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const text = d.value.windows[0].tabs[0].text orelse "";
+            try h.expect(std.mem.indexOf(u8, text, "held-back") == null, "read-only shows its badge and holds input back", .{});
+        }
+        h.key(surf, cs, w.VK_F7);
+        st = try waitStatus(h, &g, "", StatusState.notReadonly, "no read-only badge");
+        try h.expect(true, "and the badge goes when it ends", .{});
+
+        // The key state: a sequence's leader, then a key table.
+        h.key(surf, cs, w.VK_F8);
+        st = try waitStatus(h, &g, "Ctrl+Shift+F8", StatusState.keysAre, "the pending key");
+        h.key(surf, .{}, 'X');
+        st = try waitStatus(h, &g, "", StatusState.keysAre, "the sequence done");
+        try h.expect(true, "a pending sequence shows its keys until it ends", .{});
+        h.key(surf, cs, w.VK_F9);
+        st = try waitStatus(h, &g, "mytable", StatusState.keysAre, "the key table");
+        h.key(surf, .{}, w.VK_ESCAPE);
+        st = try waitStatus(h, &g, "", StatusState.keysAre, "the table gone");
+        try h.expect(true, "an active key table shows until it is deactivated", .{});
+
+        // The renderer panel.
+        try h.setRendererHealth(&g, false);
+        st = try waitStatus(h, &g, "", StatusState.isUnhealthy, "the renderer panel");
+        try h.setRendererHealth(&g, true);
+        st = try waitStatus(h, &g, "", StatusState.isHealthy, "no renderer panel");
+        try h.expect(true, "the renderer panel shows while it is unhealthy", .{});
+
+        // Toasts: a copy, then a reload of the config.
+        h.click(surf, at.x, at.y, .left);
+        h.click(surf, at.x, at.y, .left);
+        h.sync(surf);
+        h.key(surf, cs, 'C');
+        st = try waitStatus(h, &g, "Copied to clipboard", StatusState.toastIs, "the copy's toast");
+        h.key(surf, cs, w.VK_OEM_COMMA);
+        st = try waitStatus(h, &g, "Reloaded the configuration", StatusState.toastIs, "the reload's toast");
+        st = try waitStatusFor(h, &g, "", StatusState.toastIs, "the toast gone", 6000);
+        try h.expect(true, "toasts for a copy and a reload, gone after a few seconds", .{});
+        try quit(h, &g, surf);
+    }
+    {
+        // A program that fails at once: the banner, and Close.
+        var g = try h.launch("status-banner-failed", base_config ++
+            \\command = cmd.exe /c exit 3
+            \\abnormal-command-exit-runtime = 60000
+            \\
+        );
+        defer g.deinit();
+        _ = try waitStatusFor(h, &g, "Command Failed", StatusState.bannerIs, "the failed banner", 15000);
+        const win = try h.mainWindow(&g);
+        const surf = try h.surface(&g, win);
+        const banner = h.child(&g, surf, "MurrttyBanner") orelse return h.fail("no banner window", .{});
+        const close = h.child(&g, banner, "Button") orelse return h.fail("no Close button", .{});
+        try h.expect(true, "a failed program leaves 'Command Failed' with Close", .{});
+        _ = w.PostMessageW(close, w.BM_CLICK, 0, 0);
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "Close closes it (exit {?d})", .{code});
+    }
+    {
+        // With wait-after-command, a finished program's banner; any key.
+        var g = try h.launch("status-banner-done", base_config ++
+            \\command = cmd.exe /c exit 0
+            \\wait-after-command = true
+            \\
+        );
+        defer g.deinit();
+        _ = try waitStatusFor(h, &g, "Command Succeeded", StatusState.bannerIs, "the succeeded banner", 15000);
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try h.expect(true, "with wait-after-command, 'Command Succeeded'", .{});
+        h.key(surf, .{}, 'A');
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "and a key closes it (exit {?d})", .{code});
+    }
+}
+
+/// The first window's active pane's status overlays and the window's
+/// toast (copies, with lengths: the dump they come from is freed).
+const StatusState = struct {
+    link_buf: [256]u8 = undefined,
+    link_len: usize = 0,
+    link_right: bool = false,
+    readonly: bool = false,
+    keys_buf: [128]u8 = undefined,
+    keys_len: usize = 0,
+    health: bool = false,
+    banner_buf: [64]u8 = undefined,
+    banner_len: usize = 0,
+    toast_buf: [64]u8 = undefined,
+    toast_len: usize = 0,
+
+    fn link(s: *const StatusState) []const u8 {
+        return s.link_buf[0..s.link_len];
+    }
+    fn keys(s: *const StatusState) []const u8 {
+        return s.keys_buf[0..s.keys_len];
+    }
+    fn banner(s: *const StatusState) []const u8 {
+        return s.banner_buf[0..s.banner_len];
+    }
+    fn toast(s: *const StatusState) []const u8 {
+        return s.toast_buf[0..s.toast_len];
+    }
+
+    fn linkIs(s: *const StatusState, want: []const u8) bool {
+        return std.mem.eql(u8, s.link(), want);
+    }
+    fn keysAre(s: *const StatusState, want: []const u8) bool {
+        return std.mem.eql(u8, s.keys(), want);
+    }
+    fn bannerIs(s: *const StatusState, want: []const u8) bool {
+        return std.mem.eql(u8, s.banner(), want);
+    }
+    fn toastIs(s: *const StatusState, want: []const u8) bool {
+        return std.mem.eql(u8, s.toast(), want);
+    }
+    fn isReadonly(s: *const StatusState, _: []const u8) bool {
+        return s.readonly;
+    }
+    fn notReadonly(s: *const StatusState, _: []const u8) bool {
+        return !s.readonly;
+    }
+    fn isUnhealthy(s: *const StatusState, _: []const u8) bool {
+        return s.health;
+    }
+    fn isHealthy(s: *const StatusState, _: []const u8) bool {
+        return !s.health;
+    }
+};
+
+fn statusState(h: *Harness, g: *Harness.Ghostty) !StatusState {
+    var d = try h.dump(g);
+    defer d.deinit();
+    if (d.value.windows.len == 0) return .{};
+    const dw = d.value.windows[0];
+    var r: StatusState = .{};
+    r.toast_len = copyInto(&r.toast_buf, dw.toast);
+    const panes = dw.tabs[dw.active].panes orelse return r;
+    const s = panes[0].status orelse return r;
+    r.link_len = copyInto(&r.link_buf, s.link);
+    r.link_right = s.link_right;
+    r.readonly = s.readonly;
+    r.keys_len = copyInto(&r.keys_buf, s.keys);
+    r.health = s.health;
+    r.banner_len = copyInto(&r.banner_buf, s.banner);
+    return r;
+}
+
+fn waitStatus(h: *Harness, g: *Harness.Ghostty, want: []const u8, cond: fn (*const StatusState, []const u8) bool, comptime what: []const u8) !StatusState {
+    return waitStatusFor(h, g, want, cond, what, 5000);
+}
+
+fn waitStatusFor(h: *Harness, g: *Harness.Ghostty, want: []const u8, cond: fn (*const StatusState, []const u8) bool, comptime what: []const u8, ms: u32) !StatusState {
+    var last: StatusState = .{};
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        last = statusState(h, g) catch last;
+        if (cond(&last, want)) return last;
+        w.Sleep(100);
+    }
+    return h.fail("never " ++ what ++ " (link '{s}', keys '{s}', readonly {}, health {}, banner '{s}', toast '{s}')", .{ last.link(), last.keys(), last.readonly, last.health, last.banner(), last.toast() });
 }
 
 /// Titles (roadmap 3.5, GTK's): a program's title shows on the tab and the

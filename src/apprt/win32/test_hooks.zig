@@ -41,6 +41,11 @@ pub const State = if (enabled) struct {
     overlay_class: bool = false,
     /// Context menus shown (ContextMenu.track).
     menus_shown: u32 = 0,
+    /// Panes ignore WM_MOUSELEAVE (dump wparam 7): on the hidden desktop
+    /// the real cursor is never over a window, so Windows answers a posted
+    /// move's leave tracking at once, and hover state (a link's preview)
+    /// would go before a test could see it.
+    pin_mouse: bool = false,
 } else struct {};
 
 /// Whether the hooks are on, for code with no App at hand.
@@ -127,6 +132,13 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     }
     const alloc = app.core_app.alloc;
     if (wparam == 2) app.setSystemDark(lparam != 0);
+    if (wparam == 7) app.test_state.pin_mouse = lparam != 0;
+    // As if every renderer failed (lparam 1) or recovered (0): the renderer
+    // panel (roadmap 3.6), which no test can bring about for real.
+    if (wparam == 6) for (app.windows.items) |w| {
+        var it = w.panes();
+        while (it.next()) |s| s.setRendererHealth(if (lparam != 0) .unhealthy else .healthy);
+    };
     if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
@@ -187,6 +199,11 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             try writeString(alloc, out, text);
             try out.appendSlice(alloc, ",\"window_name\":");
             try writeString(alloc, out, w.title_override orelse "");
+            // The toast showing, "" for none.
+            const toast = try std.unicode.utf16LeToUtf8Alloc(alloc, w.toastText());
+            defer alloc.free(toast);
+            try out.appendSlice(alloc, ",\"toast\":");
+            try writeString(alloc, out, toast);
             try out.append(alloc, ',');
         }
 
@@ -251,8 +268,13 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             try writeString(alloc, out, s.title orelse "");
             // What the tab shows, and the user's names for the tab and its
             // focused pane ("" for none).
+            const label = try tab.label(alloc);
+            defer alloc.free(label);
             try out.appendSlice(alloc, ",\"label\":");
-            try writeString(alloc, out, tab.title());
+            try writeString(alloc, out, label);
+            // The bell (roadmap 3.7a): ringing in the focused pane, and the
+            // tab's mark for a bell while it was in the background.
+            try out.print(alloc, ",\"bell\":{},\"attention\":{}", .{ s.bell_ringing, tab.attention });
             try out.appendSlice(alloc, ",\"tab_name\":");
             try writeString(alloc, out, tab.title_override orelse "");
             try out.appendSlice(alloc, ",\"pane_name\":");
@@ -390,6 +412,26 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                 thumb.right,
                 thumb.bottom,
             });
+        }
+        // The status overlays (roadmap 3.6): the link preview (its text,
+        // "" when hidden, and whether it moved to the right), the read-only
+        // badge, the key state's text, the renderer panel, the banner's
+        // title ("" when hidden).
+        {
+            const link = try overlayText(alloc, &s.link_overlay);
+            defer alloc.free(link);
+            const keys = try overlayText(alloc, &s.key_overlay);
+            defer alloc.free(keys);
+            try out.appendSlice(alloc, ",\"status\":{\"link\":");
+            try writeString(alloc, out, link);
+            try out.print(alloc, ",\"link_right\":{},\"readonly\":{},\"keys\":", .{
+                s.link_overlay.position == .@"bottom-right",
+                s.readonlyShown(),
+            });
+            try writeString(alloc, out, keys);
+            try out.print(alloc, ",\"health\":{},\"banner\":", .{s.health_overlay.visible()});
+            try writeString(alloc, out, if (s.banner.visible()) s.banner.title() else "");
+            try out.append(alloc, '}');
         }
         if (s.core_initialized) {
             const grid = s.core_surface.size.grid();
@@ -643,6 +685,12 @@ fn promptMarks(alloc: Allocator, terminal: anytype) ![]u8 {
 }
 
 /// A COLORREF (0x00BBGGRR) as 0xRRGGBB.
+/// An overlay's text as UTF-8, or "" while it is hidden.
+fn overlayText(alloc: Allocator, o: anytype) ![]u8 {
+    if (!o.visible()) return alloc.dupe(u8, "");
+    return std.unicode.utf16LeToUtf8Alloc(alloc, o.textUtf16()) catch alloc.dupe(u8, "?");
+}
+
 fn rgbOf(ref: c.COLORREF) i64 {
     return @as(i64, ref & 0xFF) << 16 | @as(i64, (ref >> 8) & 0xFF) << 8 | @as(i64, (ref >> 16) & 0xFF);
 }

@@ -12,6 +12,7 @@ const CoreApp = @import("../../App.zig");
 const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
+const Banner = @import("Banner.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const Overlay = @import("Overlay.zig");
 const SearchBox = @import("SearchBox.zig");
@@ -182,6 +183,7 @@ pub fn init(
     try Overlay.registerClass(instance);
     try SearchBox.registerClass(instance);
     try CommandPalette.registerClass(instance);
+    try Banner.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wakeupWndProc,
@@ -1216,6 +1218,8 @@ pub fn performAction(
         .ring_bell => {
             const window = windowFromTarget(target) orelse return false;
             window.ringBell();
+            // bell-features title (roadmap 3.7a).
+            if (surfaceFromTarget(target)) |s| s.ringBell();
         },
 
         // Every link is taken, even one that will be blocked: if this
@@ -1255,6 +1259,9 @@ pub fn performAction(
                     // `scrollbar` may have changed.
                     var it = w.panes();
                     while (it.next()) |s| s.scrollbar.settingsChanged(s);
+                    // GTK's toast, in every window, for a reload of any
+                    // kind (the light/dark switch reloads it too).
+                    if (self.config.@"app-notifications".@"config-reload") w.showToast("Reloaded the configuration");
                 }
                 // window-theme may now force a different scheme.
                 self.reportColorScheme();
@@ -1280,7 +1287,32 @@ pub fn performAction(
             .stop => {},
         },
 
-        .renderer_health => log.info("renderer health={}", .{value}),
+        // The status overlays (roadmap 3.6).
+        .renderer_health => {
+            log.info("renderer health={}", .{value});
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.setRendererHealth(value);
+        },
+        .mouse_over_link => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.setLinkPreview(value.url);
+        },
+        .readonly => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.setReadonly(value == .on);
+        },
+        .key_sequence => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.keySequence(value);
+        },
+        .key_table => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.keyTable(value);
+        },
+        .show_child_exited => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            return surface.childExited(value);
+        },
 
         // Not shown yet (notify-on-command-finish); kept for the GUI
         // tests' dump.

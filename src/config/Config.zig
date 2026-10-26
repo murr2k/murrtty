@@ -3346,9 +3346,9 @@ keybind: Keybinds = .{},
 
 /// Control the in-app notifications that Ghostty shows.
 ///
-/// On Linux (GTK), in-app notifications show up as toasts. Toasts appear
-/// overlaid on top of the terminal window. They are used to show information
-/// that is not critical but may be important.
+/// On Linux (GTK) and Windows, in-app notifications show up as toasts.
+/// Toasts appear overlaid on top of the terminal window. They are used to
+/// show information that is not critical but may be important.
 ///
 /// Possible notifications are:
 ///
@@ -3368,7 +3368,7 @@ keybind: Keybinds = .{},
 /// A value of "false" will disable all notifications. A value of "true" will
 /// enable all notifications.
 ///
-/// This configuration only applies to GTK.
+/// This configuration only applies to GTK and Windows.
 ///
 /// Available since: 1.1.0
 @"app-notifications": AppNotifications = .{},

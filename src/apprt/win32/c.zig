@@ -628,6 +628,7 @@ pub const LB_SETITEMHEIGHT = 0x01A0;
 pub const LB_GETITEMHEIGHT = 0x01A1;
 pub const DT_TOP = 0x00000000;
 pub const DT_BOTTOM = 0x00000008;
+pub const DT_WORDBREAK = 0x00000010;
 pub const VK_PRIOR = 0x21;
 pub const VK_NEXT = 0x22;
 pub const VK_UP = 0x26;

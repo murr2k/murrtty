@@ -159,6 +159,9 @@ pub fn paint(
     hdc: c.HDC,
     width: c_int,
     titles: []const []const u8,
+    /// The tabs the bell rang in while in the background (underlined, as
+    /// GTK marks a tab needing attention).
+    attention: []const bool,
     active: usize,
     /// The active terminal's background and foreground.
     bg: Color,
@@ -211,6 +214,13 @@ pub fn paint(
         const len = std.unicode.utf8ToUtf16Le(&buf, title[0..@min(title.len, 200)]) catch 0;
         _ = c.SetTextColor(mem, if (is_active) pal.text else pal.text_dim);
         _ = c.DrawTextW(mem, &buf, @intCast(len), &text_rect, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_END_ELLIPSIS | c.DT_NOPREFIX);
+
+        // The bell's mark: a line under the tab's title.
+        if (i < attention.len and attention[i]) {
+            const y = r.bottom - self.scale(4);
+            const w = @max(2, self.scale(2));
+            line(mem, text_rect.left, y, text_rect.right, y, pal.text, w);
+        }
 
         // Close button on the active and hovered tabs.
         if (is_active or hovered) {

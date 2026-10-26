@@ -157,6 +157,13 @@ hosted Windows runner and then the unit tests.
   terminal (`prompt_surface_title`) or a window (`prompt_window_title`,
   `set_window_title`). A name stays while programs set their titles; a
   blank one restores theirs. `copy_title_to_clipboard` copies the title.
+- Ghostty's status overlays: the URL under the mouse (`link-previews`), a
+  "Read-only" badge (`toggle_readonly`), the key sequence and key tables in
+  progress, a banner when the program ends ("Command Succeeded" or "Command
+  Failed", with Close), a panel if the renderer fails, and toasts for
+  copying and for reloading the configuration (`app-notifications`).
+- The bell's `title` feature: a 🔔 before the tab's title and the caption
+  until you answer it, and a mark on a background tab until you select it.
 - An overlay scrollbar, as in Ghostty's GTK app: a thin thumb at the right
   edge shows while you scroll or move the mouse, widens under the mouse,
   drags, and pages with a click on the track; it fades when idle (not when
@@ -199,8 +206,8 @@ hosted Windows runner and then the unit tests.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the rest of the everyday UI: status overlays, toasts and the bell
-(Phase 3).
+with the rest of the everyday UI (Phase 3: the tab bar's menus and
+overflow, dialog polish).
 
 **Known issues**
 

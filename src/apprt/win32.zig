@@ -14,6 +14,8 @@ test {
     _ = @import("win32/CommandPalette.zig");
     _ = @import("win32/ContextMenu.zig");
     _ = @import("win32/TitleDialog.zig");
+    _ = @import("win32/KeyState.zig");
+    _ = @import("win32/Overlay.zig");
     _ = @import("win32/key.zig");
     _ = @import("win32/split_layout.zig");
     _ = @import("win32/TabBar.zig");

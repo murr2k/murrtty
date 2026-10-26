@@ -1274,6 +1274,42 @@ reports the caption, each tab's label and the names.
 
 *Done when:* each appears and hides under the same conditions as on GTK.
 
+*Done 2026-10-26.* `win32/Overlay.zig` grew into the general text host
+(per-use margins, padding, corners and colors, an optional Segoe MDL2
+glyph, shows until hidden, a 512-unit buffer cut with an ellipsis at the
+parent's width, or wrapped), with these users, each from the core's action:
+- **Link preview** (`mouse_over_link`, `link-previews`): the URL at the
+  pane's bottom left, square, GTK's padding and outline; at the bottom right
+  while the mouse is over that spot; gone on an empty URL. Long URLs are
+  cut with an ellipsis (GTK lets them run).
+- **Read-only badge** (`readonly`): a lock and "Read-only" at the top right
+  in GTK's tan (hsl(25 50% 75%)), outlined, no fill; shown at once (GTK
+  crossfades over 500 ms).
+- **Key state** (`key_sequence`, `key_table`, `win32/KeyState.zig`): a
+  keyboard glyph, the active tables joined by " > ", a "›", then the
+  sequence's keys as Windows names them ("Ctrl+Shift+F8"), at the bottom
+  center while there is any (GTK's spinner and dragging it to the top are
+  not done).
+- **Renderer panel** (`renderer_health`): GTK shows nothing; this shows
+  macOS's text in the middle of the pane while the renderer is unhealthy.
+- **Child-exited banner** (`show_child_exited`, `win32/Banner.zig`): GTK's
+  bar across the bottom, "Command Succeeded" on a green wash or "Command
+  Failed" on a red one, with a real Close button (an `App.Request` close).
+  Returning true keeps an abnormal exit's pane open, as on GTK, instead of
+  the core's text in the terminal.
+- **Toasts** (`app-notifications`): "Copied to clipboard" or "Cleared
+  clipboard" for every write to the clipboard without a confirmation (or
+  once one is allowed), "Reloaded the configuration" in every window on any
+  app config change (the light/dark switch too, as on GTK), none at start;
+  a pill at the window's bottom center for 3 seconds, the latest replacing
+  the one before (GTK queues them and gives each a close button). The
+  option's documentation now names Windows.
+Scenario `status-overlays` (each of these; the renderer through a test
+hook, as nothing can fail it on demand); the dump reports each pane's
+`status` and each window's `toast`. A test hook (dump wparam 7) keeps panes
+from acting on WM_MOUSELEAVE, which Windows sends at once for a posted move
+on the hidden desktop and would clear hover state before a test sees it.
+
 **3.7 Bell, M.** Implement the `title`, `audio` and `border` bell features
 with per-pane ringing state, cleared on focus or input. `title` is in the
 default `bell-features`, so its part (S) is in M1; audio and border are M2.
@@ -1285,6 +1321,15 @@ default `bell-features`, so its part (S) is in M1; audio and border are M2.
 
 *Done when:* a BEL in a background tab marks it until selected, and the audio
 file plays at the configured volume.
+
+*3.7a (`title`) done 2026-10-26.* A BEL with `bell-features = title` (the
+default) puts "🔔 " before the tab's title, and the caption, while the
+pane's bell rings (`Surface.bell_ringing`), until the pane gets the keyboard
+or a key; GTK's order, before the zoom's "🔍 " (`Tab.label`, which the tab
+bar and caption show; `Tab.title` stays plain for the rename prompt). A bell
+in a background tab also underlines the tab (`Tab.attention`) until it is
+selected. Scenario `bell`; the dump reports each tab's `bell` and
+`attention`. Audio and border (the rest of 3.7) are M2.
 
 **3.8 Tab bar, M to L.**
 - Right-click menu: Rename, Close, Close Others, Close to the Right, Move to

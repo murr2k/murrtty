@@ -880,6 +880,17 @@ pub fn move(self: *Harness, target: w.HWND, x: c_int, y: c_int, held: bool) void
     _ = w.PostMessageW(target, w.WM_MOUSEMOVE, if (held) w.MK_LBUTTON else 0, w.makeLParam(x, y));
 }
 
+/// Move the mouse to client coordinates of `target` with modifiers held
+/// (Ctrl over a link previews it).
+pub fn moveMods(self: *Harness, target: w.HWND, x: c_int, y: c_int, mods: Mods) void {
+    var held: Held = .init(self.dump_msg, target, mods);
+    defer held.release();
+    var mk: w.WPARAM = 0;
+    if (mods.ctrl) mk |= w.MK_CONTROL;
+    if (mods.shift) mk |= w.MK_SHIFT;
+    _ = w.PostMessageW(target, w.WM_MOUSEMOVE, mk, w.makeLParam(x, y));
+}
+
 /// Press the left button at client coordinates of `target`, and later let
 /// it go with `release`: a drag in between with `move`.
 pub fn press(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
@@ -1012,6 +1023,8 @@ pub const Dump = struct {
         /// none).
         caption: []const u8 = "",
         window_name: []const u8 = "",
+        /// The toast showing ("" for none).
+        toast: []const u8 = "",
         /// The command palette: open, whether it has the keyboard, its
         /// filter field, list and dimming windows, a row's height, the
         /// selected row (-1 for none), the filter's text and the listed
@@ -1048,6 +1061,10 @@ pub const Dump = struct {
         label: []const u8 = "",
         tab_name: []const u8 = "",
         pane_name: []const u8 = "",
+        /// The bell: ringing in the focused pane, and the tab's mark for
+        /// a bell while it was in the background.
+        bell: bool = false,
+        attention: bool = false,
         cols: ?u32 = null,
         rows: ?u32 = null,
         /// Cell size and padding in pixels.
@@ -1138,6 +1155,17 @@ pub const Dump = struct {
             alpha: f64,
             thumb: [4]i32,
         } = null,
+        /// The status overlays: the link preview's text ("" when hidden)
+        /// and whether it moved to the right, the read-only badge, the key
+        /// state's text, the renderer panel, the banner's title.
+        status: ?struct {
+            link: []const u8,
+            link_right: bool,
+            readonly: bool,
+            keys: []const u8,
+            health: bool,
+            banner: []const u8,
+        } = null,
     };
 };
 
@@ -1179,6 +1207,21 @@ pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u
         w.Sleep(100);
     }
     return self.fail("pane {d} presented no frame after asking for pixel ({d},{d})", .{ i, x, y });
+}
+
+/// Make panes ignore WM_MOUSELEAVE (`pinned`), which Windows sends for a
+/// posted move at once on the hidden desktop, or act on it again: to see
+/// hover state (a link's preview).
+pub fn pinMouse(self: *Harness, g: *const Ghostty, pinned: bool) !void {
+    var d = try self.dumpWith(g, 7, @intFromBool(pinned));
+    d.deinit();
+}
+
+/// Make every pane act as if its renderer failed (`healthy` false) or
+/// recovered.
+pub fn setRendererHealth(self: *Harness, g: *const Ghostty, healthy: bool) !void {
+    var d = try self.dumpWith(g, 6, @intFromBool(!healthy));
+    d.deinit();
 }
 
 /// Make Ghostty act as if the system's light/dark setting changed, without

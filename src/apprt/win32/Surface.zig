@@ -20,6 +20,8 @@ const key = @import("key.zig");
 const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
+const Banner = @import("Banner.zig");
+const KeyState = @import("KeyState.zig");
 const Overlay = @import("Overlay.zig");
 const Scrollbar = @import("Scrollbar.zig");
 const SearchBox = @import("SearchBox.zig");
@@ -52,6 +54,10 @@ core_initialized: bool = false,
 title: ?[:0]const u8 = null,
 title_override: ?[:0]const u8 = null,
 
+/// Whether the bell rang here since the pane last had the keyboard or
+/// input (bell-features title: a bell before its tab's title, GTK's).
+bell_ringing: bool = false,
+
 /// The terminal's background and foreground as they are now, which the
 /// window's caption and tab strip follow: the surface's config's until a
 /// program changes them (OSC 10/11) or the config changes.
@@ -67,6 +73,17 @@ search: SearchBox = .{},
 
 /// The overlay scrollbar (the core's scrollbar action).
 scrollbar: Scrollbar = .{},
+
+/// The status overlays (roadmap 3.6, GTK's): the link under the mouse at a
+/// bottom corner, the read-only badge at the top right, the key sequence
+/// and tables at the bottom center, the renderer's failure in the middle,
+/// and the banner once the program has ended.
+link_overlay: Overlay = .{ .position = .@"bottom-left", .margin = 0, .radius = 0 },
+readonly_overlay: Overlay = .{ .position = .@"top-right", .margin = 8, .pad_x = 8, .pad_y = 8, .icon = 0xE72E },
+key_overlay: Overlay = .{ .position = .@"bottom-center", .margin = 8, .pad_x = 10, .pad_y = 6, .radius = 8, .icon = 0xE765 },
+health_overlay: Overlay = .{ .position = .center, .pad_x = 16, .pad_y = 12, .radius = 8, .wrap = true },
+banner: Banner = .{},
+key_state: KeyState = .{},
 
 content_scale: apprt.ContentScale = .{ .x = 1, .y = 1 },
 size: apprt.SurfaceSize = .{ .width = 0, .height = 0 },
@@ -369,6 +386,128 @@ pub fn deinit(self: *Surface) void {
     self.title_override = null;
     self.resize_overlay.deinit();
     self.search.deinit();
+    for ([_]*Overlay{ &self.link_overlay, &self.readonly_overlay, &self.key_overlay, &self.health_overlay }) |o| o.deinit();
+    self.banner.deinit();
+    self.key_state.deinit(self.app.core_app.alloc);
+}
+
+//---------------------------------------------------------------
+// Status overlays (roadmap 3.6)
+
+/// The overlays' background: the terminal's, a little toward its
+/// foreground (as the resize overlay's).
+fn overlayColors(self: *const Surface, o: *Overlay) void {
+    const bg = self.colors.bg;
+    const fg = self.colors.fg;
+    o.bg = c.rgb(mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b));
+    o.fg = c.rgb(fg.r, fg.g, fg.b);
+}
+
+/// The core's mouse_over_link: the link under the mouse (link-previews),
+/// or none (empty). GTK shows it at the bottom left, and at the bottom
+/// right while the mouse is over that spot.
+pub fn setLinkPreview(self: *Surface, url: []const u8) void {
+    if (url.len == 0) return self.link_overlay.hide();
+    self.overlayColors(&self.link_overlay);
+    self.link_overlay.position = .@"bottom-left";
+    self.link_overlay.show(self.hwnd, url, 0);
+    self.linkPreviewFollow(self.cursor_pos.x, self.cursor_pos.y);
+}
+
+/// Keep the link preview out from under the mouse at (`x`, `y`).
+fn linkPreviewFollow(self: *Surface, x: f32, y: f32) void {
+    if (!self.link_overlay.visible()) return;
+    const r = self.link_overlay.rect() orelse return;
+    var client: c.RECT = .{};
+    _ = c.GetClientRect(self.hwnd, &client);
+    // Where it shows at the bottom left (it sits on the edges): the same
+    // size wherever it is.
+    const over = x < @as(f32, @floatFromInt(r.right - r.left)) and
+        y >= @as(f32, @floatFromInt(client.bottom - (r.bottom - r.top)));
+    self.link_overlay.moveTo(if (over) .@"bottom-right" else .@"bottom-left");
+}
+
+/// The core's readonly action: GTK's badge, a lock and "Read-only" at the
+/// top right in its tan, while input is held back.
+pub fn setReadonly(self: *Surface, on: bool) void {
+    if (!on) return self.readonly_overlay.hide();
+    const o = &self.readonly_overlay;
+    const bg = self.colors.bg;
+    o.bg = c.rgb(bg.r, bg.g, bg.b);
+    // hsl(25, 50%, 75%), GTK's.
+    o.fg = c.rgb(0xdf, 0xba, 0x9f);
+    o.border = o.fg;
+    o.show(self.hwnd, "Read-only", 0);
+}
+
+pub fn readonlyShown(self: *const Surface) bool {
+    return self.readonly_overlay.visible();
+}
+
+/// The core's key_sequence and key_table actions.
+pub fn keySequence(self: *Surface, value: apprt.action.KeySequence) void {
+    const alloc = self.app.core_app.alloc;
+    switch (value) {
+        .trigger => |t| self.key_state.sequenceKey(alloc, t) catch {},
+        .end => self.key_state.clearSequence(alloc),
+    }
+    self.syncKeyOverlay();
+}
+
+pub fn keyTable(self: *Surface, value: apprt.action.KeyTable) void {
+    const alloc = self.app.core_app.alloc;
+    switch (value) {
+        .activate => |name| self.key_state.tableActivate(alloc, name) catch {},
+        .deactivate => self.key_state.tableDeactivate(alloc),
+        .deactivate_all => self.key_state.clearTables(alloc),
+    }
+    self.syncKeyOverlay();
+}
+
+fn syncKeyOverlay(self: *Surface) void {
+    if (!self.key_state.active()) return self.key_overlay.hide();
+    var buf: [512]u8 = undefined;
+    self.overlayColors(&self.key_overlay);
+    self.key_overlay.show(self.hwnd, self.key_state.text(&buf), 0);
+}
+
+/// The renderer failed (renderer_health), or recovered. GTK shows nothing;
+/// this shows macOS's panel.
+pub fn setRendererHealth(self: *Surface, health: renderer.Health) void {
+    switch (health) {
+        .healthy => self.health_overlay.hide(),
+        .unhealthy => {
+            self.overlayColors(&self.health_overlay);
+            self.health_overlay.show(self.hwnd, "Oh, no. The renderer has failed. This is usually due to exhausting available GPU memory. Please free up available resources.", 0);
+        },
+    }
+}
+
+/// The core's show_child_exited: the program ended. GTK's banner across
+/// the bottom, "Command Succeeded" or "Command Failed", with Close; the
+/// pane stays until it is closed or a key is pressed.
+pub fn childExited(self: *Surface, value: apprt.surface.Message.ChildExited) bool {
+    const bg = self.colors.bg;
+    const fg = self.colors.fg;
+    self.banner.on_close = &closeFromBanner;
+    self.banner.ctx = self;
+    self.banner.show(self.hwnd, value.exit_code, .{ bg.r, bg.g, bg.b }, .{ fg.r, fg.g, fg.b });
+    return true;
+}
+
+fn closeFromBanner(ctx: *anyopaque) void {
+    const self: *Surface = @ptrCast(@alignCast(ctx));
+    if (!self.core_initialized) return;
+    // From the message loop, as every close.
+    self.app.request(.{ .close_surface = .{ .id = self.core_surface.id, .process_active = false } });
+}
+
+/// Place the status overlays again (the pane resized).
+fn layoutOverlays(self: *Surface) void {
+    for ([_]*Overlay{ &self.link_overlay, &self.readonly_overlay, &self.key_overlay, &self.health_overlay }) |o| {
+        if (o.visible()) o.layout();
+    }
+    if (self.banner.visible()) self.banner.layout();
 }
 
 //---------------------------------------------------------------
@@ -579,6 +718,16 @@ pub fn setClipboard(
     }
 
     try writeClipboardText(alloc, self.hwnd, text);
+    self.clipboardWritten(text);
+}
+
+/// GTK's toast for a write to the clipboard (app-notifications's
+/// clipboard-copy): "Copied to clipboard", or for nothing, "Cleared
+/// clipboard". In the pane's window, whether or not it is in front (a
+/// program's OSC 52 write too).
+fn clipboardWritten(self: *Surface, text: []const u8) void {
+    if (!self.app.config.@"app-notifications".@"clipboard-copy") return;
+    self.window.showToast(if (text.len > 0) "Copied to clipboard" else "Cleared clipboard");
 }
 
 fn confirmClipboardWrite(self: *Surface, text: []const u8) void {
@@ -593,7 +742,9 @@ fn confirmClipboardWrite(self: *Surface, text: []const u8) void {
 
     writeClipboardText(alloc, self.hwnd, text) catch |err| {
         log.warn("error writing clipboard err={}", .{err});
+        return;
     };
+    self.clipboardWritten(text);
 }
 
 pub fn defaultTermioEnv(self: *Surface) !std.process.Environ.Map {
@@ -629,6 +780,26 @@ pub fn setTitleOverride(self: *Surface, title: ?[]const u8) void {
     if (title) |t| if (t.len > 0) {
         self.title_override = alloc.dupeSentinel(u8, t, 0) catch null;
     };
+    self.window.surfaceTitleChanged(self);
+}
+
+/// The bell rang here (ring_bell, bell-features title): a bell before the
+/// tab's title and the caption until the pane has the keyboard or input,
+/// and on a background tab, a mark until it is selected.
+pub fn ringBell(self: *Surface) void {
+    if (!self.app.config.@"bell-features".title) return;
+    self.bell_ringing = true;
+    const window = self.window;
+    if (window.tabIndexOf(self)) |i| {
+        if (i != window.active) window.tabs.items[i].attention = true;
+    }
+    window.surfaceTitleChanged(self);
+}
+
+/// The pane got the keyboard or input: the bell is answered.
+fn clearBell(self: *Surface) void {
+    if (!self.bell_ringing) return;
+    self.bell_ringing = false;
     self.window.surfaceTitleChanged(self);
 }
 
@@ -832,6 +1003,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                 if (self.scrollbar.visible()) self.updateOverlay();
             }
             self.search.layout();
+            self.layoutOverlays();
             return 0;
         },
 
@@ -844,6 +1016,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             self.has_focus = msg == c.WM_SETFOCUS;
             // The pane, not its search field, now has the keyboard last.
             if (self.has_focus) self.search.field_focused = false;
+            if (self.has_focus) self.clearBell();
             // Which surface the app counts as focused (what a new tab or
             // split inherits from) is only a pointer, so it changes at
             // once: a click on "+" in an inactive window is handled before
@@ -954,12 +1127,14 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                 return 0;
             }
             self.cursorPosCallback(@floatFromInt(x), @floatFromInt(y));
+            self.linkPreviewFollow(@floatFromInt(x), @floatFromInt(y));
             return 0;
         },
 
         c.WM_MOUSELEAVE => {
-            self.scrollbar.mouseLeave(self);
             self.tracking_leave = false;
+            if (comptime test_hooks.enabled) if (self.app.test_state.pin_mouse) return 0;
+            self.scrollbar.mouseLeave(self);
             // Keep reporting while a button is held and we have capture.
             if (self.buttons_down == 0) self.cursorPosCallback(-1, -1);
             return 0;
@@ -1200,6 +1375,8 @@ fn handleKey(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c
     var utf8_buf: [64]u8 = undefined;
     const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, text_slice) catch 0;
 
+    // Input answers the bell (GTK's).
+    if (action == .press) self.clearBell();
     self.keys_sent +%= 1;
     const effect = self.core_surface.keyCallback(.{
         .action = action,

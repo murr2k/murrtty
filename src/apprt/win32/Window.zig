@@ -11,6 +11,7 @@ const c = @import("c.zig");
 const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
 const CommandPalette = @import("CommandPalette.zig");
+const Overlay = @import("Overlay.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 const TabBar = @import("TabBar.zig");
@@ -41,6 +42,10 @@ palette: CommandPalette = .{},
 /// The user's name for the window (prompt_window_title, set_window_title),
 /// shown in the caption instead of its active tab's title.
 title_override: ?[:0]u8 = null,
+
+/// In-app notifications (app-notifications), GTK's toasts: a pill at the
+/// bottom center for 3 seconds, the latest replacing the one before.
+toast: Overlay = .{ .position = .@"bottom-center", .margin = 24, .pad_x = 16, .pad_y = 8, .radius = -1 },
 
 /// Client size limits from the core, in device pixels: from the first
 /// pane, which is initialized before its tab exists.
@@ -376,6 +381,8 @@ fn needsConfirm(self: *Window, surface: *Surface) bool {
 pub fn select(self: *Window, index: usize) void {
     if (index >= self.tabs.items.len) return;
     self.active = index;
+    // Seen: the bell's mark goes.
+    self.tabs.items[index].attention = false;
     self.layout();
     for (self.tabs.items, 0..) |t, i| t.setVisible(i == index);
     self.focusActive();
@@ -490,6 +497,7 @@ fn onDestroy(self: *Window) void {
     self.tabs.deinit(alloc);
     self.tab_bar.deinit();
     self.palette.deinit(alloc);
+    self.toast.deinit();
     if (self.title_override) |v| alloc.free(v);
 
     self.app.windowDestroyed(self);
@@ -540,12 +548,16 @@ pub fn setTitleOverride(self: *Window, name: ?[]const u8) void {
 /// The caption: the user's name for the window, else its active tab's
 /// title (GTK's).
 pub fn syncTitle(self: *Window) void {
-    const title: []const u8 = self.title_override orelse if (self.activeTab()) |t| t.title() else "murrtty";
     const alloc = self.app.core_app.alloc;
-    // A magnifier marks a zoomed tab, as on its tab (GTK marks both).
-    const zoomed = if (self.activeTab()) |t| t.tree.zoomed != null else false;
-    const shown = if (zoomed) (std.fmt.allocPrint(alloc, "\u{1F50D} {s}", .{title}) catch return) else title;
-    defer if (zoomed) alloc.free(shown);
+    // The active tab's label: its bell and zoom marks as on its tab (GTK
+    // marks both).
+    const shown: []u8 = if (self.title_override) |t|
+        alloc.dupe(u8, t) catch return
+    else if (self.activeTab()) |t|
+        t.label(alloc) catch return
+    else
+        alloc.dupe(u8, "murrtty") catch return;
+    defer alloc.free(shown);
     const title16 = std.unicode.utf8ToUtf16LeAllocZ(alloc, shown) catch return;
     defer alloc.free(title16);
     _ = c.SetWindowTextW(self.hwnd, title16);
@@ -597,6 +609,30 @@ fn layout(self: *Window) void {
     }
     if (hdwp) |h| _ = c.EndDeferWindowPos(h);
     if (self.palette.isOpen()) self.palette.layout();
+    if (self.toast.visible()) self.toast.layout();
+}
+
+/// Show an in-app notification (GTK's toast) for 3 seconds, in the active
+/// pane's colors.
+pub fn showToast(self: *Window, text: []const u8) void {
+    if (self.activeSurface()) |s| {
+        const bg = s.colors.bg;
+        const fg = s.colors.fg;
+        // A dark pill on a dark terminal, as GTK's OSD toasts: a little
+        // toward the foreground.
+        self.toast.bg = c.rgb(blend(bg.r, fg.r), blend(bg.g, fg.g), blend(bg.b, fg.b));
+        self.toast.fg = c.rgb(fg.r, fg.g, fg.b);
+    }
+    self.toast.show(self.hwnd, text, 3000);
+}
+
+fn blend(a: u8, b: u8) u8 {
+    return @intCast((@as(u16, a) * 4 + b) / 5);
+}
+
+/// The toast's text, for the GUI tests' dump.
+pub fn toastText(self: *const Window) []const u16 {
+    return if (self.toast.visible()) self.toast.textUtf16() else &.{};
 }
 
 /// Resize the window so its surface area is the given size in points
@@ -847,25 +883,18 @@ fn paint(self: *Window) void {
     const alloc = self.app.core_app.alloc;
     const titles = alloc.alloc([]const u8, self.tabs.items.len) catch return;
     defer alloc.free(titles);
-    var zoomed_titles: std.ArrayList([]u8) = .empty;
-    defer {
-        for (zoomed_titles.items) |z| alloc.free(z);
-        zoomed_titles.deinit(alloc);
-    }
-    for (self.tabs.items, titles) |tab, *t| {
-        t.* = tab.title();
-        // A magnifier marks a zoomed tab.
-        if (tab.tree.zoomed == null) continue;
-        const z = std.fmt.allocPrint(alloc, "\u{1F50D} {s}", .{t.*}) catch continue;
-        zoomed_titles.append(alloc, z) catch {
-            alloc.free(z);
-            continue;
-        };
-        t.* = z;
+    const attention = alloc.alloc(bool, self.tabs.items.len) catch return;
+    defer alloc.free(attention);
+    @memset(titles, "");
+    defer for (titles) |t| if (t.len > 0) alloc.free(t);
+    // The labels: the bell and zoom marks before the title.
+    for (self.tabs.items, titles, attention) |tab, *t, *a| {
+        t.* = tab.label(alloc) catch "";
+        a.* = tab.attention;
     }
 
     const r = self.tabBarRect();
-    self.tab_bar.paint(hdc, r.right, titles, self.active, colors.bg, colors.fg);
+    self.tab_bar.paint(hdc, r.right, titles, attention, self.active, colors.bg, colors.fg);
 }
 
 fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {

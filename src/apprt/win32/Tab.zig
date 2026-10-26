@@ -36,6 +36,10 @@ focused: *Surface,
 /// instead of its focused pane's title.
 title_override: ?[:0]u8 = null,
 
+/// The bell rang in one of its panes while another tab was selected
+/// (bell-features title): marked on the tab bar until it is selected.
+attention: bool = false,
+
 /// Bumped whenever panes are added or removed, so an operation that
 /// started before (a divider drag) can tell that its panes changed.
 generation: u64 = 0,
@@ -162,6 +166,17 @@ pub fn contains(self: *const Tab, surface: *const Surface) bool {
 /// (that pane's name, else its program's title).
 pub fn title(self: *const Tab) []const u8 {
     return self.title_override orelse self.focused.effectiveTitle() orelse "murrtty";
+}
+
+/// What the tab bar and caption show: the title, after a bell while its
+/// focused pane's bell rings and a magnifier while a pane is zoomed (GTK's
+/// order). The caller frees it.
+pub fn label(self: *const Tab, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
+    return std.fmt.allocPrint(alloc, "{s}{s}{s}", .{
+        if (self.focused.bell_ringing) "\u{1F514} " else "",
+        if (self.tree.zoomed != null) "\u{1F50D} " else "",
+        self.title(),
+    });
 }
 
 /// Name the tab, or (null, or empty) go back to its pane's title.
