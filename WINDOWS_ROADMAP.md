@@ -158,6 +158,73 @@ Fork items, ahead of the rest of Phase 3:
   run otherwise), push `windows-port` as its `main` and nothing else (never
   `perf-trace`, no tags), then push to both repositories from then on.
 
+### Differences from Ghostty's GTK app
+
+Where murrtty behaves differently from Ghostty's GTK app on purpose, and
+why. Not listed: what isn't built yet (the README's status) and internals
+that change nothing a user sees. A change that adds, changes or removes a
+difference updates this list in the same commit; each entry names the
+roadmap item behind it.
+
+*Deliberate:*
+- **Default shell** (2.5): PowerShell 7 (`pwsh.exe -NoLogo`) when it is
+  installed, else `cmd.exe`; GTK starts the user's login shell.
+- **Identity** (R3): murrtty's own configuration folder,
+  `%LOCALAPPDATA%\murrtty`, falling back to an existing Ghostty
+  configuration; `TERM_PROGRAM=murrtty` and an XTVERSION of `murrtty`
+  (`TERM` stays `xterm-ghostty`); `+version` says "murrtty, based on
+  Ghostty".
+- **Extra split keys** (1.9): `Ctrl+Shift+[` and `]` also go to the previous
+  and next split, because Windows holds upstream's `Win+Ctrl+[` and `]`.
+- **Links** (0.1): untrusted links (OSC 8, unknown kinds) are vetted. Web
+  and mail links open; a file opens only if it is inert (code runners are
+  blocked, symbolic links are not followed); anything else asks first. GTK
+  hands every link to the desktop's opener.
+- **Caption colors** (0.4): `window-theme = auto` colors the title bar with
+  the terminal's background and foreground, following OSC 11, as macOS's
+  transparent title bar does, also for themes with light and dark variants;
+  GTK's `auto` picks a light or dark window.
+- **Window names** (3.5): a window's name is its caption, so the taskbar
+  shows it too; GTK's goes only to the header bar, its window list keeping
+  the tab's title. On Windows the caption is the window's title.
+- **Renaming a tab by double-clicking it** (3.5): murrtty's own; GTK's tabs
+  don't.
+- **Closing a background pane** (1.4): the focus stays where it is, as on
+  macOS; GTK moves it.
+- **`resize_split`** (1.5): each step is clamped, since upstream's resize
+  asserts on large deltas; GTK doesn't clamp.
+- **Command palette** (3.3): each "Focus:" row says where its terminal is
+  ("Tab 2: C:\src", "Window 2, tab 1: ..."), and typing matches that line
+  too; GTK's rows show only the title. Results are ranked (title matches,
+  then the line beneath, then letters in order) rather than alphabetical.
+- **Scrollbar track** (3.4): a click on the track pages, as Windows' scroll
+  bars do; GTK's jumps to the spot.
+- **Link preview** (3.6): a long URL is cut with an ellipsis; GTK lets it
+  run past the pane.
+- **Renderer panel** (3.6): while the renderer is unhealthy the pane shows
+  macOS's message; GTK shows nothing.
+- **Windows shells** (Phase 2): shell integration for PowerShell (7 and
+  5.1) and `cmd` (with Clink); the working directory from OSC 9;9 (Windows
+  Terminal's form) as well as OSC 7, and for `cmd` without integration from
+  the process itself. GTK's integration covers bash, zsh, fish, elvish and
+  nushell.
+
+*For now:*
+- **Last window** (decision 4): murrtty always opens a window at start and
+  quits with its last window, whatever `initial-window` and
+  `quit-after-last-window-closed` say, until the tray (5.6) exists.
+- **Toasts** (3.6): the latest replaces the one showing, for 3 seconds;
+  GTK queues them, each with a close button.
+- **Read-only badge** (3.6): shown at once; GTK fades it in over 500 ms.
+
+*Decided, not built yet:*
+- **Tab menu** (3.8): Rename, Close, Close Others, Close to the Right and
+  Move to New Window; GTK's offers only Change Tab Title.
+- **Tab overview** (3.8): a list with a filter box, not GTK's live
+  thumbnails.
+- **Tab tooltips** (3.8): the title and the working directory; GTK's shows
+  only the directory.
+
 ## Rules every item keeps
 
 The port's existing invariants (see the project notes and commit messages)
@@ -173,10 +240,11 @@ apply to all new code:
 - **Exact colors.** The sRGB present invariant holds: the default background
   samples as exactly `#282c34`. Every change to the present path is checked
   with a `PrintWindow` capture.
-- **Ghostty semantics first.** Behavior follows GTK and macOS. Where the two
-  differ, or Windows needs something else, the choice is recorded in the port
-  README, `.github/README.md` (for example macOS's focus-on-close rule for
-  splits).
+- **Ghostty semantics first.** Behavior follows GTK and macOS. Where murrtty
+  departs from GTK (following macOS, because Windows needs something else,
+  or as a feature of its own), the change adds it to "Differences from
+  Ghostty's GTK app" above in the same commit, and to the README where
+  users would notice.
 - **Testable with posted messages.** New UI must be drivable by the GUI
   harness (0.8, run in CI by 7.3) without real input focus, since background
   sessions and CI have none.

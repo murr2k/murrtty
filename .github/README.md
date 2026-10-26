@@ -420,7 +420,8 @@ own terminal: a native Windows work-alike of Ghostty that diverges where
 Windows or its own features call for it. Upstream is merged in from time to
 time rather than rebased onto. The plan is
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md); "The fork" there says what
-stays compatible with Ghostty and what is murrtty's own.
+stays compatible with Ghostty and what is murrtty's own, and lists where
+murrtty behaves differently from Ghostty's GTK app, and why.
 
 ## AI assistance
 
