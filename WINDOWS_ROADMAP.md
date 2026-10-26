@@ -2,7 +2,8 @@
 
 The plan for finishing the native Windows port of Ghostty: what is missing,
 in what order to build it, how, and how to tell it is done. It was written
-from a read of the code at `84e810a3e` (port) on upstream `22f100c63`,
+from a read of the code at `84e810a3e` (port, in the history before the
+2026-10-25 regroup: tag `port/pre-regroup`) on upstream `22f100c63`,
 comparing the Win32 runtime (`src/apprt/win32/`) against the core, the GTK
 runtime (`src/apprt/gtk/`) and the macOS app (`macos/Sources/`).
 
@@ -1369,7 +1370,8 @@ line.
 
 ## Appendix A: apprt action coverage
 
-The core can send 70 actions (`src/apprt/action.zig`). At `84e810a3e` the
+The core can send 70 actions (`src/apprt/action.zig`). At `84e810a3e`
+(tag `port/pre-regroup`) the
 Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 "unimplemented" branch.
 
