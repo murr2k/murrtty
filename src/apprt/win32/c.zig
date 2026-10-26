@@ -566,6 +566,36 @@ pub const SIZE = extern struct { cx: c_int = 0, cy: c_int = 0 };
 
 pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 
+// Controls (the search box)
+pub const WS_TABSTOP = 0x00010000;
+pub const ES_AUTOHSCROLL = 0x0080;
+pub const BS_OWNERDRAW = 0x000B;
+pub const WM_SETFONT = 0x0030;
+pub const WM_DRAWITEM = 0x002B;
+pub const WM_COMMAND = 0x0111;
+pub const WM_CTLCOLOREDIT = 0x0133;
+pub const EN_CHANGE = 0x0300;
+pub const BN_CLICKED = 0;
+pub const EM_SETSEL = 0x00B1;
+pub const ODS_SELECTED = 0x0001;
+pub const GWLP_WNDPROC = -4;
+pub const DRAWITEMSTRUCT = extern struct {
+    CtlType: UINT,
+    CtlID: UINT,
+    itemID: UINT,
+    itemAction: UINT,
+    itemState: UINT,
+    hwndItem: HWND,
+    hDC: HDC,
+    rcItem: RECT,
+    itemData: usize,
+};
+pub extern "user32" fn GetWindowTextW(HWND, [*]u16, c_int) callconv(.winapi) c_int;
+pub extern "user32" fn GetWindowTextLengthW(HWND) callconv(.winapi) c_int;
+pub extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+pub extern "user32" fn CallWindowProcW(isize, HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+pub extern "gdi32" fn SetBkColor(HDC, COLORREF) callconv(.winapi) COLORREF;
+
 // Popup menus
 pub const MF_STRING = 0x0000;
 pub const MF_GRAYED = 0x0001;

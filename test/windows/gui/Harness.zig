@@ -1042,6 +1042,17 @@ pub const Dump = struct {
         last_exit: i32 = -1,
         /// The resize overlay (resize-overlay): shown, and its text.
         resize_overlay: ?struct { visible: bool, text: []const u8 } = null,
+        /// The search box: on (start_search to end_search), shown, its
+        /// field's window, whether the box has the keyboard, the field's
+        /// text and the "n/m" counter.
+        search: ?struct {
+            active: bool,
+            visible: bool,
+            edit: u64,
+            focused: bool,
+            text: []const u8,
+            counter: []const u8,
+        } = null,
     };
 };
 

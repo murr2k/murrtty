@@ -21,6 +21,7 @@ const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Overlay = @import("Overlay.zig");
+const SearchBox = @import("SearchBox.zig");
 const Window = @import("Window.zig");
 const test_hooks = @import("test_hooks.zig");
 const text_util = @import("text.zig");
@@ -56,6 +57,9 @@ colors: Colors = .{ .bg = .{ .r = 0, .g = 0, .b = 0 }, .fg = .{ .r = 255, .g = 2
 /// the core surface started (GetTickCount64), for after-first.
 resize_overlay: Overlay = .{},
 created_at: u64 = 0,
+
+/// The search box (start_search to end_search).
+search: SearchBox = .{},
 
 content_scale: apprt.ContentScale = .{ .x = 1, .y = 1 },
 size: apprt.SurfaceSize = .{ .width = 0, .height = 0 },
@@ -242,7 +246,7 @@ pub fn setDim(self: *Surface, color: ?[4]f32) void {
 /// itself, or an interactive overlay open over it (the search box, roadmap
 /// 3.2), so the overlay keeps the focus across window activation.
 pub fn focusTarget(self: *Surface) c.HWND {
-    return self.hwnd;
+    return self.search.focusTarget() orelse self.hwnd;
 }
 
 /// How long after it starts a pane's size still counts as its first, for
@@ -343,6 +347,7 @@ pub fn deinit(self: *Surface) void {
     if (self.title) |v| self.app.core_app.alloc.free(v);
     self.title = null;
     self.resize_overlay.deinit();
+    self.search.deinit();
 }
 
 //---------------------------------------------------------------
@@ -785,6 +790,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                 };
                 self.showResizeOverlay();
             }
+            self.search.layout();
             return 0;
         },
 

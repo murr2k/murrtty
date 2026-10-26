@@ -13,6 +13,7 @@ const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
 const Overlay = @import("Overlay.zig");
+const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 const text_util = @import("text.zig");
@@ -171,6 +172,7 @@ pub fn init(
     try Tab.registerClass(instance);
     try Surface.registerClass(instance);
     try Overlay.registerClass(instance);
+    try SearchBox.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wakeupWndProc,
@@ -1208,6 +1210,24 @@ pub fn performAction(
         // The renderer draws on its own thread; nothing to schedule.
         .render => {},
 
+        // The search box (roadmap 3.2); the core runs the search.
+        .start_search => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.search.open(surface, value.needle);
+        },
+        .end_search => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.search.close();
+        },
+        .search_total => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.search.setTotal(value.total);
+        },
+        .search_selected => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.search.setSelected(value.selected);
+        },
+
         else => {
             log.debug("unimplemented action={}", .{action});
             return false;
@@ -1243,8 +1263,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
     return switch (action) {
         // Runtime actions not implemented yet.
         .copy_title_to_clipboard,
-        .start_search,
-        .search_selection,
         .move_tab_to_new_window,
         .toggle_tab_overview,
         .prompt_surface_title,

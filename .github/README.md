@@ -140,6 +140,11 @@ hosted Windows runner and then the unit tests.
   the click instead. `right-click-action = copy-or-paste` (copy if there is
   a selection, otherwise paste, as in Windows Terminal) or `paste` replace
   the menu. Menus are dark when Windows apps are.
+- Search (`Ctrl+Shift+F`): a box over the pane's top-right corner. Typing
+  highlights the matches and counts them ("2/6"); `Enter` and
+  `Shift+Enter`, or the arrow buttons, go to the next and previous match;
+  `Esc` or the close button ends the search. `search_selection` (unbound by
+  default on Windows) opens it with the selected text.
 - CLI actions such as `murrtty +version` print to the console they were
   started from.
 
@@ -165,7 +170,7 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- Scrollbar, search, command palette, terminal inspector, quick terminal,
+- Scrollbar, command palette, terminal inspector, quick terminal,
   desktop notifications.
 - Transparency: with `background-opacity` the window stays opaque and shows
   the background color as configured. Also background blur and the

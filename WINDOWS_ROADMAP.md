@@ -1100,6 +1100,20 @@ control, an "n/m" counter and previous, next and close buttons.
 *Done when:* `Ctrl+Shift+F` opens and focuses the box, matches highlight with
 a counter, and `search_selection` prefills it.
 
+*Done 2026-10-26.* `win32/SearchBox.zig`: a layered child of the pane
+(S1's host) at its top-right corner holding a real `EDIT` control (caret,
+IME and editing as in any field), GTK's "n/m" counter ("0/0" with no
+matches; the core's selected index is 0-based, as GTK reads it) and three
+owner-drawn buttons with Segoe MDL2 glyphs, in the terminal's colors. The
+field's wrapped window procedure turns Enter, Shift+Enter and Escape into
+`navigate_search` and `end_search`; typing runs the core's `search` 150 ms
+after it pauses (GTK's search entry delay); opening again searches for what
+the field holds. `start_search`, `end_search`, `search_total` and
+`search_selected` drive it; while it is open `Surface.focusTarget()` is
+the field, so the box keeps the keyboard across window activation, and
+closing gives it back to the pane. Scenario `search`; the dump reports
+each pane's `search`.
+
 **3.3 Command palette, L.** A popup anchored at the top center of the window:
 - A filter box and an owner-drawn list. The entries are
   `command-palette-entry` items, each with its key binding, plus one "focus

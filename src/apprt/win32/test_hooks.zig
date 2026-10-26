@@ -303,6 +303,22 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             try writeString(alloc, out, text);
             try out.append(alloc, '}');
         }
+        // The search box: on, shown, its field (and the field's window, to
+        // type into), the counter and whether it has the keyboard.
+        {
+            var text_buf: [1024]u8 = undefined;
+            var counter_buf: [32]u8 = undefined;
+            try out.print(alloc, ",\"search\":{{\"active\":{},\"visible\":{},\"edit\":{d},\"focused\":{},\"text\":", .{
+                s.search.active,
+                s.search.visible(),
+                if (s.search.edit) |e| @intFromPtr(e) else 0,
+                s.search.ownsFocus(),
+            });
+            try writeString(alloc, out, s.search.textUtf8(&text_buf));
+            try out.appendSlice(alloc, ",\"counter\":");
+            try writeString(alloc, out, s.search.counterText(&counter_buf));
+            try out.append(alloc, '}');
+        }
         if (s.core_initialized) {
             const grid = s.core_surface.size.grid();
             const wgl_state = &s.core_surface.renderer.api.wgl_state;

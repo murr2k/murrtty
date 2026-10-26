@@ -29,6 +29,7 @@ pub const all = [_]Scenario{
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
     .{ .name = "resize-overlay", .about = "the grid size shows while a pane resizes: after-first, never, always, position, duration", .run = resizeOverlay },
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
+    .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "config-folder", .about = "murrtty's own config wins, Ghostty's is read when it has none, Ctrl+, opens the file in effect; TERM_PROGRAM is murrtty", .run = configFolder },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
@@ -1002,6 +1003,134 @@ fn contextMenu(h: *Harness) anyerror!void {
         try h.expect(d.value.menus_shown == 5, "five menus shown in all (got {d})", .{d.value.menus_shown});
     }
     try quit(h, &g, last);
+}
+
+/// Search (roadmap 3.2): Ctrl+Shift+F opens the box over the pane and
+/// focuses its field; typing searches (the core highlights, the box counts
+/// "n/m"); Enter and Shift+Enter, and the buttons, step through matches;
+/// Escape closes it and gives the keyboard back; opening again searches
+/// for what the field holds; search_selection fills it with the selection.
+fn search(h: *Harness) anyerror!void {
+    var g = try start(h, "search", "keybind = ctrl+shift+g=search_selection\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    try h.typeText(surf, "echo apple banana apple cherry apple");
+    h.enter(surf);
+    try h.waitText(&g, "cherry apple", 2, 10000);
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'F');
+    var box = try waitSearch(h, &g, true);
+    try h.expect(box.visible and box.focused, "Ctrl+Shift+F shows the box with the keyboard in its field", .{});
+    const edit = hwndOf(box.edit);
+
+    // Six matches: three in the command line, three in its output.
+    try h.typeText(edit, "apple");
+    box = try waitCounter(h, &g, "/6");
+    h.key(edit, .{}, w.VK_RETURN);
+    box = try waitCounter(h, &g, "1/6");
+    h.key(edit, .{}, w.VK_RETURN);
+    box = try waitCounter(h, &g, "2/6");
+    h.key(edit, .{ .shift = true }, w.VK_RETURN);
+    box = try waitCounter(h, &g, "1/6");
+    // The previous-match button.
+    const box_hwnd = w.GetParent(edit) orelse return h.fail("the field has no box", .{});
+    const previous = h.child(&g, box_hwnd, "Button") orelse return h.fail("no buttons in the box", .{});
+    _ = w.PostMessageW(previous, w.BM_CLICK, 0, 0);
+    box = try waitCounter(h, &g, "6/6");
+
+    h.key(edit, .{}, w.VK_ESCAPE);
+    box = try waitSearch(h, &g, false);
+    try h.expect(!box.visible, "Escape closes the box", .{});
+    try h.expect(keyboardFocus(win) == surf, "and the pane has the keyboard again", .{});
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'F');
+    box = try waitSearch(h, &g, true);
+    try h.expect(std.mem.eql(u8, box.textSlice(), "apple"), "opening again keeps the field ('{s}')", .{box.textSlice()});
+    box = try waitCounter(h, &g, "/6");
+    h.key(hwndOf(box.edit), .{}, w.VK_ESCAPE);
+    _ = try waitSearch(h, &g, false);
+
+    // Double-click "banana" to select it, then search_selection.
+    const at = try cellPoint(h, &g, "apple banana apple cherry apple");
+    const banana_x = at.x + @as(c_int, @intCast(paneCell(h, &g)[0])) * 6;
+    h.click(surf, banana_x, at.y, .left);
+    h.click(surf, banana_x, at.y, .left);
+    w.Sleep(300);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'G');
+    box = try waitSearch(h, &g, true);
+    try h.expect(std.mem.eql(u8, box.textSlice(), "banana"), "search_selection fills the field ('{s}')", .{box.textSlice()});
+    box = try waitCounter(h, &g, "/2");
+    h.key(hwndOf(box.edit), .{}, w.VK_ESCAPE);
+    _ = try waitSearch(h, &g, false);
+    try quit(h, &g, surf);
+}
+
+const SearchState = struct {
+    active: bool = false,
+    visible: bool = false,
+    focused: bool = false,
+    edit: u64 = 0,
+    text: [128]u8 = undefined,
+    text_len: usize = 0,
+    counter: [32]u8 = undefined,
+    counter_len: usize = 0,
+
+    fn textSlice(self: *const SearchState) []const u8 {
+        return self.text[0..self.text_len];
+    }
+    fn counterSlice(self: *const SearchState) []const u8 {
+        return self.counter[0..self.counter_len];
+    }
+};
+
+/// The first pane's search box, from a fresh dump.
+fn searchState(h: *Harness, g: *Harness.Ghostty) !SearchState {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    const panes = dw.tabs[dw.active].panes orelse return h.fail("no panes in the dump", .{});
+    const s = panes[0].search orelse return h.fail("no search in the dump", .{});
+    var r: SearchState = .{ .active = s.active, .visible = s.visible, .focused = s.focused, .edit = s.edit };
+    r.text_len = @min(s.text.len, r.text.len);
+    @memcpy(r.text[0..r.text_len], s.text[0..r.text_len]);
+    r.counter_len = @min(s.counter.len, r.counter.len);
+    @memcpy(r.counter[0..r.counter_len], s.counter[0..r.counter_len]);
+    return r;
+}
+
+fn waitSearch(h: *Harness, g: *Harness.Ghostty, active: bool) !SearchState {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        const s = try searchState(h, g);
+        if (s.active == active and s.visible == active) return s;
+        w.Sleep(100);
+    }
+    return h.fail("the search box didn't {s}", .{if (active) "open" else "close"});
+}
+
+/// Wait until the counter ends with `suffix` ("1/6", or "/6" for any).
+fn waitCounter(h: *Harness, g: *Harness.Ghostty, suffix: []const u8) !SearchState {
+    var last: SearchState = .{};
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        last = try searchState(h, g);
+        if (std.mem.endsWith(u8, last.counterSlice(), suffix) and
+            (suffix[0] == '/' or std.mem.eql(u8, last.counterSlice(), suffix)))
+        {
+            try h.expect(true, "the counter reads {s}", .{last.counterSlice()});
+            return last;
+        }
+        w.Sleep(100);
+    }
+    return h.fail("the counter reads '{s}', not '{s}'", .{ last.counterSlice(), suffix });
+}
+
+/// The first tab's cell size in pixels.
+fn paneCell(h: *Harness, g: *Harness.Ghostty) [2]u32 {
+    var d = h.dump(g) catch return .{ 8, 16 };
+    defer d.deinit();
+    return d.value.windows[0].tabs[0].cell orelse .{ 8, 16 };
 }
 
 fn waitNoMenu(h: *Harness, g: *Harness.Ghostty) !void {
