@@ -958,6 +958,8 @@ pub const Dump = struct {
         /// and the last exit code (-1 for none).
         commands: u32 = 0,
         last_exit: i32 = -1,
+        /// The resize overlay (resize-overlay): shown, and its text.
+        resize_overlay: ?struct { visible: bool, text: []const u8 } = null,
     };
 };
 

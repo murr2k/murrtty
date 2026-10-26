@@ -130,6 +130,9 @@ hosted Windows runner and then the unit tests.
   open like local paths.
 - Resizing, the initial size from `window-width`/`window-height`, closing
   windows and tabs cleanly, quitting when the last window closes.
+- The resize overlay: a pane shows its grid size ("120 x 34") while it
+  resizes (`resize-overlay`, `resize-overlay-position`,
+  `resize-overlay-duration`).
 - CLI actions such as `murrtty +version` print to the console they were
   started from.
 
@@ -288,7 +291,7 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   apps implement in their own user interface mostly have no effect here,
   besides the missing features listed above. Among them:
   `window-position-x`/`-y`, `window-save-state`, `window-new-tab-position`,
-  `resize-overlay`, and the `title`, `audio` and `border` bell features (only
+  and the `title`, `audio` and `border` bell features (only
   `system` and `attention` work). murrtty always opens a window at startup and
   always exits when its last window closes, whatever `initial-window` and
   `quit-after-last-window-closed` say.

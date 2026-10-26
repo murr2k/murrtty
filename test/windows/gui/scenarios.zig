@@ -27,6 +27,7 @@ pub const all = [_]Scenario{
     .{ .name = "present", .about = "background-opacity doesn't darken the (opaque) window; exact background pixels", .run = present },
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
+    .{ .name = "resize-overlay", .about = "the grid size shows while a pane resizes: after-first, never, always, position, duration", .run = resizeOverlay },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "config-folder", .about = "murrtty's own config wins, Ghostty's is read when it has none, Ctrl+, opens the file in effect; TERM_PROGRAM is murrtty", .run = configFolder },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
@@ -916,6 +917,104 @@ fn configFolder(h: *Harness) anyerror!void {
     h.enter(surf);
     try h.waitText(&g, "program=murrtty", 1, 10000);
     try quit(h, &g, surf);
+}
+
+/// The resize overlay (roadmap 3.0, GTK's): the grid size over a pane while
+/// it resizes, not for a new pane's first size (after-first), gone after
+/// resize-overlay-duration; never with `never`; with `always` also on a new
+/// pane, at resize-overlay-position.
+fn resizeOverlay(h: *Harness) anyerror!void {
+    {
+        var g = try start(h, "resize-overlay", "resize-overlay-duration = 700ms\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        var pane = try paneOverlay(h, &g, 0);
+        try h.expect(!pane.visible, "a new pane shows no resize overlay (after-first)", .{});
+        // Past a new pane's first moments (250 ms), whose resizes still
+        // count as its first size: cmd's prompt comes sooner.
+        w.Sleep(500);
+
+        var wr: w.RECT = .{};
+        _ = w.GetWindowRect(win, &wr);
+        _ = w.SetWindowPos(win, null, 0, 0, wr.right - wr.left + 120, wr.bottom - wr.top + 80, w.SWP_NOMOVE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+        w.Sleep(200);
+        pane = try paneOverlay(h, &g, 0);
+        var want_buf: [32]u8 = undefined;
+        var want = try std.fmt.bufPrint(&want_buf, "{d} x {d}", .{ pane.cols, pane.rows });
+        try h.expect(pane.visible, "resizing the window shows the overlay", .{});
+        try h.expect(std.mem.eql(u8, pane.text(), want), "it shows the grid, {s} (got '{s}')", .{ want, pane.text() });
+        w.Sleep(1000);
+        pane = try paneOverlay(h, &g, 0);
+        try h.expect(!pane.visible, "and is gone after resize-overlay-duration", .{});
+
+        // A split shrinks the first pane (it shows its new grid); the new
+        // pane's first size shows nothing.
+        h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
+        try waitPanes(h, &g, 2);
+        w.Sleep(300);
+        pane = try paneOverlay(h, &g, 0);
+        want = try std.fmt.bufPrint(&want_buf, "{d} x {d}", .{ pane.cols, pane.rows });
+        try h.expect(pane.visible and std.mem.eql(u8, pane.text(), want), "the split pane shows its new grid {s} (got '{s}', shown {})", .{ want, pane.text(), pane.visible });
+        const new_pane = try paneOverlay(h, &g, 1);
+        try h.expect(!new_pane.visible, "the new pane shows none", .{});
+        try quit(h, &g, try h.surface(&g, win));
+    }
+    {
+        var g = try start(h, "resize-overlay-never", "resize-overlay = never\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        var wr: w.RECT = .{};
+        _ = w.GetWindowRect(win, &wr);
+        _ = w.SetWindowPos(win, null, 0, 0, wr.right - wr.left + 120, wr.bottom - wr.top + 80, w.SWP_NOMOVE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+        w.Sleep(300);
+        const pane = try paneOverlay(h, &g, 0);
+        try h.expect(!pane.visible, "resize-overlay = never shows nothing", .{});
+        try quit(h, &g, try h.surface(&g, win));
+    }
+    {
+        var g = try start(h, "resize-overlay-always", "resize-overlay = always\nresize-overlay-position = top-left\nresize-overlay-duration = 30s\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const pane = try paneOverlay(h, &g, 0);
+        try h.expect(pane.visible, "resize-overlay = always shows on a new pane", .{});
+        const surf = try h.surface(&g, win);
+        const overlay = h.child(&g, surf, "MurrttyOverlay") orelse return h.fail("no overlay window", .{});
+        var sr: w.RECT = .{};
+        var orect: w.RECT = .{};
+        _ = w.GetWindowRect(surf, &sr);
+        _ = w.GetWindowRect(overlay, &orect);
+        const dx = orect.left - sr.left;
+        const dy = orect.top - sr.top;
+        try h.expect(dx > 0 and dx < 40 and dy > 0 and dy < 40, "top-left: at ({d},{d}) in the pane", .{ dx, dy });
+        try quit(h, &g, surf);
+    }
+}
+
+const PaneOverlay = struct {
+    visible: bool,
+    cols: u32,
+    rows: u32,
+    buf: [32]u8 = undefined,
+    len: usize = 0,
+
+    fn text(self: *const PaneOverlay) []const u8 {
+        return self.buf[0..self.len];
+    }
+};
+
+/// Pane `i`'s resize overlay and grid, from a fresh dump.
+fn paneOverlay(h: *Harness, g: *Harness.Ghostty, i: usize) !PaneOverlay {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    const panes = dw.tabs[dw.active].panes orelse return h.fail("no panes in the dump", .{});
+    if (i >= panes.len) return h.fail("no pane {d}", .{i});
+    const p = panes[i];
+    const o = p.resize_overlay orelse return h.fail("no resize_overlay in the dump", .{});
+    var result: PaneOverlay = .{ .visible = o.visible, .cols = p.cols orelse 0, .rows = p.rows orelse 0 };
+    result.len = @min(o.text.len, result.buf.len);
+    @memcpy(result.buf[0..result.len], o.text[0..result.len]);
+    return result;
 }
 
 /// Whether two Windows paths are the same text, ignoring case and taking

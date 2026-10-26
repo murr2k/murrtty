@@ -1016,7 +1016,8 @@ come from running upstream's GTK app (`main` of 2026-10-14) under WSL on
 waits for spikes S1 and S2.
 - **Platform bits.** `SetTimer` helpers, and a `<supportedOS>` block in
   `dist/windows/ghostty.manifest` (needed for layered child windows and
-  reliable version checks; added with spike S1).
+  reliable version checks; added with spike S1, now in
+  `dist/windows/murrtty.manifest`).
 - **Overlay layer**, in two parts:
   - Shapes (borders, progress strip, scrollbar thumb) are rectangles in 1.7's
     present-pass list. They survive transparency and have no airspace
@@ -1034,6 +1035,22 @@ waits for spikes S1 and S2.
 - **`App.supportsAction`.** One predicate shared by menus and the palette.
   Entries for actions not implemented yet are grayed in menus and hidden in
   the palette.
+
+*Done 2026-10-26 (with S2 still to run on a live display):*
+`win32/Overlay.zig` is the text overlay host, a layered child of the pane
+(`MurrttyOverlay`, alpha 235, rounded, GTK's padding and outline, the
+terminal's colors), placed at one of `resize-overlay-position`'s spots and
+hidden by a `SetTimer` timer. Its first user is the resize overlay, pulled
+forward from 3.6 because it exercises the host, the timer and the layout
+together: "cols x rows" while a pane resizes, not for a new pane's first
+size (the first 250 ms, as GTK; `after-first`), also then with `always`,
+never with `never` (scenario `resize-overlay`; the dump reports each
+pane's `resize_overlay`). `Surface.focusTarget()` is the pane until 3.2
+adds the search box, and `Window.focusActive` uses it. `App.supportsAction`
+lists the binding actions whose runtime action isn't implemented yet (all
+others the core performs, or the runtime does), from a read of the core's
+binding dispatch; app-scoped ones (`open_config`, `quit`) ignore the
+runtime's result, surface ones return it.
 
 **3.1 Context menu, M.** The default `right-click-action = context-menu`
 only selects a word today, because the runtime ignores the core's consumed
@@ -1101,7 +1118,7 @@ clearing the name restores the program's title.
 
 **3.6 Status overlays, M.** Using 3.0:
 - the link hover preview (`mouse_over_link`, `link-previews`);
-- the resize overlay (`resize-overlay`, default after-first);
+- the resize overlay (`resize-overlay`, default after-first); *done in 3.0*;
 - the key sequence and key table indicator;
 - the read-only badge;
 - the child-exited banner (`show_child_exited`);

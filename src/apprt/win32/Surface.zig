@@ -19,6 +19,7 @@ const c = @import("c.zig");
 const key = @import("key.zig");
 const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
+const Overlay = @import("Overlay.zig");
 const Window = @import("Window.zig");
 const test_hooks = @import("test_hooks.zig");
 const text_util = @import("text.zig");
@@ -49,6 +50,11 @@ title: ?[:0]const u8 = null,
 /// window's caption and tab strip follow: the surface's config's until a
 /// program changes them (OSC 10/11) or the config changes.
 colors: Colors = .{ .bg = .{ .r = 0, .g = 0, .b = 0 }, .fg = .{ .r = 255, .g = 255, .b = 255 } },
+
+/// The grid size shown while the pane resizes (resize-overlay), and when
+/// the core surface started (GetTickCount64), for after-first.
+resize_overlay: Overlay = .{},
+created_at: u64 = 0,
 
 content_scale: apprt.ContentScale = .{ .x = 1, .y = 1 },
 size: apprt.SurfaceSize = .{ .width = 0, .height = 0 },
@@ -188,6 +194,8 @@ pub fn init(
     self.core_surface.sizeCallback(self.size) catch |err| {
         log.warn("error in size callback err={}", .{err});
     };
+    self.created_at = c.GetTickCount64();
+    if (app.config.@"resize-overlay" == .always) self.showResizeOverlay();
 
     // Focus gained, or lost, before the core surface existed reaches it
     // now.
@@ -227,6 +235,48 @@ pub fn setDim(self: *Surface, color: ?[4]f32) void {
     }} else &.{};
     api.setOverlay(rects);
     self.forceFrame();
+}
+
+/// The window that takes the keyboard when this pane is focused: the pane
+/// itself, or an interactive overlay open over it (the search box, roadmap
+/// 3.2), so the overlay keeps the focus across window activation.
+pub fn focusTarget(self: *Surface) c.HWND {
+    return self.hwnd;
+}
+
+/// How long after it starts a pane's size still counts as its first, for
+/// resize-overlay = after-first: a new pane settles (the tab bar appears, a
+/// split lays out) in its first moments. GTK waits as long.
+const resize_overlay_first_ms = 250;
+
+/// Show the grid size over the pane for resize-overlay-duration, as GTK
+/// does while a pane resizes.
+fn showResizeOverlay(self: *Surface) void {
+    if (!self.core_initialized) return;
+    const config = &self.app.config;
+    switch (config.@"resize-overlay") {
+        .never => return,
+        .@"after-first" => if (c.GetTickCount64() -| self.created_at < resize_overlay_first_ms) return,
+        .always => {},
+    }
+    const grid = self.core_surface.size.grid();
+    var buf: [32]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, "{d} x {d}", .{ grid.columns, grid.rows }) catch return;
+    const o = &self.resize_overlay;
+    o.position = config.@"resize-overlay-position";
+    const bg = self.colors.bg;
+    const fg = self.colors.fg;
+    o.bg = c.rgb(mix(bg.r, fg.r), mix(bg.g, fg.g), mix(bg.b, fg.b));
+    o.fg = c.rgb(fg.r, fg.g, fg.b);
+    o.show(self.hwnd, text, config.@"resize-overlay-duration".asMilliseconds());
+}
+
+/// 15% of the way from `a` to `b`: a background a little off the
+/// terminal's.
+fn mix(a: u8, b: u8) u8 {
+    const af: f32 = @floatFromInt(a);
+    const bf: f32 = @floatFromInt(b);
+    return @intFromFloat(@round(af + (bf - af) * 0.15));
 }
 
 /// Make the renderer draw a frame though the terminal didn't change.
@@ -291,6 +341,7 @@ pub fn deinit(self: *Surface) void {
 
     if (self.title) |v| self.app.core_app.alloc.free(v);
     self.title = null;
+    self.resize_overlay.deinit();
 }
 
 //---------------------------------------------------------------
@@ -731,6 +782,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                 self.core_surface.sizeCallback(self.size) catch |err| {
                     log.warn("error in size callback err={}", .{err});
                 };
+                self.showResizeOverlay();
             }
             return 0;
         },

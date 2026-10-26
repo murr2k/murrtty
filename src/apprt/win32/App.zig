@@ -12,6 +12,7 @@ const CoreApp = @import("../../App.zig");
 const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
+const Overlay = @import("Overlay.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 const text_util = @import("text.zig");
@@ -168,6 +169,7 @@ pub fn init(
     try Window.registerClass(instance);
     try Tab.registerClass(instance);
     try Surface.registerClass(instance);
+    try Overlay.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wakeupWndProc,
@@ -1212,6 +1214,42 @@ pub fn performAction(
     }
 
     return true;
+}
+
+/// Whether a key-binding action does anything here: the core performs it
+/// itself, or it becomes a runtime action this runtime implements (see
+/// performAction). Menus gray out, and the command palette hides, the
+/// actions it doesn't (roadmap 3.0). Kept in step with performAction.
+pub fn supportsAction(action: input.Binding.Action) bool {
+    return switch (action) {
+        // Runtime actions not implemented yet.
+        .copy_title_to_clipboard,
+        .start_search,
+        .search_selection,
+        .move_tab_to_new_window,
+        .toggle_tab_overview,
+        .prompt_surface_title,
+        .prompt_tab_title,
+        .prompt_window_title,
+        .set_tab_title,
+        .set_window_title,
+        .reset_window_size,
+        .inspector,
+        .show_gtk_inspector,
+        .show_on_screen_keyboard,
+        .toggle_window_decorations,
+        .toggle_window_float_on_top,
+        .toggle_secure_input,
+        .toggle_command_palette,
+        .toggle_quick_terminal,
+        .toggle_visibility,
+        .toggle_background_opacity,
+        .check_for_updates,
+        .undo,
+        .redo,
+        => false,
+        else => true,
+    };
 }
 
 /// IPC to a running instance is not supported yet.

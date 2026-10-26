@@ -558,7 +558,20 @@ pub const DT_VCENTER = 0x00000004;
 pub const DT_SINGLELINE = 0x00000020;
 pub const DT_NOPREFIX = 0x00000800;
 pub const DT_END_ELLIPSIS = 0x00008000;
+pub const DT_CALCRECT = 0x00000400;
 pub const PS_SOLID = 0;
+pub const WS_EX_TRANSPARENT = 0x00000020;
+pub const SW_SHOWNA = 8;
+pub const SIZE = extern struct { cx: c_int = 0, cy: c_int = 0 };
+
+pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+pub extern "user32" fn SetTimer(?HWND, usize, UINT, ?*const anyopaque) callconv(.winapi) usize;
+pub extern "user32" fn KillTimer(?HWND, usize) callconv(.winapi) BOOL;
+pub extern "user32" fn GetDC(?HWND) callconv(.winapi) ?HDC;
+pub extern "user32" fn ReleaseDC(?HWND, HDC) callconv(.winapi) c_int;
+pub extern "user32" fn SetWindowRgn(HWND, ?HRGN, BOOL) callconv(.winapi) c_int;
+pub extern "gdi32" fn CreateRoundRectRgn(c_int, c_int, c_int, c_int, c_int, c_int) callconv(.winapi) ?HRGN;
+pub extern "gdi32" fn FrameRgn(HDC, HRGN, HBRUSH, c_int, c_int) callconv(.winapi) BOOL;
 
 pub extern "user32" fn BeginPaint(HWND, *PAINTSTRUCT) callconv(.winapi) ?HDC;
 pub extern "user32" fn EndPaint(HWND, *const PAINTSTRUCT) callconv(.winapi) BOOL;

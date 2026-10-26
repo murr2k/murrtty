@@ -457,7 +457,7 @@ fn focusActive(self: *Window) void {
 }
 
 fn focusActiveNow(self: *Window) void {
-    if (self.activeSurface()) |s| _ = c.SetFocus(s.hwnd);
+    if (self.activeSurface()) |s| _ = c.SetFocus(s.focusTarget());
 }
 
 /// Destroy the window. Its tabs and memory are released when the window

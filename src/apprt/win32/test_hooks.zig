@@ -292,6 +292,15 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             tab.focused == s,
             c.IsWindowVisible(s.hwnd) != 0,
         });
+        // The resize overlay: whether it shows, and what.
+        {
+            const text16 = s.resize_overlay.textUtf16();
+            const text = try std.unicode.utf16LeToUtf8Alloc(alloc, text16);
+            defer alloc.free(text);
+            try out.print(alloc, ",\"resize_overlay\":{{\"visible\":{},\"text\":", .{s.resize_overlay.visible()});
+            try writeString(alloc, out, text);
+            try out.append(alloc, '}');
+        }
         if (s.core_initialized) {
             const grid = s.core_surface.size.grid();
             const wgl_state = &s.core_surface.renderer.api.wgl_state;
