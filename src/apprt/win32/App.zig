@@ -104,6 +104,10 @@ modal_owner: ?c.HWND = null,
 /// Whether the system uses a dark app theme.
 dark: bool = false,
 
+/// Whether Windows always shows scroll bars (Accessibility > Visual
+/// effects): then the scrollbar doesn't fade.
+scrollbars_always: bool = false,
+
 /// Where the mouse was last seen, in screen coordinates: over any of
 /// Ghostty's windows, or where the cursor was when panes were last laid
 /// out (see mouseMoved and Surface.followMouse).
@@ -204,6 +208,7 @@ pub fn init(
         .instance = instance,
         .wakeup_hwnd = wakeup_hwnd,
         .dark = systemDark(),
+        .scrollbars_always = scrollbarsAlwaysShown(),
         .ole_initialized = ole >= 0,
         .test_state = test_hooks.init(alloc),
     };
@@ -828,6 +833,35 @@ fn systemDark() bool {
     return status == 0 and value == 0;
 }
 
+/// A system setting changed (WM_SETTINGCHANGE, which names few of them):
+/// read again the one the scrollbar follows.
+pub fn systemSettingChanged(self: *App) void {
+    const always = scrollbarsAlwaysShown();
+    if (always == self.scrollbars_always) return;
+    self.scrollbars_always = always;
+    for (self.windows.items) |w| {
+        var it = w.panes();
+        while (it.next()) |s| s.scrollbar.settingsChanged(s);
+    }
+}
+
+/// Windows' "Always show scrollbars": DynamicScrollbars 0. Unset, they
+/// hide (the default).
+fn scrollbarsAlwaysShown() bool {
+    var value: c.DWORD = 1;
+    var size: c.DWORD = @sizeOf(c.DWORD);
+    const status = c.RegGetValueW(
+        c.HKEY_CURRENT_USER,
+        c.L("Control Panel\\Accessibility"),
+        c.L("DynamicScrollbars"),
+        c.RRF_RT_REG_DWORD,
+        null,
+        &value,
+        &size,
+    );
+    return status == 0 and value == 0;
+}
+
 fn surfaceFromTarget(target: apprt.Target) ?*Surface {
     return switch (target) {
         .app => null,
@@ -1171,12 +1205,19 @@ pub fn performAction(
                 const surface = core.rt_surface;
                 surface.colors = .fromConfig(value.config);
                 surface.window.colorsChanged(surface);
+                // The scrollbar's thumb is in the foreground color.
+                surface.updateOverlay();
             },
             .app => {
                 const config = try value.config.clone(self.core_app.alloc);
                 self.config.deinit();
                 self.config = config;
-                for (self.windows.items) |w| w.configChanged();
+                for (self.windows.items) |w| {
+                    w.configChanged();
+                    // `scrollbar` may have changed.
+                    var it = w.panes();
+                    while (it.next()) |s| s.scrollbar.settingsChanged(s);
+                }
                 // window-theme may now force a different scheme.
                 self.reportColorScheme();
                 self.queueConfigErrors();
@@ -1193,6 +1234,7 @@ pub fn performAction(
                 else => return false,
             }
             surface.window.colorsChanged(surface);
+            if (value.kind == .foreground) surface.updateOverlay();
         },
 
         .quit_timer => switch (value) {
@@ -1230,6 +1272,12 @@ pub fn performAction(
         .search_selected => {
             const surface = surfaceFromTarget(target) orelse return false;
             surface.search.setSelected(value.selected);
+        },
+
+        // The scrollbar (roadmap 3.4): the scrollable area changed.
+        .scrollbar => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.scrollbar.update(surface, value);
         },
 
         // The command palette (roadmap 3.3), one per window.

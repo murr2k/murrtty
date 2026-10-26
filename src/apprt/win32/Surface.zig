@@ -21,6 +21,7 @@ const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Overlay = @import("Overlay.zig");
+const Scrollbar = @import("Scrollbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Window = @import("Window.zig");
 const test_hooks = @import("test_hooks.zig");
@@ -60,6 +61,9 @@ created_at: u64 = 0,
 
 /// The search box (start_search to end_search).
 search: SearchBox = .{},
+
+/// The overlay scrollbar (the core's scrollbar action).
+scrollbar: Scrollbar = .{},
 
 content_scale: apprt.ContentScale = .{ .x = 1, .y = 1 },
 size: apprt.SurfaceSize = .{ .width = 0, .height = 0 },
@@ -227,18 +231,30 @@ pub fn eql(a: *const Surface, b: *const Surface) bool {
 pub fn setDim(self: *Surface, color: ?[4]f32) void {
     if (std.meta.eql(self.dim_color, color)) return;
     self.dim_color = color;
+    self.updateOverlay();
+}
+
+/// Hand the renderer the shapes it draws over the pane's frames (3.0's
+/// shape layer): the scrollbar, then the dimming over it all. Forces a
+/// frame so the change shows at once.
+pub fn updateOverlay(self: *Surface) void {
     if (!self.core_initialized) return;
     const api = &self.core_surface.renderer.api;
     const Rect = @TypeOf(api.*).Overlay.Rect;
-    // The whole window, whatever its size later.
-    const rects: []const Rect = if (color) |col| &.{.{
-        .x = 0,
-        .y = 0,
-        .width = std.math.maxInt(i16),
-        .height = std.math.maxInt(i16),
-        .color = col,
-    }} else &.{};
-    api.setOverlay(rects);
+    var rects: [3]Rect = undefined;
+    var n = self.scrollbar.rects(self, rects[0..2]);
+    if (self.dim_color) |col| {
+        // The whole window, whatever its size later.
+        rects[n] = .{
+            .x = 0,
+            .y = 0,
+            .width = std.math.maxInt(i16),
+            .height = std.math.maxInt(i16),
+            .color = col,
+        };
+        n += 1;
+    }
+    api.setOverlay(rects[0..n]);
     self.forceFrame();
 }
 
@@ -789,8 +805,15 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                     log.warn("error in size callback err={}", .{err});
                 };
                 self.showResizeOverlay();
+                // The thumb follows the pane's height.
+                if (self.scrollbar.visible()) self.updateOverlay();
             }
             self.search.layout();
+            return 0;
+        },
+
+        c.WM_TIMER => {
+            if (wparam == Scrollbar.timer_id) self.scrollbar.tick(self);
             return 0;
         },
 
@@ -821,6 +844,14 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             // Over the pane itself; the search box's controls (which ask
             // their parent first) show their own.
             if (c.loword(lparam) == c.HTCLIENT and wparam == @intFromPtr(self.hwnd)) {
+                // The arrow over the scrollbar's band.
+                var pt = [1]c.POINT{.{ .x = 0, .y = 0 }};
+                _ = c.GetCursorPos(&pt[0]);
+                _ = c.MapWindowPoints(null, self.hwnd, &pt, 1);
+                if (self.scrollbar.takesMouse(self, pt[0].x)) {
+                    _ = c.SetCursor(c.LoadCursorW(null, c.IDC_ARROW));
+                    return 1;
+                }
                 _ = c.SetCursor(if (self.mouse_hidden) null else self.cursor);
                 return 1;
             }
@@ -883,20 +914,42 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                 var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE, .hwndTrack = self.hwnd };
                 if (c.TrackMouseEvent(&tme) != 0) self.tracking_leave = true;
             }
-            self.followMouse(c.xParam(lparam), c.yParam(lparam), wparam);
-            self.cursorPosCallback(@floatFromInt(c.xParam(lparam)), @floatFromInt(c.yParam(lparam)));
+            const x = c.xParam(lparam);
+            const y = c.yParam(lparam);
+            self.followMouse(x, y, wparam);
+            // The scrollbar takes moves over its band and its drags, unless
+            // the terminal is in a drag of its own (a selection).
+            const taken = if (self.buttons_down == 0 or self.scrollbar.pressed)
+                self.scrollbar.mouseMove(self, x, y)
+            else taken: {
+                self.scrollbar.show(self);
+                break :taken false;
+            };
+            if (taken) {
+                // To the core, the mouse left the terminal.
+                self.cursorPosCallback(-1, -1);
+                return 0;
+            }
+            self.cursorPosCallback(@floatFromInt(x), @floatFromInt(y));
             return 0;
         },
 
         c.WM_MOUSELEAVE => {
+            self.scrollbar.mouseLeave(self);
             self.tracking_leave = false;
             // Keep reporting while a button is held and we have capture.
             if (self.buttons_down == 0) self.cursorPosCallback(-1, -1);
             return 0;
         },
 
-        c.WM_LBUTTONDOWN => return self.mouseButton(.press, .left, lparam),
-        c.WM_LBUTTONUP => return self.mouseButton(.release, .left, lparam),
+        c.WM_LBUTTONDOWN => {
+            if (self.buttons_down == 0 and self.scrollbar.mouseDown(self, c.xParam(lparam), c.yParam(lparam))) return 0;
+            return self.mouseButton(.press, .left, lparam);
+        },
+        c.WM_LBUTTONUP => {
+            if (self.scrollbar.mouseUp(self, c.xParam(lparam))) return 0;
+            return self.mouseButton(.release, .left, lparam);
+        },
         c.WM_RBUTTONDOWN => return self.mouseButton(.press, .right, lparam),
         c.WM_RBUTTONUP => return self.mouseButton(.release, .right, lparam),
         c.WM_MBUTTONDOWN => return self.mouseButton(.press, .middle, lparam),
@@ -909,6 +962,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
 
         c.WM_CAPTURECHANGED => {
             self.buttons_down = 0;
+            self.scrollbar.captureLost(self);
             return 0;
         },
 

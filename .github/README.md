@@ -152,6 +152,11 @@ hosted Windows runner and then the unit tests.
   is ("Window 2, tab 1: C:\src"). Typing filters by title, by the line
   beneath it, or by letters in order; `Up`/`Down` choose, `Enter` or a
   click runs, `Esc`, a click outside or `Ctrl+Shift+P` again closes.
+- An overlay scrollbar, as in Ghostty's GTK app: a thin thumb at the right
+  edge shows while you scroll or move the mouse, widens under the mouse,
+  drags, and pages with a click on the track; it fades when idle (not when
+  Windows is set to always show scroll bars). `scrollbar = never` turns it
+  off. Programs on the alternate screen have no scrollback, so no thumb.
 - While the search box or the palette has the keyboard, the application
   shortcuts still work, as in Ghostty's GTK app: new tab, window or split,
   close, copy, paste, clear, reset, the palette, and the config's.
@@ -180,7 +185,7 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- Scrollbar, terminal inspector, quick terminal, desktop notifications.
+- Terminal inspector, quick terminal, desktop notifications.
 - Transparency: with `background-opacity` the window stays opaque and shows
   the background color as configured. Also background blur and the
   `window-decoration` options.
@@ -189,8 +194,8 @@ hosted Windows runner and then the unit tests.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the rest of the everyday UI: scrollbar, titles, status overlays and
-toasts (Phase 3).
+with the rest of the everyday UI: titles, status overlays and toasts
+(Phase 3).
 
 **Known issues**
 

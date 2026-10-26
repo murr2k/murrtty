@@ -31,6 +31,7 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
+    .{ .name = "scrollbar", .about = "overlay scrollbar: none without scrollback, shows on a move, widens pressed, drag to the top, track click pages, fades, none on the alternate screen, scrollbar = never", .run = scrollbar },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "config-folder", .about = "murrtty's own config wins, Ghostty's is read when it has none, Ctrl+, opens the file in effect; TERM_PROGRAM is murrtty", .run = configFolder },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
@@ -1356,6 +1357,160 @@ fn commandPalette(h: *Harness) anyerror!void {
     try waitKeyboard(h, win, second, "the jump puts the keyboard in that pane");
     try h.expect(activeWindow(win) == win, "and brings its window forward", .{});
     try quit(h, &g, second);
+}
+
+/// The scrollbar (roadmap 3.4, GTK's overlay scrollbar): nothing without
+/// scrollback; with it, a mouse move shows a thin thumb at the bottom of
+/// the track; pressed in the band at the right edge it widens, and dragged
+/// to the top it scrolls to the first row; a click on the track below the
+/// thumb pages down; idle, it fades; a program on the alternate screen
+/// has no scrollback, so no thumb. `scrollbar = never` shows nothing.
+fn scrollbar(h: *Harness) anyerror!void {
+    {
+        var g = try start(h, "scrollbar", "", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const surf = try h.surface(&g, win);
+        var sb = try scrollState(h, &g);
+        try h.expect(sb.total == sb.len and !sb.visible, "no scrollback, no scrollbar ({d} of {d} rows)", .{ sb.len, sb.total });
+
+        try h.typeText(surf, "for /l %i in (1,1,150) do @echo line-%i");
+        h.enter(surf);
+        try h.waitText(&g, "line-150", 1, 15000);
+        sb = try waitScroll(h, &g, ScrollState.atBottom, "scrollback, viewed at the bottom", 5000);
+
+        // A move over the terminal shows it: thin, its thumb at the bottom.
+        var rect: w.RECT = .{};
+        _ = w.GetClientRect(surf, &rect);
+        const mid_x = @divTrunc(rect.right, 2);
+        const mid_y = @divTrunc(rect.bottom, 2);
+        h.move(surf, mid_x, mid_y, false);
+        sb = try waitScroll(h, &g, ScrollState.shown, "shown after a move", 5000);
+        const thin = sb.thumb[2] - sb.thumb[0];
+        try h.expect(sb.thumb[3] >= rect.bottom - 10 and sb.thumb[2] >= rect.right - 10, "a thin thumb ({d} px) at the bottom right", .{thin});
+        {
+            // Drawn over the frame (the renderer's read-back, which the
+            // present pass's shapes are part of): it differs from beside it.
+            const cy: u32 = @intCast(@divTrunc(sb.thumb[1] + sb.thumb[3], 2));
+            const on = try h.probe(&g, @intCast(@divTrunc(sb.thumb[0] + sb.thumb[2], 2)), cy);
+            const beside = try h.probe(&g, @intCast(sb.thumb[0] - 6), cy);
+            try h.expect(on != beside, "the thumb is drawn (#{x:0>6} beside #{x:0>6})", .{ on, beside });
+        }
+
+        // Pressed in the band at the right edge, the thumb widens; dragged
+        // to the top, the viewport shows the first row.
+        const x = rect.right - 5;
+        const grab_y = @divTrunc(sb.thumb[1] + sb.thumb[3], 2);
+        h.press(surf, x, grab_y);
+        sb = try waitScroll(h, &g, ScrollState.isPressed, "pressed", 5000);
+        try h.expect(sb.thumb[2] - sb.thumb[0] > thin, "pressed, the thumb widens ({d} px)", .{sb.thumb[2] - sb.thumb[0]});
+        h.move(surf, x, @divTrunc(grab_y, 2), true);
+        h.move(surf, x, 0, true);
+        h.release(surf, x, 0);
+        sb = try waitScroll(h, &g, ScrollState.atTop, "scrolled to the top", 5000);
+        try h.expect(!sb.pressed, "dragging the thumb to the top scrolls to the first row", .{});
+
+        // A click on the track below the thumb pages down.
+        h.click(surf, x, rect.bottom - 10, .left);
+        sb = try waitScroll(h, &g, ScrollState.onePageDown, "one page down", 5000);
+        try h.expect(true, "a click below the thumb pages down ({d} rows)", .{sb.len});
+
+        // Left alone, it fades.
+        h.move(surf, mid_x, mid_y, false);
+        sb = try waitScroll(h, &g, ScrollState.hidden, "faded", 5000);
+        try h.expect(true, "it fades when idle", .{});
+
+        // A program on the alternate screen: no scrollback there.
+        try h.typeText(surf, "powershell -NoProfile -Command \"[Console]::Write([char]27+'[?1049h'); Start-Sleep 5; [Console]::Write([char]27+'[?1049l')\"");
+        h.enter(surf);
+        sb = try waitScroll(h, &g, ScrollState.nothingToScroll, "nothing to scroll on the alternate screen", 10000);
+        h.move(surf, mid_x, mid_y, false);
+        w.Sleep(300);
+        sb = try scrollState(h, &g);
+        try h.expect(!sb.visible, "the alternate screen shows no thumb", .{});
+        sb = try waitScroll(h, &g, ScrollState.scrollable, "scrollback again after it", 15000);
+        try quit(h, &g, surf);
+    }
+    {
+        var g = try start(h, "scrollbar-never", "scrollbar = never\n", ">");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try h.typeText(surf, "for /l %i in (1,1,150) do @echo line-%i");
+        h.enter(surf);
+        try h.waitText(&g, "line-150", 1, 15000);
+        _ = try waitScroll(h, &g, ScrollState.scrollable, "scrollback", 5000);
+        var rect: w.RECT = .{};
+        _ = w.GetClientRect(surf, &rect);
+        h.move(surf, rect.right - 5, @divTrunc(rect.bottom, 2), false);
+        w.Sleep(300);
+        const sb = try scrollState(h, &g);
+        try h.expect(!sb.visible, "scrollbar = never shows nothing", .{});
+        try quit(h, &g, surf);
+    }
+}
+
+const ScrollState = struct {
+    total: u64 = 0,
+    offset: u64 = 0,
+    len: u64 = 0,
+    visible: bool = false,
+    hover: bool = false,
+    pressed: bool = false,
+    thumb: [4]i32 = .{ 0, 0, 0, 0 },
+
+    fn scrollable(s: ScrollState) bool {
+        return s.total > s.len;
+    }
+    fn nothingToScroll(s: ScrollState) bool {
+        return s.total <= s.len;
+    }
+    fn atBottom(s: ScrollState) bool {
+        return s.total > s.len and s.offset + s.len == s.total;
+    }
+    fn atTop(s: ScrollState) bool {
+        return s.total > s.len and s.offset == 0 and !s.pressed;
+    }
+    fn onePageDown(s: ScrollState) bool {
+        return s.offset == s.len;
+    }
+    fn shown(s: ScrollState) bool {
+        return s.visible;
+    }
+    fn hidden(s: ScrollState) bool {
+        return !s.visible;
+    }
+    fn isPressed(s: ScrollState) bool {
+        return s.pressed;
+    }
+};
+
+/// The first window's active pane's scrollbar, from a fresh dump.
+fn scrollState(h: *Harness, g: *Harness.Ghostty) !ScrollState {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    const panes = dw.tabs[dw.active].panes orelse return h.fail("no panes in the dump", .{});
+    const s = panes[0].scrollbar orelse return h.fail("no scrollbar in the dump", .{});
+    return .{
+        .total = s.total,
+        .offset = s.offset,
+        .len = s.len,
+        .visible = s.visible,
+        .hover = s.hover,
+        .pressed = s.pressed,
+        .thumb = s.thumb,
+    };
+}
+
+fn waitScroll(h: *Harness, g: *Harness.Ghostty, cond: fn (ScrollState) bool, comptime what: []const u8, ms: u32) !ScrollState {
+    var last: ScrollState = .{};
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        last = try scrollState(h, g);
+        if (cond(last)) return last;
+        w.Sleep(100);
+    }
+    return h.fail("the scrollbar never got " ++ what ++ " (rows {d}+{d} of {d}, shown {}, pressed {})", .{ last.offset, last.len, last.total, last.visible, last.pressed });
 }
 
 /// Which tab of window `win` holds the pane `pane`, and which is active.

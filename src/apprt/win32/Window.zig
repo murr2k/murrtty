@@ -1009,6 +1009,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                     self.app.systemThemeChanged();
                 }
             }
+            self.app.systemSettingChanged();
             return 0;
         },
 

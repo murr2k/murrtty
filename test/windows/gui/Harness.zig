@@ -860,6 +860,27 @@ pub fn clickMods(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: But
     }
 }
 
+/// Move the mouse to client coordinates of `target` (no button down, or
+/// the left one held after `press`).
+pub fn move(self: *Harness, target: w.HWND, x: c_int, y: c_int, held: bool) void {
+    _ = self;
+    _ = w.PostMessageW(target, w.WM_MOUSEMOVE, if (held) w.MK_LBUTTON else 0, w.makeLParam(x, y));
+}
+
+/// Press the left button at client coordinates of `target`, and later let
+/// it go with `release`: a drag in between with `move`.
+pub fn press(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
+    _ = self;
+    const pos = w.makeLParam(x, y);
+    _ = w.PostMessageW(target, w.WM_MOUSEMOVE, 0, pos);
+    _ = w.PostMessageW(target, w.WM_LBUTTONDOWN, w.MK_LBUTTON, pos);
+}
+
+pub fn release(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
+    _ = self;
+    _ = w.PostMessageW(target, w.WM_LBUTTONUP, 0, w.makeLParam(x, y));
+}
+
 /// Press the right button at client coordinates of `target`, without the
 /// release: a context menu opens on the press and takes the release.
 pub fn rightPress(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
@@ -1079,6 +1100,20 @@ pub const Dump = struct {
             focused: bool,
             text: []const u8,
             counter: []const u8,
+        } = null,
+        /// The scrollbar: the core's scrollable area (rows in all, the
+        /// viewport's first row and height), shown, widened over the band
+        /// at the right edge or pressed, its opacity, and the thumb's
+        /// rectangle (left, top, right, bottom) in the pane.
+        scrollbar: ?struct {
+            total: u64,
+            offset: u64,
+            len: u64,
+            visible: bool,
+            hover: bool,
+            pressed: bool,
+            alpha: f64,
+            thumb: [4]i32,
         } = null,
     };
 };

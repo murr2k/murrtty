@@ -1210,6 +1210,26 @@ scenario overwrites anything copied meanwhile.
 *Done when:* the thumb tracks scrollback, dragging scrolls, and alternate-screen
 apps show no thumb.
 
+*Done 2026-10-26.* `win32/Scrollbar.zig`, one per pane, from the core's
+`scrollbar` action (rows in all, the viewport's first row and height):
+GTK's overlay indicator, a 3 DIP thumb at the right edge that a scroll or
+any mouse move over the pane shows, 8 DIP with a faint track while the
+mouse is over the 14 DIP band at the edge or pressed there, in the
+terminal's foreground, fading over 200 ms a second after the last reason to
+show. It is drawn in the present pass (`Surface.updateOverlay` composes it
+with the split dimming), so the grid keeps its width. The band takes the
+mouse from the core (which sees the mouse leave), except while the
+terminal drags a selection: a press on the thumb drags it (`scroll_to_row`
+for each new row), a press on the track pages. Nothing shows without
+scrollback, which covers the alternate screen (ConPTY passes a program's
+switch to it through). `scrollbar = never` turns it off; with Windows'
+"Always show scrollbars" (`DynamicScrollbars` 0, read again on any
+WM_SETTINGCHANGE) it doesn't fade. Scenario `scrollbar` (the thumb's pixels
+from the renderer's read-back, the drag, the page, the fade, a
+PowerShell switch to the alternate screen, `never`); the dump reports each
+pane's `scrollbar`. Not done: GTK's click-to-warp (a click on the track
+pages, as Windows' scroll bars do) and repeating while the track is held.
+
 **3.5 Titles, M.** Implement `prompt_title` (surface, tab, window),
 `set_tab_title`, `set_window_title` and `copy_title_to_clipboard`.
 - Overrides layer over the terminal title: pane, then tab (on `Tab` after

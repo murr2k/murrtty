@@ -350,6 +350,26 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             try writeString(alloc, out, s.search.counterText(&counter_buf));
             try out.append(alloc, '}');
         }
+        // The scrollbar: the core's area (rows in all, the viewport's first
+        // row and height), shown, widened over the band or pressed, its
+        // opacity while fading, and the thumb's rectangle in the pane.
+        {
+            const sb = &s.scrollbar;
+            const thumb: c.RECT = if (sb.geometry(s)) |g| g.thumb else .{};
+            try out.print(alloc, ",\"scrollbar\":{{\"total\":{d},\"offset\":{d},\"len\":{d},\"visible\":{},\"hover\":{},\"pressed\":{},\"alpha\":{d:.2},\"thumb\":[{d},{d},{d},{d}]}}", .{
+                sb.total,
+                sb.offset,
+                sb.len,
+                sb.visible(),
+                sb.hover,
+                sb.pressed,
+                sb.alpha,
+                thumb.left,
+                thumb.top,
+                thumb.right,
+                thumb.bottom,
+            });
+        }
         if (s.core_initialized) {
             const grid = s.core_surface.size.grid();
             const wgl_state = &s.core_surface.renderer.api.wgl_state;
