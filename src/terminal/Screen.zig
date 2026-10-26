@@ -180,6 +180,11 @@ pub const Cursor = struct {
     semantic_content: pagepkg.Cell.SemanticContent = .output,
     semantic_content_clear_eol: bool = false,
 
+    /// A prompt mark (OSC 133) waiting for the next written cell's row,
+    /// rather than marking the row the cursor was on when it arrived (see
+    /// cursorSetPromptPending).
+    pending_prompt_mark: ?pagepkg.Row.SemanticPrompt = null,
+
     /// The pointers into the page list where the cursor is currently
     /// located. This makes it faster to move the cursor.
     page_pin: *PageList.Pin,
@@ -2990,6 +2995,21 @@ pub fn cursorSetSemanticContent(self: *Screen, t: union(enum) {
             };
         },
     }
+}
+
+/// As cursorSetSemanticContent(.prompt), but the row mark goes to the row
+/// of the next cell written, not the cursor's row now. For a pty that
+/// forwards escape sequences ahead of the text written before them (Windows
+/// ConPTY): the mark can arrive before the line feed that precedes the
+/// prompt, or while the pty repaints with its cursor elsewhere.
+pub fn cursorSetPromptPending(self: *Screen, kind: osc.semantic_prompt.PromptKind) void {
+    self.semantic_prompt.seen = true;
+    self.cursor.semantic_content = .prompt;
+    self.cursor.semantic_content_clear_eol = false;
+    self.cursor.pending_prompt_mark = switch (kind) {
+        .initial, .right => .prompt,
+        .continuation, .secondary => .prompt_continuation,
+    };
 }
 
 /// Set the selection to the given selection. If this is a tracked selection

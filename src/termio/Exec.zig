@@ -72,6 +72,13 @@ pub fn initTerminal(self: *Exec, term: *terminal.Terminal) void {
         log.warn("error setting initial pwd err={}", .{err});
     };
 
+    // ConPTY forwards escape sequences as they come but draws text in
+    // frames, so a prompt mark can arrive before the line feed written
+    // ahead of it, or during a repaint with its cursor elsewhere (as when
+    // Clink redraws its prompt after a resize). The mark goes to the row
+    // the prompt's text lands on instead.
+    if (comptime builtin.target.os.tag == .windows) term.flags.defer_prompt_mark = true;
+
     // Setup our initial grid/screen size from the terminal. This
     // can't fail because the pty should not exist at this point.
     self.resize(.{

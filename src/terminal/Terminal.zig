@@ -142,6 +142,15 @@ flags: packed struct {
     /// rather than terminal state so it is preserved across a full reset.
     resize_pull_scrollback: bool = true,
 
+    /// Whether an OSC 133 prompt start (A, P) marks the row of the next
+    /// cell written rather than the cursor's row when it arrives. This
+    /// should be true if the pty forwards escape sequences ahead of the
+    /// text written before them (e.g. Windows ConPTY), which can put the
+    /// mark a row above the prompt, or wherever the pty's cursor is during
+    /// a repaint. Like resize_pull_scrollback, this is configuration and is
+    /// preserved across a full reset.
+    defer_prompt_mark: bool = false,
+
     /// True if the terminal is in a password entry mode. This is set
     /// to true based on termios state. This is set
     /// to true based on termios state.
@@ -606,6 +615,9 @@ pub fn printSlice(self: *Terminal, cps: []const u32) !void {
 
         // Hyperlinks require per-cell map bookkeeping.
         if (screen.cursor.hyperlink_id != 0) break :fast false;
+
+        // A deferred prompt mark is placed by the first cell's write.
+        if (screen.cursor.pending_prompt_mark != null) break :fast false;
 
         break :fast true;
     };
@@ -1662,6 +1674,12 @@ fn writeCell(
 ) void {
     defer self.screens.active.assertIntegrity();
 
+    // A deferred prompt mark (defer_prompt_mark) lands on this row.
+    if (self.screens.active.cursor.pending_prompt_mark) |mark| {
+        self.screens.active.cursor.page_row.semantic_prompt = mark;
+        self.screens.active.cursor.pending_prompt_mark = null;
+    }
+
     // TODO: spacers should use a bgcolor only cell
 
     const cell = self.screens.active.cursor.page_cell;
@@ -2149,9 +2167,7 @@ pub fn semanticPrompt(
 
             // "Subsequent text (until a OSC "133;B" or OSC "133;I" command)
             // is a prompt string (as if followed by OSC 133;P;k=i\007)."
-            screen.cursorSetSemanticContent(.{
-                .prompt = cmd.readOption(.prompt_kind) orelse .initial,
-            });
+            self.setPromptContent(cmd.readOption(.prompt_kind) orelse .initial);
 
             // This is a kitty-specific flag that notes that the shell
             // is NOT capable of redraw. Redraw defaults to true so this
@@ -2204,9 +2220,7 @@ pub fn semanticPrompt(
             // The k (kind) option specifies the type of prompt:
             // regular primary prompt (k=i or default),
             // right-side prompts (k=r), or prompts for continuation lines (k=c or k=s).
-            self.screens.active.cursorSetSemanticContent(.{
-                .prompt = cmd.readOption(.prompt_kind) orelse .initial,
-            });
+            self.setPromptContent(cmd.readOption(.prompt_kind) orelse .initial);
         },
 
         .end_prompt_start_input => {
@@ -2227,6 +2241,7 @@ pub fn semanticPrompt(
         .end_input_start_output => {
             // "End of input, and start of output."
             self.screens.active.cursorSetSemanticContent(.output);
+            self.screens.active.cursor.pending_prompt_mark = null;
 
             // If our current row is marked as a prompt and we're
             // at column zero then we assume we're un-prompting. This
@@ -2250,7 +2265,18 @@ pub fn semanticPrompt(
             // its reasonable at this point to reset our semantic content
             // state but the spec doesn't really say what to do.
             self.screens.active.cursorSetSemanticContent(.output);
+            self.screens.active.cursor.pending_prompt_mark = null;
         },
+    }
+}
+
+/// The cursor's content becomes a prompt of `kind`, marking the cursor's
+/// row or, with defer_prompt_mark, the row of the next cell written.
+fn setPromptContent(self: *Terminal, kind: osc.semantic_prompt.PromptKind) void {
+    if (self.flags.defer_prompt_mark) {
+        self.screens.active.cursorSetPromptPending(kind);
+    } else {
+        self.screens.active.cursorSetSemanticContent(.{ .prompt = kind });
     }
 }
 
@@ -5090,6 +5116,7 @@ pub fn fullReset(self: *Terminal) void {
         // This is configuration based on the pty rather than terminal
         // state, so a terminal reset must not change it.
         .resize_pull_scrollback = self.flags.resize_pull_scrollback,
+        .defer_prompt_mark = self.flags.defer_prompt_mark,
 
         .xt_checksum = self.default_xt_checksum,
     };
@@ -15778,6 +15805,66 @@ test "Terminal: semantic prompt" {
         const row = list_cell.row;
         try testing.expectEqual(.none, row.semantic_prompt);
     }
+}
+
+fn testRowPrompt(t: *Terminal, y: u32) pagepkg.Row.SemanticPrompt {
+    return t.screens.active.pages.getCell(.{ .active = .{ .x = 0, .y = y } }).?.row.semantic_prompt;
+}
+
+test "Terminal: deferred prompt mark lands on the prompt text's row" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+    t.flags.defer_prompt_mark = true;
+
+    // The mark arrives before the line feed written ahead of the prompt.
+    for ("out") |c| try t.print(c);
+    try t.semanticPrompt(.init(.prompt_start));
+    t.carriageReturn();
+    try t.linefeed();
+    for ("> ") |c| try t.print(c);
+    try testing.expectEqual(.none, testRowPrompt(&t, 0));
+    try testing.expectEqual(.prompt, testRowPrompt(&t, 1));
+
+    // During a repaint: the mark arrives with the cursor at the bottom
+    // right, then the prompt is drawn elsewhere.
+    t.setCursorPos(5, 10);
+    try t.semanticPrompt(.init(.prompt_start));
+    t.setCursorPos(3, 1);
+    for ("> ") |c| try t.print(c);
+    try testing.expectEqual(.none, testRowPrompt(&t, 4));
+    try testing.expectEqual(.prompt, testRowPrompt(&t, 2));
+}
+
+test "Terminal: deferred prompt mark with no prompt text is dropped" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+    t.flags.defer_prompt_mark = true;
+
+    try t.semanticPrompt(.init(.prompt_start));
+    try t.semanticPrompt(.init(.end_input_start_output));
+    t.setCursorPos(3, 1);
+    for ("output") |c| try t.print(c);
+    try testing.expectEqual(.none, testRowPrompt(&t, 2));
+}
+
+test "Terminal: deferred prompt mark through printSlice" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+    t.flags.defer_prompt_mark = true;
+
+    t.setCursorPos(5, 10);
+    try t.semanticPrompt(.init(.prompt_start));
+    t.setCursorPos(2, 1);
+    try t.printSlice(&.{ 'C', ':', '>' });
+    try testing.expectEqual(.none, testRowPrompt(&t, 4));
+    try testing.expectEqual(.prompt, testRowPrompt(&t, 1));
+
+    // A full reset keeps the setting (it describes the pty).
+    t.fullReset();
+    try testing.expect(t.flags.defer_prompt_mark);
 }
 
 test "Terminal: semantic prompt continuations" {
