@@ -38,6 +38,7 @@ pub const all = [_]Scenario{
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "config-folder", .about = "murrtty's own config wins, Ghostty's is read when it has none, Ctrl+, opens the file in effect; TERM_PROGRAM is murrtty", .run = configFolder },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
+    .{ .name = "cli", .about = "CLI actions with output on a pipe: +version; +validate-config exits 0 for a valid file, 1 naming the problem for an invalid one", .run = cli },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
     .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
@@ -2601,6 +2602,42 @@ fn launchContext(h: *Harness) anyerror!void {
         defer h.alloc.free(text);
         try h.expect(std.mem.indexOf(u8, text, "PS ") != null, "SHELL=/usr/bin/bash still starts PowerShell", .{});
         try quitIdle(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+}
+
+/// CLI actions with their output on a pipe, as PowerShell captures it:
+/// +version names murrtty; +validate-config exits 0 and says nothing for a
+/// valid file (it exited 1: with nothing written, its writer then tried to
+/// set the pipe's length), and 1 naming the problem for an invalid one.
+fn cli(h: *Harness) anyerror!void {
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\cli", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    const valid = try std.fmt.allocPrint(h.alloc, "{s}\\valid.ghostty", .{dir});
+    defer h.alloc.free(valid);
+    try h.writeFileAt(valid, "split-divider-color = #ffffff\n");
+    const invalid = try std.fmt.allocPrint(h.alloc, "{s}\\invalid.ghostty", .{dir});
+    defer h.alloc.free(invalid);
+    try h.writeFileAt(invalid, "no-such-option = 1\n");
+
+    {
+        var r = try h.runCli("cli", &.{"+version"});
+        defer r.deinit();
+        try h.expect(r.code == 0 and std.mem.indexOf(u8, r.out, "murrtty") != null, "+version exits 0 and names murrtty (exit {d})", .{r.code});
+    }
+    {
+        const arg = try std.fmt.allocPrint(h.alloc, "--config-file={s}", .{valid});
+        defer h.alloc.free(arg);
+        var r = try h.runCli("cli", &.{ "+validate-config", arg });
+        defer r.deinit();
+        try h.expect(r.code == 0 and std.mem.trim(u8, r.out, " \r\n").len == 0, "+validate-config: a valid file exits 0, saying nothing (exit {d}, '{s}')", .{ r.code, r.out });
+    }
+    {
+        const arg = try std.fmt.allocPrint(h.alloc, "--config-file={s}", .{invalid});
+        defer h.alloc.free(arg);
+        var r = try h.runCli("cli", &.{ "+validate-config", arg });
+        defer r.deinit();
+        try h.expect(r.code == 1 and std.mem.indexOf(u8, r.out, "no-such-option") != null, "+validate-config: an invalid file exits 1, naming the problem (exit {d}, '{s}')", .{ r.code, std.mem.trim(u8, r.out, " \r\n") });
     }
 }
 

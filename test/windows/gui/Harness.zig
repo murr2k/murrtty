@@ -414,6 +414,139 @@ fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8, extr
     return out.toOwnedSlice(alloc);
 }
 
+/// What a CLI action printed, and its exit code.
+pub const CliResult = struct {
+    alloc: Allocator,
+    code: u32,
+    /// Its stdout (stderr, the log, goes to murrtty.log in its folder).
+    out: []u8,
+
+    pub fn deinit(self: *CliResult) void {
+        self.alloc.free(self.out);
+    }
+};
+
+/// Run murrtty with `args` (a CLI action, such as `+version`) in the run
+/// folder `name`, on the hidden desktop, with its stdout on a pipe, as
+/// PowerShell captures it, and its stderr (a Debug build's log) in
+/// murrtty.log there. Only those two handles are inherited. It gets 30 s
+/// to finish.
+pub fn runCli(self: *Harness, name: []const u8, args: []const []const u8) !CliResult {
+    const alloc = self.alloc;
+    const dir = try std.fmt.allocPrint(alloc, "{s}\\{s}", .{ self.temp_dir, name });
+    defer alloc.free(dir);
+    try makeDir(alloc, dir);
+    try self.launched.append(alloc, try alloc.dupe(u8, dir));
+    const dump_path = try std.fmt.allocPrint(alloc, "{s}\\dump.json", .{dir});
+    defer alloc.free(dump_path);
+    const env = try self.environment(dir, dump_path, &.{});
+    defer alloc.free(env);
+
+    // Each argument quoted: none the tests pass holds a quote or ends in a
+    // backslash.
+    var cmdline: std.ArrayList(u16) = .empty;
+    defer cmdline.deinit(alloc);
+    try cmdline.append(alloc, '"');
+    try cmdline.appendSlice(alloc, self.exe);
+    try cmdline.append(alloc, '"');
+    for (args) |a| {
+        const a16 = try std.unicode.utf8ToUtf16LeAlloc(alloc, a);
+        defer alloc.free(a16);
+        try cmdline.appendSlice(alloc, std.unicode.utf8ToUtf16LeStringLiteral(" \""));
+        try cmdline.appendSlice(alloc, a16);
+        try cmdline.append(alloc, '"');
+    }
+    try cmdline.append(alloc, 0);
+
+    var sa: w.SECURITY_ATTRIBUTES = .{ .bInheritHandle = w.TRUE };
+    var read_end: w.HANDLE = undefined;
+    var write_end: w.HANDLE = undefined;
+    if (w.CreatePipe(&read_end, &write_end, &sa, 0) == 0) return error.LaunchFailed;
+    defer _ = w.CloseHandle(read_end);
+    var write_open = true;
+    defer if (write_open) {
+        _ = w.CloseHandle(write_end);
+    };
+    _ = w.SetHandleInformation(read_end, w.HANDLE_FLAG_INHERIT, 0);
+    const log_path = try std.fmt.allocPrint(alloc, "{s}\\murrtty.log", .{dir});
+    defer alloc.free(log_path);
+    const log16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, log_path);
+    defer alloc.free(log16);
+    const log_file = w.CreateFileW(log16, w.GENERIC_WRITE, w.FILE_SHARE_READ | w.FILE_SHARE_DELETE, &sa, w.CREATE_ALWAYS, w.FILE_ATTRIBUTE_NORMAL, null);
+    if (log_file == w.INVALID_HANDLE_VALUE) return error.LaunchFailed;
+    defer _ = w.CloseHandle(log_file);
+
+    var desktop: ?[:0]u16 = null;
+    defer if (desktop) |d| alloc.free(d);
+    if (self.desktop_name) |n| {
+        desktop = try std.mem.concatWithSentinel(alloc, u16, &.{ std.unicode.utf8ToUtf16LeStringLiteral("WinSta0\\"), n }, 0);
+    }
+    var siex: w.STARTUPINFOEXW = .{ .StartupInfo = .{
+        .cb = @sizeOf(w.STARTUPINFOEXW),
+        .lpDesktop = if (desktop) |d| d.ptr else null,
+        .dwFlags = w.STARTF_USESTDHANDLES,
+        .hStdOutput = write_end,
+        .hStdError = log_file,
+    } };
+    var attr_buf: [128]u8 align(@alignOf(usize)) = undefined;
+    const inherit = [2]w.HANDLE{ write_end, log_file };
+    var size: usize = 0;
+    _ = w.InitializeProcThreadAttributeList(null, 1, 0, &size);
+    if (size > attr_buf.len or
+        w.InitializeProcThreadAttributeList(&attr_buf, 1, 0, &size) == 0) return error.LaunchFailed;
+    defer w.DeleteProcThreadAttributeList(&attr_buf);
+    if (w.UpdateProcThreadAttribute(&attr_buf, 0, w.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherit, @sizeOf(@TypeOf(inherit)), null, null) == 0) return error.LaunchFailed;
+    siex.lpAttributeList = &attr_buf;
+
+    var pi: w.PROCESS_INFORMATION = undefined;
+    const dir16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, dir);
+    defer alloc.free(dir16);
+    if (w.CreateProcessW(
+        self.exe,
+        @ptrCast(cmdline.items.ptr),
+        null,
+        null,
+        w.TRUE,
+        w.CREATE_UNICODE_ENVIRONMENT | w.EXTENDED_STARTUPINFO_PRESENT,
+        env.ptr,
+        dir16,
+        &siex.StartupInfo,
+        &pi,
+    ) == 0) {
+        std.debug.print("CreateProcessW failed ({d})\n", .{w.GetLastError()});
+        return error.LaunchFailed;
+    }
+    _ = w.CloseHandle(pi.hThread);
+    defer _ = w.CloseHandle(pi.hProcess);
+    // Ours closed, the pipe breaks once murrtty's end closes.
+    _ = w.CloseHandle(write_end);
+    write_open = false;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var buf: [4096]u8 = undefined;
+    const deadline = w.GetTickCount64() + 30000;
+    while (true) {
+        var avail: w.DWORD = 0;
+        if (w.PeekNamedPipe(read_end, null, 0, null, &avail, null) == 0) break;
+        if (avail > 0) {
+            var got: w.DWORD = 0;
+            if (w.ReadFile(read_end, &buf, @min(avail, buf.len), &got, null) == 0) break;
+            try out.appendSlice(alloc, buf[0..got]);
+            continue;
+        }
+        if (w.GetTickCount64() > deadline) {
+            _ = w.TerminateProcess(pi.hProcess, 1);
+            return self.fail("murrtty {s} didn't finish in 30 s", .{if (args.len > 0) args[0] else ""});
+        }
+        w.Sleep(20);
+    }
+    _ = w.WaitForSingleObject(pi.hProcess, 10000);
+    var code: w.DWORD = 0;
+    if (w.GetExitCodeProcess(pi.hProcess, &code) == 0) return error.LaunchFailed;
+    return .{ .alloc = alloc, .code = code, .out = try out.toOwnedSlice(alloc) };
+}
+
 //---------------------------------------------------------------
 // Registry
 

@@ -1706,13 +1706,17 @@ reference design. Critical for screen-reader users.
 - A `secure_input` badge.
 - Version numbers: fill in `FILEVERSION`, `PRODUCTVERSION` and `FileVersion`
   in the existing version resource (`dist/windows/ghostty.rc`).
-- `+validate-config` exits 1 and prints nothing when its output is a pipe
-  (PowerShell capturing it), even for an empty file; into a file it exits 0.
-  *Found 2026-10-26.* Suspect its closing `stdout_writer.end()`
-  (`cli/validate_config.zig`), which truncates the output and may fail on a
-  Windows pipe; `+version`, `+show-config` and `+list-themes`, which exit 0
-  there, don't end their output that way. An error there would also
-  swallow the diagnostics it found.
+- `+validate-config` exited 1 and printed nothing for a valid config when
+  its output was a pipe (PowerShell capturing it), and likely a console
+  (not checked); into a file it exited 0. *Found and fixed 2026-10-26.* It ended its output with
+  `stdout_writer.end()`, which also sets the file's length while std's
+  writer is still positional, as it is when nothing was written (a valid
+  config): that fails for a Windows pipe. Once something is
+  written to a pipe the writer turns streaming and skips it, so an invalid
+  config already printed its problems and exited 1 correctly. It now only
+  flushes (`cli/validate_config.zig`, a shared-code change). Scenario `cli`
+  (the harness's `runCli` puts stdout on a pipe) checks `+version` and both
+  exit codes; it failed before the fix.
 
 **6.6 Bare command names, S.** `Command.zig` starts the shell with a null
 `lpApplicationName`, so for a bare name Windows searches Ghostty's own

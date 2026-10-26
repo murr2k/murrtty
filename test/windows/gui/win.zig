@@ -254,6 +254,10 @@ pub const SECURITY_ATTRIBUTES = extern struct {
     bInheritHandle: BOOL = FALSE,
 };
 pub extern "kernel32" fn GetExitCodeProcess(HANDLE, *DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CreatePipe(*HANDLE, *HANDLE, ?*SECURITY_ATTRIBUTES, DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn PeekNamedPipe(HANDLE, ?[*]u8, DWORD, ?*DWORD, ?*DWORD, ?*DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn SetHandleInformation(HANDLE, DWORD, DWORD) callconv(.winapi) BOOL;
+pub const HANDLE_FLAG_INHERIT = 0x00000001;
 pub extern "kernel32" fn TerminateProcess(HANDLE, UINT) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetEnvironmentStringsW() callconv(.winapi) ?[*]u16;
