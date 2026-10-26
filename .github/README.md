@@ -133,6 +133,13 @@ hosted Windows runner and then the unit tests.
 - The resize overlay: a pane shows its grid size ("120 x 34") while it
   resizes (`resize-overlay`, `resize-overlay-position`,
   `resize-overlay-duration`).
+- The right-click menu, as in Ghostty's GTK app: Copy, Paste, Clear, Reset
+  and Split, Tab, Window and Config submenus, each entry with its key
+  binding; entries murrtty can't perform yet are grayed. A right-click
+  selects the word under the mouse first; a program using the mouse gets
+  the click instead. `right-click-action = copy-or-paste` (copy if there is
+  a selection, otherwise paste, as in Windows Terminal) or `paste` replace
+  the menu. Menus are dark when Windows apps are.
 - CLI actions such as `murrtty +version` print to the console they were
   started from.
 
@@ -158,10 +165,6 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- The right-click context menu. With the default
-  `right-click-action = context-menu`, a right-click only selects the word
-  under the cursor. Set `right-click-action = copy-or-paste` (copy if there is
-  a selection, otherwise paste, as in Windows Terminal) or `paste` instead.
 - Scrollbar, search, command palette, terminal inspector, quick terminal,
   desktop notifications.
 - Transparency: with `background-opacity` the window stays opaque and shows

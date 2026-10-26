@@ -565,6 +565,23 @@ pub const SW_SHOWNA = 8;
 pub const SIZE = extern struct { cx: c_int = 0, cy: c_int = 0 };
 
 pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+
+// Popup menus
+pub const MF_STRING = 0x0000;
+pub const MF_GRAYED = 0x0001;
+pub const MF_POPUP = 0x0010;
+pub const MF_SEPARATOR = 0x0800;
+pub const TPM_RIGHTBUTTON = 0x0002;
+pub const TPM_NONOTIFY = 0x0080;
+pub const TPM_RETURNCMD = 0x0100;
+pub const WM_NULL = 0x0000;
+pub extern "user32" fn CreatePopupMenu() callconv(.winapi) ?HMENU;
+pub extern "user32" fn AppendMenuW(HMENU, UINT, usize, ?LPCWSTR) callconv(.winapi) BOOL;
+/// With TPM_RETURNCMD it returns the chosen item's id, 0 for none.
+pub extern "user32" fn TrackPopupMenuEx(HMENU, UINT, c_int, c_int, HWND, ?*anyopaque) callconv(.winapi) c_int;
+pub extern "user32" fn DestroyMenu(HMENU) callconv(.winapi) BOOL;
+pub extern "user32" fn ClientToScreen(HWND, *POINT) callconv(.winapi) BOOL;
+pub extern "user32" fn IsClipboardFormatAvailable(UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn SetTimer(?HWND, usize, UINT, ?*const anyopaque) callconv(.winapi) usize;
 pub extern "user32" fn KillTimer(?HWND, usize) callconv(.winapi) BOOL;
 pub extern "user32" fn GetDC(?HWND) callconv(.winapi) ?HDC;

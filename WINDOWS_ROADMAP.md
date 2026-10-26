@@ -1071,6 +1071,25 @@ keyboard access is not scheduled. *Done when:* right-click Copy and Paste
 work, and Close Tab chosen from the menu while a dialog is pending frees
 nothing early.
 
+*Done 2026-10-26.* `win32/ContextMenu.zig` builds GTK's menu from a table
+of binding actions (`TrackPopupMenuEx` with `TPM_RETURNCMD`, in a modal
+scope with other windows enabled). Each entry shows its binding Windows
+style ("Ctrl+Shift+T", from the core's reverse map, which keeps the binding
+added last: Copy shows Ctrl+Ins) and is grayed when `App.supportsAction`
+says no, Copy without a selection, Paste without text on the clipboard, or
+for the two entries not built yet (Notify on Next Command Finish, Open
+Configuration in New Window). The menu opens on an unconsumed right press;
+it takes the button's release, so the pane lets go of the mouse and tells
+the core the button came up, then performs the chosen action after the
+menu's loop (closing actions still queue). Dark menus come from uxtheme's
+ordinals 135 and 136 (`App.allowDarkMenus`). The `context-menu` scenario
+reads the menu from another process (`MN_GETHMENU`, `GetMenuStringW`),
+chooses entries by access key, and checks Copy, Paste, Tab > New Tab and
+Close Tab, which asks while the shell runs (No keeps the tab). Not tested:
+a program reporting the mouse taking the right press (the core's rule);
+ConPTY keeps a console program's DECSET 1000 to itself, so no shell here
+can turn reporting on.
+
 **3.2 Search, M.** A search box over the pane's top-right corner: an edit
 control, an "n/m" counter and previous, next and close buttons.
 - Typing runs the core search with a short debounce. Enter and Shift+Enter

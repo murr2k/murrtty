@@ -39,6 +39,8 @@ pub const State = if (enabled) struct {
     /// Spike S1's overlays (see setOverlays).
     overlays: std.ArrayList(Overlay) = .empty,
     overlay_class: bool = false,
+    /// Context menus shown (ContextMenu.track).
+    menus_shown: u32 = 0,
 } else struct {};
 
 /// Whether the hooks are on, for code with no App at hand.
@@ -157,7 +159,7 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
 }
 
 fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
-    try out.print(alloc, "{{\"modal_depth\":{d},\"windows\":[", .{app.modal_depth});
+    try out.print(alloc, "{{\"modal_depth\":{d},\"menus_shown\":{d},\"windows\":[", .{ app.modal_depth, app.test_state.menus_shown });
     for (app.windows.items, 0..) |w, wi| {
         if (wi > 0) try out.append(alloc, ',');
         var client: c.RECT = .{};

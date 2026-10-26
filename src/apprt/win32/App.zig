@@ -157,6 +157,7 @@ pub fn init(
     // Before any window exists, so all of them take it.
     const aumid = c.SetCurrentProcessExplicitAppUserModelID(app_user_model_id);
     if (aumid < 0) log.warn("SetCurrentProcessExplicitAppUserModelID failed hr=0x{x}", .{@as(u32, @bitCast(aumid))});
+    allowDarkMenus();
 
     // OLE, and with it single-threaded COM, for this UI thread. Shell, task
     // dialog and taskbar APIs need COM, and drag and drop needs OLE itself:
@@ -1214,6 +1215,24 @@ pub fn performAction(
     }
 
     return true;
+}
+
+/// Dark popup menus (the context menu) while Windows uses dark mode for
+/// apps. Windows has no public API for it; this uses uxtheme's exports by
+/// ordinal, as Windows Terminal and File Explorer do: 135 is
+/// SetPreferredAppMode (1, AllowDark) since Windows 10 1903 and
+/// AllowDarkModeForApp (1, true) before, 136 FlushMenuThemes. Missing, it
+/// does nothing.
+fn allowDarkMenus() void {
+    const uxtheme = c.LoadLibraryW(c.L("uxtheme.dll")) orelse return;
+    if (c.GetProcAddress(uxtheme, @ptrFromInt(135))) |p| {
+        const setMode: *const fn (c_int) callconv(.winapi) c_int = @ptrCast(p);
+        _ = setMode(1);
+    }
+    if (c.GetProcAddress(uxtheme, @ptrFromInt(136))) |p| {
+        const flush: *const fn () callconv(.winapi) void = @ptrCast(p);
+        flush();
+    }
 }
 
 /// Whether a key-binding action does anything here: the core performs it

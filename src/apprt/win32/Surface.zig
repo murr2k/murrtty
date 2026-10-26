@@ -19,6 +19,7 @@ const c = @import("c.zig");
 const key = @import("key.zig");
 const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
+const ContextMenu = @import("ContextMenu.zig");
 const Overlay = @import("Overlay.zig");
 const Window = @import("Window.zig");
 const test_hooks = @import("test_hooks.zig");
@@ -981,10 +982,47 @@ fn mouseButton(
     }
 
     if (!self.core_initialized) return 0;
-    _ = self.core_surface.mouseButtonCallback(action, button, key.currentMods()) catch |err| {
+    const consumed = self.core_surface.mouseButtonCallback(action, button, key.currentMods()) catch |err| consumed: {
         log.warn("error in mouse button callback err={}", .{err});
+        break :consumed true;
     };
+    // A right press the core leaves alone (it selected the word under the
+    // mouse; a program reporting the mouse would have taken it) opens the
+    // context menu, on the press as in GTK.
+    if (button == .right and action == .press and !consumed and
+        self.core_surface.config.right_click_action == .@"context-menu")
+    {
+        self.contextMenu(c.xParam(lparam), c.yParam(lparam));
+    }
     return 0;
+}
+
+/// Show the context menu at the client point (`x`, `y`) and perform what
+/// was chosen.
+fn contextMenu(self: *Surface, x: c_int, y: c_int) void {
+    // The menu takes the button's release: let go of the mouse as that
+    // release would have.
+    const right: u8 = @as(u8, 1) << @intCast(@intFromEnum(input.MouseButton.right) & 7);
+    self.buttons_down &= ~right;
+    if (self.buttons_down == 0) _ = c.ReleaseCapture();
+
+    var pt: c.POINT = .{ .x = x, .y = y };
+    _ = c.ClientToScreen(self.hwnd, &pt);
+    const chosen = ContextMenu.track(self, pt);
+
+    // The core saw the press; it hears the release now.
+    if (self.core_initialized) {
+        _ = self.core_surface.mouseButtonCallback(.release, .right, key.currentMods()) catch |err| {
+            log.warn("error in mouse button callback err={}", .{err});
+        };
+    }
+    // Performed here, after the menu's loop: closing actions queue their
+    // close (App.request), so this surface outlives the call.
+    if (chosen) |a| if (self.core_initialized) {
+        _ = self.core_surface.performBindingAction(a) catch |err| {
+            log.warn("error performing a context menu action err={}", .{err});
+        };
+    };
 }
 
 /// Handle a key down/up message. Text for a key down is collected from

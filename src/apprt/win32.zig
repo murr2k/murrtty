@@ -11,6 +11,7 @@ pub fn preInit() void {
 }
 
 test {
+    _ = @import("win32/ContextMenu.zig");
     _ = @import("win32/key.zig");
     _ = @import("win32/split_layout.zig");
     _ = @import("win32/TabBar.zig");

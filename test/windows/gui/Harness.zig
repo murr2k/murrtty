@@ -853,11 +853,93 @@ pub fn clickMods(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: But
     }
 }
 
+/// Press the right button at client coordinates of `target`, without the
+/// release: a context menu opens on the press and takes the release.
+pub fn rightPress(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
+    _ = self;
+    const pos = w.makeLParam(x, y);
+    _ = w.PostMessageW(target, w.WM_MOUSEMOVE, 0, pos);
+    _ = w.PostMessageW(target, w.WM_RBUTTONDOWN, w.MK_RBUTTON, pos);
+}
+
+//---------------------------------------------------------------
+// Popup menus
+
+/// Wait until the process shows `count` popup menus (#32768: a menu, then
+/// a submenu over it) and return the topmost, the last opened.
+pub fn waitMenu(self: *Harness, g: *const Ghostty, count: usize, ms: u32) !w.HWND {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        const menus = try self.windows(g, "#32768");
+        defer self.alloc.free(menus);
+        // EnumWindows lists the topmost first.
+        if (menus.len >= count) return menus[0];
+        w.Sleep(100);
+    }
+    return self.fail("{d} popup menu(s) did not appear", .{count});
+}
+
+pub fn menuCount(self: *Harness, g: *const Ghostty) !usize {
+    const menus = try self.windows(g, "#32768");
+    defer self.alloc.free(menus);
+    return menus.len;
+}
+
+pub const MenuItem = struct {
+    /// UTF-8, with the access key's `&` and any `\t` accelerator text.
+    text: []u8,
+    grayed: bool,
+    separator: bool,
+    submenu: bool,
+};
+
+/// The items of the popup menu window `menu`. Menus belong to the desktop,
+/// so another process can read them. Free with freeMenuItems.
+pub fn menuItems(self: *Harness, menu: w.HWND) ![]MenuItem {
+    var result: usize = 0;
+    if (w.SendMessageTimeoutW(menu, w.MN_GETHMENU, 0, 0, w.SMTO_ABORTIFHUNG, 2000, &result) == 0 or result == 0) {
+        return self.fail("could not get the popup menu's items", .{});
+    }
+    const hmenu: w.HMENU = @ptrFromInt(result);
+    const n: usize = @intCast(@max(w.GetMenuItemCount(hmenu), 0));
+    const list = try self.alloc.alloc(MenuItem, n);
+    for (list, 0..) |*item, i| {
+        const pos: w.UINT = @intCast(i);
+        const state = w.GetMenuState(hmenu, pos, w.MF_BYPOSITION);
+        var buf: [256]u16 = undefined;
+        const len = w.GetMenuStringW(hmenu, pos, &buf, buf.len, w.MF_BYPOSITION);
+        item.* = .{
+            .text = try std.unicode.utf16LeToUtf8Alloc(self.alloc, buf[0..@intCast(@max(len, 0))]),
+            .grayed = state & (w.MF_GRAYED | w.MF_DISABLED) != 0,
+            .separator = state & w.MF_SEPARATOR != 0,
+            .submenu = state & w.MF_POPUP != 0,
+        };
+    }
+    return list;
+}
+
+pub fn freeMenuItems(self: *Harness, list: []MenuItem) void {
+    for (list) |item| self.alloc.free(item.text);
+    self.alloc.free(list);
+}
+
+/// Press the access key `letter` in the open popup menu `menu`: it chooses
+/// the item, or opens the submenu. Only the key down is posted; the menu's
+/// loop translates it into the character it matches.
+pub fn menuKey(self: *Harness, menu: w.HWND, letter: u8) void {
+    _ = self;
+    const vk = std.ascii.toUpper(letter);
+    const sc = w.MapVirtualKeyW(vk, w.MAPVK_VK_TO_VSC);
+    _ = w.PostMessageW(menu, w.WM_KEYDOWN, vk, @bitCast(@as(usize, 1 | (@as(usize, sc) << 16))));
+}
+
 //---------------------------------------------------------------
 // State dump
 
 pub const Dump = struct {
     modal_depth: u32,
+    /// Context menus shown so far.
+    menus_shown: u32 = 0,
     windows: []const Window,
     /// Links that would have opened, as "verb target" (Ghostty records
     /// them instead of opening them while the test hooks are on).

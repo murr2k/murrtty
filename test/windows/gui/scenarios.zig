@@ -28,6 +28,7 @@ pub const all = [_]Scenario{
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
     .{ .name = "resize-overlay", .about = "the grid size shows while a pane resizes: after-first, never, always, position, duration", .run = resizeOverlay },
+    .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "config-folder", .about = "murrtty's own config wins, Ghostty's is read when it has none, Ctrl+, opens the file in effect; TERM_PROGRAM is murrtty", .run = configFolder },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
@@ -917,6 +918,131 @@ fn configFolder(h: *Harness) anyerror!void {
     h.enter(surf);
     try h.waitText(&g, "program=murrtty", 1, 10000);
     try quit(h, &g, surf);
+}
+
+/// The context menu (roadmap 3.1): a right press the core leaves alone
+/// (right-click-action = context-menu) selects the word and opens GTK's
+/// menu, with key bindings, and grayed entries for what can't run; its
+/// Copy, Paste, New Tab and Close Tab work, and Close Tab still asks.
+fn contextMenu(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    var g = try start(h, "context-menu", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    try h.typeText(surf, "echo hello-menu");
+    h.enter(surf);
+    try h.waitText(&g, "hello-menu", 2, 10000);
+    try h.setClipboard("from-the-clipboard");
+
+    // On the output's word: the core selects it, and the menu opens.
+    const at = try cellPoint(h, &g, "hello-menu");
+    h.rightPress(surf, at.x, at.y);
+    var menu = try h.waitMenu(&g, 1, 5000);
+    {
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        try h.expect(items.len == 12, "twelve entries (got {d})", .{items.len});
+        // Copy is bound to Ctrl+Shift+C and Ctrl+Insert; the core's reverse
+        // map keeps the binding added last, as GTK's menu shows too.
+        try h.expect(std.mem.startsWith(u8, items[0].text, "&Copy\tCtrl+") and !items[0].grayed, "Copy, with its binding, enabled over a selection ('{s}')", .{items[0].text});
+        try h.expect(std.mem.startsWith(u8, items[1].text, "&Paste\t") and !items[1].grayed, "Paste, enabled with text on the clipboard ('{s}')", .{items[1].text});
+        try h.expect(items[2].grayed, "Notify on Next Command Finish is grayed", .{});
+        try h.expect(items[3].separator and items[6].separator and items[10].separator, "separators where GTK has them", .{});
+        try h.expect(items[7].submenu and items[8].submenu and items[9].submenu and items[11].submenu, "Split, Tab, Window and Config submenus", .{});
+    }
+    h.menuKey(menu, 'c');
+    try waitNoMenu(h, &g);
+    try waitClipboard(h, "hello-menu");
+
+    h.rightPress(surf, at.x, at.y);
+    menu = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu, 'p');
+    try waitNoMenu(h, &g);
+    try h.waitText(&g, "hello-menu", 3, 5000);
+    try h.expect(true, "Paste typed the clipboard at the prompt", .{});
+
+    // Tab > New Tab; its Change Title isn't implemented yet.
+    h.rightPress(surf, at.x, at.y);
+    menu = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu, 't');
+    var sub = try h.waitMenu(&g, 2, 5000);
+    {
+        const items = try h.menuItems(sub);
+        defer h.freeMenuItems(items);
+        try h.expect(items.len == 4 and items[0].grayed, "Tab: Change Title grayed (got {d} items)", .{items.len});
+        try h.expect(std.mem.eql(u8, items[2].text, "&New Tab\tCtrl+Shift+T") and !items[2].grayed, "New Tab with its binding ('{s}')", .{items[2].text});
+    }
+    h.menuKey(sub, 'n');
+    try waitNoMenu(h, &g);
+    try waitWindowTabs(h, &g, win, 2);
+
+    // Close Tab from the new tab's menu: its shell runs, so it asks first.
+    const second = try h.surface(&g, win);
+    try h.waitText(&g, ">", 2, 10000);
+    for ([_]c_int{ w.IDNO, w.IDYES }) |answer| {
+        h.rightPress(second, 40, 20);
+        menu = try h.waitMenu(&g, 1, 5000);
+        h.menuKey(menu, 't');
+        sub = try h.waitMenu(&g, 2, 5000);
+        h.menuKey(sub, 'c');
+        const dlg = try h.waitDialog(&g, 5000);
+        h.answer(&g, dlg, answer);
+        try waitNoDialog(h, &g);
+        try waitWindowTabs(h, &g, win, if (answer == w.IDNO) 2 else 1);
+    }
+    // A program reporting the mouse takes the right button (the core says
+    // so, and no menu opens), but no shell here can turn reporting on:
+    // ConPTY keeps a console program's DECSET 1000 to itself.
+    const last = try h.surface(&g, win);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.menus_shown == 5, "five menus shown in all (got {d})", .{d.value.menus_shown});
+    }
+    try quit(h, &g, last);
+}
+
+fn waitNoMenu(h: *Harness, g: *Harness.Ghostty) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        if (try h.menuCount(g) == 0) return;
+        w.Sleep(100);
+    }
+    return h.fail("the popup menu stayed open", .{});
+}
+
+fn waitClipboard(h: *Harness, want: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        if (try h.getClipboard()) |text| {
+            defer h.alloc.free(text);
+            if (std.mem.eql(u8, text, want)) return h.expect(true, "the clipboard holds '{s}'", .{want});
+        }
+        w.Sleep(100);
+    }
+    return h.fail("the clipboard never held '{s}'", .{want});
+}
+
+/// Client coordinates over the third cell of the first tab's row that
+/// reads exactly `line`.
+fn cellPoint(h: *Harness, g: *Harness.Ghostty, line: []const u8) !struct { x: c_int, y: c_int } {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const t = d.value.windows[0].tabs[0];
+    const text = t.text orelse return h.fail("no text in the dump", .{});
+    const cell = t.cell orelse return h.fail("no cell size in the dump", .{});
+    const pad = t.padding orelse return h.fail("no padding in the dump", .{});
+    var rows = std.mem.splitScalar(u8, text, '\n');
+    var row: u32 = 0;
+    while (rows.next()) |r| : (row += 1) {
+        if (std.mem.eql(u8, std.mem.trimEnd(u8, r, " "), line)) return .{
+            .x = @intCast(pad[0] + cell[0] * 2 + cell[0] / 2),
+            .y = @intCast(pad[1] + row * cell[1] + cell[1] / 2),
+        };
+    }
+    return h.fail("no row reads '{s}'", .{line});
 }
 
 /// The resize overlay (roadmap 3.0, GTK's): the grid size over a pane while
