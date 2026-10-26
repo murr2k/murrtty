@@ -125,7 +125,13 @@ Fork items, ahead of the rest of Phase 3:
 - **R1, S.** Record the decision (this section, the README). *Done
   2026-10-26.*
 - **R2, S.** A trial merge of current upstream `main` on a local branch, to
-  measure what each merge costs.
+  measure what each merge costs. *Done 2026-10-26:* upstream `0fe113a35`, 18
+  commits past the base `22f100c63` and 21 files (three of them,
+  `Screen.zig`, `stream_handler.zig` and `Termio.zig`, also changed by the
+  fork), merged without a conflict; unit tests (4,081 passed) and the GUI
+  suite passed unchanged, so the merge was kept (`343c485fc`). Pushing it
+  needs upstream's objects, which this blobless clone may lack: push from a
+  full clone if the push is refused.
 - **R3, M.** Rename and brand: the identifiers above, a placeholder icon,
   the builder, harness, CI and README, and a copyright line for murrtty's
   changes beside Ghostty's in `LICENSE`.
