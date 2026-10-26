@@ -1300,6 +1300,21 @@ reference design. Critical for screen-reader users.
 - Version numbers: fill in `FILEVERSION`, `PRODUCTVERSION` and `FileVersion`
   in the existing version resource (`dist/windows/ghostty.rc`).
 
+**6.6 Bare command names, S.** `Command.zig` starts the shell with a null
+`lpApplicationName`, so for a bare name Windows searches Ghostty's own
+folder and the current directory before the system folders and `PATH`.
+`command = pwsh` (or upstream's old default, `cmd.exe`) can therefore run a
+same-named program planted in the folder Ghostty started in, which, started
+from a shell, is that shell's folder. The defaults name full paths since
+2.5. Resolve a bare name in `Command.zig` with a `PATH` search that skips
+the current directory (honoring `PATHEXT`, fixed drives only as
+`default_shell.findPwsh` does) and pass the full path as
+`lpApplicationName`; a name with a path separator keeps today's behavior.
+*Done when:* a `cmd.exe` planted in the starting folder doesn't run for
+`command = cmd.exe`, and `command = pwsh -NoLogo` still starts PowerShell 7.
+Small and security-related, so it can land with any phase rather than
+waiting for M3.
+
 ---
 
 ## Phase 7: Release engineering (about 3 to 7 weeks, finished for M3, plus 7.8)
