@@ -1,16 +1,16 @@
 //! The search box (roadmap 3.2), GTK's: an edit field, an "n/m" counter
-//! and previous, next and close buttons over the pane's top-right corner.
-//! It is a layered child window of the pane (spike S1) holding real
-//! controls, so typing, the caret and the IME work as in any edit field.
-//! The core runs the search and highlights the matches; this sends it the
-//! text and the navigation, and shows what it reports. The Surface owns
-//! it; its windows are created the first time it opens and destroyed with
-//! the pane.
+//! and up, down and close buttons over the pane's top-right corner. It is
+//! a layered child window of the pane (spike S1) holding real controls, so
+//! typing, the caret and the IME work as in any edit field. The core runs
+//! the search and highlights the matches; this sends it the text and the
+//! navigation, and shows what it reports. The Surface owns it; its windows
+//! are created the first time it opens and destroyed with the pane.
 const SearchBox = @This();
 
 const std = @import("std");
 const c = @import("c.zig");
 const Surface = @import("Surface.zig");
+const text_util = @import("text.zig");
 
 const log = std.log.scoped(.win32_search);
 
@@ -29,9 +29,15 @@ const opacity = 245;
 const border_color = c.rgb(0x55, 0x55, 0x55);
 
 const id_edit = 1;
-const id_previous = 2;
-const id_next = 3;
+/// Up goes to the next match, which the core counts from the newest, so
+/// upward; down to the previous (GTK's buttons, and its Enter).
+const id_up = 2;
+const id_down = 3;
 const id_close = 4;
+
+/// The longest needle, in UTF-16 units: what the field takes and what
+/// textUtf8 reads.
+pub const max_text = 255;
 
 /// The timer that runs the search once typing pauses, after GTK's search
 /// entry (150 ms).
@@ -44,12 +50,16 @@ const glyphs = [3]u16{ 0xE70E, 0xE70D, 0xE711 };
 surface: ?*Surface = null,
 hwnd: ?c.HWND = null,
 edit: ?c.HWND = null,
-/// Previous, next and close.
+/// Up, down and close.
 buttons: [3]?c.HWND = .{ null, null, null },
 /// The edit field's own window procedure, which the box's wraps.
 edit_proc: isize = 0,
 /// Whether a search is on: from the core's start_search to its end_search.
 active: bool = false,
+/// Whether the field, not the pane, had the keyboard last: the pane gives
+/// the field the keyboard back (window activation, a tab or split coming
+/// forward) only then.
+field_focused: bool = false,
 /// What the core last reported: the number of matches and the selected
 /// one (0-based, as GTK reads it).
 total: ?usize = null,
@@ -97,15 +107,16 @@ pub fn visible(self: *const SearchBox) bool {
     return c.IsWindowVisible(h) != 0;
 }
 
-/// The window that takes the keyboard for the pane while the box is open.
+/// The window that takes the keyboard for the pane: the field, while the
+/// box is open and the field had the keyboard last.
 pub fn focusTarget(self: *const SearchBox) ?c.HWND {
-    return if (self.active) self.edit else null;
+    return if (self.active and self.field_focused) self.edit else null;
 }
 
-/// The field's text as UTF-8 into `buf`, for the tests' dump.
+/// The field's text as UTF-8 into `buf`.
 pub fn textUtf8(self: *const SearchBox, buf: []u8) []const u8 {
     const edit = self.edit orelse return "";
-    var wide: [256]u16 = undefined;
+    var wide: [max_text + 1]u16 = undefined;
     const n = c.GetWindowTextW(edit, &wide, wide.len);
     const len = std.unicode.utf16LeToUtf8(buf, wide[0..@intCast(@max(n, 0))]) catch return "";
     return buf[0..len];
@@ -134,8 +145,11 @@ pub fn open(self: *SearchBox, surface: *Surface, needle: []const u8) void {
     const was_active = self.active;
     self.active = true;
     if (needle.len > 0) {
-        var wide: [256:0]u16 = undefined;
-        const n = std.unicode.utf8ToUtf16Le(&wide, needle[0..@min(needle.len, 255)]) catch 0;
+        // Cut to the field's length, never inside a character.
+        var wide: [max_text * 2 + 1:0]u16 = undefined;
+        var n = std.unicode.utf8ToUtf16Le(&wide, text_util.truncate(needle, max_text * 2)) catch 0;
+        n = @min(n, max_text);
+        if (n > 0 and std.unicode.utf16IsHighSurrogate(wide[n - 1])) n -= 1;
         wide[n] = 0;
         // EN_CHANGE then runs the search after the usual delay; GTK runs
         // it at once.
@@ -149,7 +163,14 @@ pub fn open(self: *SearchBox, surface: *Surface, needle: []const u8) void {
     self.layout();
     _ = c.ShowWindow(hwnd, c.SW_SHOWNA);
     _ = c.InvalidateRect(hwnd, null, c.TRUE);
-    _ = c.SetFocus(edit);
+    // Only the active window's focused pane takes the keyboard now
+    // (SetFocus would activate another window, from `all:start_search`);
+    // the others' fields take it when their pane comes forward.
+    if (c.GetActiveWindow() == surface.window.hwnd and surface.window.activeSurface() == surface) {
+        _ = c.SetFocus(edit);
+    } else {
+        self.field_focused = true;
+    }
     _ = c.SendMessageW(edit, c.EM_SETSEL, 0, -1);
 }
 
@@ -222,8 +243,9 @@ fn create(self: *SearchBox, surface: *Surface) !void {
     ) orelse return error.CreateWindowFailed;
     _ = c.SetWindowLongPtrW(edit, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
     self.edit_proc = c.SetWindowLongPtrW(edit, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&editProc)));
+    _ = c.SendMessageW(edit, c.EM_SETLIMITTEXT, max_text, 0);
 
-    for (&self.buttons, [_]usize{ id_previous, id_next, id_close }) |*b, id| {
+    for (&self.buttons, [_]usize{ id_up, id_down, id_close }) |*b, id| {
         b.* = c.CreateWindowExW(
             0,
             c.L("BUTTON"),
@@ -422,8 +444,8 @@ fn paint(self: *SearchBox, hwnd: c.HWND) void {
 
 fn drawButton(self: *SearchBox, item: *const c.DRAWITEMSTRUCT) void {
     const index: usize = switch (item.CtlID) {
-        id_previous => 0,
-        id_next => 1,
+        id_up => 0,
+        id_down => 1,
         else => 2,
     };
     const pressed = item.itemState & c.ODS_SELECTED != 0;
@@ -463,10 +485,11 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             if (id == id_edit and code == c.EN_CHANGE) {
                 // Search once typing pauses.
                 _ = c.SetTimer(hwnd, search_timer, search_delay_ms, null);
-            } else if (code == c.BN_CLICKED) {
+            } else if (code == c.BN_CLICKED or code == c.BN_DOUBLECLICKED) {
+                // A quick second click comes as a double click.
                 switch (id) {
-                    id_previous => self.navigate(.previous),
-                    id_next => self.navigate(.next),
+                    id_up => self.navigate(.next),
+                    id_down => self.navigate(.previous),
                     id_close => self.end(),
                     else => {},
                 }
@@ -498,26 +521,71 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
     return c.DefWindowProcW(hwnd, msg, wparam, lparam);
 }
 
-/// The edit field's keys: Enter for the next match, Shift+Enter for the
-/// previous, Escape to end the search (GTK's); the rest is the field's.
+/// The edit field's keys, GTK's: Enter and Ctrl+G for the next match,
+/// Shift+Enter and Ctrl+Shift+G for the previous, Escape to end the
+/// search, Ctrl+Backspace to delete a word, and the application shortcuts
+/// (Surface.fieldShortcut); the rest is the field's.
 fn editProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     const self = fromHwnd(hwnd) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
     switch (msg) {
-        c.WM_KEYDOWN => switch (wparam) {
-            c.VK_RETURN => {
-                const shift = c.GetKeyState(c.VK_SHIFT) < 0;
-                self.navigate(if (shift) .previous else .next);
+        c.WM_KEYDOWN, c.WM_SYSKEYDOWN => {
+            if (self.surface) |s| if (s.fieldShortcut(hwnd, msg, wparam, lparam)) return 0;
+            const shift = c.GetKeyState(c.VK_SHIFT) < 0;
+            const ctrl = c.GetKeyState(c.VK_CONTROL) < 0;
+            const alt = c.GetKeyState(c.VK_MENU) < 0;
+            if (msg == c.WM_KEYDOWN) switch (wparam) {
+                c.VK_RETURN => {
+                    self.navigate(if (shift) .previous else .next);
+                    return 0;
+                },
+                'G' => if (ctrl and !alt) {
+                    self.navigate(if (shift) .previous else .next);
+                    return 0;
+                },
+                c.VK_ESCAPE => {
+                    self.end();
+                    return 0;
+                },
+                else => {},
+            };
+        },
+        c.WM_CHAR => switch (wparam) {
+            // Ctrl+Backspace's DEL would go in as a character.
+            0x7f => {
+                deleteWordBefore(hwnd);
                 return 0;
             },
-            c.VK_ESCAPE => {
-                self.end();
-                return 0;
-            },
+            // Enter's, Escape's and Ctrl+G's would only beep.
+            '\r', 0x1b, 0x07 => return 0,
             else => {},
         },
-        // Their characters would only beep.
-        c.WM_CHAR => if (wparam == '\r' or wparam == 0x1b) return 0,
+        c.WM_SETFOCUS => {
+            self.field_focused = true;
+            if (self.surface) |s| s.fieldFocused();
+        },
+        // The field's own menu runs a loop of its own: close requests wait
+        // until it ends (App.beginModal).
+        c.WM_CONTEXTMENU => if (self.surface) |s| {
+            var modal = s.app.beginModal(s.window.hwnd, .{ .disable_others = false });
+            defer modal.end();
+            return c.CallWindowProcW(self.edit_proc, hwnd, msg, wparam, lparam);
+        },
         else => {},
     }
     return c.CallWindowProcW(self.edit_proc, hwnd, msg, wparam, lparam);
+}
+
+/// Ctrl+Backspace in an edit field: delete back to the start of the word
+/// before the caret (or the selection, if there is one).
+pub fn deleteWordBefore(edit: c.HWND) void {
+    var start: c.DWORD = 0;
+    var end_pos: c.DWORD = 0;
+    _ = c.SendMessageW(edit, c.EM_GETSEL, @intFromPtr(&start), @bitCast(@intFromPtr(&end_pos)));
+    if (start == end_pos) {
+        var wide: [1024]u16 = undefined;
+        const n: usize = @intCast(@max(c.GetWindowTextW(edit, &wide, wide.len), 0));
+        start = @intCast(text_util.wordStart(wide[0..n], @min(end_pos, n)));
+        _ = c.SendMessageW(edit, c.EM_SETSEL, start, end_pos);
+    }
+    _ = c.SendMessageW(edit, c.EM_REPLACESEL, 1, @bitCast(@intFromPtr(c.L(""))));
 }

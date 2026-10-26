@@ -47,6 +47,24 @@ pub fn truncate(s: []const u8, max: usize) []const u8 {
     return s[0..n];
 }
 
+/// Where Ctrl+Backspace at `caret` deletes back to: past the spaces before
+/// it, then past the word before those.
+pub fn wordStart(text: []const u16, caret: usize) usize {
+    var i = @min(caret, text.len);
+    while (i > 0 and text[i - 1] == ' ') i -= 1;
+    while (i > 0 and text[i - 1] != ' ') i -= 1;
+    return i;
+}
+
+test "wordStart: the word before the caret, and the spaces after it" {
+    const s = std.unicode.utf8ToUtf16LeStringLiteral("new tab  ");
+    try std.testing.expectEqual(@as(usize, 4), wordStart(s, s.len));
+    try std.testing.expectEqual(@as(usize, 4), wordStart(s, 7));
+    try std.testing.expectEqual(@as(usize, 4), wordStart(s, 5));
+    try std.testing.expectEqual(@as(usize, 0), wordStart(s, 4));
+    try std.testing.expectEqual(@as(usize, 0), wordStart(s, 0));
+}
+
 test "utf16Lossy: valid text" {
     const alloc = std.testing.allocator;
     const out = try utf16Lossy(alloc, "h\xc3\xa9 \xf0\x9f\x9a\x80");

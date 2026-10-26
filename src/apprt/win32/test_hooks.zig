@@ -606,18 +606,35 @@ fn rgbOf(ref: c.COLORREF) i64 {
     return @as(i64, ref & 0xFF) << 16 | @as(i64, (ref >> 8) & 0xFF) << 8 | @as(i64, (ref >> 16) & 0xFF);
 }
 
-/// A JSON string literal. Invalid UTF-8 passes through unchanged; the
-/// harness decodes leniently.
+/// A JSON string literal. Each byte of invalid UTF-8 becomes U+FFFD: the
+/// harness's std.json rejects invalid UTF-8, and a terminal title (repeated
+/// in the command palette) can hold it.
 fn writeString(alloc: Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
     try out.append(alloc, '"');
-    for (s) |b| switch (b) {
-        '"' => try out.appendSlice(alloc, "\\\""),
-        '\\' => try out.appendSlice(alloc, "\\\\"),
-        '\n' => try out.appendSlice(alloc, "\\n"),
-        '\r' => try out.appendSlice(alloc, "\\r"),
-        '\t' => try out.appendSlice(alloc, "\\t"),
-        0...8, 11, 12, 14...0x1f, 0x7f => try out.print(alloc, "\\u{x:0>4}", .{b}),
-        else => try out.append(alloc, b),
-    };
+    var i: usize = 0;
+    while (i < s.len) {
+        const b = s[i];
+        if (b >= 0x80) {
+            const n = std.unicode.utf8ByteSequenceLength(b) catch 0;
+            if (n > 0 and i + n <= s.len and std.unicode.utf8ValidateSlice(s[i .. i + n])) {
+                try out.appendSlice(alloc, s[i .. i + n]);
+                i += n;
+            } else {
+                try out.appendSlice(alloc, "\u{FFFD}");
+                i += 1;
+            }
+            continue;
+        }
+        switch (b) {
+            '"' => try out.appendSlice(alloc, "\\\""),
+            '\\' => try out.appendSlice(alloc, "\\\\"),
+            '\n' => try out.appendSlice(alloc, "\\n"),
+            '\r' => try out.appendSlice(alloc, "\\r"),
+            '\t' => try out.appendSlice(alloc, "\\t"),
+            0...8, 11, 12, 14...0x1f, 0x7f => try out.print(alloc, "\\u{x:0>4}", .{b}),
+            else => try out.append(alloc, b),
+        }
+        i += 1;
+    }
     try out.append(alloc, '"');
 }

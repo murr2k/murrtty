@@ -798,6 +798,13 @@ fn wakeupWindow(pid: w.DWORD) ?w.HWND {
     return null;
 }
 
+/// Wait until Ghostty has handled what was posted to `target` so far: a
+/// later key with modifiers held must not be read as held for these.
+pub fn sync(self: *Harness, target: w.HWND) void {
+    var held: Held = .init(self.dump_msg, target, .{});
+    held.release();
+}
+
 /// A key press with modifiers held (see Held).
 pub fn key(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
     var held: Held = .init(self.dump_msg, target, mods);
@@ -905,14 +912,17 @@ pub fn menuItems(self: *Harness, menu: w.HWND) ![]MenuItem {
     const list = try self.alloc.alloc(MenuItem, n);
     for (list, 0..) |*item, i| {
         const pos: w.UINT = @intCast(i);
-        const state = w.GetMenuState(hmenu, pos, w.MF_BYPOSITION);
+        const raw = w.GetMenuState(hmenu, pos, w.MF_BYPOSITION);
+        // For a submenu the high byte is its item count, not flags.
+        const submenu = raw & w.MF_POPUP != 0;
+        const state = if (submenu) raw & 0xFF else raw;
         var buf: [256]u16 = undefined;
         const len = w.GetMenuStringW(hmenu, pos, &buf, buf.len, w.MF_BYPOSITION);
         item.* = .{
             .text = try std.unicode.utf16LeToUtf8Alloc(self.alloc, buf[0..@intCast(@max(len, 0))]),
             .grayed = state & (w.MF_GRAYED | w.MF_DISABLED) != 0,
             .separator = state & w.MF_SEPARATOR != 0,
-            .submenu = state & w.MF_POPUP != 0,
+            .submenu = submenu,
         };
     }
     return list;

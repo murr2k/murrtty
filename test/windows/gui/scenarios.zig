@@ -943,6 +943,13 @@ fn contextMenu(h: *Harness) anyerror!void {
     h.rightPress(surf, at.x, at.y);
     var menu = try h.waitMenu(&g, 1, 5000);
     {
+        // The menu's loop runs in a modal scope, so close requests wait;
+        // other windows stay enabled. (The dump is answered from that loop.)
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.modal_depth == 1 and d.value.windows[0].enabled, "the menu runs in a modal scope (depth {d})", .{d.value.modal_depth});
+    }
+    {
         const items = try h.menuItems(menu);
         defer h.freeMenuItems(items);
         try h.expect(items.len == 12, "twelve entries (got {d})", .{items.len});
@@ -965,7 +972,7 @@ fn contextMenu(h: *Harness) anyerror!void {
     try h.waitText(&g, "hello-menu", 3, 5000);
     try h.expect(true, "Paste typed the clipboard at the prompt", .{});
 
-    // Tab > New Tab; its Change Title isn't implemented yet.
+    // Tab > New Tab; its Change Tab Title isn't implemented yet.
     h.rightPress(surf, at.x, at.y);
     menu = try h.waitMenu(&g, 1, 5000);
     h.menuKey(menu, 't');
@@ -973,8 +980,8 @@ fn contextMenu(h: *Harness) anyerror!void {
     {
         const items = try h.menuItems(sub);
         defer h.freeMenuItems(items);
-        try h.expect(items.len == 4 and items[0].grayed, "Tab: Change Title grayed (got {d} items)", .{items.len});
-        try h.expect(std.mem.eql(u8, items[2].text, "&New Tab\tCtrl+Shift+T") and !items[2].grayed, "New Tab with its binding ('{s}')", .{items[2].text});
+        try h.expect(items.len == 3 and items[0].grayed, "Tab: Change Tab Title grayed (got {d} items)", .{items.len});
+        try h.expect(std.mem.eql(u8, items[1].text, "&New Tab\tCtrl+Shift+T") and !items[1].grayed, "New Tab with its binding ('{s}')", .{items[1].text});
     }
     h.menuKey(sub, 'n');
     try waitNoMenu(h, &g);
@@ -982,7 +989,7 @@ fn contextMenu(h: *Harness) anyerror!void {
 
     // Close Tab from the new tab's menu: its shell runs, so it asks first.
     const second = try h.surface(&g, win);
-    try h.waitText(&g, ">", 2, 10000);
+    try waitActivePaneText(h, &g, win, ">");
     for ([_]c_int{ w.IDNO, w.IDYES }) |answer| {
         h.rightPress(second, 40, 20);
         menu = try h.waitMenu(&g, 1, 5000);
@@ -998,12 +1005,50 @@ fn contextMenu(h: *Harness) anyerror!void {
     // so, and no menu opens), but no shell here can turn reporting on:
     // ConPTY keeps a console program's DECSET 1000 to itself.
     const last = try h.surface(&g, win);
+
+    // With nothing selected (a click on a blank cell clears the selection,
+    // and a right press there selects no word), Copy is grayed.
     {
         var d = try h.dump(&g);
         defer d.deinit();
-        try h.expect(d.value.menus_shown == 5, "five menus shown in all (got {d})", .{d.value.menus_shown});
+        const client = d.value.windows[0].client;
+        const x = @divTrunc(client[0], 2);
+        const y = client[1] - 20;
+        h.click(last, x, y, .left);
+        w.Sleep(200);
+        h.rightPress(last, x, y);
+    }
+    menu = try h.waitMenu(&g, 1, 5000);
+    {
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        try h.expect(items[0].grayed, "Copy is grayed with nothing selected", .{});
+    }
+    h.menuKey(menu, 0x1b);
+    try waitNoMenu(h, &g);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.menus_shown == 6, "six menus shown in all (got {d})", .{d.value.menus_shown});
     }
     try quit(h, &g, last);
+}
+
+/// Wait until window `win`'s active tab's first pane shows `needle`.
+fn waitActivePaneText(h: *Harness, g: *Harness.Ghostty, win: w.HWND, needle: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        for (d.value.windows) |dw| {
+            if (dw.hwnd != @intFromPtr(win)) continue;
+            const panes = dw.tabs[dw.active].panes orelse continue;
+            const text = panes[0].text orelse continue;
+            if (std.mem.indexOf(u8, text, needle) != null) return;
+        }
+        w.Sleep(100);
+    }
+    return h.fail("the active pane never showed '{s}'", .{needle});
 }
 
 /// Search (roadmap 3.2): Ctrl+Shift+F opens the box over the pane and
@@ -1016,28 +1061,50 @@ fn search(h: *Harness) anyerror!void {
     defer g.deinit();
     const win = try h.mainWindow(&g);
     const surf = try h.surface(&g, win);
-    try h.typeText(surf, "echo apple banana apple cherry apple");
+    const line = "apple banana apple cherry apple";
+    try h.typeText(surf, "echo " ++ line);
     h.enter(surf);
     try h.waitText(&g, "cherry apple", 2, 10000);
+    // A background pixel of the output's first "apple" and of "cherry".
+    const apple = try cellTop(h, &g, line, 1);
+    const cherry = try cellTop(h, &g, line, 21);
+    const plain = try h.probe(&g, apple.x, apple.y);
 
     h.key(surf, .{ .ctrl = true, .shift = true }, 'F');
     var box = try waitSearch(h, &g, true);
-    try h.expect(box.visible and box.focused, "Ctrl+Shift+F shows the box with the keyboard in its field", .{});
     const edit = hwndOf(box.edit);
+    try h.expect(keyboardFocus(win) == edit, "Ctrl+Shift+F shows the box with the keyboard in its field", .{});
 
-    // Six matches: three in the command line, three in its output.
+    // Six matches: three in the command line, three in its output. They
+    // highlight; the rest doesn't.
     try h.typeText(edit, "apple");
     box = try waitCounter(h, &g, "/6");
+    const hit = try h.probe(&g, apple.x, apple.y);
+    const miss = try h.probe(&g, cherry.x, cherry.y);
+    try h.expect(hit != plain and miss == plain, "matches highlight (#{x:0>6} on #{x:0>6}, other text #{x:0>6})", .{ hit, plain, miss });
     h.key(edit, .{}, w.VK_RETURN);
     box = try waitCounter(h, &g, "1/6");
     h.key(edit, .{}, w.VK_RETURN);
     box = try waitCounter(h, &g, "2/6");
     h.key(edit, .{ .shift = true }, w.VK_RETURN);
     box = try waitCounter(h, &g, "1/6");
-    // The previous-match button.
+    // GTK's buttons: up goes to the next match (upward, as the core counts
+    // from the newest), down to the previous, wrapping.
     const box_hwnd = w.GetParent(edit) orelse return h.fail("the field has no box", .{});
-    const previous = h.child(&g, box_hwnd, "Button") orelse return h.fail("no buttons in the box", .{});
-    _ = w.PostMessageW(previous, w.BM_CLICK, 0, 0);
+    const up = w.GetDlgItem(box_hwnd, 2) orelse return h.fail("no up button", .{});
+    const down = w.GetDlgItem(box_hwnd, 3) orelse return h.fail("no down button", .{});
+    _ = w.PostMessageW(up, w.BM_CLICK, 0, 0);
+    box = try waitCounter(h, &g, "2/6");
+    _ = w.PostMessageW(down, w.BM_CLICK, 0, 0);
+    box = try waitCounter(h, &g, "1/6");
+    _ = w.PostMessageW(down, w.BM_CLICK, 0, 0);
+    box = try waitCounter(h, &g, "6/6");
+    // GTK's search entry keys too. Ctrl+Shift+G is bound to
+    // search_selection here, which is no application shortcut, so the
+    // field keeps it.
+    h.key(edit, .{ .ctrl = true }, 'G');
+    box = try waitCounter(h, &g, "1/6");
+    h.key(edit, .{ .ctrl = true, .shift = true }, 'G');
     box = try waitCounter(h, &g, "6/6");
 
     h.key(edit, .{}, w.VK_ESCAPE);
@@ -1049,15 +1116,26 @@ fn search(h: *Harness) anyerror!void {
     box = try waitSearch(h, &g, true);
     try h.expect(std.mem.eql(u8, box.textSlice(), "apple"), "opening again keeps the field ('{s}')", .{box.textSlice()});
     box = try waitCounter(h, &g, "/6");
-    h.key(hwndOf(box.edit), .{}, w.VK_ESCAPE);
+
+    // An application shortcut works from the field (GTK's accelerators):
+    // Ctrl+Shift+N opens a window. Closing that one gives the keyboard back
+    // to the field, which had it (roadmap 3.0's focus target).
+    h.key(edit, .{ .ctrl = true, .shift = true }, 'N');
+    const other = try waitOtherWindow(h, &g, win);
+    h.key(try h.surface(&g, other), .{ .alt = true }, w.VK_F4);
+    h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
+    try waitWindowCount(h, &g, 1);
+    try waitKeyboard(h, win, edit, "the field has the keyboard again once its window is active");
+    h.key(edit, .{}, w.VK_ESCAPE);
     _ = try waitSearch(h, &g, false);
 
     // Double-click "banana" to select it, then search_selection.
-    const at = try cellPoint(h, &g, "apple banana apple cherry apple");
-    const banana_x = at.x + @as(c_int, @intCast(paneCell(h, &g)[0])) * 6;
+    const at = try cellPoint(h, &g, line);
+    const banana_x = at.x + @as(c_int, @intCast((try paneCell(h, &g))[0])) * 6;
     h.click(surf, banana_x, at.y, .left);
     h.click(surf, banana_x, at.y, .left);
-    w.Sleep(300);
+    // Before Ctrl+Shift+G holds its modifiers, or the clicks read them.
+    h.sync(surf);
     h.key(surf, .{ .ctrl = true, .shift = true }, 'G');
     box = try waitSearch(h, &g, true);
     try h.expect(std.mem.eql(u8, box.textSlice(), "banana"), "search_selection fills the field ('{s}')", .{box.textSlice()});
@@ -1131,9 +1209,10 @@ fn waitCounter(h: *Harness, g: *Harness.Ghostty, suffix: []const u8) !SearchStat
 /// window with the keyboard in its filter, listing the commands this
 /// runtime performs (each with its action beneath) and a "Focus:" entry
 /// per terminal (with where it is); typing filters; Enter runs the
-/// selected command (New Tab) once it has closed; a jump entry brings its
-/// terminal's tab forward, also in another window; a click on a row runs
-/// it; Escape and a click on the dimmed window close it and give the
+/// selected command once it has closed, also one Down moved to; a click
+/// runs the row it lands on; a jump entry brings its terminal's tab
+/// forward, also from another window; Escape, a click on the dimmed
+/// window, and its own binding in the filter close it and give the
 /// keyboard back.
 fn commandPalette(h: *Harness) anyerror!void {
     var g = try start(h, "command-palette", "", ">");
@@ -1141,16 +1220,38 @@ fn commandPalette(h: *Harness) anyerror!void {
     const win = try h.mainWindow(&g);
     const surf = try h.surface(&g, win);
 
+    // A config change first: the config loaded at start holds the default
+    // entries' titles as constants, a changed one copies of them (freed with
+    // it). Windows switching between light and dark reloads the config, and
+    // one of the two is a change.
+    try h.setSystemDark(&g, true);
+    try h.setSystemDark(&g, false);
+
     h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
     var p = try waitPalette(h, &g, win, true);
-    try h.expect(p.focused, "Ctrl+Shift+P opens it with the keyboard in its filter", .{});
+    try h.expect(keyboardFocus(win) == hwndOf(p.edit), "Ctrl+Shift+P opens it with the keyboard in its filter", .{});
     try h.expect(p.count > 20, "it lists the commands ({d})", .{p.count});
     try h.expect(p.has("New Tab"), "New Tab is there", .{});
     try h.expect(p.hasPrefix("Focus: "), "and a jump to the terminal", .{});
     try h.expect(!p.has("Toggle Inspector") and !p.has("Change Tab Title\u{2026}"), "commands this runtime lacks are not", .{});
+    try h.expect(!p.has("Copy Selection as HTML to Clipboard") and !p.has("Paste from Selection"), "nor ones whose argument it can't honor", .{});
 
+    // The app's config changes while it is open, again and again (the app
+    // is light after the two above, so each switch is a change), each time
+    // freeing the one before. The palette keeps its own copy of every entry.
+    // Reading the freed config's would read memory Debug builds overwrite or
+    // unmap, unless a new copy of the config happens to land there, so each
+    // change is another chance to catch it: the dump reads every title.
+    for ([_]bool{ true, false, true, false }) |dark| {
+        try h.setSystemDark(&g, dark);
+        const after = try paletteState(h, &g, win);
+        if (after.count != p.count or !after.has("New Tab")) {
+            return h.fail("after the config changed it lists {d} rows, first '{s}'", .{ after.count, after.first() });
+        }
+    }
+    try h.expect(true, "it lists the same entries while the config changes under it", .{});
     try h.typeText(hwndOf(p.edit), "new tab");
-    p = try waitPaletteFirst(h, &g, win, "New Tab");
+    p = try waitPaletteFirst(h, &g, win, "new tab", "New Tab");
     try h.expect(std.mem.eql(u8, p.firstDetail(), "new_tab"), "with its action beneath ('{s}')", .{p.firstDetail()});
     h.key(hwndOf(p.edit), .{}, w.VK_RETURN);
     _ = try waitPalette(h, &g, win, false);
@@ -1164,7 +1265,7 @@ fn commandPalette(h: *Harness) anyerror!void {
     h.key(second, .{ .ctrl = true, .shift = true }, 'P');
     p = try waitPalette(h, &g, win, true);
     try h.typeText(hwndOf(p.edit), "focus:");
-    p = try waitPaletteFirst(h, &g, win, "Focus: ");
+    p = try waitPaletteFirst(h, &g, win, "focus:", "Focus: ");
     try h.expect(std.mem.startsWith(u8, p.firstDetail(), "Tab 1"), "a jump says where its terminal is ('{s}')", .{p.firstDetail()});
     h.key(hwndOf(p.edit), .{}, w.VK_RETURN);
     _ = try waitPalette(h, &g, win, false);
@@ -1179,40 +1280,96 @@ fn commandPalette(h: *Harness) anyerror!void {
 
     h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
     p = try waitPalette(h, &g, win, true);
+    try h.expect(childAt(win, 10, 10) == hwndOf(p.dim), "the dimming covers the window, above the panes", .{});
     _ = w.PostMessageW(hwndOf(p.dim), w.WM_LBUTTONDOWN, w.MK_LBUTTON, 10 << 16 | 10);
     _ = try waitPalette(h, &g, win, false);
     try h.expect(keyboardFocus(win) == surf, "a click outside it closes it too", .{});
 
+    // Its own binding works in the filter (an application shortcut).
     h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
     p = try waitPalette(h, &g, win, true);
-    try h.typeText(hwndOf(p.edit), "new tab");
-    p = try waitPaletteFirst(h, &g, win, "New Tab");
-    const at: isize = @as(isize, @divTrunc(p.row_height, 2)) << 16 | 20;
-    _ = w.PostMessageW(hwndOf(p.list), w.WM_LBUTTONDOWN, w.MK_LBUTTON, at);
-    _ = w.PostMessageW(hwndOf(p.list), w.WM_LBUTTONUP, 0, at);
+    h.key(hwndOf(p.edit), .{ .ctrl = true, .shift = true }, 'P');
+    _ = try waitPalette(h, &g, win, false);
+    try h.expect(keyboardFocus(win) == surf, "Ctrl+Shift+P in the filter closes it", .{});
+
+    // Down moves to another row; Enter runs that one.
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
+    p = try waitPalette(h, &g, win, true);
+    try h.typeText(hwndOf(p.edit), "tab");
+    p = try waitPaletteText(h, &g, win, "tab");
+    const row = p.index("New Tab") orelse return h.fail("no New Tab row for 'tab'", .{});
+    try h.expect(row > 0 and row < 10, "New Tab is row {d}, not the first, and in view", .{row});
+    for (0..row) |_| h.key(hwndOf(p.edit), .{}, w.VK_DOWN);
+    p = try waitPaletteSelected(h, &g, win, row);
+    h.key(hwndOf(p.edit), .{}, w.VK_RETURN);
     _ = try waitPalette(h, &g, win, false);
     try waitWindowTabs(h, &g, win, 3);
-    try h.expect(true, "a click on a row runs it", .{});
+    try h.expect(true, "Down moves to it, and Enter runs it", .{});
     w.Sleep(500);
 
-    // From a second window, a jump to the first window's second tab:
-    // found by where it is, it brings that window forward on that tab.
+    // A click runs the row it lands on, not the selected one.
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'P');
+    p = try waitPalette(h, &g, win, true);
+    try h.typeText(hwndOf(p.edit), "tab");
+    p = try waitPaletteText(h, &g, win, "tab");
+    const click_row = p.index("New Tab") orelse return h.fail("no New Tab row for 'tab'", .{});
+    try h.expect(p.selected == 0 and click_row > 0, "row 0 is selected, New Tab is row {d}", .{click_row});
+    const list = hwndOf(p.list);
+    const y: c_int = @intCast(@as(i32, @intCast(click_row)) * p.row_height + @divTrunc(p.row_height, 2));
+    {
+        // What a real click there reaches: the box above the dimming, and
+        // the list in it.
+        const box = w.GetParent(list) orelse return h.fail("the list has no box", .{});
+        var pt = [2]w.POINT{ .{ .x = 20, .y = y }, .{ .x = 20, .y = y } };
+        _ = w.MapWindowPoints(list, win, pt[0..1], 1);
+        _ = w.MapWindowPoints(list, box, pt[1..2], 1);
+        try h.expect(childAt(win, pt[0].x, pt[0].y) == box and childAt(box, pt[1].x, pt[1].y) == list, "a click there reaches the list", .{});
+    }
+    const at: isize = @as(isize, y) << 16 | 20;
+    _ = w.PostMessageW(list, w.WM_LBUTTONDOWN, w.MK_LBUTTON, at);
+    _ = w.PostMessageW(list, w.WM_LBUTTONUP, 0, at);
+    _ = try waitPalette(h, &g, win, false);
+    try waitWindowTabs(h, &g, win, 4);
+    try h.expect(true, "a click on row {d} runs it", .{click_row});
+    w.Sleep(500);
+
+    // From a second window, a jump to the first window's tab holding the
+    // second terminal, which isn't its active tab: found by where it is,
+    // it brings that window forward on that tab, keyboard in that pane.
+    const where = try tabOfPane(h, &g, win, second);
+    try h.expect(where.tab != where.active, "the target is tab {d}; tab {d} is active", .{ where.tab + 1, where.active + 1 });
     h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'N');
-    w.Sleep(2500);
-    const wins = try h.windows(&g, "MurrttyWindow");
-    defer h.alloc.free(wins);
-    try h.expect(wins.len == 2, "Ctrl+Shift+N opens a second window (got {d})", .{wins.len});
-    const other = if (wins[0] == win) wins[1] else wins[0];
+    const other = try waitOtherWindow(h, &g, win);
+    w.Sleep(500);
     h.key(try h.surface(&g, other), .{ .ctrl = true, .shift = true }, 'P');
     p = try waitPalette(h, &g, other, true);
-    try h.typeText(hwndOf(p.edit), "window 1, tab 2");
-    p = try waitPaletteFirst(h, &g, other, "Focus: ");
-    try h.expect(std.mem.startsWith(u8, p.firstDetail(), "Window 1, tab 2"), "the filter matches where a terminal is ('{s}')", .{p.firstDetail()});
+    var filter_buf: [32]u8 = undefined;
+    const filter = try std.fmt.bufPrint(&filter_buf, "window 1, tab {d}", .{where.tab + 1});
+    try h.typeText(hwndOf(p.edit), filter);
+    p = try waitPaletteFirst(h, &g, other, filter, "Focus: ");
+    var expect_buf: [32]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&expect_buf, "Window 1, tab {d}", .{where.tab + 1});
+    try h.expect(std.mem.startsWith(u8, p.firstDetail(), expected), "the filter matches where a terminal is ('{s}')", .{p.firstDetail()});
     h.key(hwndOf(p.edit), .{}, w.VK_RETURN);
     _ = try waitPalette(h, &g, other, false);
-    try waitActiveTab(h, &g, win, 1);
-    try h.expect(activeWindow(win) == win, "a jump to another window's terminal brings that window forward", .{});
-    try quit(h, &g, try h.surface(&g, win));
+    try waitActiveTab(h, &g, win, where.tab);
+    try waitKeyboard(h, win, second, "the jump puts the keyboard in that pane");
+    try h.expect(activeWindow(win) == win, "and brings its window forward", .{});
+    try quit(h, &g, second);
+}
+
+/// Which tab of window `win` holds the pane `pane`, and which is active.
+fn tabOfPane(h: *Harness, g: *Harness.Ghostty, win: w.HWND, pane: w.HWND) !struct { tab: usize, active: usize } {
+    var d = try h.dump(g);
+    defer d.deinit();
+    for (d.value.windows) |dw| {
+        if (dw.hwnd != @intFromPtr(win)) continue;
+        for (dw.tabs, 0..) |t, i| {
+            const panes = t.panes orelse continue;
+            for (panes) |p| if (p.hwnd == @intFromPtr(pane)) return .{ .tab = i, .active = dw.active };
+        }
+    }
+    return h.fail("no tab holds the pane", .{});
 }
 
 const PaletteState = struct {
@@ -1223,6 +1380,11 @@ const PaletteState = struct {
     dim: u64 = 0,
     row_height: i32 = 0,
     count: usize = 0,
+    /// The selected row, or -1.
+    selected: i64 = -1,
+    /// The filter's text.
+    text: [256]u8 = undefined,
+    text_len: usize = 0,
     /// The listed titles, each followed by a line feed.
     titles: [8192]u8 = undefined,
     titles_len: usize = 0,
@@ -1232,6 +1394,18 @@ const PaletteState = struct {
 
     fn firstDetail(self: *const PaletteState) []const u8 {
         return self.detail[0..self.detail_len];
+    }
+
+    fn filter(self: *const PaletteState) []const u8 {
+        return self.text[0..self.text_len];
+    }
+
+    /// The row titled `title`.
+    fn index(self: *const PaletteState, title: []const u8) ?usize {
+        var it = std.mem.splitScalar(u8, self.titles[0..self.titles_len], '\n');
+        var i: usize = 0;
+        while (it.next()) |t| : (i += 1) if (std.mem.eql(u8, t, title)) return i;
+        return null;
     }
 
     fn has(self: *const PaletteState, title: []const u8) bool {
@@ -1266,7 +1440,10 @@ fn paletteState(h: *Harness, g: *Harness.Ghostty, win: w.HWND) !PaletteState {
         .dim = p.dim,
         .row_height = p.row_height,
         .count = p.items.len,
+        .selected = p.selected,
     };
+    r.text_len = @min(p.text.len, r.text.len);
+    @memcpy(r.text[0..r.text_len], p.text[0..r.text_len]);
     for (p.items) |t| {
         if (r.titles_len + t.len + 1 > r.titles.len) break;
         @memcpy(r.titles[r.titles_len..][0..t.len], t);
@@ -1290,19 +1467,40 @@ fn waitPalette(h: *Harness, g: *Harness.Ghostty, win: w.HWND, open: bool) !Palet
     return h.fail("the command palette didn't {s}", .{if (open) "open" else "close"});
 }
 
-/// Wait until the palette's first row starts with `prefix`.
-fn waitPaletteFirst(h: *Harness, g: *Harness.Ghostty, win: w.HWND, prefix: []const u8) !PaletteState {
+/// Wait until the palette's filter reads `typed` (all of it typed: the
+/// dump can come between the characters) and its first row starts with
+/// `prefix`.
+fn waitPaletteFirst(h: *Harness, g: *Harness.Ghostty, win: w.HWND, typed: []const u8, prefix: []const u8) !PaletteState {
+    const last = try waitPaletteText(h, g, win, typed);
+    if (!std.mem.startsWith(u8, last.first(), prefix)) {
+        return h.fail("for '{s}' the first row is '{s}', not '{s}...'", .{ typed, last.first(), prefix });
+    }
+    try h.expect(true, "'{s}' puts '{s}' first", .{ typed, last.first() });
+    return last;
+}
+
+/// Wait until the open palette's filter reads `typed`.
+fn waitPaletteText(h: *Harness, g: *Harness.Ghostty, win: w.HWND, typed: []const u8) !PaletteState {
     var last: PaletteState = .{};
     var waited: u32 = 0;
     while (waited <= 5000) : (waited += 100) {
         last = try paletteState(h, g, win);
-        if (last.open and std.mem.startsWith(u8, last.first(), prefix)) {
-            try h.expect(true, "the filter puts '{s}' first", .{last.first()});
-            return last;
-        }
+        if (last.open and std.mem.eql(u8, last.filter(), typed)) return last;
         w.Sleep(100);
     }
-    return h.fail("the palette's first row is '{s}', not '{s}...'", .{ last.first(), prefix });
+    return h.fail("the palette's filter reads '{s}', not '{s}'", .{ last.filter(), typed });
+}
+
+/// Wait until the palette's selected row is `row`.
+fn waitPaletteSelected(h: *Harness, g: *Harness.Ghostty, win: w.HWND, row: usize) !PaletteState {
+    var last: PaletteState = .{};
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        last = try paletteState(h, g, win);
+        if (last.selected == row) return last;
+        w.Sleep(100);
+    }
+    return h.fail("row {d} is selected, not {d}", .{ last.selected, row });
 }
 
 /// Wait until window `win`'s tab `index` is the active one.
@@ -1322,10 +1520,75 @@ fn waitActiveTab(h: *Harness, g: *Harness.Ghostty, win: w.HWND, index: usize) !v
 }
 
 /// The first tab's cell size in pixels.
-fn paneCell(h: *Harness, g: *Harness.Ghostty) [2]u32 {
-    var d = h.dump(g) catch return .{ 8, 16 };
+fn paneCell(h: *Harness, g: *Harness.Ghostty) ![2]u32 {
+    var d = try h.dump(g);
     defer d.deinit();
-    return d.value.windows[0].tabs[0].cell orelse .{ 8, 16 };
+    return d.value.windows[0].tabs[0].cell orelse h.fail("no cell size in the dump", .{});
+}
+
+/// A pixel near the top of cell `col` of the first tab's row reading
+/// `line`: the cell's background, above any glyph.
+fn cellTop(h: *Harness, g: *Harness.Ghostty, line: []const u8, col: u32) !struct { x: u32, y: u32 } {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const t = d.value.windows[0].tabs[0];
+    const text = t.text orelse return h.fail("no text in the dump", .{});
+    const cell = t.cell orelse return h.fail("no cell size in the dump", .{});
+    const pad = t.padding orelse return h.fail("no padding in the dump", .{});
+    var rows = std.mem.splitScalar(u8, text, '\n');
+    var row: u32 = 0;
+    while (rows.next()) |r| : (row += 1) {
+        if (std.mem.eql(u8, std.mem.trimEnd(u8, r, " "), line)) return .{
+            .x = pad[0] + col * cell[0] + cell[0] / 2,
+            .y = pad[1] + row * cell[1] + 1,
+        };
+    }
+    return h.fail("no row reads '{s}'", .{line});
+}
+
+/// Wait for a second murrtty window besides `win`; returns it.
+fn waitOtherWindow(h: *Harness, g: *Harness.Ghostty, win: w.HWND) !w.HWND {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 100) {
+        const wins = try h.windows(g, "MurrttyWindow");
+        defer h.alloc.free(wins);
+        if (wins.len == 2) {
+            const other = if (wins[0] == win) wins[1] else wins[0];
+            // Its pane, before keys go to it.
+            if (h.child(g, other, "MurrttySurface") != null) return other;
+        }
+        w.Sleep(100);
+    }
+    return h.fail("no second window opened", .{});
+}
+
+fn waitWindowCount(h: *Harness, g: *Harness.Ghostty, count: usize) !void {
+    var waited: u32 = 0;
+    var last: usize = 0;
+    while (waited <= 10000) : (waited += 100) {
+        const wins = try h.windows(g, "MurrttyWindow");
+        defer h.alloc.free(wins);
+        last = wins.len;
+        if (last == count) return;
+        w.Sleep(100);
+    }
+    return h.fail("{d} windows, not {d}", .{ last, count });
+}
+
+/// Wait until `target` has the keyboard in `win`'s thread.
+fn waitKeyboard(h: *Harness, win: w.HWND, target: w.HWND, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        if (keyboardFocus(win) == target) return h.expect(true, what, .{});
+        w.Sleep(100);
+    }
+    return h.fail("not so: " ++ what, .{});
+}
+
+/// The direct child of `parent` under its client point (`x`, `y`): what a
+/// real click there would reach first.
+fn childAt(parent: w.HWND, x: c_int, y: c_int) ?w.HWND {
+    return w.ChildWindowFromPointEx(parent, .{ .x = x, .y = y }, w.CWP_SKIPINVISIBLE);
 }
 
 fn waitNoMenu(h: *Harness, g: *Harness.Ghostty) !void {
@@ -1375,7 +1638,7 @@ fn cellPoint(h: *Harness, g: *Harness.Ghostty, line: []const u8) !struct { x: c_
 /// pane, at resize-overlay-position.
 fn resizeOverlay(h: *Harness) anyerror!void {
     {
-        var g = try start(h, "resize-overlay", "resize-overlay-duration = 700ms\n", ">");
+        var g = try start(h, "resize-overlay", "resize-overlay-duration = 1500ms\n", ">");
         defer g.deinit();
         const win = try h.mainWindow(&g);
         var pane = try paneOverlay(h, &g, 0);
@@ -1393,15 +1656,15 @@ fn resizeOverlay(h: *Harness) anyerror!void {
         var want = try std.fmt.bufPrint(&want_buf, "{d} x {d}", .{ pane.cols, pane.rows });
         try h.expect(pane.visible, "resizing the window shows the overlay", .{});
         try h.expect(std.mem.eql(u8, pane.text(), want), "it shows the grid, {s} (got '{s}')", .{ want, pane.text() });
-        w.Sleep(1000);
+        w.Sleep(2000);
         pane = try paneOverlay(h, &g, 0);
         try h.expect(!pane.visible, "and is gone after resize-overlay-duration", .{});
 
         // A split shrinks the first pane (it shows its new grid); the new
-        // pane's first size shows nothing.
+        // pane's first size shows nothing. The split is done when the core's
+        // binding returns, so no wait beyond the panes appearing.
         h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
         try waitPanes(h, &g, 2);
-        w.Sleep(300);
         pane = try paneOverlay(h, &g, 0);
         want = try std.fmt.bufPrint(&want_buf, "{d} x {d}", .{ pane.cols, pane.rows });
         try h.expect(pane.visible and std.mem.eql(u8, pane.text(), want), "the split pane shows its new grid {s} (got '{s}', shown {})", .{ want, pane.text(), pane.visible });
@@ -1413,6 +1676,9 @@ fn resizeOverlay(h: *Harness) anyerror!void {
         var g = try start(h, "resize-overlay-never", "resize-overlay = never\n", ">");
         defer g.deinit();
         const win = try h.mainWindow(&g);
+        // Past the first moments, as above, where after-first shows nothing
+        // either: only `never` keeps a later resize from showing it.
+        w.Sleep(500);
         var wr: w.RECT = .{};
         _ = w.GetWindowRect(win, &wr);
         _ = w.SetWindowPos(win, null, 0, 0, wr.right - wr.left + 120, wr.bottom - wr.top + 80, w.SWP_NOMOVE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);

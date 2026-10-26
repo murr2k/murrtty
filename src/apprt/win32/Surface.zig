@@ -796,6 +796,8 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
 
         c.WM_SETFOCUS, c.WM_KILLFOCUS => {
             self.has_focus = msg == c.WM_SETFOCUS;
+            // The pane, not its search field, now has the keyboard last.
+            if (self.has_focus) self.search.field_focused = false;
             // Which surface the app counts as focused (what a new tab or
             // split inherits from) is only a pointer, so it changes at
             // once: a click on "+" in an inactive window is handled before
@@ -816,7 +818,9 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         },
 
         c.WM_SETCURSOR => {
-            if (c.loword(lparam) == c.HTCLIENT) {
+            // Over the pane itself; the search box's controls (which ask
+            // their parent first) show their own.
+            if (c.loword(lparam) == c.HTCLIENT and wparam == @intFromPtr(self.hwnd)) {
                 _ = c.SetCursor(if (self.mouse_hidden) null else self.cursor);
                 return 1;
             }
@@ -948,6 +952,8 @@ fn followMouse(self: *Surface, x: i32, y: i32, wparam: c.WPARAM) void {
     if (!app.mouseMoved(self.hwnd, x, y) or !app.config.@"focus-follows-mouse") return;
     const buttons = c.MK_LBUTTON | c.MK_RBUTTON | c.MK_MBUTTON | c.MK_XBUTTON1 | c.MK_XBUTTON2;
     if (self.has_focus or wparam & buttons != 0) return;
+    // Nor away from the pane's own search field.
+    if (c.GetFocus()) |f| if (c.IsChild(self.hwnd, f) != 0) return;
     if (c.GetActiveWindow() != self.window.hwnd) return;
     _ = c.SetFocus(self.hwnd);
 }
@@ -1138,6 +1144,93 @@ fn handleKey(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c
         return null;
     }
     return 0;
+}
+
+/// The pane's search field took the keyboard: the pane becomes the window's
+/// focused one (what its tab and caption show, what a new tab inherits),
+/// as when it takes the keyboard itself, though the core hears that the
+/// terminal lost it.
+pub fn fieldFocused(self: *Surface) void {
+    if (self.core_initialized) self.app.core_app.focusSurface(&self.core_surface);
+    self.window.surfaceFocused(self);
+}
+
+/// GTK's application accelerators: the bindings that still work while a
+/// field has the keyboard (this pane's search box, or the window's command
+/// palette). A key down in `field` with Ctrl, Alt or Win held that is bound
+/// to one of them runs that action here, and the characters the key queued
+/// for the field are dropped; every other key stays the field's. Returns
+/// whether it ran.
+pub fn fieldShortcut(self: *Surface, field: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) bool {
+    if (!self.core_initialized) return false;
+    if (msg != c.WM_KEYDOWN and msg != c.WM_SYSKEYDOWN) return false;
+    const mods = key.currentMods();
+    if (!mods.ctrl and !mods.alt and !mods.super) return false;
+
+    const native = key.nativeKeycode(wparam, lparam);
+    const scancode = native & 0xFF;
+    var text16: [8]u16 = undefined;
+    const n16 = key.textWithoutCtrlAlt(wparam, scancode, &text16);
+    var utf8_buf: [32]u8 = undefined;
+    const utf8_len = if (key.isControl(text16[0..n16])) 0 else std.unicode.utf16LeToUtf8(&utf8_buf, text16[0..n16]) catch 0;
+    var event: input.KeyEvent = .{
+        .action = if (c.hiword(lparam) & c.KF_REPEAT != 0) .repeat else .press,
+        .key = key.physicalKey(native),
+        .mods = mods,
+        .consumed_mods = .{},
+        .composing = false,
+        .utf8 = utf8_buf[0..utf8_len],
+        .unshifted_codepoint = key.unshiftedCodepoint(wparam, scancode),
+    };
+    // As the core looks keys up (keyEventIsBinding).
+    const config = &self.core_surface.config;
+    if (config.key_remaps.isRemapped(mods)) event.mods = config.key_remaps.apply(mods);
+    const entry = config.keybind.set.getEvent(event) orelse return false;
+    const leaf = switch (entry.value_ptr.*) {
+        .leader => return false,
+        inline .leaf, .leaf_chained => |*l| l.generic(),
+    };
+    const actions = leaf.actionsSlice();
+    if (actions.len == 0 or !isAccelerator(actions[0])) return false;
+    // GTK runs the accelerator's own action, not a chain bound with it.
+    const action = actions[0];
+
+    var m: c.MSG = undefined;
+    while (c.PeekMessageW(&m, field, c.WM_KEYFIRST, c.WM_KEYLAST, c.PM_NOREMOVE) != 0) {
+        switch (m.message) {
+            c.WM_CHAR, c.WM_SYSCHAR, c.WM_DEADCHAR, c.WM_SYSDEADCHAR => {},
+            else => break,
+        }
+        _ = c.PeekMessageW(&m, field, m.message, m.message, c.PM_REMOVE);
+    }
+    _ = self.core_surface.performBindingAction(action) catch |err| {
+        log.warn("error performing a shortcut from a field err={}", .{err});
+    };
+    return true;
+}
+
+/// The actions GTK gives application accelerators (Application's
+/// syncActionAccelerators), whatever their argument.
+fn isAccelerator(action: input.Binding.Action) bool {
+    return switch (action) {
+        .quit,
+        .open_config,
+        .reload_config,
+        .inspector,
+        .toggle_command_palette,
+        .close_window,
+        .new_window,
+        .new_tab,
+        .close_tab,
+        .new_split,
+        .copy_to_clipboard,
+        .paste_from_clipboard,
+        .reset,
+        .clear_screen,
+        .prompt_surface_title,
+        => true,
+        else => false,
+    };
 }
 
 /// A WM_CHAR that arrived on its own (IME commit, Alt+Numpad, injected

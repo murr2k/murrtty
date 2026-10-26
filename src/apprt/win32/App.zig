@@ -635,8 +635,9 @@ fn utf16Opt(alloc: Allocator, s: []const u8) !?c.LPCWSTR {
     return try text_util.utf16Lossy(alloc, s);
 }
 
-/// Run what waited for a dialog to close: close requests, and clipboard
-/// confirmations that need a dialog of their own.
+/// Run what waited for a dialog to close: close requests, clipboard
+/// confirmations that need a dialog of their own, and commands chosen in a
+/// command palette.
 fn resumeAfterModal(self: *App) void {
     if (self.requests.items.len > 0) {
         _ = c.PostMessageW(self.wakeup_hwnd, WM_RUN_REQUESTS, 0, 0);
@@ -644,6 +645,7 @@ fn resumeAfterModal(self: *App) void {
     for (self.windows.items) |w| {
         var it = w.panes();
         while (it.next()) |s| s.resumeClipboardConfirms();
+        w.palette.resumeAfterModal();
     }
 }
 
@@ -673,7 +675,7 @@ fn findWindow(self: *App, id: u64) ?*Window {
     return null;
 }
 
-fn findSurface(self: *App, id: u64) ?*Surface {
+pub fn findSurface(self: *App, id: u64) ?*Surface {
     for (self.windows.items) |w| {
         var it = w.panes();
         while (it.next()) |s| {
@@ -1292,6 +1294,16 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         .undo,
         .redo,
         => false,
+
+        // Arguments the runtime can't honor yet. HTML alone is all
+        // `copy_to_clipboard:html` gives, and setClipboard writes text only
+        // (it would copy nothing, yet clear the selection); there is no
+        // selection clipboard on Windows; and `open_config:new_window`
+        // needs 5.1 (it would open the editor instead).
+        .copy_to_clipboard => |format| format != .html,
+        .paste_from_selection => false,
+        .open_config => |where| where != .new_window,
+
         else => true,
     };
 }

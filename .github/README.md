@@ -141,16 +141,20 @@ hosted Windows runner and then the unit tests.
   a selection, otherwise paste, as in Windows Terminal) or `paste` replace
   the menu. Menus are dark when Windows apps are.
 - Search (`Ctrl+Shift+F`): a box over the pane's top-right corner. Typing
-  highlights the matches and counts them ("2/6"); `Enter` and
-  `Shift+Enter`, or the arrow buttons, go to the next and previous match;
-  `Esc` or the close button ends the search. `search_selection` (unbound by
-  default on Windows) opens it with the selected text.
+  highlights the matches and counts them ("2/6"); `Enter` or `Ctrl+G` (and
+  the up button) goes to the next match up the screen, `Shift+Enter` or
+  `Ctrl+Shift+G` (and the down button) back down; `Esc` or the close button
+  ends the search. `search_selection` (unbound by default on Windows) opens
+  it with the selected text.
 - The command palette (`Ctrl+Shift+P`): every command murrtty can perform
   (the `command-palette-entry` list), each with its action and key binding,
   and a "Focus:" entry for each terminal in every window that says where it
   is ("Window 2, tab 1: C:\src"). Typing filters by title, by the line
   beneath it, or by letters in order; `Up`/`Down` choose, `Enter` or a
-  click runs, `Esc` or a click outside closes.
+  click runs, `Esc`, a click outside or `Ctrl+Shift+P` again closes.
+- While the search box or the palette has the keyboard, the application
+  shortcuts still work, as in Ghostty's GTK app: new tab, window or split,
+  close, copy, paste, clear, reset, the palette, and the config's.
 - CLI actions such as `murrtty +version` print to the console they were
   started from.
 

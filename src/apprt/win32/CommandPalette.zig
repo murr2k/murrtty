@@ -24,6 +24,7 @@ const input = @import("../../input.zig");
 const c = @import("c.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
+const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
 const Window = @import("Window.zig");
 
@@ -50,6 +51,10 @@ const dim_opacity = 90;
 const id_edit = 1;
 const id_list = 2;
 
+/// The longest filter, in UTF-16 units: what the field takes and what
+/// filterText reads.
+const max_filter = 255;
+
 const Entry = struct {
     title: []const u8,
     /// The line beneath: the action, or where a terminal is.
@@ -57,14 +62,16 @@ const Entry = struct {
     /// The key binding, "Ctrl+Shift+T", or empty.
     binding: []const u8,
     action: ?input.Binding.Action,
-    /// A terminal to focus (checked to still exist before use).
-    jump: ?*Surface,
+    /// A terminal to focus, by its core surface's id (App.findSurface): a
+    /// pane closed meanwhile is never confused with a new one at the same
+    /// address.
+    jump: ?u64,
 };
 
 /// What was chosen, kept past closing until WM_RUN runs it.
 const Choice = union(enum) {
     action: input.Binding.Action,
-    jump: *Surface,
+    jump: u64,
 };
 
 window: ?*Window = null,
@@ -74,13 +81,16 @@ edit: ?c.HWND = null,
 list: ?c.HWND = null,
 edit_proc: isize = 0,
 list_proc: isize = 0,
-/// The pane it opened over: commands run there.
-surface: ?*Surface = null,
+/// The pane it opened over, by core surface id: commands run there.
+surface_id: u64 = 0,
 /// Per opening: the entries (in `arena`) and the filtered order.
 arena: ?std.heap.ArenaAllocator = null,
 entries: []Entry = &.{},
 shown: std.ArrayList(usize) = .empty,
+/// What was chosen, its action copied into `pending_arena`: the entries
+/// go when the palette closes, and it may open again before WM_RUN.
 pending: ?Choice = null,
+pending_arena: ?std.heap.ArenaAllocator = null,
 font: ?c.HFONT = null,
 /// For the action beneath a command's title.
 mono_font: ?c.HFONT = null,
@@ -91,6 +101,8 @@ selected_bg: c.COLORREF = c.rgb(0x3a, 0x3a, 0x3a),
 fg: c.COLORREF = c.rgb(0xff, 0xff, 0xff),
 dim_fg: c.COLORREF = c.rgb(0xa0, 0xa0, 0xa0),
 field_brush: ?c.HBRUSH = null,
+/// The list's background, which it erases with before rows paint.
+bg_brush: ?c.HBRUSH = null,
 
 pub fn registerClass(instance: c.HINSTANCE) !void {
     for ([_]struct { c.LPCWSTR, c.WNDPROC }{
@@ -121,12 +133,16 @@ pub fn deinit(self: *CommandPalette, alloc: Allocator) void {
     self.list = null;
     self.freeEntries();
     self.shown.deinit(alloc);
-    for ([_]?c.HGDIOBJ{ self.font, self.mono_font, self.field_brush }) |obj| if (obj) |o| {
+    self.pending = null;
+    if (self.pending_arena) |*a| a.deinit();
+    self.pending_arena = null;
+    for ([_]?c.HGDIOBJ{ self.font, self.mono_font, self.field_brush, self.bg_brush }) |obj| if (obj) |o| {
         _ = c.DeleteObject(o);
     };
     self.font = null;
     self.mono_font = null;
     self.field_brush = null;
+    self.bg_brush = null;
 }
 
 pub fn isOpen(self: *const CommandPalette) bool {
@@ -147,7 +163,7 @@ pub fn toggle(self: *CommandPalette, window: *Window, surface: *Surface) void {
 
 fn open(self: *CommandPalette, window: *Window, surface: *Surface) !void {
     self.window = window;
-    self.surface = surface;
+    self.surface_id = if (surface.core_initialized) surface.core_surface.id else 0;
     if (self.hwnd == null) try self.create(window);
     self.setColors(surface);
     try self.build(window.app);
@@ -155,7 +171,10 @@ fn open(self: *CommandPalette, window: *Window, surface: *Surface) !void {
     try self.refilter();
     _ = c.ShowWindow(self.dim.?, c.SW_SHOWNA);
     _ = c.ShowWindow(self.hwnd.?, c.SW_SHOWNA);
-    _ = c.SetFocus(self.edit.?);
+    // Only the active window takes the keyboard (SetFocus would activate
+    // another, from `all:toggle_command_palette`); a window activated later
+    // gives it to the palette (Window.focusActiveNow).
+    if (c.GetActiveWindow() == window.hwnd) _ = c.SetFocus(self.edit.?);
 }
 
 /// Hide it and give the keyboard back to the pane it opened over.
@@ -166,9 +185,24 @@ pub fn close(self: *CommandPalette) void {
     _ = c.ShowWindow(hwnd, c.SW_HIDE);
     if (self.dim) |d| _ = c.ShowWindow(d, c.SW_HIDE);
     self.freeEntries();
-    if (had_focus) if (self.surface) |s| if (self.surfaceAlive(s)) {
+    if (had_focus) if (self.targetSurface()) |s| {
         _ = c.SetFocus(s.focusTarget());
     };
+}
+
+/// The pane commands run on: the one it opened over, unless that has
+/// closed since, then the window's active pane.
+fn targetSurface(self: *const CommandPalette) ?*Surface {
+    const window = self.window orelse return null;
+    if (self.surface_id != 0) if (window.app.findSurface(self.surface_id)) |s| return s;
+    return window.activeSurface();
+}
+
+/// A dialog that was open when WM_RUN came has closed (App.resumeAfterModal):
+/// run what was chosen now.
+pub fn resumeAfterModal(self: *CommandPalette) void {
+    if (self.pending == null) return;
+    if (self.hwnd) |h| _ = c.PostMessageW(h, WM_RUN, 0, 0);
 }
 
 /// Whether the keyboard focus is in the palette.
@@ -196,6 +230,7 @@ fn create(self: *CommandPalette, window: *Window) !void {
     }
     self.edit_proc = c.SetWindowLongPtrW(edit, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&editProc)));
     self.list_proc = c.SetWindowLongPtrW(list, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&listProc)));
+    _ = c.SendMessageW(edit, c.EM_SETLIMITTEXT, max_filter, 0);
 
     self.dim = dim;
     self.hwnd = hwnd;
@@ -211,8 +246,11 @@ fn setColors(self: *CommandPalette, surface: *Surface) void {
     self.selected_bg = c.rgb(mix(bg.r, fg.r, 0.2), mix(bg.g, fg.g, 0.2), mix(bg.b, fg.b, 0.2));
     self.fg = c.rgb(fg.r, fg.g, fg.b);
     self.dim_fg = c.rgb(mix(fg.r, bg.r, 0.4), mix(fg.g, bg.g, 0.4), mix(fg.b, bg.b, 0.4));
-    if (self.field_brush) |b| _ = c.DeleteObject(b);
+    for ([_]?c.HBRUSH{ self.field_brush, self.bg_brush }) |brush| if (brush) |b| {
+        _ = c.DeleteObject(b);
+    };
     self.field_brush = c.CreateSolidBrush(self.field_bg);
+    self.bg_brush = c.CreateSolidBrush(self.bg);
     // A dark scroll bar on a dark background (Explorer's dark theme).
     const luma = @as(u32, bg.r) * 299 + @as(u32, bg.g) * 587 + @as(u32, bg.b) * 114;
     const theme: c.LPCWSTR = if (luma < 128_000) c.L("DarkMode_Explorer") else c.L("Explorer");
@@ -239,8 +277,12 @@ fn build(self: *CommandPalette, app: *App) !void {
     const alloc = self.arena.?.allocator();
     var list: std.ArrayList(Entry) = .empty;
 
-    for (app.config.@"command-palette-entry".value.items) |cmd| {
-        if (!App.supportsAction(cmd.action)) continue;
+    for (app.config.@"command-palette-entry".value.items) |entry| {
+        if (!App.supportsAction(entry.action)) continue;
+        // A copy: the app's config is freed when it changes, which can
+        // happen while the palette is open (a reload from another window,
+        // Windows switching between light and dark).
+        const cmd = try entry.clone(alloc);
         try list.append(alloc, .{
             .title = cmd.title,
             .detail = try std.fmt.allocPrint(alloc, "{f}", .{cmd.action}),
@@ -262,8 +304,10 @@ fn build(self: *CommandPalette, app: *App) !void {
         var it = tab.panes();
         while (it.next()) |pane| {
             const s = pane.view;
+            // One still starting can't be focused yet.
+            if (!s.core_initialized) continue;
             const title = s.title orelse "murrtty";
-            const pwd: []const u8 = if (s.core_initialized) try s.core_surface.pwd(alloc) orelse "" else "";
+            const pwd: []const u8 = try s.core_surface.pwd(alloc) orelse "";
             var detail: std.Io.Writer.Allocating = .init(alloc);
             if (several) try detail.writer.print("Window {d}, tab {d}", .{ wi, ti }) else try detail.writer.print("Tab {d}", .{ti});
             // The directory, unless the title already shows it (GTK's
@@ -274,7 +318,7 @@ fn build(self: *CommandPalette, app: *App) !void {
                 .detail = detail.written(),
                 .binding = "",
                 .action = null,
-                .jump = s,
+                .jump = s.core_surface.id,
             });
         }
     };
@@ -324,7 +368,7 @@ fn subsequence(text: []const u8, query: []const u8) bool {
 /// The filter field's text, as UTF-8 in `buf`, trimmed.
 pub fn filterText(self: *const CommandPalette, buf: []u8) []const u8 {
     const edit = self.edit orelse return "";
-    var wide: [256]u16 = undefined;
+    var wide: [max_filter + 1]u16 = undefined;
     const n = c.GetWindowTextW(edit, &wide, wide.len);
     const len = std.unicode.utf16LeToUtf8(buf, wide[0..@intCast(@max(n, 0))]) catch 0;
     return std.mem.trim(u8, buf[0..len], " ");
@@ -471,40 +515,43 @@ fn move(self: *CommandPalette, delta: isize) void {
     _ = c.SendMessageW(list, c.LB_SETCURSEL, @intCast(next), 0);
 }
 
-/// Run the selected entry: close, then run it from WM_RUN.
+/// Run the selected entry: close, then run it from WM_RUN. With nothing
+/// listed it only closes, as GTK's does.
 fn choose(self: *CommandPalette) void {
-    const row = self.selected() orelse return;
+    const row = self.selected() orelse return self.close();
     const entry = self.entries[self.shown.items[row]];
-    self.pending = if (entry.jump) |s| .{ .jump = s } else .{ .action = entry.action.? };
+    self.pending = if (entry.jump) |s| .{ .jump = s } else action: {
+        const window = self.window orelse return self.close();
+        if (self.pending_arena == null) self.pending_arena = .init(window.app.core_app.alloc);
+        const arena = &self.pending_arena.?;
+        _ = arena.reset(.retain_capacity);
+        const action = entry.action.?.clone(arena.allocator()) catch |err| {
+            log.warn("command palette action not copied err={}", .{err});
+            return self.close();
+        };
+        break :action .{ .action = action };
+    };
     self.close();
     if (self.hwnd) |h| _ = c.PostMessageW(h, WM_RUN, 0, 0);
 }
 
 fn run(self: *CommandPalette) void {
+    const window = self.window orelse return;
     const choice = self.pending orelse return;
+    // Not inside a dialog's loop (a clipboard confirmation that opened
+    // first): App.resumeAfterModal posts this again once it closes.
+    if (window.app.modal_depth > 0) return;
     self.pending = null;
     switch (choice) {
-        .jump => |s| if (self.surfaceAlive(s)) s.window.presentSurface(s),
+        .jump => |id| if (window.app.findSurface(id)) |s| s.window.presentSurface(s),
         .action => |action| {
-            // The pane it opened over, unless that has closed since.
-            const opened = if (self.surface) |s| (if (self.surfaceAlive(s)) s else null) else null;
-            const target = opened orelse (self.window orelse return).activeSurface() orelse return;
+            const target = self.targetSurface() orelse return;
             if (!target.core_initialized) return;
             _ = target.core_surface.performBindingAction(action) catch |err| {
                 log.warn("command palette action failed err={}", .{err});
             };
         },
     }
-}
-
-/// Whether `s` is still one of the app's panes.
-fn surfaceAlive(self: *const CommandPalette, s: *Surface) bool {
-    const window = self.window orelse return false;
-    for (window.app.windows.items) |w| {
-        var it = w.panes();
-        while (it.next()) |p| if (p == s) return true;
-    }
-    return false;
 }
 
 fn paint(self: *CommandPalette, hwnd: c.HWND) void {
@@ -647,6 +694,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             _ = c.SetBkColor(dc, self.field_bg);
             if (self.field_brush) |b| return @bitCast(@intFromPtr(b));
         },
+        // The list erases with this before its rows paint (white otherwise).
+        c.WM_CTLCOLORLISTBOX => if (self.bg_brush) |b| return @bitCast(@intFromPtr(b)),
         c.WM_DRAWITEM => {
             const item: *const c.DRAWITEMSTRUCT = @ptrFromInt(@as(usize, @bitCast(lparam)));
             self.drawItem(item);
@@ -684,9 +733,20 @@ fn dimProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
 }
 
 /// The filter field's keys: Up, Down, Page Up and Page Down move the
-/// selection, Enter runs it, Escape closes.
+/// selection, Enter runs it, Escape closes, Ctrl+Backspace deletes a word,
+/// and the application shortcuts work (Surface.fieldShortcut: the
+/// palette's own binding closes it).
 fn editProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     const self = fromHwnd(hwnd) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+    switch (msg) {
+        c.WM_SYSKEYDOWN => if (self.targetSurface()) |s| {
+            if (s.fieldShortcut(hwnd, msg, wparam, lparam)) return 0;
+        },
+        c.WM_KEYDOWN => if (self.targetSurface()) |s| {
+            if (s.fieldShortcut(hwnd, msg, wparam, lparam)) return 0;
+        },
+        else => {},
+    }
     switch (msg) {
         c.WM_KEYDOWN => switch (wparam) {
             c.VK_UP, c.VK_DOWN, c.VK_PRIOR, c.VK_NEXT => {
@@ -708,8 +768,23 @@ fn editProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callc
             },
             else => {},
         },
-        // Their characters would only beep.
-        c.WM_CHAR => if (wparam == '\r' or wparam == 0x1b) return 0,
+        c.WM_CHAR => switch (wparam) {
+            // Ctrl+Backspace's DEL would go in as a character.
+            0x7f => {
+                SearchBox.deleteWordBefore(hwnd);
+                return 0;
+            },
+            // Enter's and Escape's would only beep.
+            '\r', 0x1b => return 0,
+            else => {},
+        },
+        // The field's own menu runs a loop of its own: close requests wait
+        // until it ends (App.beginModal).
+        c.WM_CONTEXTMENU => if (self.window) |w| {
+            var modal = w.app.beginModal(w.hwnd, .{ .disable_others = false });
+            defer modal.end();
+            return c.CallWindowProcW(self.edit_proc, hwnd, msg, wparam, lparam);
+        },
         // The keyboard moving elsewhere in the window (not to another
         // window or app) closes it, as a click outside it does.
         c.WM_KILLFOCUS => if (@as(?c.HWND, @ptrFromInt(wparam))) |to| {

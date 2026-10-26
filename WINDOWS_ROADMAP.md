@@ -1112,7 +1112,12 @@ the field holds. `start_search`, `end_search`, `search_total` and
 `search_selected` drive it; while it is open `Surface.focusTarget()` is
 the field, so the box keeps the keyboard across window activation, and
 closing gives it back to the pane. Scenario `search`; the dump reports
-each pane's `search`.
+each pane's `search`. Corrected after the mid-phase review: the up button
+goes to the next match (the core counts from the newest, so upward, as
+GTK's does) and the down button to the previous; Ctrl+G and Ctrl+Shift+G
+step as in GTK's search entry; the field gets the keyboard back only if it,
+not the terminal, had it last, and taking it makes its pane the focused
+one; focus-follows-mouse leaves it alone.
 
 **3.3 Command palette, L.** A popup anchored at the top center of the window:
 - A filter box and an owner-drawn list. The entries are
@@ -1135,8 +1140,8 @@ layered dimming child that covers the client area and closes the palette on
 a click. The box holds a real `EDIT` filter over an owner-drawn `LISTBOX`.
 Rows are GTK's: the title with the action beneath in monospace
 (`new_split:right`) and the binding as keycaps. The entries are the
-`command-palette-entry` items `App.supportsAction` allows (75 of the
-defaults), sorted as GTK sorts them, and a "Focus:" entry per terminal in
+`command-palette-entry` items `App.supportsAction` allows (71 of the
+defaults), copied, sorted as GTK sorts them, and a "Focus:" entry per terminal in
 every window. GTK leaves those without a line beneath; here it reads "Tab 2:
 C:\src", or "Window 2, tab 1: ..." with several windows (the directory from
 `Surface.pwd`, unless the title shows it). Typing ranks title matches, then
@@ -1152,6 +1157,48 @@ keyboard. 0.2's override for `Ctrl+Shift+P` is gone (the inspector's
 remains). Scenario `command-palette`, which also jumps from a second window;
 the dump reports each window's `palette`. Not done: GTK's description
 tooltips (the owner-drawn list has no per-row tooltips yet).
+
+*Mid-phase review, 2026-10-26.* Three independent reviews of 3.0 to 3.3
+(Win32 lifetimes and reentrancy, parity with GTK and the core, and the
+tests) found, and these were fixed:
+- **The palette read freed memory** after any app config change while it
+  was open (a reload from another window, Windows switching between light
+  and dark): its titles and actions pointed into the config that change
+  frees. It now copies each entry; what was chosen is copied again for the
+  posted run. The scenario changes the config four times under the open
+  palette (with the copy taken out, Ghostty crashed every run).
+- GTK's application accelerators work while the search field or the
+  palette's filter has the keyboard (`Surface.fieldShortcut`): new tab,
+  window and split, close, copy, paste, clear, reset, the config's, and the
+  palette's own binding, which now closes it.
+- `App.supportsAction` looks at arguments: `copy_to_clipboard:html` (HTML
+  only, which the clipboard code can't write), `paste_from_selection` and
+  `open_config:new_window` are hidden and grayed.
+- The palette tracks panes by core surface id, not address, and holds a
+  chosen command while a dialog is open (`App.resumeAfterModal`); both
+  fields' own right-click menus run in a modal scope; only the active
+  window takes the keyboard on opening (`all:` actions); the list no
+  longer erases white; Ctrl+Backspace deletes a word in both fields; Enter
+  with nothing listed closes the palette (GTK's).
+- The context menu matches GTK's submenus (no separators; "Change Tab
+  Title...", "Open Configuration in OS Editor"), and no longer frees an
+  unset string when out of memory.
+- Tests: checks that couldn't fail now can (the cross-window jump's tab, a
+  click on a row other than the first, Down then Enter, `never` versus
+  `after-first`, focus checked as the thread's real focus, posted clicks
+  checked against what is under the point); new checks for the highlight
+  (pixels), the menu's modal scope, graying with no selection, and the field
+  keeping the keyboard across window activation; races fixed (filter text
+  waited for, a sync between clicks and a chord); the dump writes invalid
+  UTF-8 as U+FFFD instead of failing.
+
+Kept as decided: typing "tab" or "window" also lists every Focus: entry
+(their line beneath is matched, so a terminal can be found by where it is
+or its directory), and results are ranked rather than GTK's plain
+alphabetical order. Still open: the Enter or Escape key-up that closes a
+field reaches the pane (a release without a press, seen only by programs
+asking for key releases); a clipboard restored by the context-menu
+scenario overwrites anything copied meanwhile.
 
 **3.4 Scrollbar, M.** An overlay scrollbar from the core's `scrollbar` action:
 - A thin thumb that widens on hover and fades when idle, drawn through 3.0's

@@ -38,30 +38,26 @@ const items = [_]Item{
     .separator,
     .{ .submenu = .{ .label = "&Split", .items = &.{
         act("Change &Title...", .prompt_surface_title),
-        .separator,
         act("Split &Up", .{ .new_split = .up }),
         act("Split &Down", .{ .new_split = .down }),
         act("Split &Left", .{ .new_split = .left }),
         act("Split &Right", .{ .new_split = .right }),
-        .separator,
         act("&Close Split", .close_surface),
     } } },
     .{ .submenu = .{ .label = "&Tab", .items = &.{
-        act("Change &Title...", .prompt_tab_title),
-        .separator,
+        act("Change Tab &Title...", .prompt_tab_title),
         act("&New Tab", .new_tab),
         act("&Close Tab", .{ .close_tab = .this }),
     } } },
     .{ .submenu = .{ .label = "&Window", .items = &.{
-        act("Change &Title...", .prompt_window_title),
-        .separator,
+        act("Change Window &Title...", .prompt_window_title),
         act("&New Window", .new_window),
         act("&Close Window", .close_window),
     } } },
     .separator,
     // Opening the editor in a new terminal window is GTK's only, for now.
     .{ .submenu = .{ .label = "C&onfig", .items = &.{
-        act("&Open Configuration", .{ .open_config = .os_open }),
+        act("&Open Configuration in OS Editor", .{ .open_config = .os_open }),
         .{ .unavailable = "Open Configuration in New &Window" },
         act("&Reload Configuration", .reload_config),
     } } },
@@ -114,28 +110,34 @@ fn build(surface: *Surface, built: *Built, list: []const Item) BuildError!c.HMEN
     for (list) |item| switch (item) {
         .separator => _ = c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null),
         .unavailable => |label| {
-            const text = try built.strings.addOne(alloc);
-            text.* = try std.unicode.utf8ToUtf16LeAllocZ(alloc, label);
+            const text = try addString(alloc, built, label);
             _ = c.AppendMenuW(menu, c.MF_STRING | c.MF_GRAYED, 0, text.ptr);
         },
         .action => |a| {
             var buf: [96]u8 = undefined;
             const label = labelWithBinding(surface.app, a.label, a.action, &buf);
-            const text = try built.strings.addOne(alloc);
-            text.* = try std.unicode.utf8ToUtf16LeAllocZ(alloc, label);
+            const text = try addString(alloc, built, label);
             try built.actions.append(alloc, a.action);
             const flags: c.UINT = if (enabled(surface, a.action)) c.MF_STRING else c.MF_STRING | c.MF_GRAYED;
             _ = c.AppendMenuW(menu, flags, built.actions.items.len, text.ptr);
         },
         .submenu => |s| {
             const sub = try build(surface, built, s.items);
-            const text = try built.strings.addOne(alloc);
-            text.* = try std.unicode.utf8ToUtf16LeAllocZ(alloc, s.label);
+            errdefer _ = c.DestroyMenu(sub);
+            const text = try addString(alloc, built, s.label);
             // The parent menu owns the submenu from here.
             _ = c.AppendMenuW(menu, c.MF_POPUP, @intFromPtr(sub), text.ptr);
         },
     };
     return menu;
+}
+
+/// A UTF-16 copy of `s` that lives as long as the menu (Built.strings).
+fn addString(alloc: Allocator, built: *Built, s: []const u8) BuildError![:0]u16 {
+    const text = try std.unicode.utf8ToUtf16LeAllocZ(alloc, s);
+    errdefer alloc.free(text);
+    try built.strings.append(alloc, text);
+    return text;
 }
 
 fn enabled(surface: *Surface, action: Action) bool {
