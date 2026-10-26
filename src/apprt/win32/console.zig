@@ -1,6 +1,6 @@
 //! Console attachment for CLI actions.
 //!
-//! ghostty.exe uses the GUI subsystem, so when it is started from a
+//! murrtty.exe uses the GUI subsystem, so when it is started from a
 //! console it gets no standard handles and `ghostty +version` would
 //! print nothing. When a CLI action is requested and output isn't
 //! already redirected, attach to the parent console.

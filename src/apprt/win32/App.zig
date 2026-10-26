@@ -21,7 +21,11 @@ const Window = @import("Window.zig");
 
 const log = std.log.scoped(.win32);
 
-const wakeup_class_name = c.L("GhosttyWakeup");
+const wakeup_class_name = c.L("MurrttyWakeup");
+
+/// The taskbar groups windows, and pins shortcuts, by this. Never change
+/// it: pinned taskbar icons would stop matching.
+const app_user_model_id = c.L("murrtty.murrtty");
 const WM_WAKEUP = c.WM_APP + 1;
 const WM_RUN_REQUESTS = c.WM_APP + 2;
 const WM_RAISE_MODAL = c.WM_APP + 3;
@@ -149,6 +153,10 @@ pub fn init(
     // Restore normal processing so children always inherit it.
     _ = c.SetConsoleCtrlHandler(null, c.FALSE);
 
+    // Before any window exists, so all of them take it.
+    const aumid = c.SetCurrentProcessExplicitAppUserModelID(app_user_model_id);
+    if (aumid < 0) log.warn("SetCurrentProcessExplicitAppUserModelID failed hr=0x{x}", .{@as(u32, @bitCast(aumid))});
+
     // OLE, and with it single-threaded COM, for this UI thread. Shell, task
     // dialog and taskbar APIs need COM, and drag and drop needs OLE itself:
     // RegisterDragDrop fails if COM was started with CoInitializeEx instead.
@@ -214,14 +222,14 @@ pub fn run(self: *App) !void {
         // A GUI program has no console, so say why it can't start.
         const msg = std.fmt.allocPrint(
             self.core_app.alloc,
-            "Ghostty could not open a window ({t}).\n\n" ++
-                "Ghostty needs a graphics driver with OpenGL 4.3. Virtual machines " ++
+            "murrtty could not open a window ({t}).\n\n" ++
+                "murrtty needs a graphics driver with OpenGL 4.3. Virtual machines " ++
                 "and Remote Desktop sessions often don't provide it.\n\n" ++
-                "To see the log, start Ghostty from a shell with: ghostty.exe 2> ghostty.log",
+                "To see the log, start murrtty from a shell with: murrtty.exe 2> murrtty.log",
             .{err},
         ) catch return err;
         defer self.core_app.alloc.free(msg);
-        _ = Surface.messageBox(self.core_app.alloc, null, msg, "Ghostty", c.MB_OK | c.MB_ICONERROR);
+        _ = Surface.messageBox(self.core_app.alloc, null, msg, "murrtty", c.MB_OK | c.MB_ICONERROR);
         return err;
     };
 
@@ -293,7 +301,7 @@ fn runRequests(self: *App) void {
             .close_window => |id| if (self.findWindow(id)) |w| w.requestClose(),
             .close_all_windows => if (self.confirmCloseAll(
                 "All terminal sessions will be terminated. Close all windows?",
-                "Ghostty: Close All Windows",
+                "murrtty:Close All Windows",
             )) self.closeAllWindows(),
             .quit => self.quit(),
             .open_config => {
@@ -368,7 +376,7 @@ fn confirmLink(self: *App, owner: ?c.HWND, target: url.Target) bool {
     defer alloc.free(content);
     const chosen = self.taskDialog(.{
         .owner = owner,
-        .title = "Ghostty: Open Link",
+        .title = "murrtty:Open Link",
         .instruction = instruction,
         .content = content,
         .icon = .warning,
@@ -378,7 +386,7 @@ fn confirmLink(self: *App, owner: ?c.HWND, target: url.Target) bool {
     }) orelse {
         const text = std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ instruction, content }) catch return false;
         defer alloc.free(text);
-        return self.confirm(owner, text, "Ghostty: Open Link");
+        return self.confirm(owner, text, "murrtty:Open Link");
     };
     return chosen == id_open_link;
 }
@@ -398,8 +406,8 @@ fn linkBlocked(self: *App, owner: ?c.HWND, denial: url.Denial) void {
     defer alloc.free(content);
     const chosen = self.taskDialog(.{
         .owner = owner,
-        .title = "Ghostty: Link Blocked",
-        .instruction = "Ghostty blocked this link",
+        .title = "murrtty:Link Blocked",
+        .instruction = "murrtty blocked this link",
         .content = content,
         .icon = .warning,
         // Copying only part of a link would look like copying it.
@@ -409,7 +417,7 @@ fn linkBlocked(self: *App, owner: ?c.HWND, denial: url.Denial) void {
     }) orelse {
         var modal = self.beginModal(owner, .{});
         defer modal.end();
-        _ = Surface.messageBox(alloc, owner, content, "Ghostty: Link Blocked", c.MB_OK | c.MB_ICONWARNING);
+        _ = Surface.messageBox(alloc, owner, content, "murrtty:Link Blocked", c.MB_OK | c.MB_ICONWARNING);
         return;
     };
     if (chosen == id_copy_link) {
@@ -744,8 +752,8 @@ fn confirmCloseAll(self: *App, text: []const u8, caption: []const u8) bool {
 
 fn quit(self: *App) void {
     if (!self.confirmCloseAll(
-        "All terminal sessions will be terminated. Quit Ghostty?",
-        "Ghostty: Quit",
+        "All terminal sessions will be terminated. Quit murrtty?",
+        "murrtty:Quit",
     )) return;
     self.closeAllWindows();
     self.quitNow();
@@ -900,7 +908,7 @@ fn showConfigErrors(self: *App) void {
     const owner: ?c.HWND = if (self.windows.items.len > 0) self.windows.items[0].hwnd else null;
     const chosen = self.taskDialog(.{
         .owner = owner,
-        .title = "Ghostty: Configuration Errors",
+        .title = "murrtty:Configuration Errors",
         .instruction = if (diags.len == 1)
             "The configuration has an error"
         else
@@ -920,7 +928,7 @@ fn showConfigErrors(self: *App) void {
         defer alloc.free(text);
         var modal = self.beginModal(owner, .{});
         defer modal.end();
-        _ = Surface.messageBox(alloc, owner, text, "Ghostty: Configuration Errors", c.MB_OK | c.MB_ICONWARNING);
+        _ = Surface.messageBox(alloc, owner, text, "murrtty:Configuration Errors", c.MB_OK | c.MB_ICONWARNING);
         return;
     };
     if (chosen == id_reload_config) self.reloadConfig(.app, false) catch |err| {

@@ -1,4 +1,4 @@
-//! Drives a Debug ghostty.exe the way the port's GUI tests always have:
+//! Drives a Debug murrtty.exe the way the port's GUI tests always have:
 //! by posting messages to its windows, with modifier keys held through a
 //! shared keyboard state, and by reading results back from window captures
 //! and from the app's state dump (src/apprt/win32/test_hooks.zig).
@@ -15,7 +15,7 @@ const w = @import("win.zig");
 const dda = @import("dda.zig");
 
 alloc: Allocator,
-/// ghostty.exe, absolute.
+/// murrtty.exe, absolute.
 exe: [:0]const u16,
 /// A per-run folder for configs and dumps, under GHOSTTY_GUI_TEST_DIR if
 /// set (CI uploads that folder when a run fails), else under %TEMP%.
@@ -111,7 +111,8 @@ pub fn deinit(self: *Harness) void {
 /// folders. Called after a fully passing run; a failing run keeps them.
 pub fn cleanup(self: *Harness) void {
     for (self.launched.items) |dir| {
-        for ([_][]const u8{ "\\dump.json", "\\ghostty.log", "\\ghostty\\config.ghostty" }) |file| removePath(self.alloc, dir, file, .file);
+        for ([_][]const u8{ "\\dump.json", "\\murrtty.log", "\\murrtty\\config.ghostty", "\\ghostty\\config.ghostty" }) |file| removePath(self.alloc, dir, file, .file);
+        removePath(self.alloc, dir, "\\murrtty", .dir);
         removePath(self.alloc, dir, "\\ghostty", .dir);
         removePath(self.alloc, dir, "", .dir);
     }
@@ -234,6 +235,11 @@ pub const LaunchOptions = struct {
     /// Start Ghostty as a shortcut (.lnk) at this path would: Windows sets
     /// STARTF_TITLEISLINKNAME with the shortcut as the title.
     shortcut: ?[]const u8 = null,
+    /// Write `config` as murrtty's configuration; false leaves it none.
+    murrtty_config: bool = true,
+    /// Also write this as Ghostty's own configuration, which murrtty reads
+    /// when it has none of its own.
+    ghostty_config: ?[]const u8 = null,
 };
 
 pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: LaunchOptions) !Ghostty {
@@ -243,12 +249,20 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
     errdefer alloc.free(dir);
     try makeDir(alloc, dir);
     try self.launched.append(alloc, try alloc.dupe(u8, dir));
-    const cfg_dir = try std.fmt.allocPrint(alloc, "{s}\\ghostty", .{dir});
-    defer alloc.free(cfg_dir);
-    try makeDir(alloc, cfg_dir);
-    const cfg_file = try std.fmt.allocPrint(alloc, "{s}\\config.ghostty", .{cfg_dir});
-    defer alloc.free(cfg_file);
-    try writeFile(alloc, cfg_file, config);
+    // XDG_CONFIG_HOME is the scenario's folder: murrtty's configuration in
+    // its murrtty folder, Ghostty's (if any) in its ghostty folder.
+    for ([_]struct { []const u8, ?[]const u8 }{
+        .{ "murrtty", if (opts.murrtty_config) config else null },
+        .{ "ghostty", opts.ghostty_config },
+    }) |entry| {
+        const text = entry[1] orelse continue;
+        const cfg_dir = try std.fmt.allocPrint(alloc, "{s}\\{s}", .{ dir, entry[0] });
+        defer alloc.free(cfg_dir);
+        try makeDir(alloc, cfg_dir);
+        const cfg_file = try std.fmt.allocPrint(alloc, "{s}\\config.ghostty", .{cfg_dir});
+        defer alloc.free(cfg_file);
+        try writeFile(alloc, cfg_file, text);
+    }
     const dump_path = try std.fmt.allocPrint(alloc, "{s}\\dump.json", .{dir});
     errdefer alloc.free(dump_path);
 
@@ -266,10 +280,10 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
     if (where == .default) if (self.desktop_name) |n| {
         desktop = try std.mem.concatWithSentinel(alloc, u16, &.{ std.unicode.utf8ToUtf16LeStringLiteral("WinSta0\\"), n }, 0);
     };
-    // Ghostty's log (its stderr) goes to ghostty.log beside the dump. Its
-    // shells inherit the handle too (Ghostty starts them inheriting), so
+    // murrtty's log (its stderr) goes to murrtty.log beside the dump. Its
+    // shells inherit the handle too (murrtty starts them inheriting), so
     // the file can be deleted while one is still open.
-    const log_path = try std.fmt.allocPrint(alloc, "{s}\\ghostty.log", .{dir});
+    const log_path = try std.fmt.allocPrint(alloc, "{s}\\murrtty.log", .{dir});
     defer alloc.free(log_path);
     const log16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, log_path);
     defer alloc.free(log16);
@@ -352,7 +366,7 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
     errdefer g.deinit();
     _ = self.waitFor(&g, 15000, struct {
         fn ready(h: *Harness, gg: *Ghostty) bool {
-            const wins = h.windows(gg, "GhosttyWindow") catch return false;
+            const wins = h.windows(gg, "MurrttyWindow") catch return false;
             defer h.alloc.free(wins);
             return wins.len > 0;
         }
@@ -551,7 +565,7 @@ pub fn child(self: *Harness, g: *const Ghostty, parent: w.HWND, comptime class: 
 
 /// The single main window; fails if there is not exactly one.
 pub fn mainWindow(self: *Harness, g: *const Ghostty) !w.HWND {
-    const wins = try self.windows(g, "GhosttyWindow");
+    const wins = try self.windows(g, "MurrttyWindow");
     defer self.alloc.free(wins);
     if (wins.len != 1) return self.fail("expected 1 window, found {d}", .{wins.len});
     return wins[0];
@@ -559,7 +573,7 @@ pub fn mainWindow(self: *Harness, g: *const Ghostty) !w.HWND {
 
 /// The visible terminal of `win`.
 pub fn surface(self: *Harness, g: *const Ghostty, win: w.HWND) !w.HWND {
-    return self.child(g, win, "GhosttySurface") orelse self.fail("no visible surface", .{});
+    return self.child(g, win, "MurrttySurface") orelse self.fail("no visible surface", .{});
 }
 
 pub fn title(self: *Harness, hwnd: w.HWND) ![]u8 {
@@ -775,7 +789,7 @@ const Held = struct {
 /// takes the test hooks' messages (Debug builds).
 fn wakeupWindow(pid: w.DWORD) ?w.HWND {
     var prev: ?w.HWND = null;
-    while (w.FindWindowExW(w.HWND_MESSAGE, prev, w.L("GhosttyWakeup"), null)) |cand| {
+    while (w.FindWindowExW(w.HWND_MESSAGE, prev, w.L("MurrttyWakeup"), null)) |cand| {
         var cand_pid: w.DWORD = 0;
         _ = w.GetWindowThreadProcessId(cand, &cand_pid);
         if (cand_pid == pid) return cand;

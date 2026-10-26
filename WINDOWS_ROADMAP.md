@@ -134,7 +134,18 @@ Fork items, ahead of the rest of Phase 3:
   full clone if the push is refused.
 - **R3, M.** Rename and brand: the identifiers above, a placeholder icon,
   the builder, harness, CI and README, and a copyright line for murrtty's
-  changes beside Ghostty's in `LICENSE`.
+  changes beside Ghostty's in `LICENSE`. *Done 2026-10-26.*
+  `build_config.murrtty` (true on Windows), `product_name` and `product_id`
+  carry the name into shared code: `+version` ("murrtty, based on Ghostty
+  ..."), `TERM_PROGRAM` and XTVERSION (`murrtty`), and the configuration
+  folder (`file_load.zig`: murrtty's own file, else Ghostty's, which Open
+  Configuration then opens; the `config-folder` scenario). The executable
+  is `murrtty.exe` with `dist/windows/murrtty.rc`, `.ico` and `.manifest`
+  (Ghostty's own `ghostty.*` files are back to upstream's text); window
+  classes are `Murrtty*`; dialogs and the title fallback say murrtty; the
+  AppUserModelID is `murrtty.murrtty`. The icon is a placeholder ("m" and a
+  block cursor, `images/murrtty/make-icon.ps1`). Clink's script accepts
+  either `TERM_PROGRAM`; its scenario part still needs the owner's run.
 - **R4, S.** Publish `murr2k/murrtty`: an audit for secrets and personal
   data, upstream's workflows kept from running there, the desktop workflow
   limited to the private mirror, and pushes going to both repositories.

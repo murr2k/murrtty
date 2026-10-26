@@ -1,5 +1,5 @@
 @echo off
-rem Build a Debug ghostty.exe and the GUI test harness, then run the GUI
+rem Build a Debug murrtty.exe and the GUI test harness, then run the GUI
 rem tests. They run on a hidden desktop, so nothing appears on screen; the
 rem pixel check briefly adds a taskbar button. Arguments go to the harness:
 rem   test\windows\gui\run.cmd --list
@@ -18,7 +18,7 @@ if not defined ZIGEXE set "ZIGEXE=zig"
 
 "%ZIGEXE%" build -Dtarget=x86_64-windows-gnu || goto failed
 "%ZIGEXE%" build --build-file test\windows\gui\build.zig || goto failed
-"test\windows\gui\zig-out\bin\ghostty-gui-test.exe" --ghostty "%CD%\zig-out\bin\ghostty.exe" %*
+"test\windows\gui\zig-out\bin\ghostty-gui-test.exe" --ghostty "%CD%\zig-out\bin\murrtty.exe" %*
 set "RC=%ERRORLEVEL%"
 popd
 exit /b %RC%

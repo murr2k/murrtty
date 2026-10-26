@@ -412,7 +412,7 @@ const Overlay = struct {
     paints: u32 = 0,
 };
 
-const overlay_class = c.L("GhosttyTestOverlay");
+const overlay_class = c.L("MurrttyTestOverlay");
 const overlay_width = 200;
 const overlay_height = 40;
 const overlay_margin = 20;

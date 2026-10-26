@@ -7,7 +7,9 @@
 #
 # The runner executes whatever this workflow runs, so it triggers only on
 # pushes to windows-port and by hand: never on pull requests or other
-# branches (Dependabot's branches carry edited workflow files).
+# branches (Dependabot's branches carry edited workflow files). It runs only
+# in the private repository, murr2k/ghostty-windows: the public murrtty
+# repository has the same files but must never reach the runner.
 name: Windows port (desktop)
 
 on:
@@ -28,6 +30,7 @@ concurrency:
 jobs:
   desktop:
     name: Unit tests and GUI suite (desktop)
+    if: github.repository == 'murr2k/ghostty-windows'
     runs-on: [self-hosted, windows, gpu]
     timeout-minutes: 60
     steps:
@@ -86,8 +89,8 @@ jobs:
         run: |
           $prefix = $env:GHOSTTY_INSTALL_PREFIX
           if (-not $prefix) { "GHOSTTY_INSTALL_PREFIX isn't set on this runner; skipped"; exit 0 }
-          $exe = Join-Path $prefix 'bin\ghostty.exe'
-          if (Get-Process ghostty -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }) {
+          $exe = Join-Path $prefix 'bin\murrtty.exe'
+          if (Get-Process murrtty -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }) {
             "::notice::$exe is running, so it was not replaced"
             exit 0
           }

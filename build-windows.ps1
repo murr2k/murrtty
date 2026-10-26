@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Install the build requirements and build Ghostty for Windows.
+    Install the build requirements and build murrtty, the Windows fork of Ghostty.
 
 .DESCRIPTION
     1. Checks the system (Windows 10 1809 or newer, 64-bit).
@@ -13,7 +13,7 @@
        installed system-wide and PATH is not changed. (zig build unpacks
        Ghostty's dependencies into zig-pkg\ next to this script and caches
        downloads per user in %LOCALAPPDATA%\zig.)
-    3. Runs `zig build` for Windows and reports where ghostty.exe is.
+    3. Runs `zig build` for Windows and reports where murrtty.exe is.
 
     The first build downloads Ghostty's source dependencies, so it needs an
     internet connection and takes several minutes. Later builds are
@@ -37,7 +37,7 @@
     Debug, ReleaseSafe, ReleaseFast (default) or ReleaseSmall.
 
 .PARAMETER Prefix
-    Install prefix: ghostty.exe ends up in <Prefix>\bin. A relative path is
+    Install prefix: murrtty.exe ends up in <Prefix>\bin. A relative path is
     relative to the current directory. Default: zig-out next to this script.
     Don't end a quoted path with a backslash ("C:\out\"): Windows reads \"
     as a literal quote. Write "C:\out" instead.
@@ -49,7 +49,7 @@
     which needs Visual Studio and the Windows SDK.
 
 .PARAMETER Run
-    Start ghostty.exe after a successful build.
+    Start murrtty.exe after a successful build.
 
 .PARAMETER SetupOnly
     Install the requirements (and clean, with -Clean), then stop without
@@ -71,11 +71,11 @@
     -Target and -Prefix instead of -Doptimize=, -Dtarget= and --prefix.
     A bare -- can't be passed (PowerShell takes it), so neither can
     arguments for `zig build run -- ...`: build, then run
-    zig-out\bin\ghostty.exe with the arguments instead.
+    zig-out\bin\murrtty.exe with the arguments instead.
 
 .EXAMPLE
     .\build-windows.cmd
-    Release build into zig-out\bin\ghostty.exe.
+    Release build into zig-out\bin\murrtty.exe.
 
 .EXAMPLE
     .\build-windows.cmd -Optimize Debug -Run
@@ -579,7 +579,7 @@ if ($SetupOnly) {
 # Build
 
 # Only the install step (the default when no step is named) puts
-# ghostty.exe into the prefix. Other steps (test, run, uninstall) and the
+# murrtty.exe into the prefix. Other steps (test, run, uninstall) and the
 # flags that print and exit (-l, --fetch, ...) leave it alone, so don't
 # check for it or start it after those. Flags that take a separate value
 # (Zig 0.17's lib/compiler/Maker.zig, plus the zig driver's cache and lib
@@ -607,7 +607,7 @@ for ($i = 0; $i -lt $ZigArgs.Count; $i++) {
 $printsAndExits = @($ZigArgs | Where-Object {
     $_ -cin '-l', '--list-steps', '-h', '--help', '--print-configuration', '--print-configuration-path' -or
     $_ -like '--fetch*' })
-# Options with which the install step builds no ghostty.exe: the embedding
+# Options with which the install step builds no murrtty.exe: the embedding
 # library alone (-Dapp-runtime=none), no exe, or libghostty-vt alone
 # (emit-exe then defaults to false).
 $noExe = @($ZigArgs | Where-Object {
@@ -644,11 +644,11 @@ if ($code -ne 0) {
 
 if (-not $installs) {
     Write-Step ("zig build finished in {0:mm\:ss}" -f $timer.Elapsed)
-    if ($Run) { Write-Note "-Run ignored: this build doesn't install ghostty.exe." }
+    if ($Run) { Write-Note "-Run ignored: this build doesn't install murrtty.exe." }
     Exit-Script 0
 }
 
-$exe = Join-Path $exeDir 'ghostty.exe'
+$exe = Join-Path $exeDir 'murrtty.exe'
 if (-not (Test-Path -LiteralPath $exe)) {
     Fail "The build succeeded but $exe was not produced."
 }
@@ -657,9 +657,9 @@ Write-Step ("Built {0} ({1} MB) in {2:mm\:ss}" -f $exe, $sizeMb, $timer.Elapsed)
 
 if ($Run) {
     if ($arch -eq 'ARM64' -and $osBuild -lt 22000 -and $Target -like 'x86_64-*') {
-        Write-Note 'Not starting Ghostty: Windows 10 on ARM cannot run x64 programs.'
+        Write-Note 'Not starting murrtty: Windows 10 on ARM cannot run x64 programs.'
     } else {
-        Write-Step 'Starting Ghostty'
+        Write-Step 'Starting murrtty'
         Start-Process -FilePath $exe
     }
 }

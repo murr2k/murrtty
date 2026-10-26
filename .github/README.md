@@ -1,25 +1,32 @@
-# Ghostty for Windows (unofficial port)
+# murrtty
 
-> **This is an unofficial port of [Ghostty](https://github.com/ghostty-org/ghostty)
-> to native Windows.** Ghostty is created by
-> [Mitchell Hashimoto](https://github.com/mitchellh) and the
+<img src="../images/murrtty/icon.png" alt="murrtty icon" width="96" align="right">
+
+**murrtty is a native Windows terminal, forked from
+[Ghostty](https://github.com/ghostty-org/ghostty).** It is Ghostty's core
+(terminal emulation, fonts, rendering, configuration) with a Win32
+application around it, and it diverges from Ghostty where Windows or its own
+features call for it.
+
+> Ghostty is created by [Mitchell Hashimoto](https://github.com/mitchellh)
+> and the
 > [Ghostty contributors](https://github.com/ghostty-org/ghostty/graphs/contributors),
-> and nearly all of the code in this repository is theirs. This project is not
+> and most of the code in this repository is theirs. murrtty is not
 > affiliated with or endorsed by the Ghostty project. Please report problems
-> with the Windows port in
-> [this repository's issues](https://github.com/murr2k/ghostty-windows/issues),
-> not to upstream Ghostty.
+> with murrtty in [this repository's issues](https://github.com/murr2k/murrtty/issues),
+> not to Ghostty.
 
-![Ghostty running PowerShell on Windows, with two tabs](../images/windows-port/screenshot.png)
+![murrtty running PowerShell on Windows, with two tabs](../images/windows-port/screenshot.png)
 
 ## What this is
 
 Upstream Ghostty ships a native macOS app and a GTK app for Linux. On Windows,
 upstream builds only `libghostty-vt`, its terminal-emulation library: the full
-core did not compile for Windows and there is no application. This fork adds
-the missing pieces so that building on Windows
+core did not compile for Windows and there is no application, and Ghostty's
+maintainers don't plan to add one. murrtty began as a port that adds the
+missing pieces, so that building on Windows
 (`zig build -Dtarget=x86_64-windows-gnu`, which `build-windows.cmd` runs)
-produces a native `ghostty.exe`:
+produces a native `murrtty.exe`:
 
 - **A Win32 application runtime** (`src/apprt/win32/`): windows, tabs,
   keyboard and IME input, mouse, clipboard, DPI scaling and the system theme,
@@ -34,25 +41,29 @@ produces a native `ghostty.exe`:
   (`src/termio/Exec.zig`).
 
 Everything else (terminal emulation, the parser, fonts and shaping,
-configuration, themes) is Ghostty's shared core. Its behavior is unchanged:
-the only edits there add the new runtime to a few compile-time switches that
-list every runtime, and keep `Shift+Insert` as a normal paste on Windows.
+configuration, themes) is Ghostty's shared core. murrtty changes it where
+Windows needs something else (prompt marks behind ConPTY, the shell's
+working directory, shell integration for PowerShell and `cmd`) and where
+murrtty names itself: programs see `TERM_PROGRAM=murrtty` and an XTVERSION
+of `murrtty`, while `TERM` stays `xterm-ghostty`, so they still get the
+capabilities the shared core implements.
 
-The port is based on upstream commit
-[`22f100c63`](https://github.com/ghostty-org/ghostty/commit/22f100c63)
+murrtty merges upstream Ghostty from time to time instead of rebasing onto
+it. It last merged upstream
+[`0fe113a35`](https://github.com/ghostty-org/ghostty/commit/0fe113a35)
 (October 2026).
 
 ## Status
 
-This is an early port. It has been tested on one machine: Windows 11 Pro
+murrtty is early. It has been tested on one machine: Windows 11 Pro
 (build 26200), NVIDIA GeForce RTX 2070, at 125% display scaling. Most of the
 testing drove the app with key and mouse messages sent to its windows, with
 the modifier keys set as held where needed, and checked the results with
 window captures, a Debug-build state dump and logs. Those GUI tests are in
 `test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
-desktop. The port has not yet had much use on a physical keyboard. Every
-push to the port branch runs the unit tests and the GUI tests on a
-self-hosted runner on the development machine
+desktop. murrtty has not yet had much use on a physical keyboard. Every
+push runs the unit tests and the GUI tests on a self-hosted runner on the
+development machine, in a private mirror of this repository
 (`.github/workflows/windows-port-desktop.yml`); the GUI tests need an
 OpenGL 4.3 driver, which GitHub's hosted runners lack. A manually started
 workflow (`.github/workflows/windows-port.yml`) runs the builder on a clean
@@ -63,19 +74,19 @@ hosted Windows runner and then the unit tests.
 - Shells through ConPTY: PowerShell 7 (the default when installed), Windows
   PowerShell 5.1 and `cmd.exe`, including PSReadLine's colors.
 - Shell integration for PowerShell 7, Windows PowerShell 5.1 and `cmd`, on by
-  default: Ghostty knows where each prompt is (`jump_to_prompt` with
+  default: murrtty knows where each prompt is (`jump_to_prompt` with
   `Ctrl+Shift+Up`/`Down`; closing at an idle prompt doesn't ask), follows the
   shell's directory (new tabs and splits open there, relative links resolve
   against it), and shows the folder, or PowerShell's running command, as the
   tab title. See `src/shell-integration/README.md`. With
   [Clink](https://chrisant996.github.io/clink/) 1.4.25 or later, cmd also
-  reports each command's start and exit status (Ghostty doesn't show exit
+  reports each command's start and exit status (murrtty doesn't show exit
   statuses yet). Without integration, cmd's directory is still followed by
   reading it from the cmd process.
 - Rendering with exact colors, fallback fonts for CJK and symbols, and color
   emoji.
 - Typing, Enter, Unicode text entry, mouse selection, copy and paste. On the
-  test machine Ghostty draws the echo of a key about 1.5 ms after it
+  test machine murrtty draws the echo of a key about 1.5 ms after it
   receives the key.
 - Ctrl and Alt shortcuts: `Ctrl+C` interrupting a running program,
   `Ctrl+Shift+A`/`C`/`V` to select all, copy and paste, `Shift+Insert` to
@@ -100,7 +111,7 @@ hosted Windows runner and then the unit tests.
   tabs open in the shell's current directory (see shell integration above).
 - Close confirmations. With shell integration, closing a tab, pane or
   window at an idle prompt doesn't ask and a running command does. Without
-  it (another shell, or PowerShell started with a command) Ghostty can't
+  it (another shell, or PowerShell started with a command) murrtty can't
   tell an idle prompt from a running program and asks whenever the shell is
   still running. Set `confirm-close-surface = false` to turn this off.
 - OSC 52 clipboard writes with `clipboard-write = ask`: a burst of requests
@@ -113,13 +124,13 @@ hosted Windows runner and then the unit tests.
   PDF) open. Links from terminal output to programs, scripts, shortcuts,
   network paths or a few abused protocols are blocked, with the reason.
   Other files and protocols ask first, naming the program that would open
-  them. Relative paths resolve against the shell's directory once Ghostty
+  them. Relative paths resolve against the shell's directory once murrtty
   knows it (shell integration, or cmd's own), and are blocked otherwise.
   `file://` links that name this computer (as `ls --hyperlink` writes them)
   open like local paths.
 - Resizing, the initial size from `window-width`/`window-height`, closing
   windows and tabs cleanly, quitting when the last window closes.
-- CLI actions such as `ghostty +version` print to the console they were
+- CLI actions such as `murrtty +version` print to the console they were
   started from.
 
 **Implemented but not yet tested**
@@ -138,7 +149,7 @@ hosted Windows runner and then the unit tests.
   `ghostty` uses `window-titlebar-background`/`-foreground`; `system`,
   `light` and `dark` use the system's caption. Caption colors need Windows
   11; Windows 10 gets a light or dark caption. The GUI tests check what
-  Ghostty asks Windows for, not yet what appears on screen.
+  murrtty asks Windows for, not yet what appears on screen.
 - Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell and paste
   protection.
 
@@ -155,7 +166,7 @@ hosted Windows runner and then the unit tests.
   `window-decoration` options.
 - Dragging tabs with the mouse, and moving a tab to a new window. Dragging
   panes to rearrange splits.
-- Sending commands to an already running instance (`ghostty +new-window`).
+- Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
 with the everyday UI: context menu, scrollbar, search and command palette
@@ -172,13 +183,13 @@ with the everyday UI: context menu, scrollbar, search and command palette
 - After `cls` or `Clear-Host`, `jump_to_prompt` can stop on blank rows where
   prompts were: ConPTY clears the screen by repainting it, and the rows keep
   their prompt marks.
-- In shells whose directory Ghostty can't see (PowerShell without its
+- In shells whose directory murrtty can't see (PowerShell without its
   integration, WSL, ssh), new tabs open where the first one started, and
   relative links are blocked. Inside cmd, a program that changes its own
   directory (a nested PowerShell, say) still has relative links resolved
   against cmd's.
 - Some modified keys never reach programs: `Shift+Enter`,
-  `Ctrl+Shift+<letter>` and others that Ghostty sends as escape sequences
+  `Ctrl+Shift+<letter>` and others that murrtty sends as escape sequences
   Windows' ConPTY layer can't translate. Plain keys and `Ctrl+<letter>`
   work. The fix is win32-input-mode (roadmap 0.12).
 
@@ -189,7 +200,7 @@ with the everyday UI: context menu, scrollbar, search and command palette
   Windows 10 on ARM cannot run x64 programs.
 - A GPU driver with OpenGL 4.3 support. Most GPUs from the last decade have
   it; virtual machines and Remote Desktop sessions often don't. Without it
-  Ghostty shows an error message and exits.
+  murrtty shows an error message and exits.
 
 To build you also need an internet connection for the first build. Git is
 optional: without it, or in a source tree that isn't a git checkout, the
@@ -200,12 +211,12 @@ Zig's bundled MinGW-w64 toolchain.
 ## Build
 
 ```powershell
-git clone https://github.com/murr2k/ghostty-windows
-cd ghostty-windows
+git clone https://github.com/murr2k/murrtty
+cd murrtty
 .\build-windows.cmd
 ```
 
-Clone into a short path, such as `C:\src\ghostty-windows`: some files in the
+Clone into a short path, such as `C:\src\murrtty`: some files in the
 repository and in the Zig toolchain have long names.
 
 `build-windows.cmd` runs `build-windows.ps1` with the Windows PowerShell 5.1
@@ -218,13 +229,13 @@ that ships with Windows, from `cmd`, PowerShell or a double-click. It:
    [ziglang.org](https://ziglang.org/download/) into `.zig-toolchain\` inside
    the repository and verifies the archive's SHA-256. Nothing is installed
    system-wide and `PATH` is not changed.
-3. Runs `zig build` and prints where `ghostty.exe` is.
+3. Runs `zig build` and prints where `murrtty.exe` is.
 
 The first build downloads Ghostty's dependencies (unpacked into `zig-pkg\` in
 the repository, about 270 MB; Zig also keeps a per-user cache in
 `%LOCALAPPDATA%\zig`) and takes several minutes. The result is
-`zig-out\bin\ghostty.exe`. Keep `zig-out\share` next to `bin` if you move it:
-it holds the themes and other resources Ghostty looks for. To keep a log of
+`zig-out\bin\murrtty.exe`. Keep `zig-out\share` next to `bin` if you move it:
+it holds the themes and other resources murrtty looks for. To keep a log of
 the build, run `.\build-windows.cmd > build.log 2>&1`.
 
 Options:
@@ -234,7 +245,7 @@ Options:
 | `-Optimize Debug` | Debug build (default `ReleaseFast`; also `ReleaseSafe`, `ReleaseSmall`) |
 | `-Prefix <dir>` | Install into `<dir>\bin` instead of `zig-out\bin` |
 | `-Target <triple>` | Zig target (default `x86_64-windows-gnu`) |
-| `-Run` | Start Ghostty after a successful build |
+| `-Run` | Start murrtty after a successful build |
 | `-SetupOnly` | Install Zig, don't build |
 | `-Clean` | Delete `.zig-cache`, and `zig-out` unless `-Prefix` is given, first (`zig-pkg\` and `.zig-toolchain\` are kept) |
 | `-Help` | Show the help (also `-?` or `/?`) |
@@ -251,8 +262,8 @@ comma or a space (`'-Dname=a,b'`). The exceptions:
   `-Optimize`, `-Target` and `-Prefix`.
 - Other single-dash words must be builder options. PowerShell accepts
   abbreviations of them, such as `-Opt`.
-- A bare `--` is rejected. To pass arguments to Ghostty, build first and then
-  run `zig-out\bin\ghostty.exe` with them.
+- A bare `--` is rejected. To pass arguments to murrtty, build first and then
+  run `zig-out\bin\murrtty.exe` with them.
 
 To build by hand with Zig 0.17.0 already installed:
 
@@ -262,11 +273,15 @@ zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
 
 ## Run and configure
 
-Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
+Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
 
-- **Configuration** lives in `%LOCALAPPDATA%\ghostty\config.ghostty` (or in
-  `%XDG_CONFIG_HOME%\ghostty\` if that variable is set). Ghostty creates it as
-  a commented template on first launch. Everything handled by Ghostty's
+- **Configuration** lives in `%LOCALAPPDATA%\murrtty\config.ghostty` (or in
+  `%XDG_CONFIG_HOME%\murrtty\` if that variable is set), in Ghostty's format.
+  If murrtty has no file of its own but Ghostty's
+  `%LOCALAPPDATA%\ghostty\config.ghostty` exists, murrtty reads that one
+  instead, and Open Configuration (`Ctrl+,`) opens it; copy it into the
+  murrtty folder to give murrtty settings of its own. With neither, murrtty
+  creates its file as a commented template on first launch. Everything handled by Ghostty's
   shared core works as documented in the
   [configuration reference](https://ghostty.org/docs/config): fonts, colors,
   themes, keybindings, the shell and so on. Options that the macOS and GTK
@@ -274,7 +289,7 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
   besides the missing features listed above. Among them:
   `window-position-x`/`-y`, `window-save-state`, `window-new-tab-position`,
   `resize-overlay`, and the `title`, `audio` and `border` bell features (only
-  `system` and `attention` work). Ghostty always opens a window at startup and
+  `system` and `attention` work). murrtty always opens a window at startup and
   always exits when its last window closes, whatever `initial-window` and
   `quit-after-last-window-closed` say.
 - **Shell.** The default is PowerShell 7 (`pwsh.exe -NoLogo`) when it is
@@ -284,16 +299,16 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
   when the command's arguments are start-up flags such as `-NoLogo` or
   `-NoProfile`, not a command or a script; it loads after your profile. A
   `SHELL` variable (from MSYS2 or Git Bash) is ignored.
-- **Starting directory.** Started from a shell or another program, Ghostty
+- **Starting directory.** Started from a shell or another program, murrtty
   opens in that program's directory; started from the Start menu, a shortcut
   or Explorer, in your home folder. `working-directory` overrides both.
 - **Keybindings** are Ghostty's defaults for non-macOS platforms, for example
   `Ctrl+Shift+C`/`Ctrl+Shift+V` to copy and paste, `Ctrl+Shift+T` for a new
   tab, `Ctrl+Shift+W` to close it, and `Ctrl+Tab` or `Ctrl+PgUp`/`Ctrl+PgDn` to
-  switch tabs. `ghostty +list-keybinds` prints them all. One addition:
+  switch tabs. `murrtty +list-keybinds` prints them all. One addition:
   `Ctrl+Shift+[`/`]` go to the previous and next pane, because Windows can
   hold upstream's `Ctrl+Win+[`/`]` as system hotkeys, which then never reach
-  Ghostty. Some Intel graphics drivers rotate the screen on
+  murrtty. Some Intel graphics drivers rotate the screen on
   `Ctrl+Alt+arrows`; if yours does, turn its hotkeys off in Intel Graphics
   Command Center (System, Hotkeys) or bind `goto_split` to other keys.
 - **Mouse.** Middle-click doesn't paste by default: the default
@@ -301,9 +316,9 @@ Start `zig-out\bin\ghostty.exe`, or build with `-Run`.
   which Windows doesn't have. Set `middle-click-action = clipboard-paste` to
   paste the clipboard instead. For the right button, see `right-click-action`
   above.
-- **Logs.** `ghostty.exe` is a GUI program, so it has no console. To see its
+- **Logs.** `murrtty.exe` is a GUI program, so it has no console. To see its
   log, start it from a shell with stderr redirected:
-  `ghostty.exe 2> ghostty.log`.
+  `murrtty.exe 2> murrtty.log`.
 
 ## How it works
 
@@ -349,44 +364,44 @@ A few rules the code depends on:
 - The window's pixel format is sRGB-capable and `GL_FRAMEBUFFER_SRGB` is on
   during the final blit, which keeps colors exact.
 
-The commit messages on the `windows-port` branch explain each change in more
-detail.
+The commit messages explain each change in more detail.
 
 ## Branches and upstream
 
-`windows-port` (the default branch) is the port: upstream Ghostty's history up
-to the base commit above, plus the commits that add Windows support. Upstream
-itself is [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty).
+`main` is murrtty: upstream Ghostty's history, the commits that brought it to
+Windows, and murrtty's own since. Upstream itself is
+[ghostty-org/ghostty](https://github.com/ghostty-org/ghostty).
 
-Ghostty's maintainers won't add more runtimes to Ghostty, so this fork is
-becoming its own terminal, **murrtty**: a native Windows work-alike of
-Ghostty that diverges where Windows or its own features call for it. Upstream
-is merged in from time to time rather than rebased onto; the plan is in
-[WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) under "The fork".
+Ghostty's maintainers won't add more runtimes to Ghostty, so murrtty is its
+own terminal: a native Windows work-alike of Ghostty that diverges where
+Windows or its own features call for it. Upstream is merged in from time to
+time rather than rebased onto. The plan is
+[WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md); "The fork" there says what
+stays compatible with Ghostty and what is murrtty's own.
 
 ## AI assistance
 
-This port was developed by the repository owner using Claude Code
+murrtty is developed by the repository owner using Claude Code
 (Anthropic's AI coding agent): at the owner's direction, the agent wrote the
 code, the commit messages and this README, and ran the testing described
 under Status. Ghostty's [AI usage policy](../AI_POLICY.md) governs contributions
-to Ghostty itself; this fork isn't submitted upstream, and any fix offered
+to Ghostty itself; murrtty isn't submitted upstream, and any fix offered
 to Ghostty on its own would have to meet that policy.
 
 ## License
 
-Ghostty is released under the MIT License, and so is this port: see
-[LICENSE](../LICENSE), copyright Mitchell Hashimoto and the Ghostty contributors.
-The changes in this repository are released under the same license.
+Ghostty is released under the MIT License, and so is murrtty: see
+[LICENSE](../LICENSE), copyright Mitchell Hashimoto and the Ghostty
+contributors, and Murray Kopit for murrtty's changes.
 
 "Ghostty" and its logo belong to the Ghostty project. The name is used here
-only to identify the software this port is based on.
+only to say what murrtty is based on, and murrtty doesn't use the logo.
 
 Upstream's README is the repository's root [README.md](../README.md), unchanged;
 this page is `.github/README.md`, which GitHub shows instead. Its
 download, support, contributing and crash-reporting instructions are for
-upstream Ghostty and don't apply to this port, and the same goes for the other
+upstream Ghostty and don't apply to murrtty, and the same goes for the other
 upstream documents such as [CONTRIBUTING.md](../CONTRIBUTING.md),
 [HACKING.md](../HACKING.md) and [AI_POLICY.md](../AI_POLICY.md). Report problems
-with the port in
-[this repository's issues](https://github.com/murr2k/ghostty-windows/issues).
+with murrtty in
+[this repository's issues](https://github.com/murr2k/murrtty/issues).

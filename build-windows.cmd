@@ -1,6 +1,6 @@
 @echo off
 rem Double-click friendly wrapper for build-windows.ps1: installs the build
-rem requirements (Zig) and builds ghostty.exe. Arguments are forwarded, e.g.
+rem requirements (Zig) and builds murrtty.exe. Arguments are forwarded, e.g.
 rem   build-windows.cmd -Optimize Debug -Run
 rem When double-clicked, build-windows.ps1 keeps the window open at the end.
 setlocal
@@ -40,6 +40,6 @@ exit /b %ERRORLEVEL%
 exit /b %ERRORLEVEL%
 
 :dashdash
-1>&2 echo error: a bare -- can't be passed through to zig build. To give Ghostty
-1>&2 echo arguments, build first, then run zig-out\bin\ghostty.exe with them.
+1>&2 echo error: a bare -- can't be passed through to zig build. To give murrtty
+1>&2 echo arguments, build first, then run zig-out\bin\murrtty.exe with them.
 exit /b 1

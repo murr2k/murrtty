@@ -25,7 +25,7 @@ const text_util = @import("text.zig");
 
 const log = std.log.scoped(.win32_surface);
 
-pub const class_name = c.L("GhosttySurface");
+pub const class_name = c.L("MurrttySurface");
 
 /// Private message posted to the surface window: show the queued
 /// clipboard confirmations (see clipboard_pending).
@@ -465,7 +465,7 @@ fn confirmClipboardRead(
     }) catch return self.core_surface.denyClipboardRequest(req);
     defer alloc.free(message);
 
-    if (!self.app.confirm(self.window.hwnd, message, "Ghostty: Clipboard")) {
+    if (!self.app.confirm(self.window.hwnd, message, "murrtty:Clipboard")) {
         self.core_surface.denyClipboardRequest(req);
         return;
     }
@@ -511,7 +511,7 @@ fn confirmClipboardWrite(self: *Surface, text: []const u8) void {
         .{ text_util.truncate(text, 512), if (text.len > 512) "..." else "" },
     ) catch return;
     defer alloc.free(message);
-    if (!self.app.confirm(self.window.hwnd, message, "Ghostty: Clipboard")) return;
+    if (!self.app.confirm(self.window.hwnd, message, "murrtty:Clipboard")) return;
 
     writeClipboardText(alloc, self.hwnd, text) catch |err| {
         log.warn("error writing clipboard err={}", .{err});

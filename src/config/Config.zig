@@ -4268,8 +4268,23 @@ pub fn loadDefaultFiles(self: *Config, alloc: Allocator) !void {
             break :xdg_loaded true;
         }
 
-        break :xdg_loaded xdg_action != .not_found or
-            legacy_xdg_action != .not_found;
+        if (xdg_action != .not_found or legacy_xdg_action != .not_found) break :xdg_loaded true;
+
+        // murrtty without a configuration of its own reads Ghostty's, so
+        // an existing Ghostty setup keeps working.
+        if (comptime build_config.murrtty) {
+            const legacy_ghostty_path = try file_load.legacyGhosttyXdgPath(alloc);
+            defer alloc.free(legacy_ghostty_path);
+            const ghostty_path = try file_load.ghosttyXdgPath(alloc);
+            defer alloc.free(ghostty_path);
+            const legacy_ghostty_action = self.loadOptionalFile(alloc, legacy_ghostty_path);
+            const ghostty_action = self.loadOptionalFile(alloc, ghostty_path);
+            if (ghostty_action != .not_found or legacy_ghostty_action != .not_found) {
+                log.info("murrtty has no configuration file of its own; using Ghostty's", .{});
+                break :xdg_loaded true;
+            }
+        }
+        break :xdg_loaded false;
     };
 
     // On macOS load the app support directory as well

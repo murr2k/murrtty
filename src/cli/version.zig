@@ -26,13 +26,18 @@ pub fn run(alloc: Allocator) !u8 {
     const stdout = &stdout_writer.interface;
     const tty = try stdout_file.isTty(global.io());
 
+    const repo = if (build_config.murrtty) "murr2k/murrtty" else "ghostty-org/ghostty";
     if (tty) if (build_config.version.build) |commit_hash| {
         try stdout.print(
-            "\x1b]8;;https://github.com/ghostty-org/ghostty/commit/{s}\x1b\\",
+            "\x1b]8;;https://github.com/" ++ repo ++ "/commit/{s}\x1b\\",
             .{commit_hash},
         );
     };
-    try stdout.print("Ghostty {s}\n\n", .{build_config.version_string});
+    if (build_config.murrtty) {
+        try stdout.print("murrtty, based on Ghostty {s}\n\n", .{build_config.version_string});
+    } else {
+        try stdout.print("Ghostty {s}\n\n", .{build_config.version_string});
+    }
     if (tty) try stdout.print("\x1b]8;;\x1b\\", .{});
 
     try stdout.print("Version\n", .{});

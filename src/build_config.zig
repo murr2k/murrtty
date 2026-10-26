@@ -103,3 +103,15 @@ pub const is_debug = switch (builtin.mode) {
     .debug, .safe => true,
     .fast, .small => false,
 };
+
+/// Built as murrtty, the Windows fork of Ghostty: the product's own name
+/// where users and programs see it. Ghostty's internal names (types, the
+/// GHOSTTY_* variables of the shell integration, the resource folder) stay.
+pub const murrtty = builtin.target.os.tag == .windows;
+
+/// The product's name as users read it.
+pub const product_name = if (murrtty) "murrtty" else "Ghostty";
+
+/// The product's name as an identifier: TERM_PROGRAM and the configuration
+/// folder.
+pub const product_id = if (murrtty) "murrtty" else "ghostty";

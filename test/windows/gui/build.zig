@@ -1,7 +1,7 @@
 //! The GUI test harness builds on its own, so it needs no changes to
 //! Ghostty's build.zig. From the repository root:
 //!
-//!   zig build --build-file test\windows\gui\build.zig run -- --ghostty zig-out\bin\ghostty.exe
+//!   zig build --build-file test\windows\gui\build.zig run -- --ghostty zig-out\bin\murrtty.exe
 //!
 //! or test\windows\gui\run.cmd, which also builds a Debug Ghostty first.
 const std = @import("std");

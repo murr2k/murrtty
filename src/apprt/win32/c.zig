@@ -702,6 +702,7 @@ pub const SEE_MASK_INVOKEIDLIST = 0x0000000C;
 pub const SEE_MASK_NOASYNC = 0x00000100;
 pub const SEE_MASK_FLAG_NO_UI = 0x00000400;
 pub extern "shell32" fn ShellExecuteExW(*SHELLEXECUTEINFOW) callconv(.winapi) BOOL;
+pub extern "shell32" fn SetCurrentProcessExplicitAppUserModelID(LPCWSTR) callconv(.winapi) HRESULT;
 pub extern "shell32" fn ILCreateFromPathW(LPCWSTR) callconv(.winapi) ?*anyopaque;
 pub extern "shell32" fn ILFree(?*anyopaque) callconv(.winapi) void;
 pub extern "shell32" fn SHGetPathFromIDListEx(*const anyopaque, [*]u16, DWORD, c_int) callconv(.winapi) BOOL;

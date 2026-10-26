@@ -1,6 +1,6 @@
 //! GUI tests for the Windows port. Usage:
 //!
-//!   ghostty-gui-test --ghostty <path to a Debug ghostty.exe> [options] [scenario...]
+//!   ghostty-gui-test --ghostty <path to a Debug murrtty.exe> [options] [scenario...]
 //!
 //!   --visible      run on the user's desktop instead of a hidden one
 //!   --verbose      print every passing check
@@ -59,7 +59,7 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
     const ghostty = exe orelse {
-        std.debug.print("usage: ghostty-gui-test --ghostty <Debug ghostty.exe> [--visible] [--verbose] [--skip <name>] [scenario...]\n", .{});
+        std.debug.print("usage: ghostty-gui-test --ghostty <Debug murrtty.exe> [--visible] [--verbose] [--skip <name>] [scenario...]\n", .{});
         return 2;
     };
 

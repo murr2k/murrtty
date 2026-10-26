@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
+const build_config = @import("../build_config.zig");
 const file_load = @import("file_load.zig");
 const global = @import("../global.zig");
 
@@ -131,6 +132,13 @@ fn configPathCandidates(alloc_arena: Allocator) ![]const []const u8 {
 
     paths.appendAssumeCapacity(try file_load.defaultXdgPath(alloc_arena));
     paths.appendAssumeCapacity(try file_load.legacyDefaultXdgPath(alloc_arena));
+
+    // murrtty reads Ghostty's file when it has none (Config.loadDefaultFiles);
+    // its own path stays first, so that is what a new file is created as.
+    if (comptime build_config.murrtty) {
+        try paths.append(alloc_arena, try file_load.ghosttyXdgPath(alloc_arena));
+        try paths.append(alloc_arena, try file_load.legacyGhosttyXdgPath(alloc_arena));
+    }
 
     return paths.items;
 }

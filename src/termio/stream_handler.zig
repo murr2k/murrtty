@@ -988,13 +988,13 @@ pub const StreamHandler = struct {
     pub fn reportXtversion(
         self: *StreamHandler,
     ) !void {
-        log.debug("reporting XTVERSION: ghostty {s}", .{build_config.version_string});
+        log.debug("reporting XTVERSION: {s} {s}", .{ build_config.product_id, build_config.version_string });
         var buf: [288]u8 = undefined;
         const resp = try std.mem.print(
             &buf,
             "\x1BP>|{s} {s}\x1B\\",
             .{
-                "ghostty",
+                build_config.product_id,
                 build_config.version_string,
             },
         );

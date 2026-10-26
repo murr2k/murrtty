@@ -16,7 +16,7 @@ const TabBar = @import("TabBar.zig");
 
 const log = std.log.scoped(.win32_window);
 
-pub const class_name = c.L("GhosttyWindow");
+pub const class_name = c.L("MurrttyWindow");
 
 /// Default client size in device-independent pixels.
 const default_width = 960;
@@ -77,7 +77,7 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     self.hwnd = c.CreateWindowExW(
         c.WS_EX_APPWINDOW,
         class_name,
-        c.L("Ghostty"),
+        c.L("murrtty"),
         c.WS_OVERLAPPEDWINDOW | c.WS_CLIPCHILDREN,
         c.CW_USEDEFAULT,
         c.CW_USEDEFAULT,
@@ -146,7 +146,7 @@ pub fn closeSurface(self: *Window, surface: *Surface, confirm: bool) void {
     if (confirm and self.needsConfirm(surface) and !self.app.confirm(
         self.hwnd,
         "A process is still running in this terminal. Close it anyway?",
-        "Ghostty: Close Tab",
+        "murrtty:Close Tab",
     )) return;
 
     const index = self.tabIndexOf(surface) orelse return;
@@ -319,7 +319,7 @@ pub fn closeTabs(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMo
             "A process is still running in this terminal. Close it anyway?"
         else
             "Processes are still running in the tabs being closed. Close them anyway?",
-        if (mode == .this) "Ghostty: Close Tab" else "Ghostty: Close Tabs",
+        if (mode == .this) "murrtty:Close Tab" else "murrtty:Close Tabs",
     )) return;
 
     for (targets.items) |t| {
@@ -491,7 +491,7 @@ pub fn requestClose(self: *Window) void {
             "Processes are still running in this window's tabs. Close it anyway?"
         else
             "A process is still running in this terminal. Close it anyway?",
-        "Ghostty: Close Window",
+        "murrtty:Close Window",
     )) return;
     self.destroy();
 }
@@ -510,7 +510,7 @@ pub fn surfaceTitleChanged(self: *Window, surface: *Surface) void {
 }
 
 pub fn syncTitle(self: *Window) void {
-    const title: []const u8 = if (self.activeSurface()) |s| s.title orelse "Ghostty" else "Ghostty";
+    const title: []const u8 = if (self.activeSurface()) |s| s.title orelse "murrtty" else "murrtty";
     const alloc = self.app.core_app.alloc;
     // A magnifier marks a zoomed tab, as on its tab (GTK marks both).
     const zoomed = if (self.activeTab()) |t| t.tree.zoomed != null else false;

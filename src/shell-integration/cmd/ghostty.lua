@@ -19,7 +19,9 @@
 -- the prompt's last line only, so of a prompt over several lines only the
 -- last is marked (the lines above it count as the last command's output).
 
-if os.getenv("TERM_PROGRAM") ~= "ghostty" then return end
+-- murrtty, the Windows fork, sets its own name.
+local program = os.getenv("TERM_PROGRAM")
+if program ~= "ghostty" and program ~= "murrtty" then return end
 
 local ST = "\027\\"
 

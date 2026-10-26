@@ -28,6 +28,7 @@ pub const all = [_]Scenario{
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
+    .{ .name = "config-folder", .about = "murrtty's own config wins, Ghostty's is read when it has none, Ctrl+, opens the file in effect; TERM_PROGRAM is murrtty", .run = configFolder },
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
@@ -337,7 +338,7 @@ fn closeAll(h: *Harness) anyerror!void {
     const surf = try h.surface(&g, first);
     h.key(surf, .{ .ctrl = true, .shift = true }, 'N');
     w.Sleep(2500);
-    const wins = try h.windows(&g, "GhosttyWindow");
+    const wins = try h.windows(&g, "MurrttyWindow");
     defer h.alloc.free(wins);
     try h.expect(wins.len == 2, "Ctrl+Shift+N opens a second window (got {d})", .{wins.len});
 
@@ -347,7 +348,7 @@ fn closeAll(h: *Harness) anyerror!void {
     h.answer(&g, dlg, w.IDNO);
     w.Sleep(800);
     for (wins) |win| try h.expect(w.IsWindowEnabled(win) != 0, "No re-enables every window", .{});
-    const still = try h.windows(&g, "GhosttyWindow");
+    const still = try h.windows(&g, "MurrttyWindow");
     defer h.alloc.free(still);
     try h.expect(still.len == 2, "No keeps both windows", .{});
 
@@ -849,7 +850,7 @@ fn configErrors(h: *Harness) anyerror!void {
 
     // Fix the file (the misspelled key goes; a visible setting comes) and
     // reload from the dialog.
-    const path = try std.fmt.allocPrint(h.alloc, "{s}\\ghostty\\config.ghostty", .{g.dir});
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\config.ghostty", .{g.dir});
     defer h.alloc.free(path);
     try h.writeFileAt(path, base_config ++ "window-theme = light\n");
     dlg = try h.waitDialog(&g, 1000);
@@ -867,6 +868,66 @@ fn configErrors(h: *Harness) anyerror!void {
     while (try launchCount(h, &g, "edit-config ") < 2 and waited < 5000) : (waited += 200) w.Sleep(200);
     try h.expect(try launchCount(h, &g, "edit-config ") == 2, "Ctrl+, opens the config file", .{});
     try quit(h, &g, surf);
+}
+
+/// murrtty's configuration folder (XDG_CONFIG_HOME\murrtty here, normally
+/// %LOCALAPPDATA%\murrtty): its own file wins, Ghostty's is read when it has
+/// none, and Ctrl+, opens the file in effect. Programs in it see
+/// TERM_PROGRAM=murrtty.
+fn configFolder(h: *Harness) anyerror!void {
+    const own = base_config ++ "title = from-murrtty\n";
+    const ghosttys = base_config ++ "title = from-ghostty\n";
+    const cases = [_]struct { name: []const u8, murrtty: bool, ghostty: bool, title: []const u8, folder: []const u8 }{
+        .{ .name = "config-folder-own", .murrtty = true, .ghostty = false, .title = "from-murrtty", .folder = "murrtty" },
+        .{ .name = "config-folder-ghostty", .murrtty = false, .ghostty = true, .title = "from-ghostty", .folder = "ghostty" },
+        .{ .name = "config-folder-both", .murrtty = true, .ghostty = true, .title = "from-murrtty", .folder = "murrtty" },
+    };
+    for (cases) |case| {
+        var g = try h.launchWith(case.name, own, .{
+            .murrtty_config = case.murrtty,
+            .ghostty_config = if (case.ghostty) ghosttys else null,
+        });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        try waitTabTitle(h, &g, 0, case.title);
+
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        h.key(surf, .{ .ctrl = true }, w.VK_OEM_COMMA);
+        const want = try std.fmt.allocPrint(h.alloc, "edit-config {s}\\{s}\\config.ghostty", .{ g.dir, case.folder });
+        defer h.alloc.free(want);
+        var opened = false;
+        var waited: u32 = 0;
+        while (!opened and waited <= 5000) : (waited += 200) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            for (d.value.launches) |l| {
+                if (pathEql(l, want)) opened = true;
+            }
+            if (!opened) w.Sleep(200);
+        }
+        try h.expect(opened, "{s}: Ctrl+, opens the {s} folder's file", .{ case.name, case.folder });
+        try quit(h, &g, surf);
+    }
+
+    var g = try start(h, "config-folder-env", "", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    try h.typeText(surf, "echo program=%TERM_PROGRAM%");
+    h.enter(surf);
+    try h.waitText(&g, "program=murrtty", 1, 10000);
+    try quit(h, &g, surf);
+}
+
+/// Whether two Windows paths are the same text, ignoring case and taking
+/// `/` and `\` as one (the core joins its config subfolder with `/`).
+fn pathEql(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        const xs = if (x == '/') '\\' else std.ascii.toLower(x);
+        const ys = if (y == '/') '\\' else std.ascii.toLower(y);
+        if (xs != ys) return false;
+    }
+    return true;
 }
 
 /// The visible text of the first tab, once `needle` is in it.
@@ -943,7 +1004,7 @@ fn fonts(h: *Harness) anyerror!void {
     var g = try start(h, "fonts", "font-family = Consolas\n", ">");
     defer g.deinit();
     w.Sleep(1000);
-    const path = try std.fmt.allocPrint(h.alloc, "{s}\\ghostty.log", .{g.dir});
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty.log", .{g.dir});
     defer h.alloc.free(path);
     const log = h.readFileOrNull(path) orelse return h.fail("no log", .{});
     defer h.alloc.free(log);
@@ -1000,7 +1061,7 @@ fn backgroundClose(h: *Harness) anyerror!void {
     // A second window, which becomes the active one.
     h.key(try h.surface(&g, a), .{ .ctrl = true, .shift = true }, 'N');
     w.Sleep(2500);
-    const wins = try h.windows(&g, "GhosttyWindow");
+    const wins = try h.windows(&g, "MurrttyWindow");
     defer h.alloc.free(wins);
     try h.expect(wins.len == 2, "Ctrl+Shift+N opens a second window (got {d})", .{wins.len});
     const b = if (wins[0] == a) wins[1] else wins[0];
@@ -2085,7 +2146,7 @@ fn focusFollowsMouse(h: *Harness) anyerror!void {
     // leaves the focus, and the activation, alone.
     h.key(right, cs, 'N');
     w.Sleep(2500);
-    const wins = try h.windows(&g, "GhosttyWindow");
+    const wins = try h.windows(&g, "MurrttyWindow");
     defer h.alloc.free(wins);
     try h.expect(wins.len == 2, "Ctrl+Shift+N opens a second window (got {d})", .{wins.len});
     const other = if (wins[0] == win) wins[1] else wins[0];

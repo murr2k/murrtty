@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
+const build_config = @import("../build_config.zig");
 const internal_os = @import("../os/main.zig");
 const global = @import("../global.zig");
 
@@ -10,26 +11,34 @@ const log = std.log.scoped(.config);
 /// Default path for the XDG home configuration file. Returned value
 /// must be freed by the caller.
 pub fn defaultXdgPath(alloc: Allocator) ![]const u8 {
-    var environ_map = try global.environMap();
-    defer environ_map.deinit();
-    return try internal_os.xdg.config(
-        global.io(),
-        alloc,
-        &environ_map,
-        .{ .subdir = "ghostty/config.ghostty" },
-    );
+    return xdgPath(alloc, build_config.product_id ++ "/config.ghostty");
 }
 
 /// Ghostty <1.3.0 default path for the XDG home configuration file.
 /// Returned value must be freed by the caller.
 pub fn legacyDefaultXdgPath(alloc: Allocator) ![]const u8 {
+    return xdgPath(alloc, build_config.product_id ++ "/config");
+}
+
+/// murrtty: Ghostty's own configuration file (and its legacy name), which
+/// murrtty reads when it has none of its own, so an existing Ghostty setup
+/// keeps working. Returned values must be freed by the caller.
+pub fn ghosttyXdgPath(alloc: Allocator) ![]const u8 {
+    return xdgPath(alloc, "ghostty/config.ghostty");
+}
+
+pub fn legacyGhosttyXdgPath(alloc: Allocator) ![]const u8 {
+    return xdgPath(alloc, "ghostty/config");
+}
+
+fn xdgPath(alloc: Allocator, subdir: []const u8) ![]const u8 {
     var environ_map = try global.environMap();
     defer environ_map.deinit();
     return try internal_os.xdg.config(
         global.io(),
         alloc,
         &environ_map,
-        .{ .subdir = "ghostty/config" },
+        .{ .subdir = subdir },
     );
 }
 
@@ -51,10 +60,23 @@ pub fn preferredXdgPath(alloc: Allocator) ![]const u8 {
         alloc.free(xdg_path);
         return legacy_xdg_path;
     } else |_| {}
+    alloc.free(legacy_xdg_path);
+
+    // murrtty without a file of its own uses Ghostty's (see
+    // Config.loadDefaultFiles), so that is the file to edit.
+    if (comptime build_config.murrtty) {
+        inline for (.{ ghosttyXdgPath, legacyGhosttyXdgPath }) |func| {
+            const path = try func(alloc);
+            if (open(global.io(), path)) |f| {
+                f.close(global.io());
+                alloc.free(xdg_path);
+                return path;
+            } else |_| alloc.free(path);
+        }
+    }
 
     // Legacy path and XDG path both don't exist. Return the
     // new one.
-    alloc.free(legacy_xdg_path);
     return xdg_path;
 }
 

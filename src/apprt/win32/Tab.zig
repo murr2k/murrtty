@@ -15,7 +15,7 @@ const Surface = @import("Surface.zig");
 
 const log = std.log.scoped(.win32_tab);
 
-pub const class_name = c.L("GhosttyTab");
+pub const class_name = c.L("MurrttyTab");
 
 pub const Tree = SplitTree(Surface);
 pub const Layout = split_layout.Layout(Surface);
@@ -155,7 +155,7 @@ pub fn contains(self: *const Tab, surface: *const Surface) bool {
 
 /// The tab's title: its focused pane's.
 pub fn title(self: *const Tab) []const u8 {
-    return self.focused.title orelse "Ghostty";
+    return self.focused.title orelse "murrtty";
 }
 
 /// Show or hide the tab (tab switches, minimize). Hidden panes, and panes
