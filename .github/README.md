@@ -67,8 +67,11 @@ hosted Windows runner and then the unit tests.
   `Ctrl+Shift+Up`/`Down`; closing at an idle prompt doesn't ask), follows the
   shell's directory (new tabs and splits open there, relative links resolve
   against it), and shows the folder, or PowerShell's running command, as the
-  tab title. See `src/shell-integration/README.md`. Without integration, cmd's
-  directory is still followed by reading it from the cmd process.
+  tab title. See `src/shell-integration/README.md`. With
+  [Clink](https://chrisant996.github.io/clink/) 1.4.25 or later, cmd also
+  reports each command's start and exit status (Ghostty doesn't show exit
+  statuses yet). Without integration, cmd's directory is still followed by
+  reading it from the cmd process.
 - Rendering with exact colors, fallback fonts for CJK and symbols, and color
   emoji.
 - Typing, Enter, Unicode text entry, mouse selection, copy and paste. On the
@@ -138,9 +141,6 @@ hosted Windows runner and then the unit tests.
   Ghostty asks Windows for, not yet what appears on screen.
 - Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, bell and paste
   protection.
-- cmd's integration through [Clink](https://chrisant996.github.io/clink/),
-  which adds the command's start and exit status (Ghostty doesn't show exit
-  statuses yet).
 
 **Not implemented yet**
 

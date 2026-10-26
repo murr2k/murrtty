@@ -1952,9 +1952,20 @@ fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
     const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
     defer h.alloc.free(config);
     // In the launch's folder, never the user's (Clink's files there keep
-    // the run folder from being removed).
+    // the run folder from being removed). Its settings turn the updater
+    // off: a new profile's first prompt otherwise checks GitHub, and once
+    // stopped taking input until the test gave up.
     const profile = try std.fmt.allocPrint(h.alloc, "{s}\\{s}\\clink-profile", .{ h.temp_dir, name });
     defer h.alloc.free(profile);
+    if (run == .clink) {
+        const launch_dir = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ h.temp_dir, name });
+        defer h.alloc.free(launch_dir);
+        try h.makeDirAt(launch_dir);
+        try h.makeDirAt(profile);
+        const settings = try std.fmt.allocPrint(h.alloc, "{s}\\clink_settings", .{profile});
+        defer h.alloc.free(settings);
+        try h.writeFileAt(settings, "clink.autoupdate = off\n");
+    }
     var path_buf: [32767]u16 = undefined;
     const path_len = w.GetEnvironmentVariableW(w.L("PATH"), &path_buf, path_buf.len);
     const path = try std.unicode.utf16LeToUtf8Alloc(h.alloc, path_buf[0..@min(path_len, path_buf.len)]);
