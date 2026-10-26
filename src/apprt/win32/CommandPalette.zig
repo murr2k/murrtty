@@ -306,7 +306,7 @@ fn build(self: *CommandPalette, app: *App) !void {
             const s = pane.view;
             // One still starting can't be focused yet.
             if (!s.core_initialized) continue;
-            const title = s.title orelse "murrtty";
+            const title = s.effectiveTitle() orelse "murrtty";
             const pwd: []const u8 = try s.core_surface.pwd(alloc) orelse "";
             var detail: std.Io.Writer.Allocating = .init(alloc);
             if (several) try detail.writer.print("Window {d}, tab {d}", .{ wi, ti }) else try detail.writer.print("Tab {d}", .{ti});

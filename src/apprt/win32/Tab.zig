@@ -32,6 +32,10 @@ tree: Tree = .empty,
 /// The pane that has the focus, or had it last.
 focused: *Surface,
 
+/// The user's name for the tab (prompt_tab_title, set_tab_title), shown
+/// instead of its focused pane's title.
+title_override: ?[:0]u8 = null,
+
 /// Bumped whenever panes are added or removed, so an operation that
 /// started before (a divider drag) can tell that its panes changed.
 generation: u64 = 0,
@@ -141,6 +145,7 @@ pub fn destroy(self: *Tab, destroy_window: bool) void {
 
     // The panes' renderers have stopped, so their windows can go.
     if (destroy_window) _ = c.DestroyWindow(self.hwnd);
+    if (self.title_override) |v| alloc.free(v);
     alloc.destroy(self);
 }
 
@@ -153,9 +158,22 @@ pub fn contains(self: *const Tab, surface: *const Surface) bool {
     return self.tree.locate(surface) != null;
 }
 
-/// The tab's title: its focused pane's.
+/// The tab's title: the user's name for it, else its focused pane's
+/// (that pane's name, else its program's title).
 pub fn title(self: *const Tab) []const u8 {
-    return self.focused.title orelse "murrtty";
+    return self.title_override orelse self.focused.effectiveTitle() orelse "murrtty";
+}
+
+/// Name the tab, or (null, or empty) go back to its pane's title.
+pub fn setTitleOverride(self: *Tab, name: ?[]const u8) void {
+    const alloc = self.window.app.core_app.alloc;
+    if (self.title_override) |v| alloc.free(v);
+    self.title_override = null;
+    if (name) |t| if (t.len > 0) {
+        self.title_override = alloc.dupeSentinel(u8, t, 0) catch null;
+    };
+    self.window.syncTitle();
+    self.window.invalidateTabBar();
 }
 
 /// Show or hide the tab (tab switches, minimize). Hidden panes, and panes

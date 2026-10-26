@@ -176,6 +176,19 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         // or -1 for the system's.
         const caption: i64 = if (w.chrome.caption) |ref| rgbOf(ref) else -1;
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
+        // The caption's text, and the user's name for the window ("" for
+        // none).
+        {
+            var wide: [512]u16 = undefined;
+            const n: usize = @intCast(@max(c.GetWindowTextW(w.hwnd, &wide, wide.len), 0));
+            const text = try std.unicode.utf16LeToUtf8Alloc(alloc, wide[0..n]);
+            defer alloc.free(text);
+            try out.appendSlice(alloc, "\"caption\":");
+            try writeString(alloc, out, text);
+            try out.appendSlice(alloc, ",\"window_name\":");
+            try writeString(alloc, out, w.title_override orelse "");
+            try out.append(alloc, ',');
+        }
 
         // The command palette: open, whether it has the keyboard, its
         // windows (to type into and click), a row's height, the filter's
@@ -236,6 +249,14 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 c.IsWindowVisible(s.hwnd) != 0,
             });
             try writeString(alloc, out, s.title orelse "");
+            // What the tab shows, and the user's names for the tab and its
+            // focused pane ("" for none).
+            try out.appendSlice(alloc, ",\"label\":");
+            try writeString(alloc, out, tab.title());
+            try out.appendSlice(alloc, ",\"tab_name\":");
+            try writeString(alloc, out, tab.title_override orelse "");
+            try out.appendSlice(alloc, ",\"pane_name\":");
+            try writeString(alloc, out, s.title_override orelse "");
             if (s.core_initialized) {
                 // Cell size and padding in pixels, to click on a cell.
                 const size = s.core_surface.size;

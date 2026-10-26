@@ -1240,6 +1240,25 @@ pages, as Windows' scroll bars do) and repeating while the track is held.
 *Done when:* a renamed tab keeps its name while programs set OSC 2 titles, and
 clearing the name restores the program's title.
 
+*Done 2026-10-26.* GTK's layering: a pane shows its name
+(`prompt_surface_title`) over its program's title (`Surface.effectiveTitle`),
+a tab its name (`prompt_tab_title`, `set_tab_title`) over its focused
+pane's, the caption the window's name (`prompt_window_title`,
+`set_window_title`) over its active tab's; a blank name goes back to the
+one beneath. `win32/TitleDialog.zig` is GTK's prompt as a real dialog from
+a template built in memory ("Change Terminal Title", "Change Tab Title" or
+"Change Window Title"; "Leave blank to restore the default title."; the
+current title, selected; OK and Cancel), so Enter, Escape and Tab work as in
+any dialog. It runs from the message loop as an `App.Request`
+(`prompt_title`), in a modal scope, never inside the core's key handling.
+A double click on a tab renames it (the window class takes double clicks;
+on the close and new-tab buttons a double click is two clicks).
+`copy_title_to_clipboard` copies the pane's effective title; the palette's
+Focus: entries and the context menu's Change Title items use these too.
+Scenario `titles` (rename, a program's title under a name, blank, Cancel,
+the window's name, the pane's name, copying, a double click); the dump
+reports the caption, each tab's label and the names.
+
 **3.6 Status overlays, M.** Using 3.0:
 - the link hover preview (`mouse_over_link`, `link-previews`);
 - the resize overlay (`resize-overlay`, default after-first); *done in 3.0*;

@@ -152,6 +152,11 @@ hosted Windows runner and then the unit tests.
   is ("Window 2, tab 1: C:\src"). Typing filters by title, by the line
   beneath it, or by letters in order; `Up`/`Down` choose, `Enter` or a
   click runs, `Esc`, a click outside or `Ctrl+Shift+P` again closes.
+- Renaming, as in Ghostty's GTK app: a tab (double-click it, or the
+  context menu's Tab > Change Tab Title..., or `prompt_tab_title`), a
+  terminal (`prompt_surface_title`) or a window (`prompt_window_title`,
+  `set_window_title`). A name stays while programs set their titles; a
+  blank one restores theirs. `copy_title_to_clipboard` copies the title.
 - An overlay scrollbar, as in Ghostty's GTK app: a thin thumb at the right
   edge shows while you scroll or move the mouse, widens under the mouse,
   drags, and pages with a click on the track; it fades when idle (not when
@@ -194,7 +199,7 @@ hosted Windows runner and then the unit tests.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the rest of the everyday UI: titles, status overlays and toasts
+with the rest of the everyday UI: status overlays, toasts and the bell
 (Phase 3).
 
 **Known issues**

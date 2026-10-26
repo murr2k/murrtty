@@ -47,7 +47,10 @@ hwnd: c.HWND,
 core_surface: CoreSurface = undefined,
 core_initialized: bool = false,
 
+/// The title the program set (OSC 0/2, or set_surface_title), and the
+/// user's name for the pane over it (prompt_surface_title).
 title: ?[:0]const u8 = null,
+title_override: ?[:0]const u8 = null,
 
 /// The terminal's background and foreground as they are now, which the
 /// window's caption and tab strip follow: the surface's config's until a
@@ -362,6 +365,8 @@ pub fn deinit(self: *Surface) void {
 
     if (self.title) |v| self.app.core_app.alloc.free(v);
     self.title = null;
+    if (self.title_override) |v| self.app.core_app.alloc.free(v);
+    self.title_override = null;
     self.resize_overlay.deinit();
     self.search.deinit();
 }
@@ -613,6 +618,24 @@ pub fn setTitle(self: *Surface, title: [:0]const u8) void {
     if (self.title) |v| alloc.free(v);
     self.title = alloc.dupeSentinel(u8, title, 0) catch null;
     self.window.surfaceTitleChanged(self);
+}
+
+/// Name the pane over the program's title, or (null, or empty) go back to
+/// the program's (GTK's prompt_surface_title).
+pub fn setTitleOverride(self: *Surface, title: ?[]const u8) void {
+    const alloc = self.app.core_app.alloc;
+    if (self.title_override) |v| alloc.free(v);
+    self.title_override = null;
+    if (title) |t| if (t.len > 0) {
+        self.title_override = alloc.dupeSentinel(u8, t, 0) catch null;
+    };
+    self.window.surfaceTitleChanged(self);
+}
+
+/// What the pane is called: the user's name for it, else the program's
+/// title (GTK's effective title).
+pub fn effectiveTitle(self: *const Surface) ?[:0]const u8 {
+    return self.title_override orelse self.title;
 }
 
 /// Show or hide this surface (tab switches, minimize). Hidden surfaces

@@ -20,6 +20,7 @@ const Tab = @import("Tab.zig");
 const text_util = @import("text.zig");
 const test_hooks = @import("test_hooks.zig");
 const url = @import("url.zig");
+const TitleDialog = @import("TitleDialog.zig");
 const Window = @import("Window.zig");
 
 const log = std.log.scoped(.win32);
@@ -53,6 +54,8 @@ pub const Request = union(enum) {
     open_config,
     /// Show the config's errors (see showConfigErrors).
     config_errors,
+    /// Ask for a pane's, its tab's or its window's title (TitleDialog).
+    prompt_title: struct { id: u64, which: apprt.action.PromptTitle },
 
     fn deinit(self: Request, alloc: Allocator) void {
         switch (self) {
@@ -282,6 +285,40 @@ pub fn request(self: *App, req: Request) void {
     if (self.modal_depth == 0) _ = c.PostMessageW(self.wakeup_hwnd, WM_RUN_REQUESTS, 0, 0);
 }
 
+/// Ask for the title of `surface`, its tab or its window (prompt_title, a
+/// double click on a tab), from the message loop: the core calls with a
+/// key or a click still being handled.
+pub fn promptTitle(self: *App, surface: *Surface, which: apprt.action.PromptTitle) void {
+    if (!surface.core_initialized) return;
+    self.request(.{ .prompt_title = .{ .id = surface.core_surface.id, .which = which } });
+}
+
+fn runTitlePrompt(self: *App, surface: *Surface, which: apprt.action.PromptTitle) void {
+    const alloc = self.core_app.alloc;
+    const window = surface.window;
+    const tab = if (window.tabIndexOf(surface)) |i| window.tabs.items[i] else return;
+    // The current title, GTK's: the pane's or tab's as shown, the window's
+    // caption.
+    const initial: []const u8 = switch (which) {
+        .surface => surface.effectiveTitle() orelse "",
+        .tab => tab.title(),
+        .window => window.title_override orelse tab.title(),
+    };
+    // Closes wait until it ends, so the pane, tab and window stay.
+    var modal = self.beginModal(window.hwnd, .{});
+    defer modal.end();
+    const name = TitleDialog.ask(alloc, window.hwnd, which, initial) catch |err| {
+        log.warn("title prompt failed err={}", .{err});
+        return;
+    } orelse return;
+    defer alloc.free(name);
+    switch (which) {
+        .surface => surface.setTitleOverride(name),
+        .tab => tab.setTitleOverride(name),
+        .window => window.setTitleOverride(name),
+    }
+}
+
 /// A WM_MOUSEMOVE at client (x, y) of `hwnd` (a pane, a tab's container or
 /// a window's tab bar): records where the mouse is, in screen coordinates,
 /// and returns whether it moved since it was last seen. A window laid out
@@ -326,6 +363,7 @@ fn runRequests(self: *App) void {
                 self.config_errors_queued = false;
                 self.showConfigErrors();
             },
+            .prompt_title => |v| if (self.findSurface(v.id)) |s| self.runTitlePrompt(s, v.which),
             .open_url => |v| {
                 defer req.deinit(self.core_app.alloc);
                 self.openUrl(v);
@@ -1274,6 +1312,27 @@ pub fn performAction(
             surface.search.setSelected(value.selected);
         },
 
+        // Titles (roadmap 3.5): the user's names over the program's.
+        .prompt_title => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            self.promptTitle(surface, value);
+        },
+        .set_tab_title => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            const i = surface.window.tabIndexOf(surface) orelse return false;
+            surface.window.tabs.items[i].setTitleOverride(value.title);
+        },
+        .set_window_title => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.window.setTitleOverride(value.title);
+        },
+        .copy_title_to_clipboard => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            const title = surface.effectiveTitle() orelse return false;
+            if (title.len == 0) return false;
+            try surface.setClipboard(.standard, &.{.{ .mime = "text/plain", .data = title }}, false);
+        },
+
         // The scrollbar (roadmap 3.4): the scrollable area changed.
         .scrollbar => {
             const surface = surfaceFromTarget(target) orelse return false;
@@ -1320,14 +1379,8 @@ fn allowDarkMenus() void {
 pub fn supportsAction(action: input.Binding.Action) bool {
     return switch (action) {
         // Runtime actions not implemented yet.
-        .copy_title_to_clipboard,
         .move_tab_to_new_window,
         .toggle_tab_overview,
-        .prompt_surface_title,
-        .prompt_tab_title,
-        .prompt_window_title,
-        .set_tab_title,
-        .set_window_title,
         .reset_window_size,
         .inspector,
         .show_gtk_inspector,

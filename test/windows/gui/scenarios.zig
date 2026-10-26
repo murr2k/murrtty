@@ -31,6 +31,7 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
+    .{ .name = "titles", .about = "rename prompts (tab, terminal) over program titles, blank restores, Cancel, set_window_title, copy_title_to_clipboard, double-click a tab", .run = titles },
     .{ .name = "scrollbar", .about = "overlay scrollbar: none without scrollback, shows on a move, widens pressed, drag to the top, track click pages, fades, none on the alternate screen, scrollbar = never", .run = scrollbar },
     .{ .name = "config-errors", .about = "config errors show a dialog; Open Configuration, fix, Reload; Ctrl+, opens the file", .run = configErrors },
     .{ .name = "config-folder", .about = "murrtty's own config wins, Ghostty's is read when it has none, Ctrl+, opens the file in effect; TERM_PROGRAM is murrtty", .run = configFolder },
@@ -973,7 +974,7 @@ fn contextMenu(h: *Harness) anyerror!void {
     try h.waitText(&g, "hello-menu", 3, 5000);
     try h.expect(true, "Paste typed the clipboard at the prompt", .{});
 
-    // Tab > New Tab; its Change Tab Title isn't implemented yet.
+    // Tab > New Tab; Change Tab Title is there too (roadmap 3.5).
     h.rightPress(surf, at.x, at.y);
     menu = try h.waitMenu(&g, 1, 5000);
     h.menuKey(menu, 't');
@@ -981,7 +982,7 @@ fn contextMenu(h: *Harness) anyerror!void {
     {
         const items = try h.menuItems(sub);
         defer h.freeMenuItems(items);
-        try h.expect(items.len == 3 and items[0].grayed, "Tab: Change Tab Title grayed (got {d} items)", .{items.len});
+        try h.expect(items.len == 3 and !items[0].grayed and std.mem.startsWith(u8, items[0].text, "Change Tab &Title..."), "Tab: Change Tab Title, enabled ('{s}', {d} items)", .{ items[0].text, items.len });
         try h.expect(std.mem.eql(u8, items[1].text, "&New Tab\tCtrl+Shift+T") and !items[1].grayed, "New Tab with its binding ('{s}')", .{items[1].text});
     }
     h.menuKey(sub, 'n');
@@ -1359,6 +1360,196 @@ fn commandPalette(h: *Harness) anyerror!void {
     try quit(h, &g, second);
 }
 
+/// Titles (roadmap 3.5, GTK's): a program's title shows on the tab and the
+/// caption; the tab's rename prompt ("Change Tab Title", the current title
+/// selected) overrides it and keeps it while the program sets new titles;
+/// a blank name restores the program's; Cancel changes nothing;
+/// set_window_title overrides the caption only; prompt_surface_title names
+/// the pane; copy_title_to_clipboard copies what shows; a double click on
+/// a tab opens its prompt.
+fn titles(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    var g = try start(h, "titles",
+        \\keybind = ctrl+shift+f2=prompt_tab_title
+        \\keybind = ctrl+shift+f3=set_window_title:win-title
+        \\keybind = ctrl+shift+f4=set_window_title:
+        \\keybind = ctrl+shift+f5=prompt_surface_title
+        \\keybind = ctrl+shift+f6=copy_title_to_clipboard
+        \\
+    , ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+
+    try h.typeText(surf, "title program-one");
+    h.enter(surf);
+    _ = try waitTitles(h, &g, "program-one", "program-one");
+
+    // Rename the tab.
+    h.key(surf, cs, w.VK_F2);
+    var dlg = try h.waitDialog(&g, 5000);
+    try expectTitleDialog(h, dlg, "Change Tab Title", "program-one");
+    try setDialogText(h, dlg, "renamed");
+    h.answer(&g, dlg, w.IDOK);
+    try waitNoDialog(h, &g);
+    _ = try waitTitles(h, &g, "renamed", "renamed");
+
+    // The program's next title doesn't replace the name.
+    try h.typeText(surf, "title program-two");
+    h.enter(surf);
+    var t = try waitProgramTitle(h, &g, "program-two");
+    try h.expect(std.mem.eql(u8, t.label(), "renamed") and std.mem.eql(u8, t.caption(), "renamed"), "the tab keeps its name while the program sets titles ('{s}')", .{t.label()});
+
+    // A blank name restores the program's.
+    h.key(surf, cs, w.VK_F2);
+    dlg = try h.waitDialog(&g, 5000);
+    try expectTitleDialog(h, dlg, "Change Tab Title", "renamed");
+    try setDialogText(h, dlg, "");
+    h.answer(&g, dlg, w.IDOK);
+    try waitNoDialog(h, &g);
+    _ = try waitTitles(h, &g, "program-two", "program-two");
+
+    // Cancel changes nothing.
+    h.key(surf, cs, w.VK_F2);
+    dlg = try h.waitDialog(&g, 5000);
+    try setDialogText(h, dlg, "not-this");
+    h.answer(&g, dlg, w.IDCANCEL);
+    try waitNoDialog(h, &g);
+    t = try titleState(h, &g);
+    try h.expect(std.mem.eql(u8, t.label(), "program-two"), "Cancel keeps the title ('{s}')", .{t.label()});
+
+    // The window's name: the caption only; empty clears it.
+    h.key(surf, cs, w.VK_F3);
+    _ = try waitTitles(h, &g, "program-two", "win-title");
+    h.key(surf, cs, w.VK_F4);
+    _ = try waitTitles(h, &g, "program-two", "program-two");
+
+    // The pane's name, through its prompt.
+    h.key(surf, cs, w.VK_F5);
+    dlg = try h.waitDialog(&g, 5000);
+    try expectTitleDialog(h, dlg, "Change Terminal Title", "program-two");
+    try setDialogText(h, dlg, "pane-name");
+    h.answer(&g, dlg, w.IDOK);
+    try waitNoDialog(h, &g);
+    _ = try waitTitles(h, &g, "pane-name", "pane-name");
+
+    // Copying the title copies what shows.
+    h.key(surf, cs, w.VK_F6);
+    try waitClipboard(h, "pane-name");
+
+    // A double click on a tab opens its prompt (two tabs show the bar).
+    h.key(surf, cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    w.Sleep(500);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const r = d.value.windows[0].tab_bar.tabs[0].rect;
+        h.doubleClick(win, @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2));
+    }
+    dlg = try h.waitDialog(&g, 5000);
+    try expectTitleDialog(h, dlg, "Change Tab Title", "pane-name");
+    h.answer(&g, dlg, w.IDCANCEL);
+    try waitNoDialog(h, &g);
+    try quit(h, &g, try h.surface(&g, win));
+}
+
+/// The active tab's focused pane's program title, the tab's label and the
+/// caption (copies: the dump they come from is freed).
+const TitleState = struct {
+    program_buf: [128]u8 = undefined,
+    program_len: usize = 0,
+    label_buf: [128]u8 = undefined,
+    label_len: usize = 0,
+    caption_buf: [128]u8 = undefined,
+    caption_len: usize = 0,
+
+    fn program(self: *const TitleState) []const u8 {
+        return self.program_buf[0..self.program_len];
+    }
+    fn label(self: *const TitleState) []const u8 {
+        return self.label_buf[0..self.label_len];
+    }
+    fn caption(self: *const TitleState) []const u8 {
+        return self.caption_buf[0..self.caption_len];
+    }
+};
+
+fn titleState(h: *Harness, g: *Harness.Ghostty) !TitleState {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    const tab = dw.tabs[dw.active];
+    var r: TitleState = .{};
+    r.program_len = copyInto(&r.program_buf, tab.title);
+    r.label_len = copyInto(&r.label_buf, tab.label);
+    r.caption_len = copyInto(&r.caption_buf, dw.caption);
+    return r;
+}
+
+fn copyInto(buf: []u8, s: []const u8) usize {
+    const n = @min(buf.len, s.len);
+    @memcpy(buf[0..n], s[0..n]);
+    return n;
+}
+
+/// Wait until the active tab shows `label` and the caption reads `caption`.
+fn waitTitles(h: *Harness, g: *Harness.Ghostty, label: []const u8, caption: []const u8) !TitleState {
+    var last: TitleState = .{};
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 100) {
+        last = try titleState(h, g);
+        if (std.mem.eql(u8, last.label(), label) and std.mem.eql(u8, last.caption(), caption)) {
+            try h.expect(true, "the tab shows '{s}', the caption '{s}'", .{ label, caption });
+            return last;
+        }
+        w.Sleep(100);
+    }
+    return h.fail("the tab shows '{s}' and the caption '{s}', not '{s}' and '{s}'", .{ last.label(), last.caption(), label, caption });
+}
+
+/// Wait until the active tab's program has set `title`.
+fn waitProgramTitle(h: *Harness, g: *Harness.Ghostty, title: []const u8) !TitleState {
+    var last: TitleState = .{};
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 100) {
+        last = try titleState(h, g);
+        if (std.mem.eql(u8, last.program(), title)) return last;
+        w.Sleep(100);
+    }
+    return h.fail("the program's title is '{s}', not '{s}'", .{ last.program(), title });
+}
+
+/// The title prompt's caption, and its field holding `initial`, selected.
+fn expectTitleDialog(h: *Harness, dlg: w.HWND, caption: []const u8, initial: []const u8) !void {
+    const t = try h.title(dlg);
+    defer h.alloc.free(t);
+    const edit = w.GetDlgItem(dlg, 100) orelse return h.fail("the prompt has no field", .{});
+    var buf: [256]u16 = undefined;
+    var n: usize = 0;
+    _ = w.SendMessageTimeoutW(edit, w.WM_GETTEXT, buf.len, @bitCast(@intFromPtr(&buf)), w.SMTO_ABORTIFHUNG, 2000, &n);
+    var text_buf: [512]u8 = undefined;
+    const len = std.unicode.utf16LeToUtf8(&text_buf, buf[0..n]) catch 0;
+    var sel: usize = 0;
+    _ = w.SendMessageTimeoutW(edit, w.EM_GETSEL, 0, 0, w.SMTO_ABORTIFHUNG, 2000, &sel);
+    const selected = (sel & 0xFFFF) == 0 and (sel >> 16) == n;
+    try h.expect(
+        std.mem.eql(u8, t, caption) and std.mem.eql(u8, text_buf[0..len], initial) and selected,
+        "the prompt reads '{s}', with '{s}' selected",
+        .{ t, text_buf[0..len] },
+    );
+}
+
+fn setDialogText(h: *Harness, dlg: w.HWND, text: []const u8) !void {
+    const edit = w.GetDlgItem(dlg, 100) orelse return h.fail("the prompt has no field", .{});
+    const wide = try std.unicode.utf8ToUtf16LeAllocZ(h.alloc, text);
+    defer h.alloc.free(wide);
+    var result: usize = 0;
+    _ = w.SendMessageTimeoutW(edit, w.WM_SETTEXT, 0, @bitCast(@intFromPtr(wide.ptr)), w.SMTO_ABORTIFHUNG, 2000, &result);
+}
+
 /// The scrollbar (roadmap 3.4, GTK's overlay scrollbar): nothing without
 /// scrollback; with it, a mouse move shows a thin thumb at the bottom of
 /// the track; pressed in the band at the right edge it widens, and dragged
@@ -1574,8 +1765,8 @@ const PaletteState = struct {
         return false;
     }
     fn first(self: *const PaletteState) []const u8 {
-        const titles = self.titles[0..self.titles_len];
-        return titles[0 .. std.mem.indexOfScalar(u8, titles, '\n') orelse titles.len];
+        const listed = self.titles[0..self.titles_len];
+        return listed[0 .. std.mem.indexOfScalar(u8, listed, '\n') orelse listed.len];
     }
 };
 

@@ -602,6 +602,17 @@ pub extern "user32" fn SendMessageW(HWND, UINT, WPARAM, LPARAM) callconv(.winapi
 pub extern "user32" fn CallWindowProcW(isize, HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
 pub extern "gdi32" fn SetBkColor(HDC, COLORREF) callconv(.winapi) COLORREF;
 
+// The title prompt (a dialog from a template in memory)
+pub const WM_INITDIALOG = 0x0110;
+pub const DS_SETFONT = 0x40;
+pub const DS_MODALFRAME = 0x80;
+pub const WS_BORDER = 0x00800000;
+pub const BS_DEFPUSHBUTTON = 0x0001;
+pub const DLGPROC = *const fn (HWND, UINT, WPARAM, LPARAM) callconv(.winapi) isize;
+pub extern "user32" fn DialogBoxIndirectParamW(?HINSTANCE, *const anyopaque, ?HWND, DLGPROC, LPARAM) callconv(.winapi) isize;
+pub extern "user32" fn EndDialog(HWND, isize) callconv(.winapi) BOOL;
+pub extern "user32" fn GetDlgItem(?HWND, c_int) callconv(.winapi) ?HWND;
+
 // The command palette's list
 pub const HWND_TOP: ?HWND = null;
 pub const WS_VSCROLL = 0x00200000;

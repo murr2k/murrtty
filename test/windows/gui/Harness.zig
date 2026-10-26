@@ -860,6 +860,19 @@ pub fn clickMods(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: But
     }
 }
 
+/// A double click at client coordinates of `target` (a window whose class
+/// takes double clicks): press, release, then the second press arrives as
+/// WM_LBUTTONDBLCLK.
+pub fn doubleClick(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
+    _ = self;
+    const pos = w.makeLParam(x, y);
+    _ = w.PostMessageW(target, w.WM_MOUSEMOVE, 0, pos);
+    _ = w.PostMessageW(target, w.WM_LBUTTONDOWN, w.MK_LBUTTON, pos);
+    _ = w.PostMessageW(target, w.WM_LBUTTONUP, 0, pos);
+    _ = w.PostMessageW(target, w.WM_LBUTTONDBLCLK, w.MK_LBUTTON, pos);
+    _ = w.PostMessageW(target, w.WM_LBUTTONUP, 0, pos);
+}
+
 /// Move the mouse to client coordinates of `target` (no button down, or
 /// the left one held after `press`).
 pub fn move(self: *Harness, target: w.HWND, x: c_int, y: c_int, held: bool) void {
@@ -995,6 +1008,10 @@ pub const Dump = struct {
         /// The title bar as Ghostty set it: dark or light, and the caption
         /// color (0xRRGGBB) or -1 for the system's.
         chrome: ?struct { dark: bool, caption: i64 } = null,
+        /// The caption's text, and the user's name for the window ("" for
+        /// none).
+        caption: []const u8 = "",
+        window_name: []const u8 = "",
         /// The command palette: open, whether it has the keyboard, its
         /// filter field, list and dimming windows, a row's height, the
         /// selected row (-1 for none), the filter's text and the listed
@@ -1024,7 +1041,13 @@ pub const Dump = struct {
     pub const Tab = struct {
         hwnd: u64,
         visible: bool,
+        /// The focused pane's title as its program set it.
         title: []const u8,
+        /// What the tab shows, and the user's names for the tab and its
+        /// focused pane ("" for none).
+        label: []const u8 = "",
+        tab_name: []const u8 = "",
+        pane_name: []const u8 = "",
         cols: ?u32 = null,
         rows: ?u32 = null,
         /// Cell size and padding in pixels.

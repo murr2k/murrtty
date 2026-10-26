@@ -38,6 +38,10 @@ tab_bar: TabBar = .{},
 /// The command palette (toggle_command_palette).
 palette: CommandPalette = .{},
 
+/// The user's name for the window (prompt_window_title, set_window_title),
+/// shown in the caption instead of its active tab's title.
+title_override: ?[:0]u8 = null,
+
 /// Client size limits from the core, in device pixels: from the first
 /// pane, which is initialized before its tab exists.
 size_limit: ?apprt.action.SizeLimit = null,
@@ -63,6 +67,8 @@ pub fn registerClass(instance: c.HINSTANCE) !void {
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wndProc,
         .hInstance = instance,
+        // Double clicks: a double click on a tab renames it.
+        .style = c.CS_DBLCLKS,
         .hIcon = c.LoadIconW(instance, 1),
         .hCursor = c.LoadCursorW(null, c.IDC_ARROW),
         .lpszClassName = class_name,
@@ -292,7 +298,7 @@ fn minimumTabArea(self: *const Window) ?split_layout.Size {
     return min;
 }
 
-fn invalidateTabBar(self: *Window) void {
+pub fn invalidateTabBar(self: *Window) void {
     if (!self.tabBarVisible()) return;
     var r = self.tabBarRect();
     _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
@@ -484,6 +490,7 @@ fn onDestroy(self: *Window) void {
     self.tabs.deinit(alloc);
     self.tab_bar.deinit();
     self.palette.deinit(alloc);
+    if (self.title_override) |v| alloc.free(v);
 
     self.app.windowDestroyed(self);
     alloc.destroy(self);
@@ -519,8 +526,21 @@ pub fn surfaceTitleChanged(self: *Window, surface: *Surface) void {
     self.invalidateTabBar();
 }
 
+/// Name the window, or (null, or empty) go back to its active tab's title.
+pub fn setTitleOverride(self: *Window, name: ?[]const u8) void {
+    const alloc = self.app.core_app.alloc;
+    if (self.title_override) |v| alloc.free(v);
+    self.title_override = null;
+    if (name) |t| if (t.len > 0) {
+        self.title_override = alloc.dupeSentinel(u8, t, 0) catch null;
+    };
+    self.syncTitle();
+}
+
+/// The caption: the user's name for the window, else its active tab's
+/// title (GTK's).
 pub fn syncTitle(self: *Window) void {
-    const title: []const u8 = if (self.activeSurface()) |s| s.title orelse "murrtty" else "murrtty";
+    const title: []const u8 = self.title_override orelse if (self.activeTab()) |t| t.title() else "murrtty";
     const alloc = self.app.core_app.alloc;
     // A magnifier marks a zoomed tab, as on its tab (GTK marks both).
     const zoomed = if (self.activeTab()) |t| t.tree.zoomed != null else false;
@@ -924,6 +944,22 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             switch (self.tabBarHit(lparam)) {
                 .none => {},
                 .tab => |i| self.select(i),
+                .close => |i| self.requestCloseTab(i),
+                .new_tab => self.newTabFromActive(),
+            }
+            return 0;
+        },
+
+        // The second press of a double click: on a tab it renames the
+        // tab (from the message loop, as any prompt); on the buttons it is
+        // just another click.
+        c.WM_LBUTTONDBLCLK => {
+            switch (self.tabBarHit(lparam)) {
+                .none => {},
+                .tab => |i| {
+                    self.select(i);
+                    if (self.activeSurface()) |s| self.app.promptTitle(s, .tab);
+                },
                 .close => |i| self.requestCloseTab(i),
                 .new_tab => self.newTabFromActive(),
             }
