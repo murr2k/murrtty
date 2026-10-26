@@ -4045,6 +4045,9 @@ fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
     h.key(first, cs, 'T');
     try waitWindowTabs(h, &g, win, 2);
     try waitTabText(h, &g, 1, prompt);
+    // The prompt's text can show before the core's idle-prompt verdict,
+    // which decides whether the close asks.
+    try waitAtPrompt(h, &g, 1, true);
     const second = try h.surface(&g, win);
     h.key(second, cs, 'W');
     try waitWindowTabs(h, &g, win, 1);
