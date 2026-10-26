@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<rect x="64" y="64" width="896" height="896" rx="208" fill="#23252B"/>
+<rect x="66" y="66" width="892" height="892" rx="206" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="4"/>
+<path d="M272,420 A240,240 0 0 1 752,420 L752,812 Q704,900 656,812 Q608,740 560,812 Q512,900 464,812 Q416,740 368,812 Q320,900 272,812 Z" fill="#FFD60A"/>
+<path d="M272,420 A240,240 0 0 1 752,420 L752,812 Q704,900 656,812 Q608,740 560,812 Q512,900 464,812 Q416,740 368,812 Q320,900 272,812 Z" fill="none" stroke="#000000" stroke-opacity="0.18" stroke-width="6"/>
+<polyline points="358,372 434,432 358,492" fill="none" stroke="#16161B" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M500,431 V347 M500,363 Q500,319 541,319 Q580,319 580,363 V431 M580,363 Q580,319 621,319 Q660,319 660,363 V431" fill="none" stroke="#16161B" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="481" y="475" width="198" height="40" rx="8" fill="#16161B"/>
+</svg>
