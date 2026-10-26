@@ -45,6 +45,7 @@ pub const all = [_]Scenario{
     .{ .name = "cmd-integration", .about = "cmd (and Clink with GHOSTTY_GUI_CLINK): the folder carries to new tabs, idle tabs close without asking", .run = cmdIntegration },
     .{ .name = "cwd-fallback", .about = "without shell integration, cmd's cd still carries to new tabs and relative links", .run = cwdFallback },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
+    .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -1219,6 +1220,234 @@ fn stressPanes(h: *Harness) anyerror!void {
     h.log("private memory {d} MB after a second of flooding, {d} MB at the end", .{ mem_first >> 20, mem_last >> 20 });
     // Sixteen 10 MB scrollbacks and their renderers: generous, but bounded.
     try h.expect(mem_last < 2048 << 20, "private memory under 2 GB (got {d} MB)", .{mem_last >> 20});
+}
+
+/// Spike S1 (roadmap 3.0): can text and interactive overlays be child
+/// windows over a WGL surface? A magenta window over each of two panes, as
+/// a sibling of the surface, a child of it and a layered child, captured
+/// through DWM while the panes flood output and the window resizes. Like
+/// pixels, it runs on the user's desktop far off-screen. Only the layered
+/// child is required to pass (the roadmap's S1 row has why); run it on
+/// each GPU vendor.
+fn overlayHost(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SPIKE"), null, 0) == 0) {
+        return h.skip("set GHOSTTY_GUI_SPIKE=1 to run it", .{});
+    }
+    if (!h.userDesktopShown()) {
+        return h.skip("the desktop isn't being drawn (screen saver or lock screen is up)", .{});
+    }
+    const Ctx = struct { h: *Harness, err: ?anyerror = null };
+    var ctx: Ctx = .{ .h = h };
+    h.runOnUserDesktop(&ctx, struct {
+        fn run(cx: *Ctx) void {
+            overlayHostOffscreen(cx.h) catch |err| {
+                cx.err = err;
+            };
+        }
+    }.run);
+    if (ctx.err) |err| return err;
+}
+
+const overlay_magenta = 0xFF00FF;
+/// What an overlay draws for WM_PRINTCLIENT: a capture showing it didn't
+/// come from what DWM composed.
+const overlay_green = 0x00FF00;
+
+const OverlayStats = struct {
+    /// Captures, and those not taken the moment a resize returned (when
+    /// Ghostty may not have painted yet).
+    captures: u32 = 0,
+    steady: u32 = 0,
+    /// Steady captures with an overlay pixel that isn't magenta, and the
+    /// most such pixels in one.
+    dirty: u32 = 0,
+    dirty_most: usize = 0,
+    /// Steady captures with magenta outside the overlays.
+    stale: u32 = 0,
+    /// Steady captures dirty or stale whose overlays still were 200 ms on.
+    lasting: u32 = 0,
+    /// The same two, for captures taken as a resize returned.
+    dirty_at_resize: u32 = 0,
+    stale_at_resize: u32 = 0,
+    /// Captures drawn by WM_PRINTCLIENT instead of DWM.
+    printed: u32 = 0,
+    /// Steady captures whose terminal pixels differ from the capture
+    /// before.
+    changed: u32 = 0,
+    last_sum: u64 = 0,
+};
+
+fn overlayHostOffscreen(h: *Harness) !void {
+    var g = try h.launchAt("overlay-host", base_config, .offscreen);
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const win = try h.mainWindow(&g);
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    try waitPaneText(h, &g, 1, ">", 1);
+    var panes: [2]w.HWND = undefined;
+    for (&panes, 0..) |*p, i| p.* = try paneHwnd(h, &g, i);
+    var wr: w.RECT = .{};
+    _ = w.GetWindowRect(win, &wr);
+    const width = wr.right - wr.left;
+    const height = wr.bottom - wr.top;
+
+    const names = [_][]const u8{ "sibling", "child", "layered child" };
+    var failed = false;
+    for (names, 1..) |name, k| {
+        const kind: u8 = @intCast(k);
+        var overlays: [2]w.HWND = undefined;
+        {
+            var d = try h.setOverlays(&g, kind);
+            defer d.deinit();
+            if (d.value.overlays.len != overlays.len) {
+                std.debug.print("\n    {s}: {d} overlays created, expected {d}", .{ name, d.value.overlays.len, overlays.len });
+                failed = true;
+                continue;
+            }
+            for (&overlays, d.value.overlays) |*o, v| o.* = hwndOf(v.hwnd);
+        }
+        w.Sleep(300);
+        var idle: OverlayStats = .{};
+        _ = try overlayCapture(h, win, &overlays, &idle, false);
+
+        // Flood both panes, and resize the window before every third
+        // capture.
+        for (panes) |p| {
+            try h.typeText(p, "for /l %i in (1,1,1000000) do @echo %i the quick brown fox jumps over the lazy dog");
+            h.enter(p);
+        }
+        w.Sleep(500);
+        var flood: OverlayStats = .{};
+        for (0..150) |i| {
+            if (i % 3 == 0) {
+                const dw: i32 = @as(i32, @intCast(i % 7)) * 40 - 120;
+                const dh: i32 = @as(i32, @intCast(i % 5)) * 30 - 60;
+                _ = w.SetWindowPos(win, null, 0, 0, width + dw, height + dh, w.SWP_NOMOVE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+                _ = try overlayCapture(h, win, &overlays, &flood, true);
+                // Two frames on, when DWM would have shown it.
+                w.Sleep(33);
+            } else {
+                w.Sleep(@intCast(i % 4 * 10));
+            }
+            if (try overlayCapture(h, win, &overlays, &flood, false)) {
+                // Whether it lasts.
+                var later: OverlayStats = .{};
+                w.Sleep(200);
+                if (try overlayCapture(h, win, &overlays, &later, false)) flood.lasting += 1;
+            }
+        }
+        const paints = paints: {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            var n: u32 = 0;
+            for (d.value.overlays) |o| n += o.paints;
+            break :paints n;
+        };
+
+        // Removed while flooding, then while idle: nothing of them stays.
+        const left_flooding = try overlayRemoved(h, &g, win, kind);
+        for (panes) |p| h.key(p, .{ .ctrl = true }, 'C');
+        w.Sleep(1000);
+        _ = w.SetWindowPos(win, null, 0, 0, width, height, w.SWP_NOMOVE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+        w.Sleep(300);
+        const left_idle = try overlayRemoved(h, &g, win, kind);
+
+        std.debug.print("\n    {s}: idle {d} dirty px; flooding, of {d} captures {d} dirty (most {d} px) and {d} stale, " ++
+            "{d} of them still 200 ms on; as a resize returned, of {d} {d} dirty and {d} stale; " ++
+            "{d} printed; terminal changed in {d}; {d} paints; removed: {d} px left flooding, {d} idle", .{
+            name,
+            idle.dirty_most,
+            flood.steady,
+            flood.dirty,
+            flood.dirty_most,
+            flood.stale,
+            flood.lasting,
+            flood.captures - flood.steady,
+            flood.dirty_at_resize,
+            flood.stale_at_resize,
+            flood.printed,
+            flood.changed,
+            paints,
+            left_flooding,
+            left_idle,
+        });
+        // The layered child is the host 3.0 builds on, and must stay clean
+        // throughout. The others are reported for comparison: on NVIDIA
+        // they leave a ghost where they were for up to 200 ms.
+        const clean = idle.dirty == 0 and flood.dirty == 0 and flood.stale == 0 and
+            flood.dirty_at_resize == 0 and flood.stale_at_resize == 0 and
+            left_flooding == 0 and left_idle == 0;
+        // Captures must come from DWM, with the terminal drawing.
+        const measured = flood.printed == 0 and flood.changed * 2 > flood.steady;
+        if (!measured or (kind == 3 and !clean)) failed = true;
+    }
+    std.debug.print("\n", .{});
+    try h.expect(!failed, "the layered child stayed clean and left nothing behind; every capture came from DWM", .{});
+}
+
+/// Capture the window and check the overlays in it. Returns whether an
+/// overlay was dirty or stale.
+fn overlayCapture(h: *Harness, win: w.HWND, overlays: []const w.HWND, stats: *OverlayStats, at_resize: bool) !bool {
+    var img = h.capture(win) catch return h.fail("capture failed", .{});
+    defer img.deinit();
+    var wr: w.RECT = .{};
+    _ = w.GetWindowRect(win, &wr);
+    var rects: [4]w.RECT = undefined;
+    for (overlays, 0..) |o, i| {
+        var r: w.RECT = .{};
+        _ = w.GetWindowRect(o, &r);
+        rects[i] = .{ .left = r.left - wr.left, .top = r.top - wr.top, .right = r.right - wr.left, .bottom = r.bottom - wr.top };
+    }
+    var dirty: usize = 0;
+    var stale: usize = 0;
+    var printed = false;
+    var sum: u64 = 0;
+    for (0..img.height) |y| for (0..img.width) |x| {
+        const px = img.rgb(x, y);
+        const xi: i32 = @intCast(x);
+        const yi: i32 = @intCast(y);
+        const inside = for (rects[0..overlays.len]) |r| {
+            if (xi >= r.left and xi < r.right and yi >= r.top and yi < r.bottom) break true;
+        } else false;
+        if (inside) {
+            if (px != overlay_magenta) dirty += 1;
+            if (px == overlay_green) printed = true;
+        } else {
+            if (px == overlay_magenta) stale += 1;
+            sum = sum *% 31 +% px;
+        }
+    };
+    stats.captures += 1;
+    if (printed) stats.printed += 1;
+    if (at_resize) {
+        if (dirty > 0) stats.dirty_at_resize += 1;
+        if (stale > 0) stats.stale_at_resize += 1;
+    } else {
+        stats.steady += 1;
+        if (dirty > 0) stats.dirty += 1;
+        stats.dirty_most = @max(stats.dirty_most, dirty);
+        if (stale > 0) stats.stale += 1;
+        if (sum != stats.last_sum) stats.changed += 1;
+    }
+    stats.last_sum = sum;
+    return dirty > 0 or stale > 0;
+}
+
+/// Put fresh overlays of `kind` up, remove them, and return how many
+/// magenta pixels the window still shows 200 ms later.
+fn overlayRemoved(h: *Harness, g: *Harness.Ghostty, win: w.HWND, kind: u8) !usize {
+    (try h.setOverlays(g, kind)).deinit();
+    w.Sleep(300);
+    (try h.setOverlays(g, 0)).deinit();
+    w.Sleep(200);
+    var img = h.capture(win) catch return h.fail("capture failed", .{});
+    defer img.deinit();
+    var n: usize = 0;
+    for (img.pixels) |px| {
+        if (px & 0xFFFFFF == overlay_magenta) n += 1;
+    }
+    return n;
 }
 
 /// Ghostty's private committed memory, in bytes.

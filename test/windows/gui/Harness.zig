@@ -811,6 +811,16 @@ pub const Dump = struct {
     /// Links that would have opened, as "verb target" (Ghostty records
     /// them instead of opening them while the test hooks are on).
     launches: []const []const u8 = &.{},
+    /// Spike S1's overlays (setOverlays).
+    overlays: []const Overlay = &.{},
+
+    pub const Overlay = struct {
+        kind: u8,
+        hwnd: u64,
+        surface: u64,
+        /// WM_PAINTs the overlay handled.
+        paints: u32,
+    };
 
     pub const Window = struct {
         id: u64,
@@ -945,6 +955,13 @@ pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u
 pub fn setSystemDark(self: *Harness, g: *const Ghostty, dark: bool) !void {
     var d = try self.dumpWith(g, 2, @intFromBool(dark));
     d.deinit();
+}
+
+/// Replace spike S1's overlays: none (`kind` 0), or a magenta window over
+/// each pane as a sibling of its surface (1), a child of it (2) or a
+/// layered child (3). Returns the dump taken after.
+pub fn setOverlays(self: *Harness, g: *const Ghostty, kind: u8) !std.json.Parsed(Dump) {
+    return self.dumpWith(g, 4, kind);
 }
 
 fn dumpWith(self: *Harness, g: *const Ghostty, wparam: w.WPARAM, lparam: w.LPARAM) !std.json.Parsed(Dump) {

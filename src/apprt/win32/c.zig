@@ -149,6 +149,7 @@ pub const WM_ERASEBKGND = 0x0014;
 pub const WM_ACTIVATEAPP = 0x001C;
 pub const WM_SETCURSOR = 0x0020;
 pub const WM_GETMINMAXINFO = 0x0024;
+pub const WM_WINDOWPOSCHANGED = 0x0047;
 pub const WM_SETTINGCHANGE = 0x001A;
 pub const WM_NCCREATE = 0x0081;
 pub const WM_NCDESTROY = 0x0082;
@@ -182,6 +183,7 @@ pub const WM_MOUSEHWHEEL = 0x020E;
 pub const WM_CAPTURECHANGED = 0x0215;
 pub const WM_MOUSELEAVE = 0x02A3;
 pub const WM_DPICHANGED = 0x02E0;
+pub const WM_PRINTCLIENT = 0x0318;
 pub const WM_APP = 0x8000;
 
 pub const UNICODE_NOCHAR = 0xFFFF;
@@ -202,6 +204,8 @@ pub const WS_OVERLAPPEDWINDOW = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU |
     WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
 pub const WS_EX_APPWINDOW = 0x00040000;
 pub const WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
+pub const WS_EX_LAYERED = 0x00080000;
+pub const LWA_ALPHA = 0x00000002;
 
 pub const CS_VREDRAW = 0x0001;
 pub const CS_HREDRAW = 0x0002;
@@ -437,6 +441,7 @@ pub extern "user32" fn GetClientRect(HWND, *RECT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetWindowRect(HWND, *RECT) callconv(.winapi) BOOL;
 pub extern "user32" fn MapWindowPoints(?HWND, ?HWND, [*]POINT, UINT) callconv(.winapi) c_int;
 pub extern "user32" fn SetWindowPos(HWND, ?HWND, c_int, c_int, c_int, c_int, UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn SetLayeredWindowAttributes(HWND, COLORREF, u8, DWORD) callconv(.winapi) BOOL;
 pub extern "user32" fn MoveWindow(HWND, c_int, c_int, c_int, c_int, BOOL) callconv(.winapi) BOOL;
 pub extern "user32" fn SetWindowTextW(HWND, LPCWSTR) callconv(.winapi) BOOL;
 pub extern "user32" fn LoadCursorW(?HINSTANCE, usize) callconv(.winapi) ?HCURSOR;

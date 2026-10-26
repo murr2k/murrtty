@@ -715,6 +715,12 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             return 0;
         },
 
+        c.WM_WINDOWPOSCHANGED => {
+            if (comptime test_hooks.enabled) test_hooks.paneMoved(self.app, self.hwnd);
+            // DefWindowProc sends WM_SIZE.
+            return null;
+        },
+
         c.WM_SIZE => {
             if (wparam == c.SIZE_MINIMIZED) return 0;
             const old = self.size;

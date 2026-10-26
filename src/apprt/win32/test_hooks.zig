@@ -35,6 +35,9 @@ pub const State = if (enabled) struct {
     launches: std.ArrayList([]u8) = .empty,
     /// Whether launches are recorded instead of performed.
     record_launches: bool = true,
+    /// Spike S1's overlays (see setOverlays).
+    overlays: std.ArrayList(Overlay) = .empty,
+    overlay_class: bool = false,
 } else struct {};
 
 /// Whether the hooks are on, for code with no App at hand.
@@ -71,6 +74,7 @@ pub fn deinit(state: *State, alloc: Allocator) void {
     state.path = null;
     for (state.launches.items) |l| alloc.free(l);
     state.launches.deinit(alloc);
+    state.overlays.deinit(alloc);
 }
 
 /// Record a launch instead of performing it, if the hooks are on. Returns
@@ -100,6 +104,9 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   Local\GhosttyGuiSync-<pid>. Posted after input, it is handled after
 ///   that input too, so the harness knows when Ghostty has read the
 ///   modifier state it set.
+/// - 4: replace spike S1's overlays (see setOverlays): none (`lparam` 0),
+///   or one per pane as a sibling of the surface (1), a child of it (2) or
+///   a layered child of it (3).
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
     if (wparam == 3) {
@@ -115,6 +122,7 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     }
     const alloc = app.core_app.alloc;
     if (wparam == 2) app.setSystemDark(lparam != 0);
+    if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
         for (app.windows.items) |w| {
@@ -237,6 +245,16 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         if (i > 0) try out.append(alloc, ',');
         try writeString(alloc, out, l);
     }
+    try out.appendSlice(alloc, "],\"overlays\":[");
+    for (app.test_state.overlays.items, 0..) |o, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.print(alloc, "{{\"kind\":{d},\"hwnd\":{d},\"surface\":{d},\"paints\":{d}}}", .{
+            @intFromEnum(o.kind),
+            @intFromPtr(o.hwnd),
+            @intFromPtr(o.surface),
+            o.paints,
+        });
+    }
     try out.appendSlice(alloc, "]}");
 }
 
@@ -336,6 +354,143 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         try out.print(alloc, "[{d},{d},{d},{d}]", .{ sp.divider.left, sp.divider.top, sp.divider.right, sp.divider.bottom });
     }
     try out.append(alloc, ']');
+}
+
+/// Spike S1 (roadmap): does a window drawn over a WGL surface stay clean
+/// while output floods and the window resizes? One solid magenta overlay
+/// per pane, 200 x 40 pixels at 20 from the pane's top-right corner (where
+/// a search box goes), kept there as the pane moves and resizes.
+const OverlayKind = enum(u8) {
+    /// A child of the tab's container above the surface: its sibling.
+    sibling = 1,
+    /// A child of the surface.
+    child = 2,
+    /// A layered (WS_EX_LAYERED), fully opaque child of the surface.
+    layered_child = 3,
+};
+
+const Overlay = struct {
+    kind: OverlayKind,
+    surface: c.HWND,
+    hwnd: c.HWND,
+    /// WM_PAINTs handled.
+    paints: u32 = 0,
+};
+
+const overlay_class = c.L("GhosttyTestOverlay");
+const overlay_width = 200;
+const overlay_height = 40;
+const overlay_margin = 20;
+
+fn setOverlays(app: *App, kind: ?OverlayKind) void {
+    const state = &app.test_state;
+    for (state.overlays.items) |o| _ = c.DestroyWindow(o.hwnd);
+    state.overlays.clearRetainingCapacity();
+    const k = kind orelse return;
+    if (!state.overlay_class) {
+        const wc: c.WNDCLASSEXW = .{
+            .lpfnWndProc = &overlayProc,
+            .hInstance = app.instance,
+            .lpszClassName = overlay_class,
+        };
+        if (c.RegisterClassExW(&wc) == 0) {
+            log.err("overlay class not registered err={d}", .{c.GetLastError()});
+            return;
+        }
+        state.overlay_class = true;
+    }
+    for (app.windows.items) |w| {
+        var it = w.panes();
+        while (it.next()) |s| {
+            const parent = parent: {
+                if (k != .sibling) break :parent s.hwnd;
+                break :parent c.GetParent(s.hwnd) orelse continue;
+            };
+            const hwnd = c.CreateWindowExW(
+                if (k == .layered_child) c.WS_EX_LAYERED else 0,
+                overlay_class,
+                c.L(""),
+                c.WS_CHILD | c.WS_VISIBLE | c.WS_CLIPSIBLINGS,
+                0,
+                0,
+                overlay_width,
+                overlay_height,
+                parent,
+                null,
+                app.instance,
+                null,
+            ) orelse {
+                log.err("overlay not created kind={t} err={d}", .{ k, c.GetLastError() });
+                continue;
+            };
+            _ = c.SetWindowLongPtrW(hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(app)));
+            // A layered window shows once its attributes are set.
+            if (k == .layered_child) _ = c.SetLayeredWindowAttributes(hwnd, 0, 255, c.LWA_ALPHA);
+            const o: Overlay = .{ .kind = k, .surface = s.hwnd, .hwnd = hwnd };
+            state.overlays.append(app.core_app.alloc, o) catch {
+                _ = c.DestroyWindow(hwnd);
+                continue;
+            };
+            placeOverlay(o);
+        }
+    }
+}
+
+/// Keep the overlays of the pane `surface` at its top-right corner. The
+/// surface calls this whenever it moves or resizes.
+pub fn paneMoved(app: *App, surface: c.HWND) void {
+    if (comptime !enabled) return;
+    for (app.test_state.overlays.items) |o| {
+        if (o.surface == surface) placeOverlay(o);
+    }
+}
+
+fn placeOverlay(o: Overlay) void {
+    var r: c.RECT = .{};
+    _ = c.GetClientRect(o.surface, &r);
+    var pt = [1]c.POINT{.{ .x = r.right - overlay_margin - overlay_width, .y = overlay_margin }};
+    if (o.kind == .sibling) _ = c.MapWindowPoints(o.surface, c.GetParent(o.surface), &pt, 1);
+    // A sibling goes on top (a null insert-after is HWND_TOP); the panes'
+    // own moves leave the order alone (SWP_NOZORDER).
+    const order: c.UINT = if (o.kind == .sibling) 0 else c.SWP_NOZORDER;
+    _ = c.SetWindowPos(o.hwnd, null, pt[0].x, pt[0].y, overlay_width, overlay_height, c.SWP_NOACTIVATE | order);
+}
+
+fn overlayProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    switch (msg) {
+        c.WM_ERASEBKGND => return 1,
+        c.WM_NCHITTEST => return c.HTTRANSPARENT,
+        c.WM_PAINT => {
+            var ps: c.PAINTSTRUCT = undefined;
+            const dc = c.BeginPaint(hwnd, &ps) orelse return 0;
+            defer _ = c.EndPaint(hwnd, &ps);
+            fillClient(hwnd, dc, c.rgb(255, 0, 255));
+            const ptr: usize = @bitCast(c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA));
+            if (ptr != 0) {
+                const app: *App = @ptrFromInt(ptr);
+                for (app.test_state.overlays.items) |*o| {
+                    if (o.hwnd == hwnd) o.paints += 1;
+                }
+            }
+            return 0;
+        },
+        // What PrintWindow gets when it asks the window to draw itself
+        // instead of copying what DWM composed: green, so a capture taken
+        // that way shows.
+        c.WM_PRINTCLIENT => {
+            if (wparam != 0) fillClient(hwnd, @ptrFromInt(wparam), c.rgb(0, 255, 0));
+            return 0;
+        },
+        else => return c.DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+fn fillClient(hwnd: c.HWND, dc: c.HDC, color: c.COLORREF) void {
+    var r: c.RECT = .{};
+    _ = c.GetClientRect(hwnd, &r);
+    const brush = c.CreateSolidBrush(color) orelse return;
+    defer _ = c.DeleteObject(brush);
+    _ = c.FillRect(dc, &r, brush);
 }
 
 /// One character per row of the viewport: its semantic prompt mark.
