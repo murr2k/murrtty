@@ -224,6 +224,8 @@ roadmap item behind it.
   thumbnails.
 - **Tab tooltips** (3.8): the title and the working directory; GTK's shows
   only the directory.
+- **Config editor** (F1): a GUI for every configuration option; Ghostty is
+  configured only by editing its file.
 
 ## Rules every item keeps
 
@@ -1782,6 +1784,50 @@ Windows on ARM).
 **7.9 Upstreaming.** *Dropped 2026-10-26 (decision 7):* Ghostty won't take
 another runtime. A fix that matters to Ghostty itself can still be offered
 upstream on its own, under upstream's `CONTRIBUTING.md` and `AI_POLICY.md`.
+
+---
+
+## Beyond Ghostty: murrtty's own features
+
+Features Ghostty doesn't have, chosen by the owner from Ghostty's wishlist
+or as murrtty's own. Each is listed under "Differences from Ghostty's GTK
+app" (as decided, not built yet, until it is). None is in a milestone yet.
+
+**F1 Config editor, L to XL.** *Planned 2026-10-26 by the owner.* A
+comprehensive GUI for setting configuration options, so users needn't edit
+the file by hand. Ghostty has none: its apps open the file in an editor
+(`open_config`), and GTK's only config window lists errors. A first sketch:
+- **Driven by the shared core's own metadata,** so options added upstream
+  appear after a merge without editor work: `Config`'s fields with their
+  types and defaults (comptime reflection), each option's documentation
+  (the generated `help_strings` module behind `+explain-config`), and value
+  formatting (`config/formatter.zig`, behind `+show-config`).
+- **Search** across names and documentation; each option's documentation
+  beside it; where its value comes from (the file, an included
+  `config-file`, or the default); reset to default.
+- **Editors by type:** booleans, enums, numbers within their limits, colors
+  with a picker, paths with a file dialog; dedicated pages for the hard
+  ones: key bindings (capture a chord, show what it replaces or conflicts
+  with), themes (`+list-themes`, with a preview and the light/dark pair),
+  fonts (`+list-fonts`, styles and features), and the repeatable options
+  (`keybind`, `palette`, `font-family`, `command-palette-entry`).
+- **Writes the file in place, minimally:** only the lines of changed keys,
+  keeping comments, order, repeated keys and includes; it refuses to
+  rewrite a file it can't round-trip. It validates with the core's parser
+  and shows its diagnostics before saving, then applies with the soft
+  reload, marking options that reach only new windows or terminals.
+- **Opened from** the context menu's Config submenu, the command palette and
+  a key binding.
+- **Decisions before starting:** native Win32 controls (no new dependency;
+  *recommended*) or WebView2 (quicker to build, a runtime dependency); which
+  file it writes while murrtty still uses Ghostty's configuration
+  (*recommended:* offer to create murrtty's own file importing Ghostty's
+  with `config-file`, leaving Ghostty's untouched); and whether opening it
+  is a new core action (a shared-code change) or a Windows-only binding.
+
+*Done when:* every option can be set and reset from the editor, saving
+without changes leaves the file byte-identical, and the GUI harness drives
+a search, an edit, a key-binding capture and a save.
 
 ---
 
