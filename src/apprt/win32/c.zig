@@ -730,6 +730,17 @@ pub extern "imm32" fn ImmSetCandidateWindow(HIMC, *const CANDIDATEFORM) callconv
 
 // dwmapi
 pub extern "dwmapi" fn DwmSetWindowAttribute(HWND, DWORD, *const anyopaque, DWORD) callconv(.winapi) HRESULT;
+pub const HRGN = *opaque {};
+pub const DWM_BB_ENABLE = 0x00000001;
+pub const DWM_BB_BLURREGION = 0x00000002;
+pub const DWM_BLURBEHIND = extern struct {
+    dwFlags: DWORD,
+    fEnable: BOOL,
+    hRgnBlur: ?HRGN = null,
+    fTransitionOnMaximized: BOOL = FALSE,
+};
+pub extern "dwmapi" fn DwmEnableBlurBehindWindow(HWND, *const DWM_BLURBEHIND) callconv(.winapi) HRESULT;
+pub extern "gdi32" fn CreateRectRgn(c_int, c_int, c_int, c_int) callconv(.winapi) ?HRGN;
 
 // comctl32. TaskDialogIndirect exists only in comctl32 v6, which the exe's
 // manifest selects; it is resolved at run time (App.taskDialog) so a

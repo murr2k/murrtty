@@ -12,6 +12,7 @@ const Harness = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const w = @import("win.zig");
+const dda = @import("dda.zig");
 
 alloc: Allocator,
 /// ghostty.exe, absolute.
@@ -209,6 +210,11 @@ pub const Where = enum {
     /// terminates it), never through a dialog, which would appear on
     /// screen.
     offscreen,
+    /// The user's desktop, on screen near its top-left corner, for checks
+    /// of what DWM composes there (transparency). It appears on the owner's
+    /// screen, so only opt-in scenarios use it; drive and end it as
+    /// `.offscreen`.
+    onscreen,
 };
 
 /// Start Ghostty with `config` as its whole configuration. `name` names
@@ -308,12 +314,13 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
         si.dwFlags |= w.STARTF_TITLEISLINKNAME;
         si.lpTitle = s.ptr;
     }
-    if (where == .offscreen) {
+    if (where != .default) {
         // Ghostty creates its first window at CW_USEDEFAULT, which takes
         // this position.
+        const at: i32 = if (where == .offscreen) -20000 else 120;
         si.dwFlags |= w.STARTF_USEPOSITION;
-        si.dwX = @bitCast(@as(i32, -20000));
-        si.dwY = @bitCast(@as(i32, -20000));
+        si.dwX = @bitCast(at);
+        si.dwY = @bitCast(at);
     }
     var pi: w.PROCESS_INFORMATION = undefined;
     const dir16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, dir);
@@ -589,6 +596,36 @@ pub fn userDesktopShown(self: *const Harness) bool {
     var needed: w.DWORD = 0;
     if (w.GetUserObjectInformationW(desk, w.UOI_NAME, &name, @sizeOf(@TypeOf(name)), &needed) == 0) return false;
     return std.mem.eql(u16, std.mem.sliceTo(&name, 0), std.unicode.utf8ToUtf16LeStringLiteral("Default"));
+}
+
+/// Whether DWM is driving a display. With the monitor off (or switched to
+/// another input) Windows may still report the display as on, but DWM idles
+/// at one vblank a second and drops what GL presents, so captures come back
+/// blank (white): the tests' windows have nothing drawn.
+pub fn displayDriven(self: *const Harness) bool {
+    _ = self;
+    const first = dwmRefreshes() orelse return false;
+    w.Sleep(250);
+    const second = dwmRefreshes() orelse return false;
+    // About 15 at 60 Hz.
+    return second -% first >= 5;
+}
+
+/// DWM's vblank count (DWM_TIMING_INFO.cRefresh).
+fn dwmRefreshes() ?u64 {
+    // DWM_TIMING_INFO is byte-packed: 292 bytes, cRefresh at offset 36.
+    var info: [292]u8 align(8) = @splat(0);
+    std.mem.writeInt(u32, info[0..4], info.len, .little);
+    if (w.DwmGetCompositionTimingInfo(null, &info) < 0) return null;
+    return std.mem.readInt(u64, info[36..44], .little);
+}
+
+/// Whether captures of the user's desktop work: it is on screen and DWM is
+/// drawing it. The scenarios that capture skip themselves otherwise.
+pub fn capturesWork(self: *const Harness) ?[]const u8 {
+    if (!self.userDesktopShown()) return "the desktop isn't being drawn (screen saver or lock screen is up)";
+    if (!self.displayDriven()) return "DWM isn't driving a display (the monitor is off), so captures come back blank";
+    return null;
 }
 
 /// Run `func(ctx)` on a new thread, which starts on the user's desktop
@@ -964,6 +1001,13 @@ pub fn setOverlays(self: *Harness, g: *const Ghostty, kind: u8) !std.json.Parsed
     return self.dumpWith(g, 4, kind);
 }
 
+/// Spike S2: blur-behind (with an empty region) on Ghostty's windows and
+/// each pane presenting its frame's own alpha, or neither.
+pub fn setTransparent(self: *Harness, g: *const Ghostty, on: bool) !void {
+    var d = try self.dumpWith(g, 5, @intFromBool(on));
+    d.deinit();
+}
+
 fn dumpWith(self: *Harness, g: *const Ghostty, wparam: w.WPARAM, lparam: w.LPARAM) !std.json.Parsed(Dump) {
     const target = wakeupWindow(g.pid) orelse return self.fail("no wakeup window (is this a Debug build?)", .{});
     var result: usize = 0;
@@ -1010,6 +1054,29 @@ pub const Image = struct {
     pub fn rgb(self: *const Image, x: usize, y: usize) u32 {
         return self.pixels[y * self.width + x] & 0xFFFFFF;
     }
+
+    /// With the alpha byte as the capture left it.
+    pub fn argb(self: *const Image, x: usize, y: usize) u32 {
+        return self.pixels[y * self.width + x];
+    }
+
+    /// Write it to `path` as a 32-bit BMP, for looking at a failure.
+    pub fn save(self: *const Image, path: []const u8) !void {
+        const data = std.mem.sliceAsBytes(self.pixels);
+        var header: [54]u8 = @splat(0);
+        header[0] = 'B';
+        header[1] = 'M';
+        std.mem.writeInt(u32, header[2..6], @intCast(header.len + data.len), .little);
+        std.mem.writeInt(u32, header[10..14], header.len, .little);
+        std.mem.writeInt(u32, header[14..18], 40, .little);
+        std.mem.writeInt(i32, header[18..22], @intCast(self.width), .little);
+        std.mem.writeInt(i32, header[22..26], -@as(i32, @intCast(self.height)), .little);
+        std.mem.writeInt(u16, header[26..28], 1, .little);
+        std.mem.writeInt(u16, header[28..30], 32, .little);
+        const bytes = try std.mem.concat(self.alloc, u8, &.{ &header, data });
+        defer self.alloc.free(bytes);
+        try writeFile(self.alloc, path, bytes);
+    }
 };
 
 /// Capture a window through DWM (PrintWindow with PW_RENDERFULLCONTENT),
@@ -1017,8 +1084,44 @@ pub const Image = struct {
 pub fn capture(self: *Harness, hwnd: w.HWND) !Image {
     var r: w.RECT = .{};
     _ = w.GetWindowRect(hwnd, &r);
-    const width = r.right - r.left;
-    const height = r.bottom - r.top;
+    return self.grab(r.right - r.left, r.bottom - r.top, .{ .window = hwnd });
+}
+
+/// What the screen shows in `rect` (screen pixels): windows there as DWM
+/// composed them, over whatever is behind them. Only for `.onscreen`.
+pub fn captureScreen(self: *Harness, rect: w.RECT) !Image {
+    return self.grab(rect.right - rect.left, rect.bottom - rect.top, .{ .screen = .{ .x = rect.left, .y = rect.top } });
+}
+
+/// What the display shows in `rect` (screen pixels on the primary
+/// monitor), through DXGI desktop duplication (dda.zig). Unlike
+/// captureScreen (GDI) it sees what a driver presents outside the window's
+/// GDI surface. Only for `.onscreen`.
+pub fn captureDisplay(self: *Harness, rect: w.RECT) !Image {
+    const width = rect.right - rect.left;
+    const height = rect.bottom - rect.top;
+    if (width <= 0 or height <= 0) return error.CaptureFailed;
+    const pixels = try self.alloc.alloc(u32, @intCast(width * height));
+    errdefer self.alloc.free(pixels);
+    // Duplication hands over a frame only once DWM presents one, which a
+    // still screen never does: a 1 x 1 window just past the area's corner
+    // changes color meanwhile.
+    var ticker = try Backdrop.create(.{ .left = rect.right, .top = rect.bottom, .right = rect.right + 1, .bottom = rect.bottom + 1 }, 0);
+    defer ticker.destroy();
+    const Tick = struct {
+        ticker: *Backdrop,
+        n: u32 = 0,
+        fn tick(t: *@This()) void {
+            t.n +%= 1;
+            _ = t.ticker.fill(if (t.n % 2 == 0) 0x000000 else 0x010101);
+        }
+    };
+    var tick: Tick = .{ .ticker = &ticker };
+    try dda.capture(rect, pixels, &tick, Tick.tick);
+    return .{ .alloc = self.alloc, .width = @intCast(width), .height = @intCast(height), .pixels = pixels };
+}
+
+fn grab(self: *Harness, width: c_int, height: c_int, source: union(enum) { window: w.HWND, screen: w.POINT }) !Image {
     if (width <= 0 or height <= 0) return error.CaptureFailed;
 
     const screen = w.GetDC(null) orelse return error.CaptureFailed;
@@ -1033,13 +1136,92 @@ pub fn capture(self: *Harness, hwnd: w.HWND) !Image {
     defer if (old) |o| {
         _ = w.SelectObject(dc, o);
     };
-    if (w.PrintWindow(hwnd, dc, w.PW_RENDERFULLCONTENT) == 0) return error.CaptureFailed;
+    const ok = switch (source) {
+        .window => |hwnd| w.PrintWindow(hwnd, dc, w.PW_RENDERFULLCONTENT),
+        .screen => |at| w.BitBlt(dc, 0, 0, width, height, screen, at.x, at.y, w.SRCCOPY | w.CAPTUREBLT),
+    };
+    if (ok == 0) return error.CaptureFailed;
 
     const n: usize = @intCast(width * height);
     const src: [*]const u32 = @ptrCast(@alignCast(bits orelse return error.CaptureFailed));
     const pixels = try self.alloc.alloc(u32, n);
     @memcpy(pixels, src[0..n]);
     return .{ .alloc = self.alloc, .width = @intCast(width), .height = @intCast(height), .pixels = pixels };
+}
+
+/// A solid window to put behind an `.onscreen` Ghostty, for transparency
+/// checks. It is topmost (raise the Ghostty above it), never activates,
+/// and is a layered window filled once, so it needs no painting.
+pub const Backdrop = struct {
+    hwnd: w.HWND,
+    rect: w.RECT,
+
+    /// Cover `rect` (screen pixels) with `rgb` (0xRRGGBB).
+    pub fn create(rect: w.RECT, rgb: u32) !Backdrop {
+        const width = rect.right - rect.left;
+        const height = rect.bottom - rect.top;
+        const hwnd = w.CreateWindowExW(
+            w.WS_EX_LAYERED | w.WS_EX_TOPMOST | w.WS_EX_TOOLWINDOW | w.WS_EX_NOACTIVATE,
+            w.L("STATIC"),
+            w.L(""),
+            w.WS_POPUP,
+            rect.left,
+            rect.top,
+            width,
+            height,
+            null,
+            null,
+            w.GetModuleHandleW(null),
+            null,
+        ) orelse return error.LaunchFailed;
+        var self: Backdrop = .{ .hwnd = hwnd, .rect = rect };
+        errdefer self.destroy();
+        if (!self.fill(rgb)) return error.LaunchFailed;
+        _ = w.ShowWindow(hwnd, w.SW_SHOWNOACTIVATE);
+        return self;
+    }
+
+    /// Fill it with `rgb`. Returns whether that worked.
+    pub fn fill(self: *Backdrop, rgb: u32) bool {
+        const rect = self.rect;
+        const width = rect.right - rect.left;
+        const height = rect.bottom - rect.top;
+        const screen = w.GetDC(null) orelse return false;
+        defer _ = w.ReleaseDC(null, screen);
+        const dc = w.CreateCompatibleDC(screen) orelse return false;
+        defer _ = w.DeleteDC(dc);
+        var bits: ?*anyopaque = null;
+        const bmi: w.BITMAPINFOHEADER = .{ .biWidth = width, .biHeight = -height };
+        const bmp = w.CreateDIBSection(dc, &bmi, w.DIB_RGB_COLORS, &bits, null, 0) orelse return false;
+        defer _ = w.DeleteObject(bmp);
+        const old = w.SelectObject(dc, bmp);
+        defer if (old) |o| {
+            _ = w.SelectObject(dc, o);
+        };
+        const px: [*]u32 = @ptrCast(@alignCast(bits orelse return false));
+        @memset(px[0..@intCast(width * height)], 0xFF000000 | rgb);
+        const pos: w.POINT = .{ .x = rect.left, .y = rect.top };
+        const size: w.SIZE = .{ .cx = width, .cy = height };
+        const origin: w.POINT = .{};
+        const blend: w.BLENDFUNCTION = .{};
+        return w.UpdateLayeredWindow(self.hwnd, screen, &pos, &size, dc, &origin, 0, &blend, w.ULW_ALPHA) != 0;
+    }
+
+    pub fn destroy(self: *Backdrop) void {
+        _ = w.DestroyWindow(self.hwnd);
+    }
+};
+
+/// Wait `ms`, handling this thread's window messages (a Backdrop's)
+/// meanwhile.
+pub fn pump(self: *const Harness, ms: u32) void {
+    _ = self;
+    var waited: u32 = 0;
+    while (waited < ms) : (waited += 10) {
+        var msg: w.MSG = undefined;
+        while (w.PeekMessageW(&msg, null, 0, 0, w.PM_REMOVE) != 0) _ = w.DispatchMessageW(&msg);
+        w.Sleep(10);
+    }
 }
 
 //---------------------------------------------------------------

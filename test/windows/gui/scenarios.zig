@@ -46,6 +46,7 @@ pub const all = [_]Scenario{
     .{ .name = "cwd-fallback", .about = "without shell integration, cmd's cd still carries to new tabs and relative links", .run = cwdFallback },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
+    .{ .name = "transparency", .about = "spike S2: background-opacity through DWM blur-behind, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -112,9 +113,7 @@ fn launch(h: *Harness) anyerror!void {
 /// thread on that desktop, and is terminated rather than closed through a
 /// dialog that would appear on screen.
 fn pixels(h: *Harness) anyerror!void {
-    if (!h.userDesktopShown()) {
-        return h.skip("the desktop isn't being drawn (screen saver or lock screen is up)", .{});
-    }
+    if (h.capturesWork()) |why| return h.skip("{s}", .{why});
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
     h.runOnUserDesktop(&ctx, struct {
@@ -1233,9 +1232,7 @@ fn overlayHost(h: *Harness) anyerror!void {
     if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SPIKE"), null, 0) == 0) {
         return h.skip("set GHOSTTY_GUI_SPIKE=1 to run it", .{});
     }
-    if (!h.userDesktopShown()) {
-        return h.skip("the desktop isn't being drawn (screen saver or lock screen is up)", .{});
-    }
+    if (h.capturesWork()) |why| return h.skip("{s}", .{why});
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
     h.runOnUserDesktop(&ctx, struct {
@@ -1448,6 +1445,158 @@ fn overlayRemoved(h: *Harness, g: *Harness.Ghostty, win: w.HWND, kind: u8) !usiz
         if (px & 0xFFFFFF == overlay_magenta) n += 1;
     }
     return n;
+}
+
+/// Spike S2 (roadmap 4.1): with blur-behind (an empty region) on the
+/// top-level window, does DWM compose the panes' GL output with its alpha?
+/// Ghostty at background-opacity 0.5 over a green backdrop, read back from
+/// the screen. Both windows show on the owner's screen for a few seconds,
+/// above everything else, so it runs only when asked.
+fn transparency(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
+        return h.skip("it shows windows on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    }
+    if (h.capturesWork()) |why| return h.skip("{s}", .{why});
+    const Ctx = struct { h: *Harness, err: ?anyerror = null };
+    var ctx: Ctx = .{ .h = h };
+    h.runOnUserDesktop(&ctx, struct {
+        fn run(cx: *Ctx) void {
+            transparencyOnScreen(cx.h) catch |err| {
+                cx.err = err;
+            };
+        }
+    }.run);
+    if (ctx.err) |err| return err;
+}
+
+const backdrop_green = 0x00FF00;
+
+fn transparencyOnScreen(h: *Harness) !void {
+    var g = try h.launchAt("transparency", base_config ++ "background-opacity = 0.5\n", .onscreen);
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const win = try h.mainWindow(&g);
+    var wr: w.RECT = .{};
+    _ = w.GetWindowRect(win, &wr);
+    var backdrop = try Harness.Backdrop.create(wr, backdrop_green);
+    defer backdrop.destroy();
+    _ = w.SetWindowPos(win, w.HWND_TOPMOST, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
+    h.pump(500);
+
+    // Read from the display (desktop duplication): on screen the GL panes
+    // may be presented outside the window's GDI surface, which BitBlt and
+    // PrintWindow read. A background pixel near the bottom right.
+    const client = clientOnScreen(win);
+    const bx: usize = @intCast(client.right - client.left - 30);
+    const by: usize = @intCast(client.bottom - client.top - 30);
+    const opaque_px = try displayPixel(h, &g, client, bx, by, "opaque.bmp");
+    const opaque_gdi = try screenPixel(h, client, bx, by);
+
+    // Spike S1's three hosts over the opaque pane: which ones show?
+    var hosts: [3]u32 = undefined;
+    for (&hosts, 1..) |*px, kind| px.* = try overlayOnDisplay(h, &g, client, @intCast(kind));
+
+    try h.setTransparent(&g, true);
+    h.pump(500);
+    const see_through = try displayPixel(h, &g, client, bx, by, "see-through.bmp");
+    const see_through_gdi = try screenPixel(h, client, bx, by);
+    const layered_over_clear = try overlayOnDisplay(h, &g, client, 3);
+
+    // A split's divider is painted with GDI, which leaves alpha 0. The new
+    // pane starts opaque until it is switched too.
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    try h.setTransparent(&g, true);
+    h.pump(800);
+    const divider_px = divider: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const dv = (t.dividers orelse break :divider @as(u32, 0));
+        if (dv.len == 0) break :divider @as(u32, 0);
+        const container = w.GetParent(hwndOf(t.panes.?[0].hwnd)) orelse break :divider @as(u32, 0);
+        var pt = [1]w.POINT{.{ .x = @divTrunc(dv[0][0] + dv[0][2], 2), .y = @divTrunc(dv[0][1] + dv[0][3], 2) }};
+        _ = w.MapWindowPoints(container, null, &pt, 1);
+        break :divider try displayPixel(h, &g, client, @intCast(pt[0].x - client.left), @intCast(pt[0].y - client.top), "split.bmp");
+    };
+
+    try h.setTransparent(&g, false);
+    h.pump(500);
+    const opaque_again = try displayPixel(h, &g, client, bx, by, "opaque-again.bmp");
+
+    std.debug.print("\n    display: opaque #{x:0>6}; overlays on it: sibling #{x:0>6}, child #{x:0>6}, layered child #{x:0>6}; " ++
+        "see-through #{x:0>6} (#14951a if DWM blends with the alpha, #14161a if it ignores it); layered child on it #{x:0>6}; " ++
+        "GDI divider #{x:0>6}; opaque again #{x:0>6}\n    GDI's view (BitBlt): opaque #{x:0>6}, see-through #{x:0>6}\n", .{
+        opaque_px,  hosts[0],     hosts[1],   hosts[2],        see_through, layered_over_clear,
+        divider_px, opaque_again, opaque_gdi, see_through_gdi,
+    });
+    try h.expect(near(opaque_px, 0x282c34, 2), "opaque, the background is #282c34 (got #{x:0>6})", .{opaque_px});
+    try h.expect(hosts[2] == overlay_magenta, "a layered child shows over the pane (got #{x:0>6})", .{hosts[2]});
+    try h.expect(near(see_through, 0x14951a, 4), "see-through, the backdrop shows through half (got #{x:0>6})", .{see_through});
+    try h.expect(layered_over_clear == overlay_magenta, "a layered child stays opaque over it (got #{x:0>6})", .{layered_over_clear});
+    try h.expect(near(opaque_again, 0x282c34, 2), "opaque again (got #{x:0>6})", .{opaque_again});
+}
+
+/// The display's pixel at (`x`, `y`) of `area`; the capture is kept as
+/// `name` in the scenario's folder.
+fn displayPixel(h: *Harness, g: *Harness.Ghostty, area: w.RECT, x: usize, y: usize, name: []const u8) !u32 {
+    var img = try h.captureDisplay(area);
+    defer img.deinit();
+    saveImage(h, g, &img, name);
+    if (x >= img.width or y >= img.height) return h.fail("({d},{d}) is outside the capture", .{ x, y });
+    return img.rgb(x, y);
+}
+
+/// Put spike S1's overlays of `kind` up and return the display's pixel at
+/// the middle of the first; then take them down.
+fn overlayOnDisplay(h: *Harness, g: *Harness.Ghostty, client: w.RECT, kind: u8) !u32 {
+    defer if (h.setOverlays(g, 0)) |d| {
+        var dd = d;
+        dd.deinit();
+    } else |_| {};
+    var d = try h.setOverlays(g, kind);
+    defer d.deinit();
+    if (d.value.overlays.len == 0) return 0;
+    h.pump(300);
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(hwndOf(d.value.overlays[0].hwnd), &r);
+    var name_buf: [32]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "overlay-{d}.bmp", .{kind}) catch "overlay.bmp";
+    return displayPixel(h, g, client, @intCast(@divTrunc(r.left + r.right, 2) - client.left), @intCast(@divTrunc(r.top + r.bottom, 2) - client.top), name);
+}
+
+fn saveImage(h: *Harness, g: *Harness.Ghostty, img: *const Harness.Image, name: []const u8) void {
+    const path = std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ g.dir, name }) catch return;
+    defer h.alloc.free(path);
+    img.save(path) catch {};
+}
+
+/// The client area of `hwnd` in screen pixels.
+fn clientOnScreen(hwnd: w.HWND) w.RECT {
+    var r: w.RECT = .{};
+    _ = w.GetClientRect(hwnd, &r);
+    var pts = [2]w.POINT{ .{ .x = r.left, .y = r.top }, .{ .x = r.right, .y = r.bottom } };
+    _ = w.MapWindowPoints(hwnd, null, &pts, 2);
+    return .{ .left = pts[0].x, .top = pts[0].y, .right = pts[1].x, .bottom = pts[1].y };
+}
+
+/// The screen's pixel at (`x`, `y`) of `area`, 0xRRGGBB.
+fn screenPixel(h: *Harness, area: w.RECT, x: usize, y: usize) !u32 {
+    var img = h.captureScreen(area) catch return h.fail("screen capture failed", .{});
+    defer img.deinit();
+    if (x >= img.width or y >= img.height) return h.fail("({d},{d}) is outside the capture", .{ x, y });
+    return img.rgb(x, y);
+}
+
+/// Whether each channel of two 0xRRGGBB colors is within `tolerance`.
+fn near(a: u32, b: u32, tolerance: u32) bool {
+    var shift: u5 = 0;
+    while (shift <= 16) : (shift += 8) {
+        const x: i32 = @intCast((a >> shift) & 0xFF);
+        const y: i32 = @intCast((b >> shift) & 0xFF);
+        if (@abs(x - y) > tolerance) return false;
+    }
+    return true;
 }
 
 /// Ghostty's private committed memory, in bytes.

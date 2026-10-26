@@ -20,6 +20,23 @@ pub const FALSE: BOOL = 0;
 pub const TRUE: BOOL = 1;
 
 pub const RECT = extern struct { left: c_int = 0, top: c_int = 0, right: c_int = 0, bottom: c_int = 0 };
+pub const POINT = extern struct { x: c_int = 0, y: c_int = 0 };
+pub const SIZE = extern struct { cx: c_int = 0, cy: c_int = 0 };
+pub const MSG = extern struct {
+    hwnd: ?HWND,
+    message: UINT,
+    wParam: WPARAM,
+    lParam: LPARAM,
+    time: DWORD,
+    pt: POINT,
+    lPrivate: DWORD,
+};
+pub const BLENDFUNCTION = extern struct {
+    BlendOp: u8 = 0, // AC_SRC_OVER
+    BlendFlags: u8 = 0,
+    SourceConstantAlpha: u8 = 255,
+    AlphaFormat: u8 = 1, // AC_SRC_ALPHA
+};
 
 pub const STARTUPINFOW = extern struct {
     cb: DWORD = @sizeOf(STARTUPINFOW),
@@ -98,6 +115,17 @@ pub const SWP_NOZORDER = 0x0004;
 pub const SWP_NOACTIVATE = 0x0010;
 pub const MAPVK_VK_TO_VSC = 0;
 pub const HWND_MESSAGE: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
+pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+pub const WS_POPUP = 0x80000000;
+pub const WS_EX_TOPMOST = 0x00000008;
+pub const WS_EX_TOOLWINDOW = 0x00000080;
+pub const WS_EX_LAYERED = 0x00080000;
+pub const WS_EX_NOACTIVATE = 0x08000000;
+pub const SW_SHOWNOACTIVATE = 4;
+pub const PM_REMOVE = 0x0001;
+pub const ULW_ALPHA = 0x00000002;
+pub const SRCCOPY = 0x00CC0020;
+pub const CAPTUREBLT = 0x40000000;
 pub const CF_UNICODETEXT = 13;
 pub const GMEM_MOVEABLE = 0x0002;
 pub const DIB_RGB_COLORS = 0;
@@ -171,6 +199,7 @@ pub extern "kernel32" fn UpdateProcThreadAttribute(*anyopaque, DWORD, usize, *co
 pub extern "kernel32" fn DeleteProcThreadAttributeList(*anyopaque) callconv(.winapi) void;
 pub extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
 pub extern "kernel32" fn GetModuleFileNameW(?*anyopaque, [*]u16, DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(.winapi) ?*anyopaque;
 pub extern "kernel32" fn WaitForSingleObject(HANDLE, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateMutexW(?*anyopaque, BOOL, LPCWSTR) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn CreateEventW(?*anyopaque, BOOL, BOOL, LPCWSTR) callconv(.winapi) ?HANDLE;
@@ -284,6 +313,13 @@ pub extern "user32" fn GetDC(?HWND) callconv(.winapi) ?HDC;
 pub extern "user32" fn ReleaseDC(?HWND, HDC) callconv(.winapi) c_int;
 pub extern "user32" fn GetDpiForWindow(HWND) callconv(.winapi) UINT;
 pub extern "user32" fn SetWindowPos(HWND, ?HWND, c_int, c_int, c_int, c_int, UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn MapWindowPoints(?HWND, ?HWND, [*]POINT, UINT) callconv(.winapi) c_int;
+pub extern "user32" fn CreateWindowExW(DWORD, LPCWSTR, LPCWSTR, DWORD, c_int, c_int, c_int, c_int, ?HWND, ?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.winapi) ?HWND;
+pub extern "user32" fn DestroyWindow(HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn ShowWindow(HWND, c_int) callconv(.winapi) BOOL;
+pub extern "user32" fn PeekMessageW(*MSG, ?HWND, UINT, UINT, UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn DispatchMessageW(*const MSG) callconv(.winapi) LRESULT;
+pub extern "user32" fn UpdateLayeredWindow(HWND, ?HDC, ?*const POINT, ?*const SIZE, ?HDC, ?*const POINT, DWORD, ?*const BLENDFUNCTION, DWORD) callconv(.winapi) BOOL;
 pub extern "user32" fn GetWindow(HWND, UINT) callconv(.winapi) ?HWND;
 pub extern "user32" fn CreateDesktopW(LPCWSTR, ?LPCWSTR, ?*anyopaque, DWORD, DWORD, ?*anyopaque) callconv(.winapi) ?HDESK;
 pub extern "user32" fn SetThreadDesktop(HDESK) callconv(.winapi) BOOL;
@@ -303,12 +339,16 @@ pub extern "user32" fn GetClipboardSequenceNumber() callconv(.winapi) DWORD;
 pub extern "user32" fn RegisterClipboardFormatW(LPCWSTR) callconv(.winapi) UINT;
 pub extern "user32" fn GetClipboardFormatNameW(UINT, [*]u16, c_int) callconv(.winapi) c_int;
 
+// dwmapi
+pub extern "dwmapi" fn DwmGetCompositionTimingInfo(?HWND, *anyopaque) callconv(.winapi) c_long;
+
 // gdi32
 pub extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(.winapi) ?HDC;
 pub extern "gdi32" fn CreateDIBSection(?HDC, *const BITMAPINFOHEADER, UINT, *?*anyopaque, ?HANDLE, DWORD) callconv(.winapi) ?HGDIOBJ;
 pub extern "gdi32" fn SelectObject(HDC, HGDIOBJ) callconv(.winapi) ?HGDIOBJ;
 pub extern "gdi32" fn DeleteObject(HGDIOBJ) callconv(.winapi) BOOL;
 pub extern "gdi32" fn DeleteDC(HDC) callconv(.winapi) BOOL;
+pub extern "gdi32" fn BitBlt(HDC, c_int, c_int, c_int, c_int, ?HDC, c_int, c_int, DWORD) callconv(.winapi) BOOL;
 
 /// A UTF-16 string literal.
 pub fn L(comptime s: []const u8) LPCWSTR {

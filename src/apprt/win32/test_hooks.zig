@@ -20,6 +20,7 @@ const Allocator = std.mem.Allocator;
 const c = @import("c.zig");
 const global = @import("../../global.zig");
 const App = @import("App.zig");
+const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 
 const log = std.log.scoped(.win32_test_hooks);
@@ -107,6 +108,8 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 /// - 4: replace spike S1's overlays (see setOverlays): none (`lparam` 0),
 ///   or one per pane as a sibling of the surface (1), a child of it (2) or
 ///   a layered child of it (3).
+/// - 5: spike S2's transparency (see setTransparent) on (`lparam` 1) or
+///   off (0).
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
     if (wparam == 3) {
@@ -129,20 +132,14 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
             var it = w.panes();
             while (it.next()) |s| {
                 if (!s.core_initialized) continue;
-                const core = &s.core_surface;
-                const state = &core.renderer.api.wgl_state;
+                const state = &s.core_surface.renderer.api.wgl_state;
                 state.probe.store(0, .monotonic);
                 state.probe_point.store(point, .monotonic);
-                // Nothing may have changed to cause a frame, so mark the
-                // whole screen dirty (as a modifier change does) and wake
-                // the renderer.
-                core.renderer_state.mutex.lockUncancelable(global.io());
-                core.renderer_state.terminal.flags.dirty.clear = true;
-                core.renderer_state.mutex.unlock(global.io());
-                core.renderer_thread.wakeup.notify() catch {};
+                redraw(s);
             }
         }
     }
+    if (wparam == 5) setTransparent(app, lparam != 0);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
     write(app, alloc, &out) catch |err| {
@@ -354,6 +351,44 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         try out.print(alloc, "[{d},{d},{d},{d}]", .{ sp.divider.left, sp.divider.top, sp.divider.right, sp.divider.bottom });
     }
     try out.append(alloc, ']');
+}
+
+/// Draw a new frame of the pane `s` soon. Nothing may have changed to cause
+/// one, so this marks the whole screen dirty (as a modifier change does)
+/// and wakes the renderer.
+fn redraw(s: *Surface) void {
+    const core = &s.core_surface;
+    core.renderer_state.mutex.lockUncancelable(global.io());
+    core.renderer_state.terminal.flags.dirty.clear = true;
+    core.renderer_state.mutex.unlock(global.io());
+    core.renderer_thread.wakeup.notify() catch {};
+}
+
+/// Spike S2 (roadmap): does DWM honor per-pixel alpha from the panes' GL
+/// child windows when the top-level window has blur-behind with an empty
+/// region (which turns on per-pixel alpha without blurring)? Each pane then
+/// presents its frame's own alpha (background-opacity) instead of
+/// compositing over the opaque background.
+fn setTransparent(app: *App, enable: bool) void {
+    for (app.windows.items) |w| {
+        const region = if (enable) c.CreateRectRgn(0, 0, -1, -1) else null;
+        defer if (region) |r| {
+            _ = c.DeleteObject(r);
+        };
+        const bb: c.DWM_BLURBEHIND = .{
+            .dwFlags = c.DWM_BB_ENABLE | @as(c.DWORD, if (enable) c.DWM_BB_BLURREGION else 0),
+            .fEnable = @intFromBool(enable),
+            .hRgnBlur = region,
+        };
+        const hr = c.DwmEnableBlurBehindWindow(w.hwnd, &bb);
+        if (hr < 0) log.err("DwmEnableBlurBehindWindow failed hr=0x{x}", .{@as(u32, @bitCast(hr))});
+        var it = w.panes();
+        while (it.next()) |s| {
+            if (!s.core_initialized) continue;
+            s.core_surface.renderer.api.wgl_state.transparent.store(enable, .monotonic);
+            redraw(s);
+        }
+    }
 }
 
 /// Spike S1 (roadmap): does a window drawn over a WGL surface stay clean

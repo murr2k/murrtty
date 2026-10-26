@@ -81,6 +81,10 @@ const Wgl = struct {
     probe: std.atomic.Value(u32) = .init(0),
     /// Frames presented, so the tests can tell whether something drew.
     frames: std.atomic.Value(u32) = .init(0),
+    /// Spike S2 (roadmap), set by a GUI test hook: present the frame with
+    /// its own alpha, for DWM to compose over what is behind the window,
+    /// instead of over the opaque background.
+    transparent: std.atomic.Value(bool) = .init(false),
 
     /// Rectangles drawn over the frame in the present pass, set by the UI
     /// thread (the dimming of an unfocused split pane) and read here.
@@ -520,6 +524,10 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
         out.* = if (background.linear) srgbToLinear(f) else f;
     }
     try p.program.setUniform("background", @as(@Vector(4, f32), bg));
+    // DWM takes premultiplied sRGB, which the shader works out itself.
+    const transparent = state.transparent.load(.monotonic);
+    try p.program.setUniform("transparent", transparent);
+    try p.program.setUniform("frame_linear", background.linear);
     try p.program.setUniform("frame_size", @Vector(2, f32){ frame_w, frame_h });
     // The frame sits at the window's top-left corner.
     try p.program.setUniform("frame_offset_y", @as(f32, @floatFromInt(win_h)) - frame_h);
@@ -531,8 +539,9 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     // With native blending the frame already holds sRGB values (the
     // shaders don't linearize), so they are stored as they are; encoding
     // them again showed every color too light.
-    if (!background.linear) ctx.Disable.?(gl.c.GL_FRAMEBUFFER_SRGB);
-    defer if (!background.linear) ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
+    const srgb_off = !background.linear or transparent;
+    if (srgb_off) ctx.Disable.?(gl.c.GL_FRAMEBUFFER_SRGB);
+    defer if (srgb_off) ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
     ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 3);
 
     var overlay: Overlay = undefined;
@@ -645,9 +654,14 @@ const present_fragment =
     \\#version 430 core
     \\layout(binding = 0) uniform sampler2D frame;
     \\uniform vec4 background;
+    \\uniform bool transparent;
+    \\uniform bool frame_linear;
     \\uniform vec2 frame_size;
     \\uniform float frame_offset_y;
     \\layout(location = 0) out vec4 out_color;
+    \\vec3 encode(vec3 c) {
+    \\    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+    \\}
     \\void main() {
     \\    ivec2 p = ivec2(gl_FragCoord.xy) - ivec2(0, int(frame_offset_y));
     \\    ivec2 size = ivec2(frame_size);
@@ -655,7 +669,14 @@ const present_fragment =
     \\    if (p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y) {
     \\        color = texelFetch(frame, p, 0);
     \\    }
-    \\    out_color = color + background * (1.0 - color.a);
+    \\    if (transparent) {
+    \\        // Premultiplied sRGB, written as is (sRGB writes off).
+    \\        vec3 straight = color.a > 0.0 ? color.rgb / color.a : vec3(0.0);
+    \\        if (frame_linear) straight = encode(straight);
+    \\        out_color = vec4(straight * color.a, color.a);
+    \\    } else {
+    \\        out_color = color + background * (1.0 - color.a);
+    \\    }
     \\}
 ;
 
