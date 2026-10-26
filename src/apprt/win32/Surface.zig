@@ -1597,10 +1597,23 @@ fn positionIme(self: *Surface) void {
 //---------------------------------------------------------------
 // Clipboard and dialogs
 
+/// Open the clipboard for `hwnd`. Another program (a clipboard manager,
+/// clipboard history, Remote Desktop's clipboard sync) may have it open for
+/// a moment, so try for about 100 ms before giving up: a paste that failed
+/// at once lost the paste.
+fn openClipboard(hwnd: c.HWND) bool {
+    var tries: usize = 0;
+    while (c.OpenClipboard(hwnd) == 0) : (tries += 1) {
+        if (tries == 10) return false;
+        c.Sleep(10);
+    }
+    return true;
+}
+
 /// Read CF_UNICODETEXT from the clipboard as UTF-8. Returns null if the
 /// clipboard has no text.
 fn readClipboardText(alloc: Allocator, hwnd: c.HWND) !?[]u8 {
-    if (c.OpenClipboard(hwnd) == 0) return error.ClipboardOpenFailed;
+    if (!openClipboard(hwnd)) return error.ClipboardOpenFailed;
     defer _ = c.CloseClipboard();
 
     const handle = c.GetClipboardData(c.CF_UNICODETEXT) orelse return null;
@@ -1627,15 +1640,9 @@ pub fn writeClipboardText(alloc: Allocator, hwnd: c.HWND, text: []const u8) !voi
         _ = c.GlobalUnlock(handle);
     }
 
-    // Another program (a clipboard manager, clipboard history) may have the
-    // clipboard open for a moment.
-    var tries: usize = 0;
-    while (c.OpenClipboard(hwnd) == 0) : (tries += 1) {
-        if (tries == 5) {
-            _ = c.GlobalFree(handle);
-            return error.ClipboardOpenFailed;
-        }
-        c.Sleep(10);
+    if (!openClipboard(hwnd)) {
+        _ = c.GlobalFree(handle);
+        return error.ClipboardOpenFailed;
     }
     defer _ = c.CloseClipboard();
     _ = c.EmptyClipboard();

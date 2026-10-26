@@ -280,6 +280,15 @@ fn clipboard(h: *Harness) anyerror!void {
     h.key(surf, .{ .shift = true }, w.VK_INSERT);
     try h.waitText(&g, "gui-paste-two", 1, 5000);
 
+    // A paste while another program has the clipboard open for a moment
+    // (clipboard history, a manager) waits for it rather than being lost.
+    try h.setClipboard("gui-paste-held");
+    var hold = try h.holdClipboard(50);
+    h.key(surf, .{ .shift = true }, w.VK_INSERT);
+    hold.wait();
+    try h.waitText(&g, "gui-paste-held", 1, 5000);
+    try h.expect(true, "a paste waits out a clipboard held open for 50 ms", .{});
+
     try h.setClipboard("");
     h.key(surf, .{ .ctrl = true, .shift = true }, 'A');
     h.key(surf, .{ .ctrl = true, .shift = true }, 'C');

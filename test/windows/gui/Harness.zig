@@ -1626,6 +1626,51 @@ pub fn setClipboard(self: *Harness, text: []const u8) !void {
     excludeFromHistory();
 }
 
+/// The clipboard held open by another thread (see holdClipboard).
+pub const ClipboardHold = struct {
+    thread: w.HANDLE,
+
+    /// Wait for the thread to let the clipboard go.
+    pub fn wait(self: *ClipboardHold) void {
+        _ = w.WaitForSingleObject(self.thread, 10000);
+        _ = w.CloseHandle(self.thread);
+    }
+};
+
+/// Hold the clipboard open for `ms` from another thread, as a clipboard
+/// manager or clipboard history does for a moment. Returns once it is
+/// held. (Harness.key waits until murrtty has handled a key, so the hold
+/// can't be on this thread.)
+pub fn holdClipboard(self: *Harness, ms: w.DWORD) !ClipboardHold {
+    const Ctx = struct {
+        ms: w.DWORD,
+        /// 0 starting, 1 held, 2 couldn't open it.
+        state: std.atomic.Value(u8) = .init(0),
+
+        fn run(p: ?*anyopaque) callconv(.winapi) w.DWORD {
+            const ctx: *@This() = @ptrCast(@alignCast(p.?));
+            // The caller's frame may be gone once the state is set.
+            const hold = ctx.ms;
+            const opened = w.OpenClipboard(null) != 0;
+            ctx.state.store(if (opened) 1 else 2, .release);
+            if (!opened) return 1;
+            w.Sleep(hold);
+            _ = w.CloseClipboard();
+            return 0;
+        }
+    };
+    var ctx: Ctx = .{ .ms = ms };
+    const thread = w.CreateThread(null, 0, Ctx.run, &ctx, 0, null) orelse return self.fail("no thread to hold the clipboard", .{});
+    var waited: u32 = 0;
+    while (ctx.state.load(.acquire) == 0 and waited < 5000) : (waited += 1) w.Sleep(1);
+    if (ctx.state.load(.acquire) != 1) {
+        _ = w.WaitForSingleObject(thread, 5000);
+        _ = w.CloseHandle(thread);
+        return self.fail("couldn't hold the clipboard open", .{});
+    }
+    return .{ .thread = thread };
+}
+
 /// A copy of `data` on the open clipboard as `format`.
 fn setClipboardData(format: w.UINT, data: []const u8) void {
     const h = w.GlobalAlloc(w.GMEM_MOVEABLE, @max(data.len, 1)) orelse return;
