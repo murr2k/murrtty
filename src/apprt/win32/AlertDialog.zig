@@ -439,11 +439,14 @@ fn drawButton(state: *const State, item: *const c.DRAWITEMSTRUCT) void {
     _ = c.DrawTextW(dc, &label, @intCast(n), &tr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
 }
 
-test "alert dialog template: one button per response" {
+test "alert dialog template: one button per response, and the entry" {
     const alloc = std.testing.allocator;
-    var t: std.ArrayList(u8) = .empty;
-    defer t.deinit(alloc);
-    try buildTemplate(alloc, &t, &.{ .{ .id = c.IDCANCEL, .label = "Cancel" }, .{ .id = c.IDYES, .label = "Close", .appearance = .destructive } });
-    try std.testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, t.items[8..10], .little));
-    try std.testing.expect(t.items.len % 2 == 0);
+    const responses: []const Response = &.{ .{ .id = c.IDCANCEL, .label = "Cancel" }, .{ .id = c.IDYES, .label = "Close", .appearance = .destructive } };
+    for ([_]bool{ false, true }) |entry| {
+        var t: std.ArrayList(u8) = .empty;
+        defer t.deinit(alloc);
+        try buildTemplate(alloc, &t, responses, entry);
+        try std.testing.expectEqual(@as(u16, if (entry) 3 else 2), std.mem.readInt(u16, t.items[8..10], .little));
+        try std.testing.expect(t.items.len % 2 == 0);
+    }
 }
