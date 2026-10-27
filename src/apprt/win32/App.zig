@@ -1407,7 +1407,19 @@ pub fn performAction(
             // list once its first pane is initialized.)
             const window = windowFromTarget(target) orelse return false;
             if (window.tabs.items.len > 0) return false;
+            // reset_window_size comes back to it.
+            window.initial_size = .{ value.width, value.height };
             window.setClientSize(value.width, value.height);
+        },
+
+        // As macOS (GTK leaves them out; roadmap 4.6).
+        .float_window => {
+            const window = windowFromTarget(target) orelse return false;
+            window.setFloat(value);
+        },
+        .reset_window_size => {
+            const window = windowFromTarget(target) orelse return false;
+            return window.resetSize();
         },
 
         .resize_window => {
@@ -1696,11 +1708,9 @@ fn syncMenuTheme(self: *const App) void {
 pub fn supportsAction(action: input.Binding.Action) bool {
     return switch (action) {
         // Runtime actions not implemented yet.
-        .reset_window_size,
         .inspector,
         .show_gtk_inspector,
         .show_on_screen_keyboard,
-        .toggle_window_float_on_top,
         .toggle_secure_input,
         .toggle_quick_terminal,
         .toggle_visibility,

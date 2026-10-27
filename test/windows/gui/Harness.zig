@@ -1234,6 +1234,8 @@ pub const Dump = struct {
         captionless: bool = false,
         /// Whether Windows last told it it is active (WM_NCACTIVATE).
         active_window: bool = true,
+        /// Kept above other windows (float_window).
+        floating: bool = false,
         /// How what shows through is blurred (4.2: "none", "backdrop",
         /// "accent"), and the system backdrop DWM reports (-1 if it can't).
         blur: []const u8 = "none",
@@ -1547,6 +1549,15 @@ pub fn pinMouse(self: *Harness, g: *const Ghostty, pinned: bool) !void {
 /// whatever the build (`on`), or as the build says.
 pub fn forceAccentBlur(self: *Harness, g: *const Ghostty, on: bool) !void {
     var d = try self.dumpWith(g, 13, @intFromBool(on));
+    d.deinit();
+}
+
+/// Resize each of Ghostty's windows by its bottom right corner by (`dx`,
+/// `dy`) as a drag would (WM_SIZING first, inside Ghostty, as its lParam is
+/// a pointer that can't cross processes).
+pub fn dragResize(self: *Harness, g: *const Ghostty, dx: i16, dy: i16) !void {
+    const lp: u32 = @as(u32, @as(u16, @bitCast(dx))) | @as(u32, @as(u16, @bitCast(dy))) << 16;
+    var d = try self.dumpWith(g, 14, @intCast(lp));
     d.deinit();
 }
 

@@ -403,6 +403,7 @@ pub extern "user32" fn GetClipboardFormatNameW(UINT, [*]u16, c_int) callconv(.wi
 pub extern "dwmapi" fn DwmGetCompositionTimingInfo(?HWND, *anyopaque) callconv(.winapi) c_long;
 pub extern "dwmapi" fn DwmGetWindowAttribute(HWND, DWORD, *anyopaque, DWORD) callconv(.winapi) c_long;
 pub const DWMWA_CLOAKED = 14;
+pub const DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 pub extern "user32" fn WindowFromPoint(POINT) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetAncestor(HWND, UINT) callconv(.winapi) ?HWND;
 pub const GA_ROOT = 2;

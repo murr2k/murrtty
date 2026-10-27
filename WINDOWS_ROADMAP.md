@@ -215,6 +215,10 @@ roadmap item behind it.
   (`gtk_window_set_decorated`). Toggling decorations keeps the terminal's
   grid, the window growing or shrinking by the header bar where it is,
   where GTK keeps the window's size.
+- **Window options** (4.6): `window-position-x`/`-y` (every new window's
+  frame there, as macOS), `window-step-resize`, the float binding
+  (`toggle_window_float_on_top`) and `reset_window_size` work as on macOS;
+  GTK has none of them.
 - **Background opacity toggle** (4.1): `toggle_background_opacity` works
   as on macOS: every window turns opaque, or translucent again, and new
   windows follow; with `background-opacity` at 1 it does nothing. GTK
@@ -2172,6 +2176,23 @@ Escape cancelling a drag.
 - The missing cursor shapes as `.cur` resources.
 - `window-vsync`.
 
+*Built 2026-10-27, as macOS has them (GTK has none):*
+`window-position-x`/`-y` put every new window's visible frame (DWM's,
+inside the resize border) there, as macOS does rather than cascading
+later windows; off every monitor, the window moves into the nearest work
+area (`placeAsConfigured`). `float_window` (`toggle_window_float_on_top`)
+makes the window topmost and back (`setFloat`; Windows takes it only
+from a process with foreground rights, as murrtty is when its binding is
+pressed). `reset_window_size` restores, if maximized, and sizes the
+window to what its first pane asked for (`initial_size`, else the
+default). `window-step-resize` cuts a window being resized (`WM_SIZING`)
+so the focused pane's grid fills its tab area in whole cells
+(`split_layout.snapToCells`). The `window-options` scenario checks each
+(the drag through a test hook that sends `WM_SIZING` inside murrtty).
+Not built: `window-vsync`, which murrtty ignores as GTK does (DWM
+composes windowed GL without tearing; a swap interval of 1 only adds
+latency), and the missing cursor shapes, which need artwork.
+
 ---
 
 ## Phase 5: Desktop integration (about 10 to 12 weeks)
@@ -2505,7 +2526,6 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 | prompt_title, set_tab_title, set_window_title, copy_title_to_clipboard | 3.5 |
 | mouse_over_link, key_sequence, key_table, readonly, show_child_exited | 3.6 |
 | toggle_tab_overview | 3.8 |
-| cell_size, reset_window_size, float_window | 4.6 |
 | desktop_notification | 5.2 |
 | command_finished | 5.3 |
 | progress_report | 5.4 |

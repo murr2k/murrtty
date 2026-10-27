@@ -225,6 +225,9 @@ hosted Windows runner and then the unit tests.
   drag), out of the window into a new one, or onto another window's tab
   row or title bar; `move_tab_to_new_window` and the tab menu's Move Tab
   to New Window. The terminals keep running as they move.
+- Window options Ghostty has on macOS: `window-position-x`/`-y`,
+  `window-step-resize` (resizing in whole cells), keeping a window on top
+  (`toggle_window_float_on_top`) and `reset_window_size`.
 - `window-decoration = none`: no title bar, still resizable from every
   edge, with Windows' shadow and rounded corners; and
   `toggle_window_decorations`, per window as in Ghostty's GTK app, which
@@ -262,7 +265,8 @@ hosted Windows runner and then the unit tests.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the rest of the window chrome (Phase 4: window options next).
+with desktop integration (Phase 5: one instance for every window, and
+the command line reaching it).
 
 **Known issues**
 

@@ -150,6 +150,8 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   alpha included, where captures can't see it (the hidden desktop).
 /// - 13: blur with the accent policy whatever Windows' build (`lparam` 1),
 ///   with Acrylic even while inactive (2), or as the build says (0).
+/// - 14: resize each window by its bottom right corner as a drag would,
+///   WM_SIZING first: `lparam` holds dx (low word) and dy (high), signed.
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -180,6 +182,20 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     };
     // As if Windows' "Always show scrollbars" changed (lparam 1 on).
     if (wparam == 8) app.setScrollbarsAlways(lparam != 0);
+    // Grow (or shrink) each window by its bottom right corner as a drag of
+    // it would: WM_SIZING first (window-step-resize), then the size it
+    // leaves. lparam: dx in the low word, dy in the high, signed.
+    if (wparam == 14) for (app.windows.items) |w| {
+        const bits: u32 = @truncate(@as(usize, @bitCast(lparam)));
+        const dx: i16 = @bitCast(@as(u16, @truncate(bits)));
+        const dy: i16 = @bitCast(@as(u16, @truncate(bits >> 16)));
+        var r: c.RECT = .{};
+        _ = c.GetWindowRect(w.hwnd, &r);
+        r.right += dx;
+        r.bottom += dy;
+        _ = c.SendMessageW(w.hwnd, c.WM_SIZING, c.WMSZ_BOTTOMRIGHT, @bitCast(@intFromPtr(&r)));
+        _ = c.SetWindowPos(w.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+    };
     // The accent policy's blur whatever the build (lparam 1), Acrylic even
     // while inactive (2), or the build's own (0); the windows switch at
     // once.
@@ -263,7 +279,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
         try out.print(alloc, "\"translucent\":{},", .{w.translucent});
         try out.print(alloc, "\"decoration\":\"{t}\",\"captionless\":{},", .{ w.decoration(), w.captionless() });
-        try out.print(alloc, "\"active_window\":{},", .{w.active_window});
+        try out.print(alloc, "\"active_window\":{},\"floating\":{},", .{ w.active_window, w.floating });
         // The blur applied, and the system backdrop DWM reports (-1 when it
         // can't say, before Windows 11 22H2).
         var backdrop: c.DWORD = 0;

@@ -57,6 +57,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
     .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar; gtk-toolbar-style raised-border and flat", .run = shade },
     .{ .name = "translucent", .about = "background-opacity < 1: frames with its alpha (a split's too), the header bar and dividers opaque, toggle_background_opacity in every window and new ones, a reload to 1", .run = translucent },
+    .{ .name = "window-options", .about = "window-position-x/-y for each window, toggle_window_float_on_top, reset_window_size, window-step-resize", .run = windowOptions },
     .{ .name = "tab-drag-close", .about = "a tab closing while another is dragged: the drag goes on with the tab pressed", .run = tabDragClose },
     .{ .name = "tab-drag", .about = "tabs reorder live as they are dragged, tear off into a new window, move onto another window's bar (an emptied window closes); move_tab_to_new_window", .run = tabDrag },
     .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
@@ -5339,6 +5340,104 @@ fn tabDrag(h: *Harness) anyerror!void {
     defer h.alloc.free(wins);
     try h.expect(wins.len == 2, "and does nothing for a window's only tab", .{});
     try quit(h, &g, torn);
+}
+
+/// Window options macOS has and GTK lacks (roadmap 4.6): window-position-x
+/// and -y put each new window's visible frame there; the float binding
+/// keeps the window above others and lets it go; reset_window_size brings
+/// back the grid the window opened with; window-step-resize leaves a
+/// dragged window in whole cells (a step short of a cell keeps the size, a
+/// cell and a bit adds one), and without it the window takes any size.
+fn windowOptions(h: *Harness) anyerror!void {
+    const binds = "keybind = ctrl+shift+f7=toggle_window_float_on_top\nkeybind = ctrl+shift+f8=reset_window_size\n";
+    {
+        var g = try start(h, "window-options", "window-position-x = 200\nwindow-position-y = 150\nwindow-step-resize = true\n" ++ binds, ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const surf = try h.surface(&g, win);
+        // What reset_window_size comes back to.
+        const opening = try gridOf(h, &g);
+        try expectVisibleAt(h, win, 200, 150, "the window's frame is at window-position-x, -y");
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'N');
+        try waitWindowCount(h, &g, 2);
+        try expectVisibleAt(h, try windowOf(h, &g, 1), 200, 150, "and so is the next window's, as on macOS");
+
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F7);
+        try expectFloating(h, &g, win, true);
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F7);
+        try expectFloating(h, &g, win, false);
+
+        // Step resizing, on the first window: a step short of a cell keeps
+        // its size, a cell and a bit grows it by a cell.
+        const cell = try cellOf(h, &g);
+        try h.dragResize(&g, 0, 0);
+        const p0 = try paneSize(h, &g, 0);
+        try h.dragResize(&g, @intCast(cell[0] - 1), @intCast(cell[1] - 1));
+        const p1 = try paneSize(h, &g, 0);
+        try h.expect(p1[0] == p0[0] and p1[1] == p0[1], "with window-step-resize, a drag short of a cell keeps the size ({d}x{d}, was {d}x{d})", .{ p1[0], p1[1], p0[0], p0[1] });
+        try h.dragResize(&g, @intCast(cell[0] + 2), @intCast(cell[1] + 2));
+        const p2 = try paneSize(h, &g, 0);
+        try h.expect(p2[0] == p0[0] + cell[0] and p2[1] == p0[1] + cell[1], "a cell and a bit adds a cell ({d}x{d}, cell {d}x{d})", .{ p2[0] - p0[0], p2[1] - p0[1], cell[0], cell[1] });
+
+        // reset_window_size: the grid it opened with.
+        try h.dragResize(&g, 160, 120);
+        try h.expect(!std.meta.eql(try gridOf(h, &g), opening), "dragged larger, the grid grows", .{});
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F8);
+        try expectGrid(h, &g, opening, "reset_window_size");
+        try quit(h, &g, surf);
+    }
+    {
+        var g = try start(h, "window-options-free", "", ">");
+        defer g.deinit();
+        try h.dragResize(&g, 0, 0);
+        const p0 = try paneSize(h, &g, 0);
+        try h.dragResize(&g, 3, 2);
+        const p1 = try paneSize(h, &g, 0);
+        try h.expect(p1[0] == p0[0] + 3 and p1[1] == p0[1] + 2, "without it the window takes the size dragged to (+{d},+{d})", .{ p1[0] - p0[0], p1[1] - p0[1] });
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+}
+
+/// Expect `win`'s visible frame (DWM's, inside the resize border) at
+/// (`x`, `y`).
+fn expectVisibleAt(h: *Harness, win: w.HWND, x: i32, y: i32, comptime what: []const u8) !void {
+    var r: w.RECT = .{};
+    if (w.DwmGetWindowAttribute(win, w.DWMWA_EXTENDED_FRAME_BOUNDS, &r, @sizeOf(w.RECT)) < 0) _ = w.GetWindowRect(win, &r);
+    try h.expect(@abs(r.left - x) <= 1 and @abs(r.top - y) <= 1, what ++ " ({d},{d})", .{ r.left, r.top });
+}
+
+/// Wait until the first window's floating state is `on`. Windows makes a
+/// window topmost only for a process with foreground rights, which murrtty
+/// has when its binding is pressed but never on the hidden desktop, so the
+/// window style is reported, not checked.
+fn expectFloating(h: *Harness, g: *Harness.Ghostty, win: w.HWND, on: bool) !void {
+    var waited: u32 = 0;
+    while (waited <= 3000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.windows[0].floating == on) {
+            const topmost = w.GetWindowLongPtrW(win, w.GWL_EXSTYLE) & w.WS_EX_TOPMOST != 0;
+            return h.expect(true, "the float binding turns floating {s} (topmost style here: {})", .{ if (on) "on" else "off", topmost });
+        }
+        w.Sleep(100);
+    }
+    return h.fail("floating isn't {}", .{on});
+}
+
+/// The first tab's cell size.
+fn cellOf(h: *Harness, g: *Harness.Ghostty) ![2]i32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const cell = d.value.windows[0].tabs[0].cell orelse return h.fail("no cell size", .{});
+    return .{ @intCast(cell[0]), @intCast(cell[1]) };
+}
+
+/// Window `wi`'s first pane's size, once its pane has the window's new size.
+fn paneSize(h: *Harness, g: *Harness.Ghostty, wi: usize) ![2]i32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const r = (d.value.windows[wi].tabs[0].panes orelse return h.fail("no panes", .{}))[0].rect;
+    return .{ r[2] - r[0], r[3] - r[1] };
 }
 
 /// Wait until window `gone` is no longer among Ghostty's windows.

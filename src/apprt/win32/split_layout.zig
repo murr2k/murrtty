@@ -483,6 +483,24 @@ fn expectTiles(layout: *const L, area: Rect) !void {
     try testing.expectEqual(@as(i64, area.width()) * area.height(), total);
 }
 
+/// `len` cut down to `pad` and whole `cell`s, at least one
+/// (window-step-resize).
+pub fn snapToCells(len: i32, pad: u32, cell: u32) i32 {
+    if (cell == 0) return len;
+    const p: i32 = @intCast(pad);
+    const cl: i32 = @intCast(cell);
+    const cells = @max(1, @divFloor(len - p, cl));
+    return p + cells * cl;
+}
+
+test "split_layout: snapToCells keeps whole cells beside the padding" {
+    try std.testing.expectEqual(@as(i32, 4 + 10 * 9), snapToCells(4 + 10 * 9, 4, 9));
+    try std.testing.expectEqual(@as(i32, 4 + 10 * 9), snapToCells(4 + 10 * 9 + 8, 4, 9));
+    try std.testing.expectEqual(@as(i32, 4 + 11 * 9), snapToCells(4 + 11 * 9, 4, 9));
+    try std.testing.expectEqual(@as(i32, 4 + 9), snapToCells(3, 4, 9));
+    try std.testing.expectEqual(@as(i32, 50), snapToCells(50, 4, 0));
+}
+
 test "split_layout: divider width follows the DPI" {
     try testing.expectEqual(@as(i32, 1), dividerWidth(96));
     try testing.expectEqual(@as(i32, 1), dividerWidth(120));

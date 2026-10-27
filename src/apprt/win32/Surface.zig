@@ -402,7 +402,23 @@ fn forceFrame(self: *Surface) void {
 /// grows with the pane: then the configured padding, scaled as the core
 /// scales it.
 pub fn layoutMin(self: *const Surface) split_layout.Size {
-    if (!self.core_initialized) return .{};
+    const g = self.cellGeometry() orelse return .{};
+    const width = g.cell_w * CoreSurface.min_window_width_cells + g.pad_x;
+    const height = g.cell_h * CoreSurface.min_window_height_cells + g.pad_y;
+    return .{
+        .width = @intCast(@min(width, std.math.maxInt(u16))),
+        .height = @intCast(@min(height, std.math.maxInt(u16))),
+    };
+}
+
+/// The pane's cell and its padding (both sides together), in pixels.
+pub const CellGeometry = struct { cell_w: u32, cell_h: u32, pad_x: u32, pad_y: u32 };
+
+/// The cell size and padding a size for this pane is made of (layoutMin;
+/// window-step-resize): the core's applied padding, or the configured
+/// padding when balanced, which grows with the pane.
+pub fn cellGeometry(self: *const Surface) ?CellGeometry {
+    if (!self.core_initialized) return null;
     const cs = &self.core_surface;
     const cfg = &cs.config;
     const pad_x: u32, const pad_y: u32 = if (cfg.window_padding_balance == .false) .{
@@ -415,12 +431,7 @@ pub fn layoutMin(self: *const Surface) split_layout.Size {
         scaledPadding(cfg.window_padding_top, self.content_scale.y) +
             scaledPadding(cfg.window_padding_bottom, self.content_scale.y),
     };
-    const width = cs.size.cell.width * CoreSurface.min_window_width_cells + pad_x;
-    const height = cs.size.cell.height * CoreSurface.min_window_height_cells + pad_y;
-    return .{
-        .width = @intCast(@min(width, std.math.maxInt(u16))),
-        .height = @intCast(@min(height, std.math.maxInt(u16))),
-    };
+    return .{ .cell_w = cs.size.cell.width, .cell_h = cs.size.cell.height, .pad_x = pad_x, .pad_y = pad_y };
 }
 
 /// Padding `points` in pixels at content scale `scale`, as the core scales

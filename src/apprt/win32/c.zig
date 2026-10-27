@@ -552,6 +552,23 @@ pub extern "user32" fn GetActiveWindow() callconv(.winapi) ?HWND;
 pub extern "user32" fn SetCapture(HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn ReleaseCapture() callconv(.winapi) BOOL;
 pub extern "user32" fn GetCapture() callconv(.winapi) ?HWND;
+// Window options (roadmap 4.6).
+pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
+pub const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
+pub const WS_EX_TOPMOST = 0x00000008;
+pub const GWL_EXSTYLE = -20;
+pub const WM_SIZING = 0x0214;
+pub const WMSZ_LEFT = 1;
+pub const WMSZ_RIGHT = 2;
+pub const WMSZ_TOP = 3;
+pub const WMSZ_TOPLEFT = 4;
+pub const WMSZ_TOPRIGHT = 5;
+pub const WMSZ_BOTTOM = 6;
+pub const WMSZ_BOTTOMLEFT = 7;
+pub const WMSZ_BOTTOMRIGHT = 8;
+pub const DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+pub const MONITOR_DEFAULTTONULL = 0;
+
 // Dragging tabs between windows (roadmap 4.5).
 pub extern "user32" fn WindowFromPoint(POINT) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetAncestor(HWND, UINT) callconv(.winapi) ?HWND;

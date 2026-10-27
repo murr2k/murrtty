@@ -85,6 +85,11 @@ captionless_frame: bool = false,
 /// toggle_window_decorations' choice for this window over the config's
 /// window-decoration, as GTK keeps it (null: the config's).
 decoration_override: ?configpkg.WindowDecoration = null,
+/// Kept above other windows (float_window; roadmap 4.6).
+floating: bool = false,
+/// The size its first pane asked for (initial_size, in points), which
+/// reset_window_size goes back to.
+initial_size: ?[2]u32 = null,
 /// Whether the window is translucent (App.translucent), as last applied
 /// by syncTranslucent.
 translucent: bool = false,
@@ -175,8 +180,90 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     const self = try createEmpty(app);
     errdefer self.discard();
     _ = try self.addTab(parent, .window);
+    self.placeAsConfigured();
     self.show();
     return self;
+}
+
+/// window-position-x and -y, both set: the window's visible top left there
+/// (the frame's, not the invisible resize border around it), in pixels from
+/// the primary monitor's top left, as macOS has it for every new window
+/// (GTK can't place windows). Off every monitor, it moves into the nearest
+/// one's work area.
+fn placeAsConfigured(self: *Window) void {
+    const config = &self.app.config;
+    const px = config.@"window-position-x" orelse return;
+    const py = config.@"window-position-y" orelse return;
+    var r: c.RECT = .{};
+    _ = c.GetWindowRect(self.hwnd, &r);
+    // DWM's frame lies inside the window rectangle by the resize border.
+    var visible: c.RECT = r;
+    if (c.DwmGetWindowAttribute(self.hwnd, c.DWMWA_EXTENDED_FRAME_BOUNDS, &visible, @sizeOf(c.RECT)) < 0) visible = r;
+    const w = r.right - r.left;
+    const h = r.bottom - r.top;
+    var x = @as(c_int, px) - (visible.left - r.left);
+    var y = @as(c_int, py) - (visible.top - r.top);
+    const there: c.RECT = .{ .left = x, .top = y, .right = x + w, .bottom = y + h };
+    if (c.MonitorFromRect(&there, c.MONITOR_DEFAULTTONULL) == null) {
+        var mi: c.MONITORINFO = .{};
+        if (c.MonitorFromRect(&there, c.MONITOR_DEFAULTTONEAREST)) |m| if (c.GetMonitorInfoW(m, &mi) != 0) {
+            const work = mi.rcWork;
+            x = @max(work.left, @min(x, work.right - w));
+            y = @max(work.top, @min(y, work.bottom - h));
+        };
+    }
+    _ = c.SetWindowPos(self.hwnd, null, x, y, 0, 0, c.SWP_NOSIZE | c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+}
+
+/// float_window (toggle_window_float_on_top): kept above other windows, or
+/// not, as macOS's floating level (GTK lacks it).
+pub fn setFloat(self: *Window, mode: apprt.action.FloatWindow) void {
+    self.floating = switch (mode) {
+        .on => true,
+        .off => false,
+        .toggle => !self.floating,
+    };
+    const after = if (self.floating) c.HWND_TOPMOST else c.HWND_NOTOPMOST;
+    // Windows takes this only from a process with foreground rights, as
+    // murrtty has when the binding is pressed (not on the GUI tests'
+    // hidden desktop).
+    if (c.SetWindowPos(self.hwnd, after, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE | c.SWP_NOACTIVATE) == 0) {
+        log.warn("SetWindowPos for floating failed err={}", .{c.GetLastError()});
+    }
+}
+
+/// reset_window_size: the size its first pane asked for (window-width and
+/// -height, or the default), as macOS's; restored first if maximized,
+/// nothing fullscreen. Returns whether it resized.
+pub fn resetSize(self: *Window) bool {
+    if (self.fullscreen != null) return false;
+    if (c.IsZoomed(self.hwnd) != 0) _ = c.ShowWindow(self.hwnd, c.SW_RESTORE);
+    const size = self.initial_size orelse .{ default_width, default_height };
+    self.setClientSize(size[0], size[1]);
+    return true;
+}
+
+/// window-step-resize: `rect`, the window being resized by its `edge`
+/// (WM_SIZING), cut so the focused pane's grid fills its tab area in whole
+/// cells, as macOS's resize increments (GTK lacks it). The edge dragged
+/// moves; the opposite one stays.
+fn stepResize(self: *Window, rect: *c.RECT, edge: c.WPARAM) void {
+    const surface = self.activeSurface() orelse return;
+    const g = surface.cellGeometry() orelse return;
+    var frame: c.RECT = .{};
+    self.adjustFrame(&frame, c.GetDpiForWindow(self.hwnd));
+    const extra_w = frame.right - frame.left;
+    const extra_h = frame.bottom - frame.top + self.chromeHeight();
+    const w = split_layout.snapToCells(rect.right - rect.left - extra_w, g.pad_x, g.cell_w) + extra_w;
+    const h = split_layout.snapToCells(rect.bottom - rect.top - extra_h, g.pad_y, g.cell_h) + extra_h;
+    switch (edge) {
+        c.WMSZ_LEFT, c.WMSZ_TOPLEFT, c.WMSZ_BOTTOMLEFT => rect.left = rect.right - w,
+        else => rect.right = rect.left + w,
+    }
+    switch (edge) {
+        c.WMSZ_TOP, c.WMSZ_TOPLEFT, c.WMSZ_TOPRIGHT => rect.top = rect.bottom - h,
+        else => rect.bottom = rect.top + h,
+    }
 }
 
 /// A new window, not yet shown, with no tab: for create to add one to, or
@@ -2060,6 +2147,13 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_ACTIVATEAPP => {
             self.app.core_app.focusEvent(wparam != 0);
             return 0;
+        },
+
+        // window-step-resize (roadmap 4.6): whole cells as it is dragged.
+        c.WM_SIZING => {
+            if (!self.app.config.@"window-step-resize") return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            self.stepResize(@ptrFromInt(@as(usize, @bitCast(lparam))), wparam);
+            return 1;
         },
 
         c.WM_GETMINMAXINFO => {
