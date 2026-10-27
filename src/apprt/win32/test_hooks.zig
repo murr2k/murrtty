@@ -279,7 +279,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
         try out.print(alloc, "\"translucent\":{},", .{w.translucent});
         try out.print(alloc, "\"decoration\":\"{t}\",\"captionless\":{},", .{ w.decoration(), w.captionless() });
-        try out.print(alloc, "\"active_window\":{},\"floating\":{},", .{ w.active_window, w.floating });
+        try out.print(alloc, "\"active_window\":{},\"floating\":{},\"topmost\":{},", .{ w.active_window, w.floating, w.isTopmost() });
         // The blur applied, and the system backdrop DWM reports (-1 when it
         // can't say, before Windows 11 22H2).
         var backdrop: c.DWORD = 0;

@@ -1234,8 +1234,10 @@ pub const Dump = struct {
         captionless: bool = false,
         /// Whether Windows last told it it is active (WM_NCACTIVATE).
         active_window: bool = true,
-        /// Kept above other windows (float_window).
+        /// Asked to stay above other windows (float_window), and whether
+        /// Windows keeps it there.
         floating: bool = false,
+        topmost: bool = false,
         /// How what shows through is blurred (4.2: "none", "backdrop",
         /// "accent"), and the system backdrop DWM reports (-1 if it can't).
         blur: []const u8 = "none",

@@ -74,6 +74,11 @@ colors: Colors = .{ .bg = .{ .r = 0, .g = 0, .b = 0 }, .fg = .{ .r = 255, .g = 2
 resize_overlay: Overlay = .{},
 created_at: u64 = 0,
 
+/// The size a new window would open with for this pane (the core's
+/// initial_size, in points, sent again on font size changes), which
+/// reset_window_size goes back to, as macOS keeps it per terminal.
+initial_size: ?[2]u32 = null,
+
 /// The search box (start_search to end_search).
 search: SearchBox = .{},
 

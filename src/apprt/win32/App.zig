@@ -1405,10 +1405,11 @@ pub fn performAction(
             // Only the window's first surface sizes the window; a new
             // tab must not resize an existing window. (A tab joins the
             // list once its first pane is initialized.)
+            // Each time (the core sends it again on font size changes):
+            // reset_window_size comes back to it.
+            if (surfaceFromTarget(target)) |s| s.initial_size = .{ value.width, value.height };
             const window = windowFromTarget(target) orelse return false;
             if (window.tabs.items.len > 0) return false;
-            // reset_window_size comes back to it.
-            window.initial_size = .{ value.width, value.height };
             window.setClientSize(value.width, value.height);
         },
 

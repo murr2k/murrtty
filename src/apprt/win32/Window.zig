@@ -85,11 +85,8 @@ captionless_frame: bool = false,
 /// toggle_window_decorations' choice for this window over the config's
 /// window-decoration, as GTK keeps it (null: the config's).
 decoration_override: ?configpkg.WindowDecoration = null,
-/// Kept above other windows (float_window; roadmap 4.6).
+/// Asked to stay above other windows (float_window; roadmap 4.6).
 floating: bool = false,
-/// The size its first pane asked for (initial_size, in points), which
-/// reset_window_size goes back to.
-initial_size: ?[2]u32 = null,
 /// Whether the window is translucent (App.translucent), as last applied
 /// by syncTranslucent.
 translucent: bool = false,
@@ -179,8 +176,10 @@ pub fn registerClass(instance: c.HINSTANCE) !void {
 pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     const self = try createEmpty(app);
     errdefer self.discard();
-    _ = try self.addTab(parent, .window);
+    // Before the pane, which then opens at that monitor's DPI and the
+    // first size fits its work area.
     self.placeAsConfigured();
+    _ = try self.addTab(parent, .window);
     self.show();
     return self;
 }
@@ -218,27 +217,35 @@ fn placeAsConfigured(self: *Window) void {
 /// float_window (toggle_window_float_on_top): kept above other windows, or
 /// not, as macOS's floating level (GTK lacks it).
 pub fn setFloat(self: *Window, mode: apprt.action.FloatWindow) void {
+    // As the window is: another program (Always On Top) may have changed it.
+    if (self.isTopmost()) self.floating = true;
     self.floating = switch (mode) {
         .on => true,
         .off => false,
         .toggle => !self.floating,
     };
     const after = if (self.floating) c.HWND_TOPMOST else c.HWND_NOTOPMOST;
-    // Windows takes this only from a process with foreground rights, as
-    // murrtty has when the binding is pressed (not on the GUI tests'
-    // hidden desktop).
+    // Windows may refuse it without saying so (it does on the GUI tests'
+    // hidden desktop): `floating` is what was asked, isTopmost what is.
     if (c.SetWindowPos(self.hwnd, after, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE | c.SWP_NOACTIVATE) == 0) {
         log.warn("SetWindowPos for floating failed err={}", .{c.GetLastError()});
     }
 }
 
-/// reset_window_size: the size its first pane asked for (window-width and
-/// -height, or the default), as macOS's; restored first if maximized,
-/// nothing fullscreen. Returns whether it resized.
+/// Whether Windows keeps the window above others now.
+pub fn isTopmost(self: *const Window) bool {
+    return c.GetWindowLongPtrW(self.hwnd, c.GWL_EXSTYLE) & c.WS_EX_TOPMOST != 0;
+}
+
+/// reset_window_size: the size a new window would open with for the
+/// focused pane (window-width and -height at its current font, its last
+/// initial_size; else the default), as macOS's; restored first if
+/// maximized, nothing fullscreen or minimized. Returns whether it resized.
 pub fn resetSize(self: *Window) bool {
-    if (self.fullscreen != null) return false;
+    if (self.fullscreen != null or c.IsIconic(self.hwnd) != 0) return false;
     if (c.IsZoomed(self.hwnd) != 0) _ = c.ShowWindow(self.hwnd, c.SW_RESTORE);
-    const size = self.initial_size orelse .{ default_width, default_height };
+    const pane = if (self.activeSurface()) |s| s.initial_size else null;
+    const size = pane orelse .{ default_width, default_height };
     self.setClientSize(size[0], size[1]);
     return true;
 }
@@ -256,13 +263,16 @@ fn stepResize(self: *Window, rect: *c.RECT, edge: c.WPARAM) void {
     const extra_h = frame.bottom - frame.top + self.chromeHeight();
     const w = split_layout.snapToCells(rect.right - rect.left - extra_w, g.pad_x, g.cell_w) + extra_w;
     const h = split_layout.snapToCells(rect.bottom - rect.top - extra_h, g.pad_y, g.cell_h) + extra_h;
+    // Only the sides dragged.
     switch (edge) {
         c.WMSZ_LEFT, c.WMSZ_TOPLEFT, c.WMSZ_BOTTOMLEFT => rect.left = rect.right - w,
-        else => rect.right = rect.left + w,
+        c.WMSZ_RIGHT, c.WMSZ_TOPRIGHT, c.WMSZ_BOTTOMRIGHT => rect.right = rect.left + w,
+        else => {},
     }
     switch (edge) {
         c.WMSZ_TOP, c.WMSZ_TOPLEFT, c.WMSZ_TOPRIGHT => rect.top = rect.bottom - h,
-        else => rect.bottom = rect.top + h,
+        c.WMSZ_BOTTOM, c.WMSZ_BOTTOMLEFT, c.WMSZ_BOTTOMRIGHT => rect.bottom = rect.top + h,
+        else => {},
     }
 }
 
@@ -667,12 +677,13 @@ pub fn moveTabToNewWindow(self: *Window, surface: *Surface) bool {
 
 /// Move tab `index` into a new window of the default size, as GTK's new
 /// window has (not this one's, which may be maximized or fullscreen), its
-/// top left at `at` (screen) within that monitor's work area, or where
-/// Windows places new windows; nothing (an error) for the only tab, which
-/// would leave this window empty.
+/// top left at `at` (screen) within that monitor's work area, or as any
+/// new window (window-position-x/-y, or where Windows places it); nothing
+/// (an error) for the only tab, which would leave this window empty.
 fn tearOff(self: *Window, index: usize, at: ?c.POINT) !void {
     if (self.tabs.items.len < 2) return error.OnlyTab;
     const target = try createEmpty(self.app);
+    if (at == null) target.placeAsConfigured();
     if (at) |p| {
         var r: c.RECT = .{};
         _ = c.GetWindowRect(target.hwnd, &r);

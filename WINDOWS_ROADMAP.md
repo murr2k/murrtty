@@ -2180,14 +2180,18 @@ Escape cancelling a drag.
 `window-position-x`/`-y` put every new window's visible frame (DWM's,
 inside the resize border) there, as macOS does rather than cascading
 later windows; off every monitor, the window moves into the nearest work
-area (`placeAsConfigured`). `float_window` (`toggle_window_float_on_top`)
-makes the window topmost and back (`setFloat`; Windows takes it only
-from a process with foreground rights, as murrtty is when its binding is
-pressed). `reset_window_size` restores, if maximized, and sizes the
-window to what its first pane asked for (`initial_size`, else the
-default). `window-step-resize` cuts a window being resized (`WM_SIZING`)
-so the focused pane's grid fills its tab area in whole cells
-(`split_layout.snapToCells`). The `window-options` scenario checks each
+area (`placeAsConfigured`, before the first pane, so it opens at that
+monitor's DPI; `move_tab_to_new_window`'s window too).
+`float_window` (`toggle_window_float_on_top`) makes the window topmost
+and back (`setFloat`, from the window's actual state, which another
+program may have changed; Windows may refuse silently, and does on the
+hidden desktop). `reset_window_size` restores, if maximized, and sizes
+the window to what a new window would get for its focused pane (the
+pane's latest `initial_size`, which the core sends again when the font
+size changes, as macOS keeps it per terminal; else the default; nothing
+when minimized or fullscreen). `window-step-resize` cuts a window being
+resized (`WM_SIZING`) so the focused pane's grid fills its tab area in
+whole cells, only along the sides dragged (`split_layout.snapToCells`). The `window-options` scenario checks each
 (the drag through a test hook that sends `WM_SIZING` inside murrtty).
 Not built: `window-vsync`, which murrtty ignores as GTK does (DWM
 composes windowed GL without tearing; a swap interval of 1 only adds

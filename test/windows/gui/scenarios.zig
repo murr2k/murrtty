@@ -5349,14 +5349,18 @@ fn tabDrag(h: *Harness) anyerror!void {
 /// dragged window in whole cells (a step short of a cell keeps the size, a
 /// cell and a bit adds one), and without it the window takes any size.
 fn windowOptions(h: *Harness) anyerror!void {
-    const binds = "keybind = ctrl+shift+f7=toggle_window_float_on_top\nkeybind = ctrl+shift+f8=reset_window_size\n";
+    const binds = "keybind = ctrl+shift+f7=toggle_window_float_on_top\nkeybind = ctrl+shift+f8=reset_window_size\nkeybind = ctrl+shift+f9=increase_font_size:2\n";
     {
-        var g = try start(h, "window-options", "window-position-x = 200\nwindow-position-y = 150\nwindow-step-resize = true\n" ++ binds, ">");
+        // No padding, so whole cells fill the pane exactly.
+        const config = "window-position-x = 200\nwindow-position-y = 150\nwindow-step-resize = true\n" ++
+            "window-padding-x = 0\nwindow-padding-y = 0\nwindow-width = 90\nwindow-height = 26\n" ++ binds;
+        var g = try start(h, "window-options", config, ">");
         defer g.deinit();
         const win = try h.mainWindow(&g);
         const surf = try h.surface(&g, win);
         // What reset_window_size comes back to.
         const opening = try gridOf(h, &g);
+        try h.expect(opening[0] == 90 and opening[1] == 26, "it opens at window-width x -height ({d}x{d})", .{ opening[0], opening[1] });
         try expectVisibleAt(h, win, 200, 150, "the window's frame is at window-position-x, -y");
         h.key(surf, .{ .ctrl = true, .shift = true }, 'N');
         try waitWindowCount(h, &g, 2);
@@ -5372,18 +5376,26 @@ fn windowOptions(h: *Harness) anyerror!void {
         const cell = try cellOf(h, &g);
         try h.dragResize(&g, 0, 0);
         const p0 = try paneSize(h, &g, 0);
+        try h.expect(@mod(p0[0], cell[0]) == 0 and @mod(p0[1], cell[1]) == 0, "with window-step-resize, a drag leaves whole cells ({d}x{d}, cell {d}x{d})", .{ p0[0], p0[1], cell[0], cell[1] });
         try h.dragResize(&g, @intCast(cell[0] - 1), @intCast(cell[1] - 1));
         const p1 = try paneSize(h, &g, 0);
-        try h.expect(p1[0] == p0[0] and p1[1] == p0[1], "with window-step-resize, a drag short of a cell keeps the size ({d}x{d}, was {d}x{d})", .{ p1[0], p1[1], p0[0], p0[1] });
+        try h.expect(p1[0] == p0[0] and p1[1] == p0[1], "a drag short of a cell keeps the size ({d}x{d}, was {d}x{d})", .{ p1[0], p1[1], p0[0], p0[1] });
         try h.dragResize(&g, @intCast(cell[0] + 2), @intCast(cell[1] + 2));
         const p2 = try paneSize(h, &g, 0);
         try h.expect(p2[0] == p0[0] + cell[0] and p2[1] == p0[1] + cell[1], "a cell and a bit adds a cell ({d}x{d}, cell {d}x{d})", .{ p2[0] - p0[0], p2[1] - p0[1], cell[0], cell[1] });
 
-        // reset_window_size: the grid it opened with.
+        // reset_window_size: the grid it opened with, also after the font
+        // grows (the size is worked out again for it).
         try h.dragResize(&g, 160, 120);
         try h.expect(!std.meta.eql(try gridOf(h, &g), opening), "dragged larger, the grid grows", .{});
         h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F8);
         try expectGrid(h, &g, opening, "reset_window_size");
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F9);
+        h.sync(surf);
+        w.Sleep(300);
+        try h.expect(!std.meta.eql(try gridOf(h, &g), opening), "a larger font fits fewer cells", .{});
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F8);
+        try expectGrid(h, &g, opening, "reset_window_size after the font grew");
         try quit(h, &g, surf);
     }
     {
