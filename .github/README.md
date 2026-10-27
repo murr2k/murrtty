@@ -112,10 +112,13 @@ hosted Windows runner and then the unit tests.
   chevrons at either end, or the mouse wheel), and the list button beside
   the menu button (or `toggle_tab_overview`) lists the window's tabs with
   a filter box. A tab's tooltip shows its title and working directory.
-  The strip stays with one tab, showing just these buttons (GTK's header
-  bar), and hides in fullscreen or with `gtk-titlebar = false` unless it
-  has tabs to show. `window-new-tab-position` and
-  `window-title-font-family` (the strip's font) work.
+  These buttons sit in GTK's header bar, which is the window's title bar
+  (with the title, and round minimize, maximize and close buttons); the
+  tabs get their own row beneath when there are tabs to show.
+  `window-decoration = server`, `gtk-titlebar = false` and fullscreen give
+  the system's title bar instead, with no header buttons, as GTK has none
+  then. `window-new-tab-position` and `window-title-font-family` (the
+  chrome's font) work.
 - Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
   and down, a pane closes with its shell (the last one closes the tab), and
   the tab shows the focused pane's title. `Ctrl+Shift+W` closes the whole

@@ -689,6 +689,34 @@ pub const COLOR_WINDOWTEXT = 8;
 pub extern "user32" fn GetSysColor(c_int) callconv(.winapi) DWORD;
 pub extern "user32" fn GetSysColorBrush(c_int) callconv(.winapi) ?HBRUSH;
 
+// Client-side decorations (the header bar as the title bar)
+pub const WM_NCCALCSIZE = 0x0083;
+pub const WM_NCMOUSEMOVE = 0x00A0;
+pub const WM_NCLBUTTONDOWN = 0x00A1;
+pub const WM_NCLBUTTONUP = 0x00A2;
+pub const WM_NCLBUTTONDBLCLK = 0x00A3;
+pub const WM_NCMOUSELEAVE = 0x02A2;
+pub const TME_NONCLIENT = 0x00000010;
+pub const HTCAPTION = 2;
+pub const HTMINBUTTON = 8;
+pub const HTMAXBUTTON = 9;
+pub const HTTOP = 12;
+pub const HTTOPLEFT = 13;
+pub const HTTOPRIGHT = 14;
+pub const HTCLOSE = 20;
+pub const SC_SIZE = 0xF000;
+pub const SC_MOVE = 0xF010;
+pub const SC_MINIMIZE = 0xF020;
+pub const SC_MAXIMIZE = 0xF030;
+pub const SC_CLOSE = 0xF060;
+pub const SC_RESTORE = 0xF120;
+pub const SM_CYSIZEFRAME = 33;
+pub const SM_CXPADDEDBORDER = 92;
+pub const NCCALCSIZE_PARAMS = extern struct {
+    rgrc: [3]RECT,
+    lppos: ?*anyopaque,
+};
+
 // The system menu
 pub const WM_INITMENUPOPUP = 0x0117;
 pub const WM_ENTERMENULOOP = 0x0211;
@@ -698,6 +726,7 @@ pub extern "user32" fn GetSystemMenu(HWND, BOOL) callconv(.winapi) ?HMENU;
 pub extern "user32" fn GetMenuItemCount(?HMENU) callconv(.winapi) c_int;
 pub extern "user32" fn DeleteMenu(HMENU, UINT, UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetMenuStringW(HMENU, UINT, ?[*]u16, c_int, UINT) callconv(.winapi) c_int;
+pub extern "user32" fn EnableMenuItem(HMENU, UINT, UINT) callconv(.winapi) BOOL;
 
 // The command palette's list
 pub const HWND_TOP: ?HWND = null;

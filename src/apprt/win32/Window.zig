@@ -9,8 +9,10 @@ const input = @import("../../input.zig");
 const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
+const draw = @import("draw.zig");
 const split_layout = @import("split_layout.zig");
 const text_util = @import("text.zig");
+const HeaderBar = @import("HeaderBar.zig");
 const App = @import("App.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const ContextMenu = @import("ContextMenu.zig");
@@ -65,8 +67,17 @@ size_limit: ?apprt.action.SizeLimit = null,
 
 /// Saved placement and style while fullscreen.
 fullscreen: ?Saved = null,
-/// Whether the strip showed at the last layout.
-strip_shown: bool = false,
+/// The chrome's height at the last layout.
+chrome_shown: c_int = -1,
+/// Whether the frame was last computed for client-side decorations.
+csd_frame: bool = false,
+/// GTK's header bar, the title bar with client-side decorations.
+header: HeaderBar = .{},
+/// The window's button pressed (a press on the header bar's minimize,
+/// maximize or close, until its release) and the non-client mouse
+/// tracking that clears it when the mouse leaves.
+pressed: TabBar.Hit = .none,
+nc_tracking: bool = false,
 /// Wheel movement over the strip short of a notch, toward its end.
 wheel_rest: c_int = 0,
 /// A tab was selected while the strip had no width (minimized): bring it
@@ -142,11 +153,14 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
         log.err("failed to create window err={}", .{c.GetLastError()});
         return error.CreateWindowFailed;
     };
+    // WM_NCCALCSIZE gave the new window its frame by csd().
+    self.csd_frame = self.csd();
     errdefer {
         _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
         _ = c.DestroyWindow(self.hwnd);
         self.tabs.deinit(alloc);
         self.tab_bar.deinit();
+        self.header.deinit();
         // onDestroy, which frees them otherwise, doesn't run.
         for ([_]?c.HICON{ self.small_icon, self.big_icon }) |icon| if (icon) |i| {
             _ = c.DestroyIcon(i);
@@ -156,6 +170,7 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     // Size the client area for the monitor's DPI (setClientSize scales).
     const dpi = c.GetDpiForWindow(self.hwnd);
     self.tab_bar.setDpi(dpi, app.config.@"window-title-font-family");
+    self.header.setDpi(dpi, app.config.@"window-title-font-family");
     self.loadIcons(dpi);
     self.createTooltip();
     // The window's own copy of the system menu, made now: until a window
@@ -356,10 +371,10 @@ fn minimumTabArea(self: *const Window) ?split_layout.Size {
     return min;
 }
 
+/// Repaint the chrome: the header bar (its title) and the tab row.
 pub fn invalidateTabBar(self: *Window) void {
-    if (!self.tabBarVisible()) return;
-    var r = self.tabBarRect();
-    _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
+    var r = self.chromeRect();
+    if (r.bottom > 0) _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
 }
 
 /// Close tabs relative to the one holding `surface`, for the close_tab
@@ -430,8 +445,8 @@ pub fn select(self: *Window, index: usize) void {
     self.active = index;
     // In view on an overflowing strip; while minimized (no width to scroll
     // in), once restored.
-    const width = self.tabBarRect().right;
-    if (width > 0) self.tab_bar.ensureVisible(index, self.stripTabs(), width) else self.reveal_active = true;
+    const width = self.clientWidth();
+    if (width > 0) self.tab_bar.ensureVisible(index, self.tabs.items.len, width) else self.reveal_active = true;
     // Seen: the bell's mark goes.
     self.tabs.items[index].attention = false;
     self.layout();
@@ -551,6 +566,7 @@ fn onDestroy(self: *Window) void {
     for (self.tabs.items) |tab| tab.destroy(false);
     self.tabs.deinit(alloc);
     self.tab_bar.deinit();
+    self.header.deinit();
     self.palette.deinit(alloc);
     self.system_menu.deinit(alloc);
     self.toast.deinit();
@@ -614,6 +630,8 @@ pub fn syncTitle(self: *Window) void {
     const title16 = std.unicode.utf8ToUtf16LeAllocZ(alloc, shown) catch return;
     defer alloc.free(title16);
     _ = c.SetWindowTextW(self.hwnd, title16);
+    // The header bar shows it too.
+    self.invalidateTabBar();
 }
 
 //---------------------------------------------------------------
@@ -628,42 +646,80 @@ fn tabsShownFor(self: *const Window, count: usize) bool {
     };
 }
 
-/// Whether GTK's header bar, whose buttons the strip holds, would show:
-/// unless gtk-titlebar is off, the window is fullscreen, or it is
-/// maximized with gtk-titlebar-hide-when-maximized.
-fn headerShown(self: *const Window) bool {
+/// Whether the window draws GTK's header bar as its title bar (client-side
+/// decorations; roadmap 4.3). GTK draws its header bar only with
+/// `window-decoration` `auto` or `client`, and not with gtk-titlebar off,
+/// fullscreen, or maximized with gtk-titlebar-hide-when-maximized. Without
+/// it the system's caption shows, and no header buttons, as GTK's tab bar
+/// then has none.
+pub fn csd(self: *const Window) bool {
     const config = &self.app.config;
+    switch (config.@"window-decoration") {
+        .auto, .client => {},
+        .server, .none => return false,
+    }
     if (!config.@"gtk-titlebar" or self.fullscreen != null) return false;
     return !(config.@"gtk-titlebar-hide-when-maximized" and c.IsZoomed(self.hwnd) != 0);
 }
 
-/// The strip shows for the header's buttons or for the tabs.
-fn tabBarVisibleFor(self: *const Window, count: usize) bool {
-    return self.headerShown() or self.tabsShownFor(count);
-}
-
+/// Whether the tab row shows (window-show-tab-bar).
 pub fn tabBarVisible(self: *const Window) bool {
-    return self.tabBarVisibleFor(self.tabs.items.len);
+    return self.tabsShownFor(self.tabs.items.len);
 }
 
-/// The tabs the strip lays out: all of them, or none while it shows only
-/// the header's buttons (one tab, with window-show-tab-bar = auto).
-pub fn stripTabs(self: *const Window) usize {
-    return if (self.tabsShownFor(self.tabs.items.len)) self.tabs.items.len else 0;
+pub fn headerHeight(self: *const Window) c_int {
+    return if (self.csd()) self.header.height() else 0;
 }
 
-fn tabBarRect(self: *const Window) c.RECT {
+/// The header bar's and the tab row's height with `count` tabs.
+fn chromeHeightFor(self: *const Window, count: usize) c_int {
+    return self.headerHeight() + @as(c_int, if (self.tabsShownFor(count)) self.tab_bar.height() else 0);
+}
+
+pub fn chromeHeight(self: *const Window) c_int {
+    return self.chromeHeightFor(self.tabs.items.len);
+}
+
+fn clientWidth(self: *const Window) c_int {
     var client: c.RECT = .{};
     _ = c.GetClientRect(self.hwnd, &client);
-    return .{ .right = client.right, .bottom = self.tab_bar.height() };
+    return client.right;
+}
+
+/// The tab row, in client coordinates: below the header bar.
+pub fn tabBarRect(self: *const Window) c.RECT {
+    const top = self.headerHeight();
+    return .{ .top = top, .right = self.clientWidth(), .bottom = top + self.tab_bar.height() };
+}
+
+/// The header bar and the tab row together.
+fn chromeRect(self: *const Window) c.RECT {
+    return .{ .right = self.clientWidth(), .bottom = self.chromeHeight() };
 }
 
 /// The area tabs occupy when the window has `count` tabs.
 fn tabRect(self: *const Window, count: usize) c.RECT {
     var r: c.RECT = .{};
     _ = c.GetClientRect(self.hwnd, &r);
-    if (self.tabBarVisibleFor(count)) r.top = @min(r.bottom, self.tab_bar.height());
+    r.top = @min(r.bottom, self.chromeHeightFor(count));
     return r;
+}
+
+/// The resize band along the top, inside the client area once the header
+/// bar replaces the caption.
+fn frameY(self: *const Window) c_int {
+    const dpi = c.GetDpiForWindow(self.hwnd);
+    return c.GetSystemMetricsForDpi(c.SM_CYSIZEFRAME, dpi) + c.GetSystemMetricsForDpi(c.SM_CXPADDEDBORDER, dpi);
+}
+
+/// `rect`, a client area, grown to the window around it: the system's
+/// frame, less the caption while the header bar replaces it
+/// (WM_NCCALCSIZE).
+fn adjustFrame(self: *const Window, rect: *c.RECT, dpi: c.UINT) void {
+    const top = rect.top;
+    const style: c.DWORD = @truncate(@as(usize, @bitCast(c.GetWindowLongPtrW(self.hwnd, c.GWL_STYLE))));
+    _ = c.AdjustWindowRectExForDpi(rect, style, c.FALSE, c.WS_EX_APPWINDOW, dpi);
+    if (self.csd()) rect.top = top;
 }
 
 /// Size every tab to the tab area, all in one step (so they never show at
@@ -673,17 +729,26 @@ fn tabRect(self: *const Window, count: usize) c.RECT {
 fn layout(self: *Window) void {
     // A wider window may show more tabs: keep the scroll in range (not the
     // active tab in view, which would undo the chevrons; select does that).
-    const strip_width = self.tabBarRect().right;
-    self.tab_bar.clampScroll(self.stripTabs(), strip_width);
+    const strip_width = self.clientWidth();
+    self.tab_bar.clampScroll(self.tabs.items.len, strip_width);
     if (self.reveal_active and strip_width > 0) {
         self.reveal_active = false;
-        self.tab_bar.ensureVisible(self.active, self.stripTabs(), strip_width);
+        self.tab_bar.ensureVisible(self.active, self.tabs.items.len, strip_width);
     }
-    // The strip comes or goes on a maximize (gtk-titlebar-hide-when-
-    // maximized) or fullscreen: paint it, or the terminal where it was.
-    const strip = self.tabBarVisible();
-    if (strip != self.strip_shown) {
-        self.strip_shown = strip;
+    // A reload that changes the decorations: the frame again (maximizing
+    // and fullscreen recompute it as they happen).
+    const csd_now = self.csd();
+    if (csd_now != self.csd_frame) {
+        self.csd_frame = csd_now;
+        _ = c.SetWindowPos(self.hwnd, null, 0, 0, 0, 0, c.SWP_FRAMECHANGED | c.SWP_NOMOVE |
+            c.SWP_NOSIZE | c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+    }
+    // The chrome changes height (the tab row comes or goes, the header bar
+    // with a maximize or fullscreen): paint it, or the terminal where it
+    // was.
+    const chrome = self.chromeHeight();
+    if (chrome != self.chrome_shown) {
+        self.chrome_shown = chrome;
         _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
     }
     const r = self.tabRect(self.tabs.items.len);
@@ -746,10 +811,8 @@ pub fn setClientSize(self: *Window, width: u32, height: u32) void {
         current.bottom - current.top
     else
         @intCast((@as(u64, height) * dpi + 95) / 96);
-    const bar: c_int = if (self.tabBarVisible()) self.tab_bar.height() else 0;
-    var rect: c.RECT = .{ .right = w, .bottom = h + bar };
-    const style: c.DWORD = @truncate(@as(usize, @bitCast(c.GetWindowLongPtrW(self.hwnd, c.GWL_STYLE))));
-    _ = c.AdjustWindowRectExForDpi(&rect, style, c.FALSE, c.WS_EX_APPWINDOW, dpi);
+    var rect: c.RECT = .{ .right = w, .bottom = h + self.chromeHeight() };
+    self.adjustFrame(&rect, dpi);
     var win_w = rect.right - rect.left;
     var win_h = rect.bottom - rect.top;
     // Within the monitor's work area: never larger, and moved back in if
@@ -943,8 +1006,7 @@ pub fn colorsChanged(self: *Window, surface: *Surface) void {
     }
     if (self.activeSurface() != surface) return;
     self.applyChrome();
-    var r = self.tabBarRect();
-    _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
+    self.invalidateTabBar();
 }
 
 /// The config changed: the chrome, the tab bar's colors and visibility,
@@ -952,6 +1014,7 @@ pub fn colorsChanged(self: *Window, surface: *Surface) void {
 pub fn configChanged(self: *Window) void {
     // window-title-font-family may have changed.
     self.tab_bar.setDpi(self.tab_bar.dpi, self.app.config.@"window-title-font-family");
+    self.header.setDpi(self.header.dpi, self.app.config.@"window-title-font-family");
     self.applyChrome();
     for (self.tabs.items) |t| t.syncDim();
     self.layout();
@@ -963,9 +1026,9 @@ pub fn configChanged(self: *Window) void {
 //---------------------------------------------------------------
 // Tab bar input and painting
 
-/// Paint the tab bar, and anything of the client area the tabs don't
-/// cover yet (while resizing) in the terminal's background rather than
-/// leaving it black. WS_CLIPCHILDREN keeps this off the tabs.
+/// Paint the header bar and the tab row, and anything of the client area
+/// the tabs don't cover yet (while resizing) in the terminal's background
+/// rather than leaving it black. WS_CLIPCHILDREN keeps this off the tabs.
 fn paint(self: *Window) void {
     var ps: c.PAINTSTRUCT = undefined;
     const hdc = c.BeginPaint(self.hwnd, &ps) orelse return;
@@ -977,26 +1040,31 @@ fn paint(self: *Window) void {
         defer _ = c.DeleteObject(brush);
         _ = c.FillRect(hdc, &below, brush);
     }
+    const pal = draw.palette(colors.bg, colors.fg);
+    const width = self.clientWidth();
+    if (self.csd()) {
+        // The caption's text, which syncTitle keeps.
+        var title: [512]u16 = undefined;
+        const n = c.GetWindowTextW(self.hwnd, &title, title.len);
+        self.header.paint(hdc, width, title[0..@intCast(@max(n, 0))], self.tab_bar.hover, self.pressed, c.IsZoomed(self.hwnd) != 0, pal);
+    }
     if (!self.tabBarVisible()) return;
 
-    // Every title the strip shows: it is laid out (and hit-tested) for all
-    // of them, or for none with only the header's buttons.
+    // Every title: the row is laid out (and hit-tested) for all the tabs.
     const alloc = self.app.core_app.alloc;
-    const shown = self.stripTabs();
-    const titles = alloc.alloc([]const u8, shown) catch return;
+    const titles = alloc.alloc([]const u8, self.tabs.items.len) catch return;
     defer alloc.free(titles);
-    const attention = alloc.alloc(bool, shown) catch return;
+    const attention = alloc.alloc(bool, self.tabs.items.len) catch return;
     defer alloc.free(attention);
     @memset(titles, "");
     defer for (titles) |t| if (t.len > 0) alloc.free(t);
     // The labels: the bell and zoom marks before the title.
-    for (self.tabs.items[0..shown], titles, attention) |tab, *t, *a| {
+    for (self.tabs.items, titles, attention) |tab, *t, *a| {
         t.* = tab.label(alloc) catch "";
         a.* = tab.attention;
     }
 
-    const r = self.tabBarRect();
-    self.tab_bar.paint(hdc, r.right, titles, attention, self.active, colors.bg, colors.fg);
+    self.tab_bar.paint(hdc, self.headerHeight(), width, titles, attention, self.active, pal);
     self.painted_bell = 0;
     self.painted_attention = 0;
     for (titles, attention, 0..) |t, a, i| {
@@ -1019,7 +1087,7 @@ fn tabMenu(self: *Window, index: usize, lparam: c.LPARAM) void {
 
 /// Scroll an overflowing strip by `tabs` tabs.
 fn scrollTabs(self: *Window, tabs: c_int) void {
-    if (self.tab_bar.scrollTabs(tabs, self.stripTabs(), self.tabBarRect().right)) {
+    if (self.tab_bar.scrollTabs(tabs, self.tabs.items.len, self.clientWidth())) {
         self.invalidateTabBar();
     }
 }
@@ -1035,18 +1103,18 @@ pub fn toggleTabList(self: *Window) void {
 /// The menu on the arrow beside "+": splits of the active tab's pane.
 fn splitMenu(self: *Window) void {
     const surface = self.activeSurface() orelse return;
-    const r = self.tab_bar.newTabMenuRect(self.stripTabs(), self.tabBarRect().right);
+    const r = self.header.place(self.clientWidth()).new_tab_menu;
     var pt: c.POINT = .{ .x = r.left, .y = r.bottom };
     _ = c.ClientToScreen(self.hwnd, &pt);
     const chosen = ContextMenu.trackSplit(surface, pt) orelse return;
     self.performOnPane(surface, chosen);
 }
 
-/// The main menu, under its button at the strip's right end, for the
-/// active tab's focused pane.
+/// The main menu, under its button in the header bar, for the active tab's
+/// focused pane.
 fn mainMenu(self: *Window) void {
     const surface = self.activeSurface() orelse return;
-    const r = self.tab_bar.menuRect(self.tabBarRect().right);
+    const r = self.header.place(self.clientWidth()).menu;
     var pt: c.POINT = .{ .x = r.right, .y = r.bottom };
     _ = c.ClientToScreen(self.hwnd, &pt);
     self.runChoice(surface, ContextMenu.trackMain(surface, pt) orelse return);
@@ -1058,6 +1126,61 @@ fn runChoice(self: *Window, surface: *Surface, choice: ContextMenu.Choice) void 
         .action => |a| self.performOnPane(surface, a),
         .about => self.app.showAbout(self.hwnd),
     }
+}
+
+/// The window's button a non-client hit code names.
+fn controlHit(code: c.WPARAM) TabBar.Hit {
+    return switch (code) {
+        c.HTMINBUTTON => .minimize,
+        c.HTMAXBUTTON => .maximize,
+        c.HTCLOSE => .window_close,
+        else => .none,
+    };
+}
+
+fn isControl(hit: TabBar.Hit) bool {
+    return switch (hit) {
+        .minimize, .maximize, .window_close => true,
+        else => false,
+    };
+}
+
+/// A click on one of the window's buttons in the header bar: what the
+/// caption's would do.
+fn runControl(self: *Window, hit: TabBar.Hit) void {
+    const cmd: c.WPARAM = switch (hit) {
+        .minimize => c.SC_MINIMIZE,
+        .maximize => if (c.IsZoomed(self.hwnd) != 0) c.SC_RESTORE else c.SC_MAXIMIZE,
+        .window_close => c.SC_CLOSE,
+        else => return,
+    };
+    _ = c.PostMessageW(self.hwnd, c.WM_SYSCOMMAND, cmd, 0);
+}
+
+/// The system menu at screen point (x, y), as DefWindowProc shows it over
+/// its own caption: murrtty's items current, Windows' enabled for the
+/// window's state, the choice run as WM_SYSCOMMAND.
+fn systemMenuAt(self: *Window, x: c_int, y: c_int) void {
+    const menu = c.GetSystemMenu(self.hwnd, c.FALSE) orelse return;
+    if (self.activeSurface()) |s| self.system_menu.refresh(s, menu);
+    const zoomed = c.IsZoomed(self.hwnd) != 0;
+    for ([_]struct { c.UINT, bool }{
+        .{ c.SC_RESTORE, zoomed },
+        .{ c.SC_MOVE, !zoomed },
+        .{ c.SC_SIZE, !zoomed },
+        .{ c.SC_MINIMIZE, true },
+        .{ c.SC_MAXIMIZE, !zoomed },
+        .{ c.SC_CLOSE, true },
+    }) |item| {
+        _ = c.EnableMenuItem(menu, item[0], if (item[1]) c.MF_STRING else c.MF_GRAYED);
+    }
+    self.beginMenuModal();
+    const cmd = c.TrackPopupMenuEx(menu, c.TPM_RETURNCMD | c.TPM_RIGHTBUTTON, x, y, self.hwnd, null);
+    // WM_EXITMENULOOP has ended it already, unless the loop never began.
+    self.endMenuModal();
+    // So the menu closes properly the next time (KB135788).
+    _ = c.PostMessageW(self.hwnd, c.WM_NULL, 0, 0);
+    if (cmd > 0) _ = c.PostMessageW(self.hwnd, c.WM_SYSCOMMAND, @intCast(cmd), 0);
 }
 
 fn beginMenuModal(self: *Window) void {
@@ -1079,21 +1202,23 @@ fn performOnPane(self: *Window, surface: *Surface, action: input.Binding.Action)
     };
 }
 
+/// The chrome's item at the client point in `lparam`: the header bar's
+/// (its buttons; the window's come as non-client messages) or the tab
+/// row's.
 fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {
+    const x = c.xParam(lparam);
+    const y = c.yParam(lparam);
+    const width = self.clientWidth();
+    const header = self.headerHeight();
+    if (y < header) return self.header.hitTest(x, y, width);
     if (!self.tabBarVisible()) return .none;
-    return self.tab_bar.hitTest(
-        c.xParam(lparam),
-        c.yParam(lparam),
-        self.stripTabs(),
-        self.tabBarRect().right,
-    );
+    return self.tab_bar.hitTest(x, y - header, self.tabs.items.len, width);
 }
 
 fn setHover(self: *Window, hit: TabBar.Hit) void {
     if (hit.eql(self.tab_bar.hover)) return;
     self.tab_bar.hover = hit;
-    var r = self.tabBarRect();
-    _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
+    self.invalidateTabBar();
     // Another item: hide the tooltip, which asks for its text again when
     // it next shows.
     if (self.tooltip) |tip| _ = c.SendMessageW(tip, c.TTM_POP, 0, 0);
@@ -1134,7 +1259,7 @@ fn createTooltip(self: *Window) void {
         .uFlags = c.TTF_SUBCLASS,
         .hwnd = self.hwnd,
         .uId = 1,
-        .rect = self.tabBarRect(),
+        .rect = self.chromeRect(),
         .lpszText = c.LPSTR_TEXTCALLBACKW,
     };
     _ = c.SendMessageW(tip, c.TTM_ADDTOOLW, 0, @bitCast(@intFromPtr(&info)));
@@ -1143,13 +1268,13 @@ fn createTooltip(self: *Window) void {
     self.tooltip = tip;
 }
 
-/// The tool covers the strip (nothing while it is hidden).
+/// The tool covers the header bar and the tab row.
 fn placeTooltip(self: *Window) void {
     const tip = self.tooltip orelse return;
     var info: c.TTTOOLINFOW = .{
         .hwnd = self.hwnd,
         .uId = 1,
-        .rect = if (self.tabBarVisible()) self.tabBarRect() else .{},
+        .rect = self.chromeRect(),
     };
     _ = c.SendMessageW(tip, c.TTM_NEWTOOLRECTW, 0, @bitCast(@intFromPtr(&info)));
 }
@@ -1179,6 +1304,8 @@ pub fn tooltipText(self: *Window, alloc: std.mem.Allocator, hit: TabBar.Hit) ![]
         .menu => try w.writeAll("Menu"),
         .scroll_left => try w.writeAll("Scroll Tabs Left"),
         .scroll_right => try w.writeAll("Scroll Tabs Right"),
+        // The window's buttons are the caption's: Windows' own tips.
+        .minimize, .maximize, .window_close => {},
     }
     return out.toOwnedSlice();
 }
@@ -1262,7 +1389,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             const hit = self.tabBarHit(lparam);
             self.last_press = hit;
             switch (hit) {
-                .none => {},
+                // The window's buttons come as non-client messages.
+                .none, .minimize, .maximize, .window_close => {},
                 .tab => |i| self.select(i),
                 .close => |i| self.requestCloseTab(i),
                 .new_tab => self.newTabFromActive(),
@@ -1287,7 +1415,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             };
             self.last_press = hit;
             switch (hit) {
-                .none => {},
+                .none, .minimize, .maximize, .window_close => {},
                 .tab => |i| {
                     self.select(i);
                     if (same_tab) if (self.activeSurface()) |s| self.app.promptTitle(s, .tab);
@@ -1308,7 +1436,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_MOUSEWHEEL, c.WM_MOUSEHWHEEL => {
             var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
             _ = c.ScreenToClient(self.hwnd, &pt);
-            if (!self.tabBarVisible() or pt.y < 0 or pt.y >= self.tab_bar.height()) {
+            const row = self.tabBarRect();
+            if (!self.tabBarVisible() or pt.y < row.top or pt.y >= row.bottom) {
                 return c.DefWindowProcW(hwnd, msg, wparam, lparam);
             }
             // Touchpads and smooth wheels send less than a notch at a time:
@@ -1381,16 +1510,109 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_GETMINMAXINFO => {
             const min = self.minimumTabArea() orelse return 0;
             const info: *c.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            const bar: c_int = if (self.tabBarVisible()) self.tab_bar.height() else 0;
-            var rect: c.RECT = .{ .right = min.width, .bottom = min.height + bar };
-            const style: c.DWORD = @truncate(@as(usize, @bitCast(c.GetWindowLongPtrW(hwnd, c.GWL_STYLE))));
-            _ = c.AdjustWindowRectExForDpi(&rect, style, c.FALSE, c.WS_EX_APPWINDOW, c.GetDpiForWindow(hwnd));
+            var rect: c.RECT = .{ .right = min.width, .bottom = min.height + self.chromeHeight() };
+            self.adjustFrame(&rect, c.GetDpiForWindow(hwnd));
             info.ptMinTrackSize = .{ .x = rect.right - rect.left, .y = rect.bottom - rect.top };
             return 0;
         },
 
+        // Client-side decorations (roadmap 4.3): no caption, the header
+        // bar drawn in its place. Maximized, the window reaches past the
+        // monitor by its frame, so the bar starts that far down.
+        c.WM_NCCALCSIZE => {
+            if (wparam == 0 or !self.csd()) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            const params: *c.NCCALCSIZE_PARAMS = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            const top = params.rgrc[0].top;
+            const ret = c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            params.rgrc[0].top = top;
+            if (c.IsZoomed(hwnd) != 0) params.rgrc[0].top += self.frameY();
+            return ret;
+        },
+
+        // Over the header bar: the caption between its buttons, the
+        // caption's buttons over the window's (Windows 11 shows Snap
+        // Layouts over HTMAXBUTTON), its own buttons as client clicks, and
+        // the resize band along the top that the caption had.
+        c.WM_NCHITTEST => {
+            const def = c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            if (def != c.HTCLIENT or !self.csd()) return def;
+            var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
+            _ = c.ScreenToClient(hwnd, &pt);
+            const width = self.clientWidth();
+            const band = self.frameY();
+            if (c.IsZoomed(hwnd) == 0 and pt.y < band) {
+                if (pt.x < band) return c.HTTOPLEFT;
+                if (pt.x >= width - band) return c.HTTOPRIGHT;
+                return c.HTTOP;
+            }
+            if (pt.y >= self.headerHeight()) return def;
+            return switch (self.header.hitTest(pt.x, pt.y, width)) {
+                .none => c.HTCAPTION,
+                .minimize => c.HTMINBUTTON,
+                .maximize => c.HTMAXBUTTON,
+                .window_close => c.HTCLOSE,
+                else => c.HTCLIENT,
+            };
+        },
+
+        // The window's buttons, drawn by the header bar: hover, press and
+        // click here, not in DefWindowProc, which would draw the old
+        // caption buttons and run their loop. Other non-client mouse
+        // messages (the caption's drag, double click and menu) are its.
+        c.WM_NCMOUSEMOVE => {
+            const hit = controlHit(wparam);
+            if (hit != .none and !self.nc_tracking) {
+                var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE | c.TME_NONCLIENT, .hwndTrack = hwnd };
+                if (c.TrackMouseEvent(&tme) != 0) self.nc_tracking = true;
+            }
+            if (hit != .none or isControl(self.tab_bar.hover)) self.setHover(hit);
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_NCMOUSELEAVE => {
+            self.nc_tracking = false;
+            if (isControl(self.tab_bar.hover)) self.setHover(.none);
+            if (self.pressed != .none) {
+                self.pressed = .none;
+                self.invalidateTabBar();
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_NCLBUTTONDOWN, c.WM_NCLBUTTONDBLCLK => {
+            const hit = controlHit(wparam);
+            if (hit == .none) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            self.pressed = hit;
+            self.invalidateTabBar();
+            return 0;
+        },
+        c.WM_NCLBUTTONUP => {
+            const was = self.pressed;
+            if (was == .none) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            self.pressed = .none;
+            self.invalidateTabBar();
+            if (controlHit(wparam).eql(was)) self.runControl(was);
+            return 0;
+        },
+
+        // A right-click on the header bar's caption (WM_NCRBUTTONUP becomes
+        // this): the system menu, which DefWindowProc shows only over a
+        // caption it drew.
+        c.WM_CONTEXTMENU => {
+            if (self.csd() and lparam != -1) {
+                var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
+                _ = c.ScreenToClient(hwnd, &pt);
+                if (pt.y >= 0 and pt.y < self.headerHeight() and
+                    self.header.hitTest(pt.x, pt.y, self.clientWidth()) == .none)
+                {
+                    self.systemMenuAt(c.xParam(lparam), c.yParam(lparam));
+                    return 0;
+                }
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
         c.WM_DPICHANGED => {
             self.tab_bar.setDpi(c.hiword(wparam), self.app.config.@"window-title-font-family");
+            self.header.setDpi(c.hiword(wparam), self.app.config.@"window-title-font-family");
             self.loadIcons(c.hiword(wparam));
             // The panes first: the suggested size is checked against the
             // window's minimum (WM_GETMINMAXINFO), which their cells and

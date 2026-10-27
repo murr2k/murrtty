@@ -1,30 +1,23 @@
-//! A custom-drawn tab strip along the top of a window's client area.
+//! The tab row: a custom-drawn strip of tabs below the header bar (GTK's
+//! tab bar; roadmap 3.8, 4.3).
 //!
 //! Drawn with GDI rather than the common tab control so it can follow
-//! the terminal's colors and the dark title bar. The Window owns the
-//! tabs; this only lays them out, paints and hit-tests.
-//!
-//! Left to right: the tabs, "+" and the arrow beside it (the split menu),
-//! then at the right end the tab list's button and the main menu's. Tabs
-//! share the room between 64 and 240 DIP each; when they don't fit at 64
-//! they scroll (by `scroll`) between a "‹" and a "›", and "+" moves to
-//! just left of the list button (roadmap 3.8). Laid out for no tabs, it is
-//! GTK's header bar alone: the buttons, "+" at the left end.
+//! the terminal's colors. The Window owns the tabs; this only lays them
+//! out, paints and hit-tests. Tabs share the row between 64 and 240 DIP
+//! each; when they don't fit at 64 they scroll (by `scroll`) between a "‹"
+//! and a "›". The header bar's buttons are HeaderBar's.
 const TabBar = @This();
 
 const std = @import("std");
-const configpkg = @import("../../config.zig");
 const c = @import("c.zig");
+const draw = @import("draw.zig");
 const text_util = @import("text.zig");
 
 /// Unscaled metrics, in device-independent pixels.
 const bar_height = 34;
 const tab_max_width = 240;
 const tab_min_width = 64;
-const button_width = 34;
-/// The arrow beside "+" opening the split menu (GTK's split button).
-const dropdown_width = 18;
-/// The "‹" and "›" scrolling an overflowing strip.
+/// The "‹" and "›" scrolling an overflowing row.
 const chevron_width = 22;
 const close_size = 18;
 const text_inset = 12;
@@ -32,34 +25,40 @@ const text_inset = 12;
 font: ?c.HFONT = null,
 dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 
-/// The item under the mouse, for hover highlighting.
+/// The item under the mouse, in this row or the header bar, for hover
+/// highlighting.
 hover: Hit = .none,
 tracking: bool = false,
 
 /// How far the tabs are scrolled, in pixels, while they overflow.
 scroll: c_int = 0,
 
+/// An item of the window's chrome: the tab row's or the header bar's.
 pub const Hit = union(enum) {
     none,
     tab: usize,
     close: usize,
+    /// The chevrons of an overflowing row.
+    scroll_left,
+    scroll_right,
+    /// The header bar's "+", and the arrow beside it: the split menu.
     new_tab,
-    /// The arrow beside "+": the split menu.
     new_tab_menu,
     /// The tab list's button.
     list,
-    /// The main menu's button at the right end.
+    /// The main menu's button.
     menu,
-    /// The chevrons of an overflowing strip.
-    scroll_left,
-    scroll_right,
+    /// The window's buttons.
+    minimize,
+    maximize,
+    window_close,
 
     pub fn eql(a: Hit, b: Hit) bool {
         return std.meta.eql(a, b);
     }
 };
 
-/// Where everything goes for `n` tabs in a bar `width` pixels wide.
+/// Where the tabs go for `n` of them in a row `width` pixels wide.
 const Place = struct {
     tab_width: c_int,
     /// The tabs don't fit at their narrowest: they scroll between the
@@ -68,43 +67,21 @@ const Place = struct {
     /// The span the tabs show in.
     view_left: c_int,
     view_right: c_int,
-    new_tab_left: c_int,
-    list_left: c_int,
-    menu_left: c_int,
 };
 
 fn place(self: *const TabBar, n: usize, width: c_int) Place {
-    const button = self.scale(button_width);
-    const plus = button + self.scale(dropdown_width);
-    const menu_left = width - button;
-    const list_left = menu_left - button;
     const count: c_int = @intCast(@max(n, 1));
-    const avail = @max(0, list_left - plus);
-    const per = @divTrunc(avail, count);
+    const per = @divTrunc(@max(0, width), count);
     if (per >= self.scale(tab_min_width) or n <= 1) {
         const w = std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
-        // No tabs (only the header's buttons): "+" at the left end.
-        const tabs_right = if (n == 0) 0 else w * count;
-        return .{
-            .tab_width = w,
-            .overflow = false,
-            .view_left = 0,
-            .view_right = tabs_right,
-            .new_tab_left = tabs_right,
-            .list_left = list_left,
-            .menu_left = menu_left,
-        };
+        return .{ .tab_width = w, .overflow = false, .view_left = 0, .view_right = w * count };
     }
     const chevron = self.scale(chevron_width);
-    const new_tab_left = @max(0, list_left - plus);
     return .{
         .tab_width = self.scale(tab_min_width),
         .overflow = true,
         .view_left = chevron,
-        .view_right = @max(chevron, new_tab_left - chevron),
-        .new_tab_left = new_tab_left,
-        .list_left = list_left,
-        .menu_left = menu_left,
+        .view_right = @max(chevron, width - chevron),
     };
 }
 
@@ -115,7 +92,7 @@ fn maxScroll(self: *const TabBar, n: usize, width: c_int) c_int {
     return @max(0, p.tab_width * @as(c_int, @intCast(n)) - (p.view_right - p.view_left));
 }
 
-/// Keep the scroll in range (after the bar or the tabs change).
+/// Keep the scroll in range (after the row or the tabs change).
 pub fn clampScroll(self: *TabBar, n: usize, width: c_int) void {
     self.scroll = std.math.clamp(self.scroll, 0, self.maxScroll(n, width));
 }
@@ -153,47 +130,25 @@ pub fn deinit(self: *TabBar) void {
 pub fn setDpi(self: *TabBar, dpi: c.UINT, family: ?[]const u8) void {
     self.dpi = dpi;
     if (self.font) |f| _ = c.DeleteObject(f);
-    self.font = null;
-
-    var ncm: c.NONCLIENTMETRICSW = .{};
-    if (c.SystemParametersInfoForDpi(c.SPI_GETNONCLIENTMETRICS, @sizeOf(c.NONCLIENTMETRICSW), &ncm, 0, dpi) != 0) {
-        var lf = ncm.lfMessageFont;
-        if (family) |name| setFace(&lf, name);
-        self.font = c.CreateFontIndirectW(&lf);
-    }
-}
-
-/// `name` as the font's face, if it fits LOGFONT's 31 characters.
-fn setFace(lf: *c.LOGFONTW, name: []const u8) void {
-    // utf8ToUtf16Le assumes the output fits: measure first.
-    const len = std.unicode.calcUtf16LeLen(name) catch return;
-    if (len == 0 or len > 31) return;
-    var wide: [31]u16 = undefined;
-    const n = std.unicode.utf8ToUtf16Le(&wide, name) catch return;
-    lf.lfFaceName = @splat(0);
-    @memcpy(lf.lfFaceName[0..n], wide[0..n]);
+    self.font = draw.chromeFont(dpi, family, false);
 }
 
 /// The font's face, for the GUI tests' dump.
 pub fn faceName(self: *const TabBar, buf: []u8) []const u8 {
-    const font = self.font orelse return "";
-    var lf: c.LOGFONTW = undefined;
-    if (c.GetObjectW(font, @sizeOf(c.LOGFONTW), &lf) == 0) return "";
-    const face = std.mem.sliceTo(&lf.lfFaceName, 0);
-    const n = std.unicode.utf16LeToUtf8(buf, face) catch return "";
-    return buf[0..n];
+    return draw.faceName(self.font, buf);
 }
 
 fn scale(self: *const TabBar, v: c_int) c_int {
-    return @intCast(@divTrunc(@as(i64, v) * self.dpi, c.USER_DEFAULT_SCREEN_DPI));
+    return draw.scale(self.dpi, v);
 }
 
 pub fn height(self: *const TabBar) c_int {
     return self.scale(bar_height);
 }
 
-/// The rectangle of tab `i` of `n` in a bar `width` pixels wide; scrolled,
-/// it may lie partly or wholly outside the span tabs show in.
+/// The rectangle of tab `i` of `n` in a row `width` pixels wide, in the
+/// row's coordinates; scrolled, it may lie partly or wholly outside the
+/// span tabs show in.
 pub fn tabRect(self: *const TabBar, i: usize, n: usize, width: c_int) c.RECT {
     const p = self.place(n, width);
     const offset = if (p.overflow) self.scroll else 0;
@@ -220,132 +175,47 @@ pub fn scrollLeftRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
 
 pub fn scrollRightRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
     const p = self.place(n, width);
-    return .{ .left = p.view_right, .top = 0, .right = p.new_tab_left, .bottom = self.height() };
-}
-
-/// The main menu's button, at the right end of the bar.
-pub fn menuRect(self: *const TabBar, width: c_int) c.RECT {
-    return .{ .left = width - self.scale(button_width), .top = 0, .right = width, .bottom = self.height() };
-}
-
-/// The tab list's button, left of the main menu's.
-pub fn listRect(self: *const TabBar, width: c_int) c.RECT {
-    const m = self.menuRect(width);
-    return .{ .left = m.left - self.scale(button_width), .top = 0, .right = m.left, .bottom = self.height() };
+    return .{ .left = p.view_right, .top = 0, .right = width, .bottom = self.height() };
 }
 
 pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
     const s = self.scale(close_size);
     const right = tab.right - self.scale(8);
-    const top = @divTrunc(tab.bottom - s, 2);
+    const top = tab.top + @divTrunc(tab.bottom - tab.top - s, 2);
     return .{ .left = right - s, .top = top, .right = right, .bottom = top + s };
 }
 
-/// "+", after the last tab, or left of the list button when they overflow.
-pub fn newTabRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
-    const left = self.place(n, width).new_tab_left;
-    return .{ .left = left, .top = 0, .right = left + self.scale(button_width), .bottom = self.height() };
-}
-
-/// The arrow beside "+".
-pub fn newTabMenuRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
-    const nt = self.newTabRect(n, width);
-    return .{ .left = nt.right, .top = 0, .right = nt.right + self.scale(dropdown_width), .bottom = self.height() };
-}
-
-fn contains(r: c.RECT, x: c_int, y: c_int) bool {
-    return x >= r.left and x < r.right and y >= r.top and y < r.bottom;
-}
-
+/// The item at (`x`, `y`) in the row's coordinates.
 pub fn hitTest(self: *const TabBar, x: c_int, y: c_int, n: usize, width: c_int) Hit {
     if (y < 0 or y >= self.height()) return .none;
-    if (contains(self.menuRect(width), x, y)) return .menu;
-    if (contains(self.listRect(width), x, y)) return .list;
-    if (contains(self.newTabRect(n, width), x, y)) return .new_tab;
-    if (contains(self.newTabMenuRect(n, width), x, y)) return .new_tab_menu;
     if (self.overflowing(n, width)) {
-        if (contains(self.scrollLeftRect(n, width), x, y)) return .scroll_left;
-        if (contains(self.scrollRightRect(n, width), x, y)) return .scroll_right;
+        if (draw.contains(self.scrollLeftRect(n, width), x, y)) return .scroll_left;
+        if (draw.contains(self.scrollRightRect(n, width), x, y)) return .scroll_right;
     }
     // Only where tabs show: scrolled away, they are under the chevrons.
-    if (!contains(self.viewRect(n, width), x, y)) return .none;
+    if (!draw.contains(self.viewRect(n, width), x, y)) return .none;
     for (0..n) |i| {
         const r = self.tabRect(i, n, width);
-        if (contains(r, x, y)) {
-            return if (contains(self.closeRect(r), x, y)) .{ .close = i } else .{ .tab = i };
+        if (draw.contains(r, x, y)) {
+            return if (draw.contains(self.closeRect(r), x, y)) .{ .close = i } else .{ .tab = i };
         }
     }
     return .none;
 }
 
-const Palette = struct {
-    bar: c.COLORREF,
-    active: c.COLORREF,
-    hover: c.COLORREF,
-    text: c.COLORREF,
-    text_dim: c.COLORREF,
-    separator: c.COLORREF,
-};
-
-const Color = configpkg.Config.Color;
-
-fn blend(a: Color, b: Color, t: f32) Color {
-    const f = struct {
-        fn ch(x: u8, y: u8, k: f32) u8 {
-            const v = @as(f32, @floatFromInt(x)) * (1 - k) + @as(f32, @floatFromInt(y)) * k;
-            return @intFromFloat(@round(v));
-        }
-    }.ch;
-    return .{ .r = f(a.r, b.r, t), .g = f(a.g, b.g, t), .b = f(a.b, b.b, t) };
-}
-
-fn ref(v: Color) c.COLORREF {
-    return c.rgb(v.r, v.g, v.b);
-}
-
-/// Derive the colors from the terminal's background and foreground so the
-/// active tab merges with the terminal below it.
-fn palette(bg: Color, fg: Color) Palette {
-    const bar = blend(bg, .{ .r = 0, .g = 0, .b = 0 }, 0.25);
-    return .{
-        .bar = ref(bar),
-        .active = ref(bg),
-        .hover = ref(blend(bar, fg, 0.08)),
-        .text = ref(fg),
-        .text_dim = ref(blend(fg, bg, 0.45)),
-        .separator = ref(blend(fg, bg, 0.8)),
-    };
-}
-
-fn fill(hdc: c.HDC, r: c.RECT, color: c.COLORREF) void {
-    const brush = c.CreateSolidBrush(color) orelse return;
-    defer _ = c.DeleteObject(brush);
-    _ = c.FillRect(hdc, &r, brush);
-}
-
-fn line(hdc: c.HDC, x0: c_int, y0: c_int, x1: c_int, y1: c_int, color: c.COLORREF, width: c_int) void {
-    const pen = c.CreatePen(c.PS_SOLID, width, color) orelse return;
-    defer _ = c.DeleteObject(pen);
-    const old = c.SelectObject(hdc, pen);
-    defer _ = c.SelectObject(hdc, old);
-    _ = c.MoveToEx(hdc, x0, y0, null);
-    _ = c.LineTo(hdc, x1, y1);
-}
-
-/// Paint the bar into `hdc` (which covers exactly the bar), double
-/// buffered to avoid flicker.
+/// Paint the row into `hdc` at (0, `top`), double buffered to avoid
+/// flicker.
 pub fn paint(
     self: *const TabBar,
     hdc: c.HDC,
+    top: c_int,
     width: c_int,
     titles: []const []const u8,
     /// The tabs the bell rang in while in the background (underlined, as
     /// GTK marks a tab needing attention).
     attention: []const bool,
     active: usize,
-    /// The active terminal's background and foreground.
-    bg: Color,
-    fg: Color,
+    pal: draw.Palette,
 ) void {
     const h = self.height();
     const mem = c.CreateCompatibleDC(hdc) orelse return;
@@ -360,8 +230,7 @@ pub fn paint(
     };
     _ = c.SetBkMode(mem, c.TRANSPARENT);
 
-    const pal = palette(bg, fg);
-    fill(mem, .{ .right = width, .bottom = h }, pal.bar);
+    draw.fill(mem, .{ .right = width, .bottom = h }, pal.bar);
 
     const n = titles.len;
     const pen_w = @max(1, self.scale(1));
@@ -379,13 +248,13 @@ pub fn paint(
         };
 
         if (is_active) {
-            fill(mem, r, pal.active);
+            draw.fill(mem, r, pal.active);
         } else if (hovered) {
-            fill(mem, r, pal.hover);
+            draw.fill(mem, r, pal.hover);
         } else if (i + 1 != active and i + 1 < n) {
             // Separators between inactive tabs.
             const inset = self.scale(9);
-            line(mem, r.right - 1, r.top + inset, r.right - 1, r.bottom - inset, pal.separator, pen_w);
+            draw.line(mem, r.right - 1, r.top + inset, r.right - 1, r.bottom - inset, pal.separator, pen_w);
         }
 
         // Title
@@ -405,17 +274,17 @@ pub fn paint(
         if (i < attention.len and attention[i]) {
             const y = r.bottom - self.scale(4);
             const w = @max(2, self.scale(2));
-            line(mem, text_rect.left, y, text_rect.right, y, pal.text, w);
+            draw.line(mem, text_rect.left, y, text_rect.right, y, pal.text, w);
         }
 
         // Close button on the active and hovered tabs.
         if (is_active or hovered) {
             const cr = self.closeRect(r);
-            if (std.meta.eql(self.hover, Hit{ .close = i })) fill(mem, cr, pal.hover);
+            if (std.meta.eql(self.hover, Hit{ .close = i })) draw.fill(mem, cr, pal.hover);
             const pad = self.scale(5);
             const color = if (is_active) pal.text else pal.text_dim;
-            line(mem, cr.left + pad, cr.top + pad, cr.right - pad, cr.bottom - pad, color, pen_w);
-            line(mem, cr.right - pad - 1, cr.top + pad, cr.left + pad - 1, cr.bottom - pad, color, pen_w);
+            draw.line(mem, cr.left + pad, cr.top + pad, cr.right - pad, cr.bottom - pad, color, pen_w);
+            draw.line(mem, cr.right - pad - 1, cr.top + pad, cr.left + pad - 1, cr.bottom - pad, color, pen_w);
         }
     }
     _ = c.SelectClipRgn(mem, null);
@@ -428,144 +297,30 @@ pub fn paint(
             .{ .scroll_right, self.scrollRightRect(n, width), self.scroll < max, 1 },
         }) |chev| {
             const r = chev[1];
-            fill(mem, r, if (std.meta.eql(self.hover, chev[0]) and chev[2]) pal.hover else pal.bar);
+            draw.fill(mem, r, if (std.meta.eql(self.hover, chev[0]) and chev[2]) pal.hover else pal.bar);
             const x = @divTrunc(r.left + r.right, 2);
             const y = @divTrunc(r.top + r.bottom, 2);
             const arm = self.scale(4);
             const color = if (chev[2]) pal.text_dim else pal.separator;
             // "‹" points left (-1), "›" right (1).
-            line(mem, x + arm * chev[3] * -1, y - arm, x + arm * chev[3], y + 1, color, pen_w);
-            line(mem, x + arm * chev[3] * -1, y + arm, x + arm * chev[3], y - 1, color, pen_w);
+            draw.line(mem, x + arm * chev[3] * -1, y - arm, x + arm * chev[3], y + 1, color, pen_w);
+            draw.line(mem, x + arm * chev[3] * -1, y + arm, x + arm * chev[3], y - 1, color, pen_w);
         }
     }
 
-    // The header's buttons, drawn as GTK's symbolic icons in the
-    // foreground color, each hovered on a rounded highlight.
-    const stroke = @max(1, self.scale(2));
-    const half = self.scale(7);
-
-    // New tab: tab-new, a rounded square holding a plus.
-    const nr = self.newTabRect(n, width);
-    self.buttonBack(mem, nr, std.meta.eql(self.hover, Hit.new_tab), pal);
-    const cx = @divTrunc(nr.left + nr.right, 2);
-    const cy = @divTrunc(nr.top + nr.bottom, 2);
-    roundRect(mem, .{ .left = cx - half, .top = cy - half, .right = cx + half + 1, .bottom = cy + half + 1 }, self.scale(3), null, pal.text, stroke);
-    const arm = self.scale(3);
-    line(mem, cx - arm, cy, cx + arm + 1, cy, pal.text, stroke);
-    line(mem, cx, cy - arm, cx, cy + arm + 1, pal.text, stroke);
-
-    // Its arrow: pan-down, a filled triangle, past a thin divider (GTK's
-    // split button).
-    const dr = self.newTabMenuRect(n, width);
-    self.buttonBack(mem, dr, std.meta.eql(self.hover, Hit.new_tab_menu), pal);
-    const inset = self.scale(9);
-    line(mem, dr.left, dr.top + inset, dr.left, dr.bottom - inset, pal.separator, pen_w);
-    const dx = @divTrunc(dr.left + dr.right, 2);
-    const dy = @divTrunc(dr.top + dr.bottom, 2);
-    const tw = self.scale(4);
-    triangleDown(mem, dx, dy, tw, @divTrunc(tw + 1, 2) + 1, pal.text);
-
-    // The tab list's button: view-grid, four squares (GTK's overview).
-    const lr = self.listRect(width);
-    self.buttonBack(mem, lr, std.meta.eql(self.hover, Hit.list), pal);
-    const lx = @divTrunc(lr.left + lr.right, 2);
-    const ly = @divTrunc(lr.top + lr.bottom, 2);
-    const cell = self.scale(6);
-    const gap = self.scale(2);
-    for ([_]c_int{ -1, 1 }) |sy| for ([_]c_int{ -1, 1 }) |sx| {
-        const left = if (sx < 0) lx - @divTrunc(gap, 2) - cell else lx + gap - @divTrunc(gap, 2);
-        const top = if (sy < 0) ly - @divTrunc(gap, 2) - cell else ly + gap - @divTrunc(gap, 2);
-        roundRect(mem, .{ .left = left, .top = top, .right = left + cell, .bottom = top + cell }, @max(1, self.scale(1)), pal.text, null, 0);
-    };
-
-    // The main menu's button: open-menu, three lines.
-    const mr = self.menuRect(width);
-    self.buttonBack(mem, mr, std.meta.eql(self.hover, Hit.menu), pal);
-    const mx = @divTrunc(mr.left + mr.right, 2);
-    const my = @divTrunc(mr.top + mr.bottom, 2);
-    const step = self.scale(5);
-    for ([_]c_int{ my - step, my, my + step }) |y| {
-        line(mem, mx - half + 1, y, mx + half, y, pal.text, stroke);
-    }
-
-    _ = c.BitBlt(hdc, 0, 0, width, h, mem, 0, 0, c.SRCCOPY);
-}
-
-/// A header button's background: the bar, and when hovered a rounded
-/// highlight inside it.
-fn buttonBack(self: *const TabBar, hdc: c.HDC, r: c.RECT, hovered: bool, pal: Palette) void {
-    fill(hdc, r, pal.bar);
-    if (!hovered) return;
-    const v = self.scale(4);
-    const hz = self.scale(2);
-    roundRect(hdc, .{ .left = r.left + hz, .top = r.top + v, .right = r.right - hz, .bottom = r.bottom - v }, self.scale(6), pal.hover, null, 0);
-}
-
-/// A rounded rectangle, filled with `fill_color` and/or outlined in
-/// `outline`, `width` pixels wide.
-fn roundRect(hdc: c.HDC, r: c.RECT, radius: c_int, fill_color: ?c.COLORREF, outline: ?c.COLORREF, width: c_int) void {
-    const pen = if (outline) |o| c.CreatePen(c.PS_SOLID, width, o) else null;
-    defer if (pen) |p| {
-        _ = c.DeleteObject(p);
-    };
-    const brush = if (fill_color) |f| c.CreateSolidBrush(f) else null;
-    defer if (brush) |b| {
-        _ = c.DeleteObject(b);
-    };
-    const old_pen = c.SelectObject(hdc, pen orelse c.GetStockObject(c.NULL_PEN));
-    defer _ = c.SelectObject(hdc, old_pen);
-    const old_brush = c.SelectObject(hdc, if (brush) |b| @ptrCast(b) else c.GetStockObject(c.NULL_BRUSH));
-    defer _ = c.SelectObject(hdc, old_brush);
-    // RoundRect's edge runs inside the right and bottom bounds.
-    const extra: c_int = if (outline != null) 0 else 1;
-    _ = c.RoundRect(hdc, r.left, r.top, r.right + extra, r.bottom + extra, radius * 2, radius * 2);
-}
-
-/// A filled triangle pointing down, `half` pixels either side of x and
-/// `tall` pixels tall, centered on (x, y).
-fn triangleDown(hdc: c.HDC, x: c_int, y: c_int, half: c_int, tall: c_int, color: c.COLORREF) void {
-    const top = y - @divTrunc(tall, 2);
-    const pts = [_]c.POINT{
-        .{ .x = x - half, .y = top },
-        .{ .x = x + half, .y = top },
-        .{ .x = x, .y = top + tall },
-    };
-    const pen = c.CreatePen(c.PS_SOLID, 1, color) orelse return;
-    defer _ = c.DeleteObject(pen);
-    const brush = c.CreateSolidBrush(color) orelse return;
-    defer _ = c.DeleteObject(brush);
-    const old_pen = c.SelectObject(hdc, pen);
-    defer _ = c.SelectObject(hdc, old_pen);
-    const old_brush = c.SelectObject(hdc, @ptrCast(brush));
-    defer _ = c.SelectObject(hdc, old_brush);
-    _ = c.Polygon(hdc, &pts, pts.len);
+    _ = c.BitBlt(hdc, 0, top, width, h, mem, 0, 0, c.SRCCOPY);
 }
 
 test "hitTest" {
     const testing = std.testing;
     const bar: TabBar = .{};
-    // Two tabs in a wide bar: each is tab_max_width wide.
+    // Two tabs in a wide row: each is tab_max_width wide, from the left.
     try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(10, 10, 2, 2000));
     try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(tab_max_width + 10, 10, 2, 2000));
     try testing.expectEqual(Hit{ .close = 0 }, bar.hitTest(tab_max_width - 12, bar_height / 2, 2, 2000));
-    try testing.expectEqual(Hit.new_tab, bar.hitTest(2 * tab_max_width + 5, 10, 2, 2000));
-    try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(2 * tab_max_width + button_width + 5, 10, 2, 2000));
-    try testing.expectEqual(Hit.menu, bar.hitTest(2000 - 5, 10, 2, 2000));
-    try testing.expectEqual(Hit.list, bar.hitTest(2000 - button_width - 5, 10, 2, 2000));
     try testing.expectEqual(Hit.none, bar.hitTest(1500, 10, 2, 2000));
     try testing.expectEqual(Hit.none, bar.hitTest(10, bar_height + 1, 2, 2000));
     try testing.expect(!bar.overflowing(2, 2000));
-}
-
-test "no tabs: the header's buttons, + at the left end" {
-    const testing = std.testing;
-    const bar: TabBar = .{};
-    try testing.expectEqual(Hit.new_tab, bar.hitTest(5, 10, 0, 2000));
-    try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(button_width + 5, 10, 0, 2000));
-    try testing.expectEqual(Hit.menu, bar.hitTest(2000 - 5, 10, 0, 2000));
-    try testing.expectEqual(Hit.list, bar.hitTest(2000 - button_width - 5, 10, 0, 2000));
-    try testing.expectEqual(Hit.none, bar.hitTest(500, 10, 0, 2000));
-    try testing.expect(!bar.overflowing(0, 2000));
 }
 
 test "overflow: 40 tabs scroll between the chevrons, all reachable" {
@@ -574,13 +329,9 @@ test "overflow: 40 tabs scroll between the chevrons, all reachable" {
     const n = 40;
     const width = 500;
     try testing.expect(bar.overflowing(n, width));
-    // [‹ 0..22][tabs 22..358][› 358..380][+ 380..414][▾ 414..432][list 432..466][≡ 466..500]
-    try testing.expectEqual(Hit.menu, bar.hitTest(width - 5, 10, n, width));
-    try testing.expectEqual(Hit.list, bar.hitTest(width - button_width - 5, 10, n, width));
-    try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(420, 10, n, width));
-    try testing.expectEqual(Hit.new_tab, bar.hitTest(390, 10, n, width));
+    // [‹ 0..22][tabs 22..478][› 478..500]
     try testing.expectEqual(Hit.scroll_left, bar.hitTest(5, 10, n, width));
-    try testing.expectEqual(Hit.scroll_right, bar.hitTest(365, 10, n, width));
+    try testing.expectEqual(Hit.scroll_right, bar.hitTest(width - 5, 10, n, width));
     try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(30, 10, n, width));
 
     // Scrolling by a tab, never past either end.
@@ -602,17 +353,4 @@ test "overflow: 40 tabs scroll between the chevrons, all reachable" {
     // Fewer tabs fit again: no scroll left over.
     bar.ensureVisible(0, 2, width);
     try testing.expectEqual(@as(c_int, 0), bar.scroll);
-}
-
-test "setFace: a family longer than LOGFONT holds leaves the face alone" {
-    const testing = std.testing;
-    var lf: c.LOGFONTW = std.mem.zeroes(c.LOGFONTW);
-    setFace(&lf, "Consolas");
-    const consolas = std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
-    try testing.expectEqualSlices(u16, consolas, std.mem.sliceTo(&lf.lfFaceName, 0));
-    // 34 characters: this used to write past the conversion buffer.
-    setFace(&lf, "Segoe UI Variable Display Semibold");
-    try testing.expectEqualSlices(u16, consolas, std.mem.sliceTo(&lf.lfFaceName, 0));
-    setFace(&lf, "abcdefghijklmnopqrstuvwxyz01234");
-    try testing.expectEqual(@as(usize, 31), std.mem.sliceTo(&lf.lfFaceName, 0).len);
 }

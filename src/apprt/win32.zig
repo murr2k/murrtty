@@ -14,7 +14,9 @@ test {
     _ = @import("win32/ClipboardDialog.zig");
     _ = @import("win32/CommandPalette.zig");
     _ = @import("win32/ContextMenu.zig");
+    _ = @import("win32/HeaderBar.zig");
     _ = @import("win32/TitleDialog.zig");
+    _ = @import("win32/draw.zig");
     _ = @import("win32/KeyState.zig");
     _ = @import("win32/Overlay.zig");
     _ = @import("win32/key.zig");

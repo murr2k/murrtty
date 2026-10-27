@@ -117,13 +117,13 @@ fn launch(h: *Harness) anyerror!void {
         const t = d.value.windows[0].tabs;
         try h.expect(t.len == 1, "one tab", .{});
         try h.expect((t[0].cols orelse 0) > 0 and (t[0].rows orelse 0) > 0, "grid {?d}x{?d}", .{ t[0].cols, t[0].rows });
-        const tb = d.value.windows[0].tab_bar;
-        try h.expect(tb.visible and !tb.tabs_shown, "one tab: the strip shows the header's buttons but no tabs", .{});
-        bar = tb.height;
+        const dw = d.value.windows[0];
+        try h.expect(dw.header.visible and !dw.tab_bar.visible, "one tab: the header bar, no tab row", .{});
+        bar = dw.header.height;
     }
 
     // The default terminal area is 960x600 DIPs at the window's DPI, below
-    // the strip.
+    // the header bar.
     const dpi = w.GetDpiForWindow(win);
     var r: w.RECT = .{};
     _ = w.GetClientRect(win, &r);
@@ -271,7 +271,7 @@ fn tabs(h: *Harness) anyerror!void {
         const dw = d.value.windows[0];
         try h.expect(dw.tabs.len == 3, "three tabs (got {d})", .{dw.tabs.len});
         try h.expect(dw.active == 2, "the new tab is active (got {d})", .{dw.active});
-        try h.expect(dw.tab_bar.visible and dw.tab_bar.tabs_shown, "the strip shows three tabs", .{});
+        try h.expect(dw.tab_bar.visible and dw.tab_bar.top == dw.header.height, "the tab row shows three tabs, below the header bar", .{});
     }
 
     surf = try h.surface(&g, win);
@@ -321,8 +321,8 @@ fn tabs(h: *Harness) anyerror!void {
         var d = try h.dump(&g);
         defer d.deinit();
         try h.expect(d.value.windows[0].tabs.len == 1, "middle-click closes the tab", .{});
-        const tb = d.value.windows[0].tab_bar;
-        try h.expect(tb.visible and !tb.tabs_shown, "with one tab again, the strip shows only the header's buttons", .{});
+        const dw = d.value.windows[0];
+        try h.expect(dw.header.visible and !dw.tab_bar.visible, "with one tab again, the tab row goes", .{});
     }
     try quit(h, &g, try h.surface(&g, win));
 }
@@ -628,12 +628,20 @@ fn systemMenu(h: *Harness) anyerror!void {
     try waitWindowTabs(h, &g, win, 2);
     try h.expect(true, "its New Tab opens a tab", .{});
 
-    // A right-click on the caption: DefWindowProc shows the menu with
-    // TrackPopupMenu (WM_ENTERMENULOOP's wparam TRUE), with murrtty's items
-    // and closes held all the same.
-    var at: w.POINT = .{ .x = 200, .y = 0 };
+    // A right-click on the caption (the header bar between its buttons):
+    // DefWindowProc shows the menu, with murrtty's items and closes held
+    // all the same.
+    var at: w.POINT = .{ .x = 0, .y = 0 };
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const header = d.value.windows[0].header;
+        var client: w.RECT = .{};
+        _ = w.GetClientRect(win, &client);
+        at = .{ .x = @divTrunc(client.right, 2), .y = @divTrunc(header.height, 2) };
+    }
+    try expectNcHit(h, win, .{ at.x, at.y }, w.HTCAPTION, "the header bar's middle is the caption");
     _ = w.ClientToScreen(win, &at);
-    at.y -= 10;
     _ = w.PostMessageW(win, w.WM_CONTEXTMENU, @intFromPtr(win), w.makeLParam(at.x, at.y));
     menu = try h.waitMenu(&g, 1, 5000);
     try expectModalDepth(h, &g, 1, "closes wait while the caption's menu is open");
@@ -2007,7 +2015,7 @@ fn tabOverflow(h: *Harness) anyerror!void {
             defer d.deinit();
             const bar = d.value.windows[0].tab_bar;
             const mid = @divTrunc(bar.view[0] + bar.view[1], 2);
-            h.wheel(win, mid, @divTrunc(bar.height, 2), -20);
+            h.wheel(win, mid, bar.top + @divTrunc(bar.height, 2), -20);
         }
         h.sync(win);
         {
@@ -2029,7 +2037,7 @@ fn tabOverflow(h: *Harness) anyerror!void {
             before = bar.scroll;
             tab_w = bar.tabs[0].rect[2] - bar.tabs[0].rect[0];
             const mid = @divTrunc(bar.view[0] + bar.view[1], 2);
-            for (0..3) |_| h.wheelDelta(win, mid, @divTrunc(bar.height, 2), 40);
+            for (0..3) |_| h.wheelDelta(win, mid, bar.top + @divTrunc(bar.height, 2), 40);
         }
         h.sync(win);
         {
@@ -2105,42 +2113,84 @@ fn tabOverflow(h: *Harness) anyerror!void {
     }
 }
 
-/// GTK's header bar (roadmap 3.8e): with one tab the strip shows its
-/// buttons ("+" at the left end) and no tabs, and "+" there opens a tab;
-/// fullscreen hides the header (with one tab, the whole strip), as
-/// gtk-titlebar = false does; window-show-tab-bar = never keeps the
-/// buttons with no tabs.
+/// GTK's header bar as the title bar (roadmap 4.3; 3.8e before it): with
+/// client-side decorations the header bar replaces the caption, shows with
+/// one tab (the tab row hidden), and is the caption between its buttons,
+/// the window's buttons answering as the caption's (maximize, restore,
+/// minimize, close asking first); "+" opens a tab and the row shows.
+/// Fullscreen, gtk-titlebar = false and window-decoration = server bring
+/// back the system's caption without a header; window-show-tab-bar = never
+/// keeps the header without the row.
 fn headerBar(h: *Harness) anyerror!void {
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
     {
         var g = try start(h, "header-bar", "keybind = ctrl+shift+f8=toggle_fullscreen\n", ">");
         defer g.deinit();
         const win = try h.mainWindow(&g);
-        try waitStrip(h, &g, true, false, "one tab: the strip shows the header's buttons, no tabs");
-        const plus = try stripButton(h, &g, .new_tab);
+        try waitChrome(h, &g, true, false, "one tab: the header bar, no tab row");
+
+        // What Windows hears over the header bar.
+        var hb: Harness.Dump.Header = undefined;
+        var width: i32 = 0;
         {
             var d = try h.dump(&g);
             defer d.deinit();
-            const nt = d.value.windows[0].tab_bar.new_tab;
-            try h.expect(nt[0] == 0, "\"+\" at the strip's left end (got {d})", .{nt[0]});
+            hb = d.value.windows[0].header;
+            var client: w.RECT = .{};
+            _ = w.GetClientRect(win, &client);
+            width = client.right;
         }
+        try h.expect(hb.new_tab[0] > 0 and hb.new_tab[0] < 40, "\"+\" at the bar's left end (x {d})", .{hb.new_tab[0]});
+        try expectNcHit(h, win, rectMid(hb.minimize), w.HTMINBUTTON, "over minimize: the caption's minimize button");
+        try expectNcHit(h, win, rectMid(hb.maximize), w.HTMAXBUTTON, "over maximize: the caption's (Snap Layouts)");
+        try expectNcHit(h, win, rectMid(hb.window_close), w.HTCLOSE, "over close: the caption's close");
+        try expectNcHit(h, win, rectMid(hb.new_tab), w.HTCLIENT, "over \"+\": the window's own button");
+        try expectNcHit(h, win, .{ @divTrunc(width, 2), @divTrunc(hb.height, 2) }, w.HTCAPTION, "between the buttons: the caption");
+        try expectNcHit(h, win, .{ @divTrunc(width, 2), 1 }, w.HTTOP, "the top edge resizes");
+
+        // The window's buttons.
+        ncClick(win, w.HTMAXBUTTON);
+        try waitWindowState(win, .maximized, h, "maximize maximizes");
+        ncClick(win, w.HTMAXBUTTON);
+        try waitWindowState(win, .normal, h, "and again restores");
+        ncClick(win, w.HTMINBUTTON);
+        try waitWindowState(win, .minimized, h, "minimize minimizes");
+        _ = w.ShowWindow(win, w.SW_RESTORE);
+        try waitWindowState(win, .normal, h, "restored");
+
+        const plus = try stripButton(h, &g, .new_tab);
         h.key(try h.surface(&g, win), cs, w.VK_F8);
-        try waitStrip(h, &g, false, false, "fullscreen with one tab: no strip");
+        try waitChrome(h, &g, false, false, "fullscreen with one tab: no header, no row");
         h.key(try h.surface(&g, win), cs, w.VK_F8);
-        try waitStrip(h, &g, true, false, "out of fullscreen: the header's buttons again");
+        try waitChrome(h, &g, true, false, "out of fullscreen: the header bar again");
         h.click(win, plus.x, plus.y, .left);
         try waitWindowTabs(h, &g, win, 2);
-        try waitStrip(h, &g, true, true, "\"+\" opened a second tab, and the strip shows both");
+        try waitChrome(h, &g, true, true, "\"+\" opened a second tab, and the row shows both");
+
+        ncClick(win, w.HTCLOSE);
+        const dlg = try h.waitDialog(&g, 5000);
+        try expectDialogText(h, &g, "Close Window?", "All terminal sessions in this window will be terminated.");
+        h.answer(&g, dlg, w.IDCANCEL);
+        try waitNoDialog(h, &g);
         try quit(h, &g, try h.surface(&g, win));
     }
     {
         var g = try start(h, "header-bar-off", "gtk-titlebar = false\n", ">");
         defer g.deinit();
         const win = try h.mainWindow(&g);
-        try waitStrip(h, &g, false, false, "gtk-titlebar = false, one tab: no strip");
+        try waitChrome(h, &g, false, false, "gtk-titlebar = false, one tab: no header, no row");
+        try expectSystemCaption(h, win, "with the system's caption");
         h.key(try h.surface(&g, win), cs, 'T');
         try waitWindowTabs(h, &g, win, 2);
-        try waitStrip(h, &g, true, true, "and with two tabs, the strip and its tabs");
+        try waitChrome(h, &g, false, true, "and with two tabs, the row alone");
+        try quit(h, &g, try h.surface(&g, win));
+    }
+    {
+        var g = try start(h, "header-bar-server", "window-decoration = server\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        try waitChrome(h, &g, false, false, "window-decoration = server: no header bar");
+        try expectSystemCaption(h, win, "the system's caption instead");
         try quit(h, &g, try h.surface(&g, win));
     }
     {
@@ -2149,25 +2199,72 @@ fn headerBar(h: *Harness) anyerror!void {
         const win = try h.mainWindow(&g);
         h.key(try h.surface(&g, win), cs, 'T');
         try waitWindowTabs(h, &g, win, 2);
-        try waitStrip(h, &g, true, false, "window-show-tab-bar = never, two tabs: the header's buttons, no tabs");
+        try waitChrome(h, &g, true, false, "window-show-tab-bar = never, two tabs: the header bar, no row");
         try quit(h, &g, try h.surface(&g, win));
     }
 }
 
-/// Wait until the first window's strip shows or not (`visible`), with tabs
-/// or only the header's buttons (`tabs_shown`).
-fn waitStrip(h: *Harness, g: *Harness.Ghostty, visible: bool, tabs_shown: bool, what: []const u8) !void {
+/// Wait until the first window shows the header bar or not, and the tab
+/// row or not.
+fn waitChrome(h: *Harness, g: *Harness.Ghostty, header: bool, row: bool, what: []const u8) !void {
     var waited: u32 = 0;
     var last: [2]bool = .{ false, false };
     while (waited <= 5000) : (waited += 100) {
         var d = try h.dump(g);
         defer d.deinit();
-        const tb = d.value.windows[0].tab_bar;
-        last = .{ tb.visible, tb.tabs_shown };
-        if (tb.visible == visible and tb.tabs_shown == tabs_shown) return h.expect(true, "{s}", .{what});
+        const dw = d.value.windows[0];
+        last = .{ dw.header.visible, dw.tab_bar.visible };
+        if (last[0] == header and last[1] == row) return h.expect(true, "{s}", .{what});
         w.Sleep(100);
     }
-    return h.fail("{s}: the strip shows {}, its tabs {}", .{ what, last[0], last[1] });
+    return h.fail("{s}: the header bar shows {}, the tab row {}", .{ what, last[0], last[1] });
+}
+
+fn rectMid(r: [4]i32) [2]i32 {
+    return .{ @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2) };
+}
+
+/// What WM_NCHITTEST answers at client point `at`.
+fn ncHit(win: w.HWND, at: [2]i32) isize {
+    var pt: w.POINT = .{ .x = at[0], .y = at[1] };
+    _ = w.ClientToScreen(win, &pt);
+    var result: usize = 0;
+    _ = w.SendMessageTimeoutW(win, w.WM_NCHITTEST, 0, w.makeLParam(pt.x, pt.y), w.SMTO_ABORTIFHUNG, 2000, &result);
+    return @bitCast(result);
+}
+
+fn expectNcHit(h: *Harness, win: w.HWND, at: [2]i32, want: isize, what: []const u8) !void {
+    const got = ncHit(win, at);
+    try h.expect(got == want, "{s} (hit {d} at {d},{d}; expected {d})", .{ what, got, at[0], at[1], want });
+}
+
+/// A click on the caption's button `code`, as Windows posts it.
+fn ncClick(win: w.HWND, code: c_int) void {
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(win, &r);
+    const pos = w.makeLParam(r.left + 10, r.top + 10);
+    _ = w.PostMessageW(win, w.WM_NCLBUTTONDOWN, @intCast(code), pos);
+    _ = w.PostMessageW(win, w.WM_NCLBUTTONUP, @intCast(code), pos);
+}
+
+fn waitWindowState(win: w.HWND, want: enum { normal, maximized, minimized }, h: *Harness, what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        const now: @TypeOf(want) = if (w.IsIconic(win) != 0) .minimized else if (w.IsZoomed(win) != 0) .maximized else .normal;
+        if (now == want) return h.expect(true, "{s}", .{what});
+        w.Sleep(100);
+    }
+    return h.fail("{s}: the window never was {t}", .{ what, want });
+}
+
+/// The window has the system's caption: its client area starts well below
+/// its top.
+fn expectSystemCaption(h: *Harness, win: w.HWND, what: []const u8) !void {
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(win, &r);
+    var origin: w.POINT = .{ .x = 0, .y = 0 };
+    _ = w.ClientToScreen(win, &origin);
+    try h.expect(origin.y - r.top > 20, "{s} (client area {d} px below the window's top)", .{ what, origin.y - r.top });
 }
 
 /// The strip's details (roadmap 3.8): window-title-font-family sets its
@@ -2198,7 +2295,7 @@ fn tabDetails(h: *Harness) anyerror!void {
         const big = w.GetSystemMetricsForDpi(w.SM_CXICON, dpi);
         try h.expect(dw.icon_widths[0] == small and dw.icon_widths[1] == big, "the icons are loaded at the window's DPI ({d} and {d} px at {d} dpi; got {d} and {d})", .{ small, big, dpi, dw.icon_widths[0], dw.icon_widths[1] });
         try h.expect(dw.has_tooltip, "the strip has a tooltip", .{});
-        try h.expect(std.mem.eql(u8, dw.tab_bar.new_tab_tooltip, "New Tab (Ctrl+Shift+T)"), "'+' says what it does and its binding ('{s}')", .{dw.tab_bar.new_tab_tooltip});
+        try h.expect(std.mem.eql(u8, dw.header.new_tab_tooltip, "New Tab (Ctrl+Shift+T)"), "'+' says what it does and its binding ('{s}')", .{dw.header.new_tab_tooltip});
     }
 
     // A tab's tooltip: its title, then its directory, unless the title
@@ -2248,18 +2345,23 @@ fn tabDetails(h: *Harness) anyerror!void {
     try quitIdle(h, &g, try h.surface(&g, win));
 }
 
-/// The middle of one of the strip's buttons, in the window's client area.
-fn stripButton(h: *Harness, g: *Harness.Ghostty, which: enum { new_tab, new_tab_menu, menu, list }) !struct { x: c_int, y: c_int } {
+/// The middle of one of the header bar's buttons, in the window's client
+/// area.
+fn stripButton(h: *Harness, g: *Harness.Ghostty, which: enum { new_tab, new_tab_menu, menu, list, minimize, maximize, window_close }) !struct { x: c_int, y: c_int } {
     var d = try h.dump(g);
     defer d.deinit();
-    const bar = d.value.windows[0].tab_bar;
+    const bar = d.value.windows[0].header;
+    if (!bar.visible) return h.fail("the header bar isn't showing", .{});
     const r = switch (which) {
         .new_tab => bar.new_tab,
         .new_tab_menu => bar.new_tab_menu,
         .menu => bar.menu,
         .list => bar.list,
+        .minimize => bar.minimize,
+        .maximize => bar.maximize,
+        .window_close => bar.window_close,
     };
-    if (r[2] <= r[0]) return h.fail("the strip reports no such button", .{});
+    if (r[2] <= r[0]) return h.fail("the header bar reports no such button", .{});
     return .{ .x = @divTrunc(r[0] + r[2], 2), .y = @divTrunc(r[1] + r[3], 2) };
 }
 
@@ -2686,7 +2788,7 @@ fn titles(h: *Harness) anyerror!void {
     {
         var d = try h.dump(&g);
         defer d.deinit();
-        const r = d.value.windows[0].tab_bar.new_tab;
+        const r = d.value.windows[0].header.new_tab;
         h.doubleClick(win, @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2));
     }
     try waitWindowTabsAtLeast(h, &g, win, 3);

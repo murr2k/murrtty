@@ -240,10 +240,14 @@ roadmap item behind it.
   box (the command palette's), not GTK's overview of live thumbnails.
 - **Tab overflow** (3.8): tabs that don't fit scroll between chevrons and
   with the wheel; GTK's strip scrolls without chevrons.
-- **Header bar** (3.8): GTK's header bar buttons are on the tab strip, under
-  the system's caption until 4.3 draws the title bar, so the title isn't
-  repeated beside them. In fullscreen, where GTK hides its header bar, the
-  strip keeps them while it shows tabs.
+- **Window buttons** (4.3): the header bar always has minimize, maximize
+  and close, drawn as libadwaita's round window controls; GTK shows the
+  ones its button layout names (GNOME's default: close alone). Its buttons
+  take the bar's whole height and close reaches the window's edge, so a
+  maximized window's top edge and corner hit them, as Windows' do.
+- **No title bar** (4.3): with `gtk-titlebar = false` (or a maximized
+  window with `gtk-titlebar-hide-when-maximized`) murrtty shows the
+  system's caption; GTK's window then has no title bar at all.
 - **Tab tooltips** (3.8): a tab's tooltip shows its title and, beneath,
   its working directory (unless the title shows it); GTK's shows only the
   directory. The strip's buttons have tooltips with their bindings.
@@ -1754,6 +1758,45 @@ close button; Windows users expect minimize, maximize and close). Tabs, when
 shown, go in their own row beneath, as GTK's tab bar. Buttons highlight on
 hover with rounded backgrounds; the menu button stays highlighted while its
 menu is open. 3.8f already draws GTK's icons on today's strip.
+
+*Design (2026-10-26).* GTK draws its header bar only with client-side
+decorations (`window-decoration = auto` or `client`, *checked* in
+`gtk/class/window.zig`); with `server` the window manager's title bar and
+GTK's tab bar remain. So: CSD (the caption removed, the header bar drawn
+as the title bar) when `window-decoration` is `auto` or `client`,
+`gtk-titlebar` is on, and the window isn't fullscreen or maximized with
+`gtk-titlebar-hide-when-maximized`; otherwise the system caption, as
+today, and no header (no header buttons, as GTK's tab bar then has none).
+The header holds the split button at the left, the title centered, the
+tab list and main menu buttons, then the window's buttons, drawn as
+libadwaita's round window controls with minimize and maximize as well as
+close (GTK's look for them, as Ubuntu's layout shows them); the tab row
+beneath holds only tabs. Steps: (1) the frame and the header's layout,
+input and painting in today's colors; (2) the Look's colors and
+libadwaita's metrics; (3) the bundled font; (4) the comparison against a
+GTK reference capture, and tuning.
+
+*Step 1 done 2026-10-26.* `win32/HeaderBar.zig` lays out, hit-tests and
+paints the bar (46 DIP; "+" and its arrow, the bold title centered between
+the buttons, the tab list and menu buttons, libadwaita's round minimize,
+maximize or restore, and close); `TabBar` is the tab row alone, below it;
+`draw.zig` holds the GDI shapes and fonts both use. `WM_NCCALCSIZE` drops
+the caption while `Window.csd()` holds (insetting a maximized window by
+its frame); `WM_NCHITTEST` answers the caption between the buttons,
+`HTMINBUTTON`/`HTMAXBUTTON`/`HTCLOSE` over the window's buttons (Snap
+Layouts) and `HTTOP` along the top band; the window's buttons hover,
+press and click in `WM_NCMOUSEMOVE`/`WM_NCLBUTTONDOWN`/`UP` (never
+DefWindowProc's, which would draw the old buttons), posting
+`WM_SYSCOMMAND`. A right-click on the bar's caption opens the system menu
+from `WM_CONTEXTMENU` (DefWindowProc shows it only over a caption it
+drew), its items enabled for the window's state. `setClientSize` and
+`WM_GETMINMAXINFO` take the frame
+without the caption (`adjustFrame`). A reload that changes the decorations
+recomputes the frame (`SWP_FRAMECHANGED`). Scenario `header-bar` checks
+the hit codes, maximize, restore, minimize and close through the bar,
+fullscreen, `gtk-titlebar = false`, `window-decoration = server` and
+`window-show-tab-bar = never`; the dump reports `header` (its buttons,
+title font, visibility) and the tab row's `top`.
 
 *With the Look rule* (decided 2026-10-26, which made 4.3 Phase 4's first
 item): the bar and tab row take libadwaita's colors and metrics (taken from

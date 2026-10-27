@@ -505,7 +505,7 @@ pub fn layout(self: *CommandPalette) void {
     const width = @min(px(max_width, dpi), @max(client.right - px(32, dpi), px(200, dpi)));
     const list_h = rows * px(row_height, dpi);
     const height = px(field_height, dpi) + list_h + (if (rows > 0) px(pad, dpi) else 0);
-    const top = (if (window.tabBarVisible()) window.tab_bar.height() else 0) + px(top_gap, dpi);
+    const top = window.chromeHeight() + px(top_gap, dpi);
     _ = c.SetWindowPos(hwnd, c.HWND_TOP, @divTrunc(client.right - width, 2), top, width, height, c.SWP_NOACTIVATE);
     const r = px(radius, dpi) * 2;
     if (c.CreateRoundRectRgn(0, 0, width + 1, height + 1, r, r)) |rgn| {

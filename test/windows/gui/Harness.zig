@@ -1231,25 +1231,40 @@ pub const Dump = struct {
         icon_widths: [2]i32 = .{ 0, 0 },
         /// Whether the tab strip has its tooltip.
         has_tooltip: bool = false,
+        header: Header = .{},
         tab_bar: TabBar,
         tabs: []const Tab,
     };
+    /// GTK's header bar, the title bar with client-side decorations: its
+    /// buttons in client coordinates (laid out for the window's width even
+    /// while it's hidden).
+    pub const Header = struct {
+        visible: bool = false,
+        height: i32 = 0,
+        /// The title's font face.
+        font: []const u8 = "",
+        new_tab_tooltip: []const u8 = "",
+        new_tab: [4]i32 = .{ 0, 0, 0, 0 },
+        /// The arrow beside "+" (the split menu).
+        new_tab_menu: [4]i32 = .{ 0, 0, 0, 0 },
+        list: [4]i32 = .{ 0, 0, 0, 0 },
+        menu: [4]i32 = .{ 0, 0, 0, 0 },
+        /// The window's buttons.
+        minimize: [4]i32 = .{ 0, 0, 0, 0 },
+        maximize: [4]i32 = .{ 0, 0, 0, 0 },
+        window_close: [4]i32 = .{ 0, 0, 0, 0 },
+    };
+    /// The tab row, below the header bar; rectangles in client coordinates.
     pub const TabBar = struct {
         visible: bool,
-        /// The strip shows tabs, not only the header's buttons (zero rects
-        /// for its tabs then).
+        /// The same as visible (the row shows only with tabs to show).
         tabs_shown: bool = false,
+        /// Where the row starts (the header bar's height, or 0).
+        top: i32 = 0,
         height: i32,
-        /// The strip's font face.
+        /// The row's font face.
         font: []const u8 = "",
         tabs: []const struct { rect: [4]i32, close: [4]i32, tooltip: []const u8 = "" },
-        new_tab_tooltip: []const u8 = "",
-        new_tab: [4]i32,
-        /// The arrow beside "+" (the split menu) and the main menu's button.
-        new_tab_menu: [4]i32 = .{ 0, 0, 0, 0 },
-        menu: [4]i32 = .{ 0, 0, 0, 0 },
-        /// The tab list's button.
-        list: [4]i32 = .{ 0, 0, 0, 0 },
         /// Whether tabs overflow; then the chevrons, the span tabs show in
         /// (left, right) and how far they are scrolled.
         overflow: bool = false,
