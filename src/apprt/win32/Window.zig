@@ -993,6 +993,12 @@ pub fn isDark(color: configpkg.Config.Color) bool {
     return draw.isDark(color);
 }
 
+/// The opacity of the shade the header bar or tab row casts onto the
+/// content below, 0 without either (draw.shadeAlpha).
+pub fn shade(self: *const Window) f32 {
+    return if (self.chromeHeight() > 0) self.chromeTheme().shade else 0;
+}
+
 /// A surface's colors changed (a program set them, or its config changed).
 pub fn colorsChanged(self: *Window, surface: *Surface) void {
     if (self.tabIndexOf(surface)) |i| {
@@ -1044,7 +1050,7 @@ fn paint(self: *Window) void {
         // The caption's text, which syncTitle keeps.
         var title: [512]u16 = undefined;
         const n = c.GetWindowTextW(self.hwnd, &title, title.len);
-        self.header.paint(hdc, width, title[0..@intCast(@max(n, 0))], self.tab_bar.hover, self.pressed, c.IsZoomed(self.hwnd) != 0, !self.tabBarVisible(), pal);
+        self.header.paint(hdc, width, title[0..@intCast(@max(n, 0))], self.tab_bar.hover, self.pressed, c.IsZoomed(self.hwnd) != 0, pal);
     }
     if (!self.tabBarVisible()) return;
 

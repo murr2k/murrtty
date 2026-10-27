@@ -24,8 +24,6 @@ pub const Palette = struct {
     separator: c.COLORREF,
     /// The split button's divider (30%, as GTK's measures).
     divider: c.COLORREF,
-    /// The line under the header bar (libadwaita's shade).
-    shade: c.COLORREF,
     /// The window controls' circles: at rest, hovered, pressed.
     control: c.COLORREF,
     control_hover: c.COLORREF,
@@ -39,7 +37,8 @@ pub const Theme = struct {
     fg: Color,
     /// The bar while the window is inactive (libadwaita's backdrop).
     backdrop: Color,
-    /// How dark the shade under the bar is.
+    /// The opacity of the shade color (`shade_color`), which the top bars
+    /// cast onto the content (`shadeAlpha`).
     shade: f32,
     dark: bool,
 };
@@ -74,6 +73,44 @@ pub fn ghosttyTheme(bg: Color, fg: Color) Theme {
 /// libadwaita's near-black, rgb(0 0 6).
 const ink: Color = .{ .r = 0, .g = 0, .b = 6 };
 
+/// The shade's color, at the theme's `shade` opacity.
+pub const shade_color = ink;
+
+/// The opacity of the shade the top bars cast onto the content below,
+/// `row` pixels from their edge at `dpi`, for a shade color of opacity
+/// `shade`. libadwaita's raised top bar (toolbarview > .top-bar.raised)
+/// casts `0 1px` and `0 2px 4px`, both in the shade color at half its
+/// opacity; a CSS blur of 4 px is a Gaussian of deviation 2 px.
+pub fn shadeAlpha(shade: f32, dpi: c.UINT, row: u32) f32 {
+    const s = @as(f32, @floatFromInt(dpi)) / c.USER_DEFAULT_SCREEN_DPI;
+    const top: f32 = @floatFromInt(row);
+    const half = shade * 0.5;
+    const edge = std.math.clamp(s - top, 0, 1);
+    const blur = normalCdf((2 * s - (top + 0.5)) / (2 * s));
+    return 1 - (1 - half * edge) * (1 - half * blur);
+}
+
+/// The rows the shade covers at `dpi`: as far as CSS draws the blurred
+/// copy, its offset and blur radius (6 px).
+pub fn shadeRows(dpi: c.UINT) u32 {
+    return (6 * dpi + c.USER_DEFAULT_SCREEN_DPI - 1) / c.USER_DEFAULT_SCREEN_DPI;
+}
+
+/// `color` under the shade's `row` (as `shadeAlpha`).
+pub fn shaded(color: Color, shade: f32, dpi: c.UINT, row: u32) Color {
+    return blend(color, ink, shadeAlpha(shade, dpi, row));
+}
+
+/// The standard normal distribution's CDF (Abramowitz and Stegun 7.1.26,
+/// within 1.5e-7).
+fn normalCdf(x: f32) f32 {
+    const z = @abs(x) / std.math.sqrt2;
+    const t = 1 / (1 + 0.3275911 * z);
+    const poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+    const erf = 1 - poly * @exp(-z * z);
+    return if (x >= 0) 0.5 * (1 + erf) else 0.5 * (1 - erf);
+}
+
 /// The chrome's colors from `theme`, as libadwaita mixes them: hover 7%,
 /// pressed 16%, selected 10% (13% hovered) of the text over the bar, the
 /// window controls 10/15/30%, separators 15%, dim text 55%. An inactive
@@ -91,7 +128,6 @@ pub fn palette(theme: Theme, backdrop: bool) Palette {
         .text_dim = ref(blend(bar, fg, 0.55)),
         .separator = ref(blend(bar, fg, 0.15)),
         .divider = ref(blend(bar, fg, 0.30)),
-        .shade = ref(blend(bar, ink, theme.shade)),
         .control = ref(blend(bar, fg, 0.10)),
         .control_hover = ref(blend(bar, fg, 0.15)),
         .control_pressed = ref(blend(bar, fg, 0.30)),
@@ -331,6 +367,20 @@ test "palette: libadwaita's mixes" {
     // Inactive: the window's background.
     try testing.expectEqual(c.rgb(0x22, 0x22, 0x26), palette(adwaita(true), true).bar);
     try testing.expect(isDark(.{ .r = 0x28, .g = 0x2c, .b = 0x34 }) and !isDark(.{ .r = 0xfa, .g = 0xfa, .b = 0xfa }));
+}
+
+test "shadeAlpha: GTK's shade under its bar at 96 DPI" {
+    const testing = std.testing;
+    // Measured on GTK's (test/windows/look): the dark shade over the
+    // default background, row by row, then nothing.
+    const bg: Color = .{ .r = 0x28, .g = 0x2c, .b = 0x34 };
+    const want = [_]u8{ 0x1c, 0x24, 0x25, 0x26, 0x27, 0x28 };
+    try testing.expectEqual(6, shadeRows(96));
+    for (want, 0..) |r, k| try testing.expectEqual(r, shaded(bg, 0.36, 96, @intCast(k)).r);
+    // Twice the pixels at twice the DPI, as dark at the edge.
+    try testing.expectEqual(12, shadeRows(192));
+    try testing.expect(@abs(shadeAlpha(0.36, 192, 0) - shadeAlpha(0.36, 96, 0)) < 0.02);
+    try testing.expect(shadeAlpha(0.36, 192, 9) > shadeAlpha(0.36, 192, 10));
 }
 
 test "chromeFont: the bundled Adwaita Sans, regular and bold" {

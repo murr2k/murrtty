@@ -22,6 +22,7 @@ const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Banner = @import("Banner.zig");
 const ClipboardDialog = @import("ClipboardDialog.zig");
+const draw = @import("draw.zig");
 const KeyState = @import("KeyState.zig");
 const Overlay = @import("Overlay.zig");
 const Scrollbar = @import("Scrollbar.zig");
@@ -100,6 +101,11 @@ shown: bool = true,
 /// The color (sRGB, alpha) the pane is dimmed with as an unfocused pane of
 /// a split tab, or null (Tab.syncDim).
 dim_color: ?[4]f32 = null,
+/// The opacity of the shade the window's top bars cast onto the pane, 0
+/// when none falls on it (Tab.layoutPanes), and the DPI its rows were
+/// worked out for.
+shade: f32 = 0,
+shade_dpi: c.UINT = 0,
 cursor_pos: apprt.CursorPos = .{ .x = -1, .y = -1 },
 
 /// Mouse state.
@@ -230,6 +236,9 @@ pub fn init(
     self.core_surface.sizeCallback(self.size) catch |err| {
         log.warn("error in size callback err={}", .{err});
     };
+    // Shapes given before the renderer existed (the pane is laid out, and
+    // so shaded, first).
+    if (self.shade > 0 or self.dim_color != null) self.updateOverlay();
     self.created_at = c.GetTickCount64();
     if (app.config.@"resize-overlay" == .always) self.showResizeOverlay();
 
@@ -261,8 +270,20 @@ pub fn setDim(self: *Surface, color: ?[4]f32) void {
     self.updateOverlay();
 }
 
+/// Cast the top bars' shade onto the pane (`alpha` the shade color's
+/// opacity), or none (0): libadwaita's raised top bar, which GTK draws over
+/// the content below it (roadmap 4.3). Forces a frame if it changes.
+pub fn setShade(self: *Surface, alpha: f32) void {
+    const dpi = c.GetDpiForWindow(self.hwnd);
+    if (alpha == self.shade and (alpha == 0 or dpi == self.shade_dpi)) return;
+    self.shade = alpha;
+    self.shade_dpi = dpi;
+    self.updateOverlay();
+}
+
 /// Hand the renderer the shapes it draws over the pane's frames (3.0's
-/// shape layer): the scrollbar, then the dimming over it all. A frame
+/// shape layer): the scrollbar, the dimming over it all, then the top
+/// bars' shade, as GTK draws the bars over the content. A frame
 /// follows from the message loop (WM_FORCE_FRAME), one for any number of
 /// changes before it, and never with the terminal's lock taken here: this
 /// runs from WM_SIZE and setting changes, which a cross-process sent
@@ -271,8 +292,8 @@ pub fn setDim(self: *Surface, color: ?[4]f32) void {
 pub fn updateOverlay(self: *Surface) void {
     if (!self.core_initialized) return;
     const api = &self.core_surface.renderer.api;
-    const Rect = @TypeOf(api.*).Overlay.Rect;
-    var rects: [3]Rect = undefined;
+    const Shapes = @TypeOf(api.*).Overlay;
+    var rects: [Shapes.max]Shapes.Rect = undefined;
     var n = self.scrollbar.rects(self, rects[0..2]);
     if (self.dim_color) |col| {
         // The whole window, whatever its size later.
@@ -284,6 +305,25 @@ pub fn updateOverlay(self: *Surface) void {
             .color = col,
         };
         n += 1;
+    }
+    if (self.shade > 0) {
+        const ink = draw.shade_color;
+        var row: u32 = 0;
+        while (row < draw.shadeRows(self.shade_dpi) and n < rects.len) : (row += 1) {
+            rects[n] = .{
+                .x = 0,
+                .y = @intCast(row),
+                .width = std.math.maxInt(i16),
+                .height = 1,
+                .color = .{
+                    @as(f32, @floatFromInt(ink.r)) / 255.0,
+                    @as(f32, @floatFromInt(ink.g)) / 255.0,
+                    @as(f32, @floatFromInt(ink.b)) / 255.0,
+                    draw.shadeAlpha(self.shade, self.shade_dpi, row),
+                },
+            };
+            n += 1;
+        }
     }
     api.setOverlay(rects[0..n]);
     if (self.frame_posted) return;

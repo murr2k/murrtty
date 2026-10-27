@@ -147,7 +147,6 @@ const Glyph = struct {
             draw.fill(g.hdc, inner, back);
         }
     }
-
 };
 
 /// Paint the bar into `hdc` at the top, double buffered. `title` is
@@ -160,9 +159,6 @@ pub fn paint(
     hover: Hit,
     pressed: Hit,
     maximized: bool,
-    /// The bar is the chrome's lowest (no tab row below it): it has the
-    /// shade.
-    shade: bool,
     pal: draw.Palette,
 ) void {
     const h = self.height();
@@ -174,9 +170,8 @@ pub fn paint(
     defer _ = c.SelectObject(mem, old_bmp);
     _ = c.SetBkMode(mem, c.TRANSPARENT);
 
+    // The shade below falls on the content (Surface.setShade).
     draw.fill(mem, .{ .right = width, .bottom = h }, pal.bar);
-    // libadwaita's shade, under the top bars (a tab row's, if one follows).
-    if (shade) draw.fill(mem, .{ .top = h - 1, .right = width, .bottom = h }, pal.shade);
 
     const p = self.place(width);
     const inset = self.scale(icon_inset);

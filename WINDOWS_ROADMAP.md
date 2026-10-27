@@ -1848,10 +1848,26 @@ with no line between it and the header: the shade comes under the lowest
 top bar. Its close glyph is window-close's 8 px X, 31 px from the row's
 right edge. `TabBar` takes those (`top_bar`), the header draws the shade
 only without a tab row, and both draw the X the same way (`draw.cross`).
-Still to compare: the terminal's font, cells and padding (which needs a read-back of a
-frame, since window captures read white while DWM idles), and GTK's
-shade, which falls 5 px onto the content below the bar where murrtty
-draws a 1 px line inside it.
+Then the terminal (step 4c, 2026-10-27): the test hooks read a whole
+presented frame back (dump wparams 10 and 11, `Harness.saveFrames`), and
+`snapshot` writes one at GTK's 96 DPI pixel size showing the same line as
+a reference made with `command = printf ...`. Aligned by their ink, the
+two lines differ by at most 9 of 255 (p95 2, 77% of pixels identical,
+`textdiff.py`): font, size, hinting, cell width and height and blending
+already match, since both use FreeType and `linear-corrected`. Padding
+matches at 96 DPI; elsewhere both floor points × DPI / 72 (3 px for 2 pt
+at 120 DPI). GTK's shade is libadwaita's raised top bar, `0 1px` and
+`0 2px 4px` in the shade color at half its opacity, falling onto the
+content (measured: 30, 10, 7, 4 and 2% over the background, then
+nothing). murrtty now draws it there too, not as a line inside the bar:
+row by row in the present pass over every pane that reaches the bars
+(`draw.shadeAlpha`, `Surface.setShade`, after the scrollbar and dimming,
+as GTK draws the bar over the content) and over the dividers' tops; the
+`shade` scenario checks it. The reference is the snap, which bundles
+libadwaita 1.5 (header #303030, window #242424); murrtty keeps the
+current stylesheet's colors (step 2), Ghostty's look on a current GNOME,
+and the metrics measured on 1.5. Not taken yet: `gtk-toolbar-style`
+(`flat` and `raised-border`; murrtty always draws `raised`, the default).
 
 *With the Look rule* (decided 2026-10-26, which made 4.3 Phase 4's first
 item): the bar and tab row take libadwaita's colors and metrics (taken from

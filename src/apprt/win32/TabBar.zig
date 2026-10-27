@@ -6,9 +6,8 @@
 //! and, as the top bar (no header bar above), 6 above (40 or 46 DIP, as
 //! measured on GTK's), tabs as rounded buttons (radius 9) with the title
 //! centered, the selected one tinted, a round close button on the
-//! selected and hovered tabs, separators between the others, and the
-//! shade under it, the chrome's lowest bar. The Window owns the tabs; this
-//! only lays them out, paints and hit-tests.
+//! selected and hovered tabs, separators between the others. The Window
+//! owns the tabs; this only lays them out, paints and hit-tests.
 //! Tabs fill the row (`gtk-wide-tabs`, as GTK's do by default) or take up
 //! to 240 DIP each; below 64 DIP they scroll (by `scroll`) between a "‹"
 //! and a "›". The header bar's buttons are HeaderBar's.
@@ -260,8 +259,6 @@ pub fn paint(
     _ = c.SetBkMode(mem, c.TRANSPARENT);
 
     draw.fill(mem, .{ .right = width, .bottom = h }, pal.bar);
-    // libadwaita's shade under the top bars: the row is the lowest.
-    draw.fill(mem, .{ .top = h - 1, .right = width, .bottom = h }, pal.shade);
 
     const n = titles.len;
     const pen_w = @max(1, self.scale(1));

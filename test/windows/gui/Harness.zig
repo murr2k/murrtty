@@ -1333,6 +1333,10 @@ pub const Dump = struct {
         frames: ?u32 = null,
         /// As the tab's `probe`, for this pane.
         probe: ?u32 = null,
+        /// Whether the frame asked for with `saveFrames` was read.
+        frame_ready: bool = false,
+        /// The opacity of the top bars' shade over the pane, 0 for none.
+        shade: f64 = 0,
         /// Key events the pane passed to the core (presses, repeats and
         /// releases; not text from WM_CHAR alone).
         keys: ?u32 = null,
@@ -1434,6 +1438,34 @@ pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u
         w.Sleep(100);
     }
     return self.fail("pane {d} presented no frame after asking for pixel ({d},{d})", .{ i, x, y });
+}
+
+/// Have every pane read back the whole frame it presents next and write the
+/// visible panes' frames as `frame-<n>.bmp` beside the dump file (n counts
+/// the panes window by window, tab by tab, from 0). Ghostty reads them in
+/// Debug builds, so this works on the hidden desktop, where captures read
+/// white.
+pub fn saveFrames(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 10, 0);
+    d.deinit();
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var dd = try self.dump(g);
+        defer dd.deinit();
+        const ready = ready: {
+            for (dd.value.windows) |win| for (win.tabs) |t| if (t.panes) |panes| for (panes) |p| {
+                if (p.visible and !p.frame_ready) break :ready false;
+            };
+            break :ready true;
+        };
+        if (ready) {
+            var done = try self.dumpWith(g, 11, 0);
+            done.deinit();
+            return;
+        }
+        w.Sleep(100);
+    }
+    return self.fail("a visible pane presented no frame to read back", .{});
 }
 
 /// Make panes ignore WM_MOUSELEAVE (`pinned`), which Windows sends for a

@@ -81,6 +81,16 @@ const Wgl = struct {
     probe: std.atomic.Value(u32) = .init(0),
     /// Frames presented, so the tests can tell whether something drew.
     frames: std.atomic.Value(u32) = .init(0),
+    /// And once asked (`frame_wanted`), the next present reads its whole
+    /// back buffer into `frame` (BGRA rows, top first) and sets
+    /// `frame_ready`; the UI thread takes the frame from there, freeing it
+    /// before it asks again. Window captures read white where DWM isn't
+    /// composing; this is what was drawn.
+    frame_wanted: std.atomic.Value(bool) = .init(false),
+    frame_ready: std.atomic.Value(bool) = .init(false),
+    frame: []u8 = &.{},
+    frame_width: u32 = 0,
+    frame_height: u32 = 0,
     /// Spike S2 (roadmap), set by a GUI test hook: present the frame with
     /// its own alpha, for DWM to compose over what is behind the window,
     /// instead of over the opaque background.
@@ -99,7 +109,9 @@ const Wgl = struct {
 /// Solid rectangles the Windows present pass draws over the frame, blending
 /// in the stored (sRGB) values as GTK's CSS overlays do.
 pub const Overlay = struct {
-    pub const max = 16;
+    /// Room for the scrollbar, the dimming and the top bars' shade (a rect
+    /// per row, 6 per 96 DPI).
+    pub const max = 48;
 
     rects: [max]Rect = undefined,
     len: usize = 0,
@@ -563,6 +575,7 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
                 state.probe.store(readPixel(x, win_h - 1 - y) | Wgl.probe_read, .monotonic);
             }
         }
+        if (state.frame_wanted.swap(false, .acquire)) readFrame(state, win_w, win_h);
     };
 
     if (wgl.SwapBuffers(state.hdc) == 0) return error.WglSwapBuffersFailed;
@@ -627,6 +640,32 @@ const overlay_fragment =
     \\    out_color = color;
     \\}
 ;
+
+/// The whole back buffer into `state.frame` (BGRA, rows top first), for
+/// the GUI tests; then `frame_ready`.
+fn readFrame(state: *Wgl, win_w: gl.c.GLint, win_h: gl.c.GLint) void {
+    if (win_w <= 0 or win_h <= 0) return;
+    const width: usize = @intCast(win_w);
+    const height: usize = @intCast(win_h);
+    const pixels = std.heap.page_allocator.alloc(u8, width * height * 4) catch return;
+    gl.glad.context.ReadPixels.?(0, 0, win_w, win_h, gl.c.GL_BGRA, gl.c.GL_UNSIGNED_BYTE, pixels.ptr);
+    // GL's rows run bottom up.
+    const stride = width * 4;
+    var top: usize = 0;
+    var bottom: usize = height - 1;
+    while (top < bottom) : ({
+        top += 1;
+        bottom -= 1;
+    }) {
+        const a = pixels[top * stride ..][0..stride];
+        const b = pixels[bottom * stride ..][0..stride];
+        for (a, b) |*x, *y| std.mem.swap(u8, x, y);
+    }
+    state.frame = pixels;
+    state.frame_width = @intCast(width);
+    state.frame_height = @intCast(height);
+    state.frame_ready.store(true, .release);
+}
 
 /// The back buffer's pixel at GL coordinates (origin bottom left) as
 /// 0x00RRGGBB, as stored.

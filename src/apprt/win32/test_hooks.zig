@@ -137,6 +137,11 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   the core's renderer_health action.
 /// - 7: panes ignore WM_MOUSELEAVE (`lparam` 1) or act on it (0).
 /// - 8: Windows' "Always show scrollbars" on (`lparam` 1) or off (0).
+/// - 10: ask every pane's renderer for the whole frame it presents next
+///   (each pane's `frame_ready` reports it read).
+/// - 11: write the frames read as `frame-<n>.bmp` beside the dump file, n
+///   counting the panes window by window, tab by tab.
+/// (9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
     if (wparam == 3) {
@@ -180,6 +185,22 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         }
     }
     if (wparam == 5) setTransparent(app, lparam != 0);
+    if (wparam == 10) for (app.windows.items) |w| {
+        var it = w.panes();
+        while (it.next()) |s| {
+            if (!s.core_initialized) continue;
+            const state = &s.core_surface.renderer.api.wgl_state;
+            // A frame read is the UI thread's to free; one still asked for
+            // is the render thread's to write.
+            if (state.frame_ready.swap(false, .acquire)) {
+                std.heap.page_allocator.free(state.frame);
+                state.frame = &.{};
+            }
+            state.frame_wanted.store(true, .release);
+            redraw(s);
+        }
+    };
+    if (wparam == 11) saveFrames(app);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
     write(app, alloc, &out) catch |err| {
@@ -527,11 +548,13 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             const grid = s.core_surface.size.grid();
             const wgl_state = &s.core_surface.renderer.api.wgl_state;
             // Whether text is selected (hasSelection takes the terminal's lock).
-            try out.print(alloc, ",\"core_focused\":{},\"selection\":{},\"frames\":{d},\"probe\":{d},\"keys\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
+            try out.print(alloc, ",\"core_focused\":{},\"selection\":{},\"frames\":{d},\"probe\":{d},\"frame_ready\":{},\"shade\":{d:.3},\"keys\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
                 s.core_surface.focused,
                 s.core_surface.hasSelection(),
                 wgl_state.frames.load(.monotonic),
                 wgl_state.probe.load(.monotonic),
+                wgl_state.frame_ready.load(.acquire),
+                s.shade,
                 s.keys_sent,
                 grid.columns,
                 grid.rows,
@@ -584,6 +607,50 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         try out.print(alloc, "[{d},{d},{d},{d}]", .{ sp.divider.left, sp.divider.top, sp.divider.right, sp.divider.bottom });
     }
     try out.append(alloc, ']');
+}
+
+/// Write each frame the renderers read back (dump wparam 10) as a 32-bit
+/// BMP, `frame-<n>.bmp` beside the dump file.
+fn saveFrames(app: *App) void {
+    const dump_path = app.test_state.path orelse return;
+    const sep = std.mem.lastIndexOfScalar(u16, dump_path, '\\') orelse return;
+    var n: usize = 0;
+    for (app.windows.items) |w| {
+        var it = w.panes();
+        while (it.next()) |s| : (n += 1) {
+            if (!s.core_initialized) continue;
+            const state = &s.core_surface.renderer.api.wgl_state;
+            if (!state.frame_ready.load(.acquire)) continue;
+            var name_buf: [32]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "frame-{d}.bmp", .{n}) catch continue;
+            var path: [1024:0]u16 = undefined;
+            if (sep + 1 + name.len >= path.len) continue;
+            @memcpy(path[0 .. sep + 1], dump_path[0 .. sep + 1]);
+            for (name, 0..) |ch, i| path[sep + 1 + i] = ch;
+            path[sep + 1 + name.len] = 0;
+            writeBmp(&path, state.frame, state.frame_width, state.frame_height);
+        }
+    }
+}
+
+/// `pixels` (BGRA rows, top first) as a top-down 32-bit BMP at `path`.
+fn writeBmp(path: [*:0]const u16, pixels: []const u8, width: u32, height: u32) void {
+    var header: [54]u8 = @splat(0);
+    header[0] = 'B';
+    header[1] = 'M';
+    std.mem.writeInt(u32, header[2..6], @intCast(header.len + pixels.len), .little);
+    std.mem.writeInt(u32, header[10..14], header.len, .little);
+    std.mem.writeInt(u32, header[14..18], 40, .little);
+    std.mem.writeInt(i32, header[18..22], @intCast(width), .little);
+    std.mem.writeInt(i32, header[22..26], -@as(i32, @intCast(height)), .little);
+    std.mem.writeInt(u16, header[26..28], 1, .little);
+    std.mem.writeInt(u16, header[28..30], 32, .little);
+    const file = c.CreateFileW(path, c.GENERIC_WRITE, 0, null, c.CREATE_ALWAYS, c.FILE_ATTRIBUTE_NORMAL, null);
+    if (file == c.INVALID_HANDLE_VALUE) return;
+    defer _ = c.CloseHandle(file);
+    var written: c.DWORD = 0;
+    _ = c.WriteFile(file, &header, header.len, &written, null);
+    _ = c.WriteFile(file, pixels.ptr, @intCast(pixels.len), &written, null);
 }
 
 /// Draw a new frame of the pane `s` soon. Nothing may have changed to cause

@@ -9,6 +9,7 @@ const CoreSurface = @import("../../Surface.zig");
 const SplitTree = @import("../../datastruct/split_tree.zig").SplitTree;
 
 const c = @import("c.zig");
+const draw = @import("draw.zig");
 const split_layout = @import("split_layout.zig");
 const Window = @import("Window.zig");
 const Surface = @import("Surface.zig");
@@ -123,6 +124,9 @@ pub fn create(
 
     self.tree = try Tree.init(alloc, surface);
     self.focused = surface;
+    // Sized as the whole tab, so reaching the bars (layoutPanes does this
+    // from now on).
+    surface.setShade(window.shade());
     return self;
 }
 
@@ -462,6 +466,9 @@ pub fn layoutPanes(self: *Tab) void {
     }
     if (hdwp) |h| _ = c.EndDeferWindowPos(h);
     self.syncPaneVisibility();
+    // The bars' shade falls on the panes that reach them.
+    const shade = self.window.shade();
+    for (layout.panes) |p| p.view.setShade(if (p.rect.top == 0 and !p.rect.isEmpty()) shade else 0);
     // WS_CLIPCHILDREN limits this to the dividers and any gap.
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
@@ -551,15 +558,15 @@ fn toRect(r: split_layout.Rect) c.RECT {
 /// The dividers' color: `split-divider-color`, else macOS's rule, the
 /// focused pane's background darkened 40% on a dark theme, 8% on a light
 /// one.
-fn dividerColor(self: *const Tab) c.COLORREF {
-    if (self.window.app.config.@"split-divider-color") |col| return c.rgb(col.r, col.g, col.b);
+fn dividerColor(self: *const Tab) draw.Color {
+    if (self.window.app.config.@"split-divider-color") |col| return .{ .r = col.r, .g = col.g, .b = col.b };
     const bg = self.focused.colors.bg;
     const keep: f32 = if (Window.isDark(bg)) 0.6 else 0.92;
-    return c.rgb(
-        @intFromFloat(@as(f32, @floatFromInt(bg.r)) * keep),
-        @intFromFloat(@as(f32, @floatFromInt(bg.g)) * keep),
-        @intFromFloat(@as(f32, @floatFromInt(bg.b)) * keep),
-    );
+    return .{
+        .r = @intFromFloat(@as(f32, @floatFromInt(bg.r)) * keep),
+        .g = @intFromFloat(@as(f32, @floatFromInt(bg.g)) * keep),
+        .b = @intFromFloat(@as(f32, @floatFromInt(bg.b)) * keep),
+    };
 }
 
 /// Paint the dividers, and fill what the panes don't cover yet (while
@@ -579,13 +586,24 @@ fn paint(self: *Tab) void {
     const alloc = self.window.app.core_app.alloc;
     var layout = Layout.compute(alloc, &self.tree, self.area(), self.dividerWidth()) catch return;
     defer layout.deinit(alloc);
-    const color = self.dividerColor();
+    const under = self.dividerColor();
+    const color = draw.ref(under);
     const brush = c.CreateSolidBrush(color) orelse return;
     defer _ = c.DeleteObject(brush);
     self.painted_divider = color;
+    const shade = self.window.shade();
+    const dpi = c.GetDpiForWindow(self.hwnd);
     for (layout.splits) |s| {
         const r = toRect(s.divider);
         _ = c.FillRect(hdc, &r, brush);
+        // The bars' shade falls on a divider that reaches them, as on the
+        // panes beside it.
+        if (shade <= 0 or r.top != 0) continue;
+        var row: u32 = 0;
+        while (row < draw.shadeRows(dpi)) : (row += 1) {
+            const y: c_int = @intCast(row);
+            draw.fill(hdc, .{ .left = r.left, .top = y, .right = r.right, .bottom = @min(y + 1, r.bottom) }, draw.ref(draw.shaded(under, shade, dpi, row)));
+        }
     }
 }
 

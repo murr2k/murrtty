@@ -55,6 +55,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits, minimums", .run = splitCommands },
     .{ .name = "split-mouse", .about = "dragging a divider, Esc (none of that keystroke reaches the core), double-click to equalize, the grip band", .run = splitMouse },
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
+    .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar", .run = shade },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
@@ -174,18 +175,27 @@ fn pixelsOffscreen(h: *Harness) !void {
     try h.expect(px == 0x282c34, "background pixel #{x:0>6}, expected #282c34", .{px});
 }
 
-/// Opt-in (GHOSTTY_GUI_SNAPSHOT = a folder): pictures of the whole window,
-/// for comparing with Ghostty's GTK app by eye: one tab, split right, then
-/// a second tab (snapshot-tab.bmp, snapshot-split.bmp, snapshot-tabs.bmp).
-/// Off-screen on the user's
-/// desktop, like pixels; no menus, which Windows would pull on screen.
+/// The line `snapshot`'s frame shows, as GTK's reference shows it with
+/// `.\gtkref.ps1 -Extra "command = printf '<look_text>\n'; exec sleep 60"`
+/// (test/windows/look). Nothing cmd's echo or printf would read as syntax.
+const look_text = "The quick brown fox jumps over the lazy dog 0123456789 []{}=+-*/.,;:!?";
+
+/// Opt-in (GHOSTTY_GUI_SNAPSHOT = a folder): pictures for comparing with
+/// Ghostty's GTK app (test/windows/look). First the terminal as the
+/// renderer drew it, sized as GTK's at 96 DPI and showing `look_text`
+/// (frame-tab.bmp), on the hidden desktop; then, where captures work, the
+/// whole window: one tab, split right, then a second tab
+/// (snapshot-tab.bmp, snapshot-split.bmp, snapshot-tabs.bmp, and
+/// chrome-*.bmp), off-screen on the user's desktop, like pixels; no menus,
+/// which Windows would pull on screen.
 fn snapshot(h: *Harness) anyerror!void {
     var dir_w: [260:0]u16 = undefined;
     const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &dir_w, dir_w.len);
     if (n == 0 or n >= dir_w.len) return h.skip("set GHOSTTY_GUI_SNAPSHOT to a folder to run it", .{});
-    if (h.capturesWork()) |why| return h.skip("{s}", .{why});
     var dir_buf: [1024]u8 = undefined;
     const dir_len = std.unicode.utf16LeToUtf8(&dir_buf, dir_w[0..n]) catch return h.fail("bad folder name", .{});
+    try snapshotFrame(h, dir_buf[0..dir_len]);
+    if (h.capturesWork()) |why| return h.skip("window pictures: {s}", .{why});
     const Ctx = struct { h: *Harness, dir: []const u8, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h, .dir = dir_buf[0..dir_len] };
     h.runOnUserDesktop(&ctx, struct {
@@ -196,6 +206,38 @@ fn snapshot(h: *Harness) anyerror!void {
         }
     }.run);
     if (ctx.err) |err| return err;
+}
+
+/// frame-tab.bmp: GTK's default font size (12 points, 16 pixels at 96 DPI)
+/// scaled by 96/DPI so the cells come out in GTK's pixels. Padding stays
+/// as configured (whole points), so the grid may sit a pixel off GTK's.
+fn snapshotFrame(h: *Harness, dir: []const u8) !void {
+    const dpi = dpi: {
+        var g = try h.launch("snapshot-dpi", base_config);
+        defer g.deinit();
+        break :dpi w.GetDpiForWindow(try h.mainWindow(&g));
+    };
+    const config = try std.fmt.allocPrint(h.alloc, base_config ++
+        \\command = direct:cmd.exe /c "echo {s}&& pause>nul"
+        \\font-size = {d}
+        \\window-width = 80
+        \\window-height = 24
+        \\
+    , .{ look_text, 12.0 * 96.0 / @as(f64, @floatFromInt(dpi)) });
+    defer h.alloc.free(config);
+    var g = try h.launch("snapshot-frame", config);
+    defer g.deinit();
+    try h.waitText(&g, look_text, 1, 20000);
+    w.Sleep(500);
+    try h.saveFrames(&g);
+    const from = try std.fmt.allocPrint(h.alloc, "{s}\\frame-0.bmp", .{std.fs.path.dirname(g.dump_path).?});
+    defer h.alloc.free(from);
+    const to = try std.fmt.allocPrint(h.alloc, "{s}\\frame-tab.bmp", .{dir});
+    defer h.alloc.free(to);
+    const bytes = h.readFileOrNull(from) orelse return h.fail("no {s}", .{from});
+    defer h.alloc.free(bytes);
+    try h.writeFileAt(to, bytes);
+    try h.expect(true, "wrote {s} at {d} DPI", .{ to, dpi });
 }
 
 fn snapshotOffscreen(h: *Harness, dir: []const u8) !void {
@@ -4572,22 +4614,22 @@ fn splitDim(h: *Harness) anyerror!void {
     defer g.deinit();
     const win = try h.mainWindow(&g);
     const bg: u32 = 0x282c34;
-    try h.expect(try h.probePane(&g, 0, 1, 1) == bg, "one pane: not dimmed", .{});
+    try h.expect(try h.probePane(&g, 0, 1, 40) == bg, "one pane: not dimmed", .{});
 
     h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
     try waitPanes(h, &g, 2);
     w.Sleep(1500);
     // The new (right) pane is focused; the left one is dimmed.
     const dim = blendSrgb(0xff0000, bg, 0.5);
-    try expectColor(h, try h.probePane(&g, 0, 1, 1), dim, "the unfocused pane is dimmed");
-    try expectColor(h, try h.probePane(&g, 1, 1, 1), bg, "the focused pane isn't");
+    try expectColor(h, try h.probePane(&g, 0, 1, 40), dim, "the unfocused pane is dimmed");
+    try expectColor(h, try h.probePane(&g, 1, 1, 40), bg, "the focused pane isn't");
 
     // Clicking the left pane moves the focus, and the dimming with it.
     const left = try paneHwnd(h, &g, 0);
     h.click(left, 200, 200, .left);
     w.Sleep(800);
-    try expectColor(h, try h.probePane(&g, 0, 1, 1), bg, "after a click the left pane isn't dimmed");
-    try expectColor(h, try h.probePane(&g, 1, 1, 1), dim, "and the right one is");
+    try expectColor(h, try h.probePane(&g, 0, 1, 40), bg, "after a click the left pane isn't dimmed");
+    try expectColor(h, try h.probePane(&g, 1, 1, 40), dim, "and the right one is");
 
     // The dividers are the focused pane's background darkened (60% of a
     // dark one, 92% of a light one), and repaint when a program changes
@@ -4605,6 +4647,53 @@ fn splitDim(h: *Harness) anyerror!void {
     h.key(left, .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
     try expectDividerColor(h, &g, 0xffffff, "split-divider-color sets them, whatever the background");
     try quit(h, &g, left);
+}
+
+/// GTK's top bars cast libadwaita's shade onto the content below them
+/// (roadmap 4.3), read back from the renderers in the left padding: the
+/// top row is the background under the shade's darkest row (#1c1f26 at
+/// 96, 120 and 144 DPI, draw.shadeAlpha), and the background returns
+/// within 6 px per 96 DPI. Of a split, the panes reaching the bar are
+/// shaded and one below another isn't; without a bar (server decorations,
+/// one tab) nothing is.
+fn shade(h: *Harness) anyerror!void {
+    const bg: u32 = 0x282c34;
+    const shaded: u32 = 0x1c1f26;
+    {
+        var g = try start(h, "shade", "", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        try expectColor(h, try h.probePane(&g, 0, 1, 0), shaded, "the top row is under the shade");
+        try expectColor(h, try h.probePane(&g, 0, 1, 40), bg, "below its reach, the background");
+
+        // Side by side, then the right pane split down.
+        h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
+        try waitPanes(h, &g, 2);
+        h.key(try paneHwnd(h, &g, 1), .{ .ctrl = true, .shift = true }, 'E');
+        try waitPanes(h, &g, 3);
+        w.Sleep(1500);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{});
+        var top: i32 = std.math.maxInt(i32);
+        for (panes) |p| top = @min(top, p.rect[1]);
+        for (panes, 0..) |p, i| {
+            const reaches = p.rect[1] == top;
+            try h.expect((p.shade > 0.3) == reaches, "pane {d} {s} the bar: shade {d:.2}", .{ i, if (reaches) "reaching" else "below", p.shade });
+            const px = try h.probePane(&g, i, 1, 0);
+            try expectColor(h, px, if (reaches) shaded else bg, "its top row");
+        }
+        try quit(h, &g, try paneHwnd(h, &g, 0));
+    }
+    {
+        var g = try start(h, "shade-none", "window-decoration = server\n", ">");
+        defer g.deinit();
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.windows[0].tabs[0].panes.?[0].shade == 0, "no bar, no shade", .{});
+        try expectColor(h, try h.probePane(&g, 0, 1, 0), bg, "the top row is the background");
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
 }
 
 /// Wait until the first tab's dividers were last painted `want`.
