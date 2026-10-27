@@ -674,6 +674,30 @@ pub extern "user32" fn DialogBoxIndirectParamW(?HINSTANCE, *const anyopaque, ?HW
 pub extern "user32" fn EndDialog(HWND, isize) callconv(.winapi) BOOL;
 pub extern "user32" fn GetDlgItem(?HWND, c_int) callconv(.winapi) ?HWND;
 
+// The clipboard confirmation (likewise)
+pub const WS_HSCROLL = 0x00100000;
+pub const ES_MULTILINE = 0x0004;
+pub const ES_AUTOVSCROLL = 0x0040;
+pub const ES_READONLY = 0x0800;
+pub const BS_AUTOCHECKBOX = 0x0003;
+pub const BM_GETCHECK = 0x00F0;
+pub const BST_CHECKED = 1;
+pub const SS_NOPREFIX = 0x0080;
+pub const WM_CTLCOLORSTATIC = 0x0138;
+pub const COLOR_WINDOW = 5;
+pub const COLOR_WINDOWTEXT = 8;
+pub extern "user32" fn GetSysColor(c_int) callconv(.winapi) DWORD;
+pub extern "user32" fn GetSysColorBrush(c_int) callconv(.winapi) ?HBRUSH;
+
+// The system menu
+pub const WM_INITMENUPOPUP = 0x0117;
+pub const WM_ENTERMENULOOP = 0x0211;
+pub const WM_EXITMENULOOP = 0x0212;
+pub const MF_BYPOSITION = 0x0400;
+pub extern "user32" fn GetSystemMenu(HWND, BOOL) callconv(.winapi) ?HMENU;
+pub extern "user32" fn GetMenuItemCount(?HMENU) callconv(.winapi) c_int;
+pub extern "user32" fn DeleteMenu(HMENU, UINT, UINT) callconv(.winapi) BOOL;
+
 // The command palette's list
 pub const HWND_TOP: ?HWND = null;
 pub const WS_VSCROLL = 0x00200000;
@@ -745,6 +769,10 @@ pub extern "gdi32" fn DeleteDC(HDC) callconv(.winapi) BOOL;
 pub extern "gdi32" fn BitBlt(HDC, c_int, c_int, c_int, c_int, ?HDC, c_int, c_int, DWORD) callconv(.winapi) BOOL;
 pub extern "gdi32" fn CreateSolidBrush(COLORREF) callconv(.winapi) ?HBRUSH;
 pub extern "gdi32" fn CreatePen(c_int, c_int, COLORREF) callconv(.winapi) ?HGDIOBJ;
+pub extern "gdi32" fn RoundRect(HDC, c_int, c_int, c_int, c_int, c_int, c_int) callconv(.winapi) BOOL;
+pub extern "gdi32" fn Polygon(HDC, [*]const POINT, c_int) callconv(.winapi) BOOL;
+pub const NULL_BRUSH = 5;
+pub const NULL_PEN = 8;
 pub extern "gdi32" fn MoveToEx(HDC, c_int, c_int, ?*POINT) callconv(.winapi) BOOL;
 pub extern "gdi32" fn LineTo(HDC, c_int, c_int) callconv(.winapi) BOOL;
 pub extern "gdi32" fn SetBkMode(HDC, c_int) callconv(.winapi) c_int;

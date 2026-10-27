@@ -134,8 +134,13 @@ hosted Windows runner and then the unit tests.
   it (another shell, or PowerShell started with a command) murrtty can't
   tell an idle prompt from a running program and asks whenever the shell is
   still running. Set `confirm-close-surface = false` to turn this off.
-- OSC 52 clipboard writes with `clipboard-write = ask`: a burst of requests
-  is confirmed one dialog at a time.
+  The dialogs use GTK's wording ("Close Tab?", "Quit murrtty?").
+- Clipboard confirmations (`clipboard-read`/`clipboard-write = ask`, and
+  paste protection) as in GTK: the whole text in a scrollable box, Deny by
+  default, and for OSC 52 "Remember choice for this split". A burst of
+  requests is confirmed one dialog at a time.
+- The system menu (`Alt+Space`, or the window icon) adds New Window, New
+  Tab, Split, Command Palette, Config, About murrtty and Quit.
 - Configuration errors: a dialog lists them at startup and after a reload,
   with Open Configuration, Reload and Ignore; reloading (`Ctrl+Shift+,`)
   applies a fixed file.
@@ -232,8 +237,8 @@ hosted Windows runner and then the unit tests.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the rest of the everyday UI (Phase 3: the tab bar's menus and
-overflow, dialog polish).
+with window chrome (Phase 4: transparency, blur, and GTK's header bar as
+the title bar).
 
 **Known issues**
 

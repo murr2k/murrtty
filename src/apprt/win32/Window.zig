@@ -81,6 +81,12 @@ small_icon: ?c.HICON = null,
 big_icon: ?c.HICON = null,
 icon_widths: [2]c_int = .{ 0, 0 },
 
+/// murrtty's items in the system menu (Alt+Space).
+system_menu: ContextMenu.SystemMenu = .{},
+/// Open while the system menu's loop runs: closes wait until it ends, as
+/// for every other nested loop.
+menu_modal: ?App.Modal = null,
+
 pub const Chrome = struct {
     dark: bool = false,
     /// The caption color, or null for the system's.
@@ -142,6 +148,10 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     self.tab_bar.setDpi(dpi, app.config.@"window-title-font-family");
     self.loadIcons(dpi);
     self.createTooltip();
+    // The window's own copy of the system menu, made now: until a window
+    // asks for it, Windows shows the shared one, and asking while it opens
+    // makes a copy other than the menu showing (WM_INITMENUPOPUP).
+    _ = c.GetSystemMenu(self.hwnd, c.FALSE);
     self.setClientSize(default_width, default_height);
     self.applyChrome();
 
@@ -189,11 +199,13 @@ pub fn addTab(
 /// Only call this from the message loop (see App.Request), never from
 /// inside a core callback.
 pub fn closeSurface(self: *Window, surface: *Surface, confirm: bool) void {
-    if (confirm and self.needsConfirm(surface) and !self.app.confirm(
-        self.hwnd,
-        "A process is still running in this terminal. Close it anyway?",
-        "murrtty:Close Tab",
-    )) return;
+    if (confirm and self.needsConfirm(surface)) {
+        // Worded for what closes: the split, or the tab a lone pane takes
+        // with it (GTK says Close Split? for that too).
+        const i = self.tabIndexOf(surface) orelse return;
+        const target: App.CloseTarget = if (self.tabs.items[i].tree.isSplit()) .split else .tab;
+        if (!self.app.confirmClose(self.hwnd, target)) return;
+    }
 
     const index = self.tabIndexOf(surface) orelse return;
     const tab = self.tabs.items[index];
@@ -359,14 +371,8 @@ pub fn closeTabs(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMo
 
     var confirm = false;
     for (targets.items) |t| confirm = confirm or self.tabNeedsConfirm(t);
-    if (confirm and !self.app.confirm(
-        self.hwnd,
-        if (mode == .this)
-            "A process is still running in this terminal. Close it anyway?"
-        else
-            "Processes are still running in the tabs being closed. Close them anyway?",
-        if (mode == .this) "murrtty:Close Tab" else "murrtty:Close Tabs",
-    )) return;
+    // One question for them all (GTK asks for each tab in turn).
+    if (confirm and !self.app.confirmClose(self.hwnd, if (targets.items.len > 1) .tabs else .tab)) return;
 
     for (targets.items) |t| {
         const i = std.mem.indexOfScalar(*Tab, self.tabs.items, t) orelse continue;
@@ -524,12 +530,17 @@ pub fn destroy(self: *Window) void {
 fn onDestroy(self: *Window) void {
     const alloc = self.app.core_app.alloc;
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+    // Destroyed inside its system menu's loop (closes wait for it, but
+    // another program can destroy a window): end the scope while the
+    // panes it resumes are still here.
+    self.endMenuModal();
 
     // The child windows are destroyed by the system after this.
     for (self.tabs.items) |tab| tab.destroy(false);
     self.tabs.deinit(alloc);
     self.tab_bar.deinit();
     self.palette.deinit(alloc);
+    self.system_menu.deinit(alloc);
     self.toast.deinit();
     if (self.title_override) |v| alloc.free(v);
     // The tooltip, owned by the window, goes with it; the icons don't.
@@ -547,14 +558,7 @@ pub fn requestClose(self: *Window) void {
     var confirm = false;
     var it = self.panes();
     while (it.next()) |s| confirm = confirm or self.needsConfirm(s);
-    if (confirm and !self.app.confirm(
-        self.hwnd,
-        if (self.tabs.items.len > 1)
-            "Processes are still running in this window's tabs. Close it anyway?"
-        else
-            "A process is still running in this terminal. Close it anyway?",
-        "murrtty:Close Window",
-    )) return;
+    if (confirm and !self.app.confirmClose(self.hwnd, .window)) return;
     self.destroy();
 }
 
@@ -1028,10 +1032,20 @@ fn mainMenu(self: *Window) void {
     const r = self.tab_bar.menuRect(self.tabBarRect().right);
     var pt: c.POINT = .{ .x = r.right, .y = r.bottom };
     _ = c.ClientToScreen(self.hwnd, &pt);
-    switch (ContextMenu.trackMain(surface, pt) orelse return) {
+    self.runChoice(surface, ContextMenu.trackMain(surface, pt) orelse return);
+}
+
+/// Run what was chosen from the main menu or the system menu.
+fn runChoice(self: *Window, surface: *Surface, choice: ContextMenu.Choice) void {
+    switch (choice) {
         .action => |a| self.performOnPane(surface, a),
         .about => self.app.showAbout(self.hwnd),
     }
+}
+
+fn endMenuModal(self: *Window) void {
+    if (self.menu_modal) |*m| m.end();
+    self.menu_modal = null;
 }
 
 /// Run a menu's choice on `surface` after the menu's loop, during which
@@ -1380,6 +1394,34 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_CLOSE => {
             self.app.request(.{ .close_window = self.id });
             return 0;
+        },
+
+        // The system menu: murrtty's items, current, as it opens (not its
+        // submenus, which open inside it), and its loop in a modal scope
+        // (wparam FALSE: not a TrackPopupMenu menu, which has its own).
+        c.WM_INITMENUPOPUP => {
+            const menu: c.HMENU = @ptrFromInt(wparam);
+            if (c.hiword(lparam) != 0) if (c.GetSystemMenu(hwnd, c.FALSE)) |sys| if (sys == menu) {
+                if (self.activeSurface()) |s| self.system_menu.refresh(s, menu);
+            };
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_ENTERMENULOOP => {
+            if (wparam == 0 and self.menu_modal == null) {
+                self.menu_modal = self.app.beginModal(hwnd, .{ .disable_others = false });
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_EXITMENULOOP => {
+            if (wparam == 0) self.endMenuModal();
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_SYSCOMMAND => {
+            if (self.system_menu.choice(wparam)) |choice| {
+                if (self.activeSurface()) |s| self.runChoice(s, choice);
+                return 0;
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
         c.WM_NOTIFY => {

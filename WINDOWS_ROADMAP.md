@@ -120,6 +120,14 @@ not affiliated with the Ghostty project.
   Ghostty), the configuration folder `%LOCALAPPDATA%\murrtty`, the
   identifiers of decision 5, and the icon: Ghostty's name and logo belong to
   the Ghostty project and are used only to say what murrtty is based on.
+- **Look** (decided by the owner 2026-10-26). By default murrtty looks like
+  Ghostty's GTK app as libadwaita draws it on GNOME: its colors (Adwaita's
+  light or dark by the terminal background, as `window-theme = auto` does
+  there), fonts, spacing, kerning and margins, header bar and menus.
+  Windows' own look stays only where GTK has nothing to match: the window's
+  minimize and maximize buttons, Snap Layouts, the system menu. Reference:
+  the GTK app under WSLg (`run-linux.cmd`), minding that WSL lacks GNOME's
+  interface font, so its menus fall back to DejaVu Sans.
 
 Fork items, ahead of the rest of Phase 3:
 - **R1, S.** Record the decision (this section, the README). *Done
@@ -184,10 +192,6 @@ roadmap item behind it.
   and mail links open; a file opens only if it is inert (code runners are
   blocked, symbolic links are not followed); anything else asks first. GTK
   hands every link to the desktop's opener.
-- **Caption colors** (0.4): `window-theme = auto` colors the title bar with
-  the terminal's background and foreground, following OSC 11, as macOS's
-  transparent title bar does, also for themes with light and dark variants;
-  GTK's `auto` picks a light or dark window.
 - **Window names** (3.5): a window's name is its caption, so the taskbar
   shows it too; GTK's goes only to the header bar, its window list keeping
   the tab's title. On Windows the caption is the window's title.
@@ -214,6 +218,12 @@ roadmap item behind it.
   nushell.
 
 *For now:*
+- **Caption colors** (0.4, until 4.3): `window-theme = auto` colors the
+  title bar and the strip with the terminal's background and foreground,
+  following OSC 11, as macOS's transparent title bar does. GTK's `auto`
+  draws Adwaita's light or dark window, chosen by the configured
+  background's perceived luminance, and keeps terminal colors for
+  `window-theme = ghostty`; 4.3 brings murrtty to GTK's (the Look rule).
 - **Last window** (decision 4): murrtty always opens a window at start and
   quits with its last window, whatever `initial-window` and
   `quit-after-last-window-closed` say, until the tray (5.6) exists.
@@ -237,6 +247,16 @@ roadmap item behind it.
 - **Tab tooltips** (3.8): a tab's tooltip shows its title and, beneath,
   its working directory (unless the title shows it); GTK's shows only the
   directory. The strip's buttons have tooltips with their bindings.
+- **Close confirmations** (3.9): closing a tab's only pane asks "Close
+  Tab?" (GTK: "Close Split?"), and closing several tabs at once asks once,
+  "Close Tabs?" (GTK asks for each tab).
+- **Clipboard confirmation** (3.9): a write's dialog says the text shown is
+  what the program would write (GTK's says the current contents, but shows
+  the same text); control characters show as Control Pictures; Escape or
+  the close box denies without remembering (GTK's remembers a Deny then).
+- **System menu** (3.9): Alt+Space's menu adds New Window, New Tab, Split,
+  Command Palette, Terminal Inspector, Config, About murrtty and Quit
+  after Windows' own items; GTK has no such menu.
 
 *Decided, not built yet:*
 - **Config editor** (F1): a GUI for every configuration option; Ghostty is
@@ -1607,6 +1627,14 @@ see it). Scenario `header-bar`; `launch` expects the 960x600 DIP terminal
 below the strip; the dump reports `tabs_shown`, with zero rectangles for
 tabs not shown.
 
+*3.8f (GTK's icons) done 2026-10-26, from the owner's screenshot of the
+GTK app.* The header's buttons are drawn as GTK's symbolic icons in the
+foreground color: tab-new (a rounded square holding a plus), pan-down (a
+filled triangle past a thin divider), view-grid for the tab list, and
+open-menu; a hovered button gets a rounded highlight. Opt-in scenario
+`snapshot` (`GHOSTTY_GUI_SNAPSHOT` = a folder) writes pictures of the whole
+window, off-screen, for comparing by eye.
+
 **3.9 Dialog polish, S.**
 - Replace `MessageBox` confirmations with TaskDialogs, worded as GTK's
   (*observed*): "Close Tab?" / "All terminal sessions in this tab will be
@@ -1620,9 +1648,41 @@ tabs not shown.
 - Add `open_config:new_window` once 5.1's command overrides exist (the basic
   `open_config` fix is in 0.6).
 
+*3.9 done 2026-10-26, but for `open_config:new_window` (with 5.1); Phase 3
+done.*
+- **Close confirmations** (`App.confirmClose`): task dialogs with GTK's
+  heading and body for the app ("Quit murrtty?"), a window, a tab, a split,
+  plus "Close All Windows?" and "Close Tabs?" (several at once: one question
+  where GTK asks per tab), Cancel the default (Escape too) and Close. A lone
+  pane's close says "Close Tab?", which is what happens (GTK: "Close
+  Split?"). Close has IDYES's id, so tests answer as before; No is Cancel.
+- **Clipboard confirmation** (`win32/ClipboardDialog.zig`, a dialog from a
+  template like the title prompt): GTK's headings and bodies (a write's
+  body says the text shown is what it would write, where GTK's says the
+  current contents), the whole text in a read-only Consolas box (up to
+  256 KiB; line breaks as CRLF, other control characters as Control
+  Pictures, so a NUL can't hide what follows), Allow and Deny (default),
+  and for OSC 52 "Remember choice for this split", kept in the core's
+  config until a reload. Escape and the close box deny without remembering.
+- **System menu** (`ContextMenu.SystemMenu`): after Windows' Close, New
+  Window, New Tab, Split, Command Palette, Terminal Inspector, Config, About
+  murrtty and Quit, refilled as the menu opens; access keys clear of
+  Windows' (R M S N X C), so Alt+Space, C still closes. Ids are multiples of
+  16 (WM_SYSCOMMAND keeps the low four bits). The window takes its own copy
+  of the menu at creation, or WM_INITMENUPOPUP brings the shared one; the
+  menu's loop runs in a modal scope (WM_ENTERMENULOOP).
+- The title prompt was already GTK's (3.5).
+Scenarios `clipboard-dialog`, `system-menu`; close wording checked in
+`typing`, `alt-f4`, `close-all`, `tab-menu`, `split-commands` and every
+`quit`, from the dump's `dialog` (the last task dialog's heading and body,
+which a DirectUIHWND draws out of reach).
+
 ---
 
 ## Phase 4: Window chrome and visuals (about 5 to 8 weeks, or 7 to 10 if 4.1 needs Phase B)
+
+*Order:* 4.3 first (the owner, 2026-10-26: GTK's header bar as the title
+bar is most of the Look rule), then 4.1, 4.2 and the rest as numbered.
 
 **4.1 True transparency, L, or XL if Phase B is needed.** Spike S2 first.
 - **Phase A:** `DwmEnableBlurBehindWindow` with an empty region on the top
@@ -1668,6 +1728,31 @@ without interop fall back to opaque cleanly.
 This is `window-decoration = auto/client`; `server` keeps today's layout.
 *Done when:* drag, double-click maximize, Snap Layouts, every resize edge and
 the system menu all work at 100% to 200%, on Windows 10 and 11.
+
+*The look to match* (the owner's screenshot of the GTK app under WSLg,
+2026-10-26): one bar, about 46 px at 100%, is the whole title bar: at the
+left the split button (tab-new icon, a thin divider, a down triangle), the
+title centered, at the right the tab overview (grid) and main menu
+(hamburger) buttons, then the window's buttons (GTK shows only a round
+close button; Windows users expect minimize, maximize and close). Tabs, when
+shown, go in their own row beneath, as GTK's tab bar. Buttons highlight on
+hover with rounded backgrounds; the menu button stays highlighted while its
+menu is open. 3.8f already draws GTK's icons on today's strip.
+
+*With the Look rule* (decided 2026-10-26, which made 4.3 Phase 4's first
+item): the bar and tab row take libadwaita's colors and metrics (taken from
+its stylesheet when built, not from memory): Adwaita light or dark by the
+configured background's luminance for `window-theme = auto`, the terminal's
+colors for `ghostty`, the system's for `system`; the chrome's font is
+GNOME's interface font, bundled (Adwaita Sans, OFL; Cantarell before GNOME
+48), unless `window-title-font-family` names one. Then, as **4.3b**, the
+menus (main, split, tab, terminal) as libadwaita's popovers and the dialogs
+as its alert dialogs, replacing the Win32 menus and task dialogs of 3.1,
+3.8 and 3.9. To check the result against GTK's, not by eye alone: a GTK
+reference captured headless (the WSL app under `xvfb-run`, at a known DPI
+and the same configuration) beside murrtty's own read-back of a frame (a
+dump request, since window captures read white while DWM idles), for the
+terminal's font, cell spacing and padding as well as the chrome.
 
 **4.4 Decorations, M.** `window-decoration = none` (borderless, resizable,
 keeps the shadow) and `toggle_window_decorations` without changing the grid

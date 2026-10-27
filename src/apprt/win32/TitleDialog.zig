@@ -93,7 +93,7 @@ fn buildTemplate(alloc: Allocator, out: *std.ArrayList(u8), caption: []const u8)
     try putItem(alloc, out, child | c.WS_TABSTOP, .{ 163, 43, 50, 14 }, c.IDCANCEL, button_class, "Cancel");
 }
 
-fn putItem(alloc: Allocator, out: *std.ArrayList(u8), style: u32, rect: [4]i16, id: u16, class: u16, text: []const u8) !void {
+pub fn putItem(alloc: Allocator, out: *std.ArrayList(u8), style: u32, rect: [4]i16, id: u16, class: u16, text: []const u8) !void {
     // Each item starts on a DWORD boundary.
     while (out.items.len % 4 != 0) try out.append(alloc, 0);
     try put32(alloc, out, style);
@@ -106,16 +106,16 @@ fn putItem(alloc: Allocator, out: *std.ArrayList(u8), style: u32, rect: [4]i16, 
     try put16(alloc, out, 0); // no creation data
 }
 
-fn put16(alloc: Allocator, out: *std.ArrayList(u8), v: u16) !void {
+pub fn put16(alloc: Allocator, out: *std.ArrayList(u8), v: u16) !void {
     try out.appendSlice(alloc, &std.mem.toBytes(std.mem.nativeToLittle(u16, v)));
 }
 
-fn put32(alloc: Allocator, out: *std.ArrayList(u8), v: u32) !void {
+pub fn put32(alloc: Allocator, out: *std.ArrayList(u8), v: u32) !void {
     try out.appendSlice(alloc, &std.mem.toBytes(std.mem.nativeToLittle(u32, v)));
 }
 
 /// A NUL-terminated UTF-16 string (ASCII here).
-fn putString(alloc: Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
+pub fn putString(alloc: Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
     for (s) |b| try put16(alloc, out, b);
     try put16(alloc, out, 0);
 }
@@ -168,7 +168,7 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
 
 /// Center the dialog over its owner (dialogs otherwise open at the top left
 /// of the screen).
-fn center(dialog: c.HWND, owner: ?c.HWND) void {
+pub fn center(dialog: c.HWND, owner: ?c.HWND) void {
     const o = owner orelse return;
     var orect: c.RECT = .{};
     var drect: c.RECT = .{};

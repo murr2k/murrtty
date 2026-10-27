@@ -435,47 +435,106 @@ pub fn paint(
         }
     }
 
-    // New tab button
+    // The header's buttons, drawn as GTK's symbolic icons in the
+    // foreground color, each hovered on a rounded highlight.
+    const stroke = @max(1, self.scale(2));
+    const half = self.scale(7);
+
+    // New tab: tab-new, a rounded square holding a plus.
     const nr = self.newTabRect(n, width);
-    fill(mem, nr, if (std.meta.eql(self.hover, Hit.new_tab)) pal.hover else pal.bar);
+    self.buttonBack(mem, nr, std.meta.eql(self.hover, Hit.new_tab), pal);
     const cx = @divTrunc(nr.left + nr.right, 2);
     const cy = @divTrunc(nr.top + nr.bottom, 2);
-    const arm = self.scale(6);
-    line(mem, cx - arm, cy, cx + arm + 1, cy, pal.text_dim, pen_w);
-    line(mem, cx, cy - arm, cx, cy + arm + 1, pal.text_dim, pen_w);
+    roundRect(mem, .{ .left = cx - half, .top = cy - half, .right = cx + half + 1, .bottom = cy + half + 1 }, self.scale(3), null, pal.text, stroke);
+    const arm = self.scale(3);
+    line(mem, cx - arm, cy, cx + arm + 1, cy, pal.text, stroke);
+    line(mem, cx, cy - arm, cx, cy + arm + 1, pal.text, stroke);
 
-    // Its arrow, a small chevron.
+    // Its arrow: pan-down, a filled triangle, past a thin divider (GTK's
+    // split button).
     const dr = self.newTabMenuRect(n, width);
-    fill(mem, dr, if (std.meta.eql(self.hover, Hit.new_tab_menu)) pal.hover else pal.bar);
+    self.buttonBack(mem, dr, std.meta.eql(self.hover, Hit.new_tab_menu), pal);
+    const inset = self.scale(9);
+    line(mem, dr.left, dr.top + inset, dr.left, dr.bottom - inset, pal.separator, pen_w);
     const dx = @divTrunc(dr.left + dr.right, 2);
     const dy = @divTrunc(dr.top + dr.bottom, 2);
-    const v = self.scale(3);
-    line(mem, dx - v, dy - @divTrunc(v, 2), dx, dy + @divTrunc(v, 2) + 1, pal.text_dim, pen_w);
-    line(mem, dx + v, dy - @divTrunc(v, 2), dx - 1, dy + @divTrunc(v, 2) + 1, pal.text_dim, pen_w);
+    const tw = self.scale(4);
+    triangleDown(mem, dx, dy, tw, @divTrunc(tw + 1, 2) + 1, pal.text);
 
-    // The main menu's button: three lines.
+    // The tab list's button: view-grid, four squares (GTK's overview).
+    const lr = self.listRect(width);
+    self.buttonBack(mem, lr, std.meta.eql(self.hover, Hit.list), pal);
+    const lx = @divTrunc(lr.left + lr.right, 2);
+    const ly = @divTrunc(lr.top + lr.bottom, 2);
+    const cell = self.scale(6);
+    const gap = self.scale(2);
+    for ([_]c_int{ -1, 1 }) |sy| for ([_]c_int{ -1, 1 }) |sx| {
+        const left = if (sx < 0) lx - @divTrunc(gap, 2) - cell else lx + gap - @divTrunc(gap, 2);
+        const top = if (sy < 0) ly - @divTrunc(gap, 2) - cell else ly + gap - @divTrunc(gap, 2);
+        roundRect(mem, .{ .left = left, .top = top, .right = left + cell, .bottom = top + cell }, @max(1, self.scale(1)), pal.text, null, 0);
+    };
+
+    // The main menu's button: open-menu, three lines.
     const mr = self.menuRect(width);
-    fill(mem, mr, if (std.meta.eql(self.hover, Hit.menu)) pal.hover else pal.bar);
+    self.buttonBack(mem, mr, std.meta.eql(self.hover, Hit.menu), pal);
     const mx = @divTrunc(mr.left + mr.right, 2);
     const my = @divTrunc(mr.top + mr.bottom, 2);
-    const half = self.scale(7);
-    const gap = self.scale(5);
-    for ([_]c_int{ my - gap, my, my + gap }) |ly| {
-        line(mem, mx - half, ly, mx + half + 1, ly, pal.text_dim, pen_w);
-    }
-
-    // The tab list's button: three rows, each a dot and a line.
-    const lr = self.listRect(width);
-    fill(mem, lr, if (std.meta.eql(self.hover, Hit.list)) pal.hover else pal.bar);
-    const lx = @divTrunc(lr.left + lr.right, 2);
-    const ly0 = @divTrunc(lr.top + lr.bottom, 2);
-    const dot = @max(2, self.scale(2));
-    for ([_]c_int{ ly0 - gap, ly0, ly0 + gap }) |ly| {
-        fill(mem, .{ .left = lx - half, .top = ly - @divTrunc(dot, 2), .right = lx - half + dot, .bottom = ly - @divTrunc(dot, 2) + dot }, pal.text_dim);
-        line(mem, lx - half + dot + self.scale(3), ly, lx + half + 1, ly, pal.text_dim, pen_w);
+    const step = self.scale(5);
+    for ([_]c_int{ my - step, my, my + step }) |y| {
+        line(mem, mx - half + 1, y, mx + half, y, pal.text, stroke);
     }
 
     _ = c.BitBlt(hdc, 0, 0, width, h, mem, 0, 0, c.SRCCOPY);
+}
+
+/// A header button's background: the bar, and when hovered a rounded
+/// highlight inside it.
+fn buttonBack(self: *const TabBar, hdc: c.HDC, r: c.RECT, hovered: bool, pal: Palette) void {
+    fill(hdc, r, pal.bar);
+    if (!hovered) return;
+    const v = self.scale(4);
+    const hz = self.scale(2);
+    roundRect(hdc, .{ .left = r.left + hz, .top = r.top + v, .right = r.right - hz, .bottom = r.bottom - v }, self.scale(6), pal.hover, null, 0);
+}
+
+/// A rounded rectangle, filled with `fill_color` and/or outlined in
+/// `outline`, `width` pixels wide.
+fn roundRect(hdc: c.HDC, r: c.RECT, radius: c_int, fill_color: ?c.COLORREF, outline: ?c.COLORREF, width: c_int) void {
+    const pen = if (outline) |o| c.CreatePen(c.PS_SOLID, width, o) else null;
+    defer if (pen) |p| {
+        _ = c.DeleteObject(p);
+    };
+    const brush = if (fill_color) |f| c.CreateSolidBrush(f) else null;
+    defer if (brush) |b| {
+        _ = c.DeleteObject(b);
+    };
+    const old_pen = c.SelectObject(hdc, pen orelse c.GetStockObject(c.NULL_PEN));
+    defer _ = c.SelectObject(hdc, old_pen);
+    const old_brush = c.SelectObject(hdc, if (brush) |b| @ptrCast(b) else c.GetStockObject(c.NULL_BRUSH));
+    defer _ = c.SelectObject(hdc, old_brush);
+    // RoundRect's edge runs inside the right and bottom bounds.
+    const extra: c_int = if (outline != null) 0 else 1;
+    _ = c.RoundRect(hdc, r.left, r.top, r.right + extra, r.bottom + extra, radius * 2, radius * 2);
+}
+
+/// A filled triangle pointing down, `half` pixels either side of x and
+/// `tall` pixels tall, centered on (x, y).
+fn triangleDown(hdc: c.HDC, x: c_int, y: c_int, half: c_int, tall: c_int, color: c.COLORREF) void {
+    const top = y - @divTrunc(tall, 2);
+    const pts = [_]c.POINT{
+        .{ .x = x - half, .y = top },
+        .{ .x = x + half, .y = top },
+        .{ .x = x, .y = top + tall },
+    };
+    const pen = c.CreatePen(c.PS_SOLID, 1, color) orelse return;
+    defer _ = c.DeleteObject(pen);
+    const brush = c.CreateSolidBrush(color) orelse return;
+    defer _ = c.DeleteObject(brush);
+    const old_pen = c.SelectObject(hdc, pen);
+    defer _ = c.SelectObject(hdc, old_pen);
+    const old_brush = c.SelectObject(hdc, @ptrCast(brush));
+    defer _ = c.SelectObject(hdc, old_brush);
+    _ = c.Polygon(hdc, &pts, pts.len);
 }
 
 test "hitTest" {

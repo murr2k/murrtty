@@ -84,6 +84,44 @@ const id_open_config = 110;
 const id_reload_config = 111;
 const id_ignore_config = 112;
 
+/// A close confirmation's Close button: IDYES, the answer of the message
+/// box it replaced (no Yes button shares the dialog).
+const id_close = c.IDYES;
+
+/// What a close confirmation is for: GTK's targets (app, window, tab,
+/// split), and murrtty's for closing all windows and several tabs at once.
+pub const CloseTarget = enum {
+    app,
+    all_windows,
+    window,
+    tab,
+    tabs,
+    split,
+
+    /// GTK's heading.
+    pub fn heading(self: CloseTarget) []const u8 {
+        return switch (self) {
+            .app => "Quit murrtty?",
+            .all_windows => "Close All Windows?",
+            .window => "Close Window?",
+            .tab => "Close Tab?",
+            .tabs => "Close Tabs?",
+            .split => "Close Split?",
+        };
+    }
+
+    /// GTK's body.
+    pub fn body(self: CloseTarget) []const u8 {
+        return switch (self) {
+            .app, .all_windows => "All terminal sessions will be terminated.",
+            .window => "All terminal sessions in this window will be terminated.",
+            .tab => "All terminal sessions in this tab will be terminated.",
+            .tabs => "All terminal sessions in these tabs will be terminated.",
+            .split => "The currently running process in this split will be terminated.",
+        };
+    }
+};
+
 /// HWND_MESSAGE: the parent for message-only windows.
 const HWND_MESSAGE: c.HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
 
@@ -353,10 +391,7 @@ fn runRequests(self: *App) void {
             .close_surface => |v| if (self.findSurface(v.id)) |s| s.window.closeSurface(s, v.process_active),
             .close_tabs => |v| if (self.findSurface(v.id)) |s| s.window.closeTabs(s, v.mode),
             .close_window => |id| if (self.findWindow(id)) |w| w.requestClose(),
-            .close_all_windows => if (self.confirmCloseAll(
-                "All terminal sessions will be terminated. Close all windows?",
-                "murrtty:Close All Windows",
-            )) self.closeAllWindows(),
+            .close_all_windows => if (self.confirmCloseAll(.all_windows)) self.closeAllWindows(),
             .quit => self.quit(),
             .open_config => {
                 // The shell can show dialogs of its own.
@@ -581,6 +616,28 @@ pub fn confirm(self: *App, owner: ?c.HWND, text: []const u8, caption: []const u8
     );
 }
 
+/// GTK's close confirmation: its heading and body, then Cancel (the
+/// default; Escape too) and Close. True to close. Close requests made
+/// while it is open are held until it closes.
+pub fn confirmClose(self: *App, owner: ?c.HWND, target: CloseTarget) bool {
+    const chosen = self.taskDialog(.{
+        .owner = owner,
+        .title = "murrtty",
+        .instruction = target.heading(),
+        .content = target.body(),
+        .icon = .warning,
+        .buttons = &.{.{ .id = id_close, .text = "&Close" }},
+        .common_buttons = c.TDCBF_CANCEL_BUTTON,
+        .default_button = c.IDCANCEL,
+    }) orelse {
+        const alloc = self.core_app.alloc;
+        const text = std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ target.heading(), target.body() }) catch return false;
+        defer alloc.free(text);
+        return self.confirm(owner, text, "murrtty");
+    };
+    return chosen == id_close;
+}
+
 pub const TaskDialog = struct {
     owner: ?c.HWND,
     /// The window caption.
@@ -652,6 +709,7 @@ pub fn taskDialog(self: *App, td: TaskDialog) ?c_int {
         config.lpCallbackData = @bitCast(@intFromPtr(&stay));
     }
 
+    test_hooks.recordDialog(&self.test_state, td.instruction, td.content);
     var modal = self.beginModal(td.owner, .{});
     defer modal.end();
     var chosen: c_int = 0;
@@ -818,7 +876,7 @@ fn quitNow(self: *App) void {
 
 /// True if closing every window may go ahead: nothing needs confirming,
 /// or the user said yes.
-fn confirmCloseAll(self: *App, text: []const u8, caption: []const u8) bool {
+fn confirmCloseAll(self: *App, target: CloseTarget) bool {
     if (!self.core_app.needsConfirmQuit() or
         self.config.@"confirm-close-surface" == .false) return true;
 
@@ -829,14 +887,11 @@ fn confirmCloseAll(self: *App, text: []const u8, caption: []const u8) bool {
     for (self.windows.items) |w| {
         if (foreground == w.hwnd) owner = w.hwnd;
     }
-    return self.confirm(owner, text, caption);
+    return self.confirmClose(owner, target);
 }
 
 fn quit(self: *App) void {
-    if (!self.confirmCloseAll(
-        "All terminal sessions will be terminated. Quit murrtty?",
-        "murrtty:Quit",
-    )) return;
+    if (!self.confirmCloseAll(.app)) return;
     self.closeAllWindows();
     self.quitNow();
 }

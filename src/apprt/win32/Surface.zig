@@ -21,6 +21,7 @@ const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Banner = @import("Banner.zig");
+const ClipboardDialog = @import("ClipboardDialog.zig");
 const KeyState = @import("KeyState.zig");
 const Overlay = @import("Overlay.zig");
 const Scrollbar = @import("Scrollbar.zig");
@@ -677,25 +678,37 @@ fn runClipboardConfirms(self: *Surface) void {
     }
 }
 
+/// GTK's clipboard confirmation over this pane's window, in a modal scope.
+/// A remembered answer holds for this split until the configuration is
+/// reloaded (the core rebuilds its config then), as GTK's does.
+fn askClipboard(self: *Surface, kind: ClipboardDialog.Kind, text: []const u8, can_remember: bool) ClipboardDialog.Answer {
+    var modal = self.app.beginModal(self.window.hwnd, .{});
+    defer modal.end();
+    return ClipboardDialog.ask(self.app.core_app.alloc, self.window.hwnd, kind, text, can_remember);
+}
+
 fn confirmClipboardRead(
     self: *Surface,
     req: apprt.ClipboardRequest,
     text: ?[]const u8,
     unsafe: bool,
 ) void {
-    const alloc = self.app.core_app.alloc;
-    const preview = text orelse "";
-    const message = std.fmt.allocPrint(alloc, "{s}\n\n{s}{s}", .{
-        if (unsafe)
-            "Pasting this text into the terminal may be dangerous as it looks like some commands may be executed. Paste anyway?"
-        else
-            "An application is attempting to access the clipboard. Allow it?",
-        text_util.truncate(preview, 512),
-        if (preview.len > 512) "..." else "",
-    }) catch return self.core_surface.denyClipboardRequest(req);
-    defer alloc.free(message);
-
-    if (!self.app.confirm(self.window.hwnd, message, "murrtty:Clipboard")) {
+    // What the box shows: the clipboard's text, or what a Kitty write
+    // would put there.
+    const shown: []const u8 = text orelse switch (req) {
+        .kitty_write => |k| for (k.contents) |content| {
+            if (std.mem.eql(u8, content.mime, "text/plain")) break content.data;
+        } else "",
+        else => "",
+    };
+    const kind: ClipboardDialog.Kind = if (unsafe) .paste else switch (req) {
+        .kitty_write => .write,
+        else => .read,
+    };
+    // GTK offers to remember only OSC 52's answers.
+    const answer = self.askClipboard(kind, shown, req == .osc_52_read);
+    if (answer.remember) self.core_surface.config.clipboard_read = if (answer.allow) .allow else .deny;
+    if (!answer.allow) {
         self.core_surface.denyClipboardRequest(req);
         return;
     }
@@ -743,17 +756,14 @@ fn clipboardWritten(self: *Surface, text: []const u8) void {
     self.window.showToast(if (text.len > 0) "Copied to clipboard" else "Cleared clipboard");
 }
 
+/// An OSC 52 write the configuration says to ask about (clipboard-write =
+/// ask).
 fn confirmClipboardWrite(self: *Surface, text: []const u8) void {
-    const alloc = self.app.core_app.alloc;
-    const message = std.fmt.allocPrint(
-        alloc,
-        "An application is attempting to write to the clipboard. Allow it?\n\n{s}{s}",
-        .{ text_util.truncate(text, 512), if (text.len > 512) "..." else "" },
-    ) catch return;
-    defer alloc.free(message);
-    if (!self.app.confirm(self.window.hwnd, message, "murrtty:Clipboard")) return;
+    const answer = self.askClipboard(.write, text, true);
+    if (answer.remember) self.core_surface.config.clipboard_write = if (answer.allow) .allow else .deny;
+    if (!answer.allow) return;
 
-    writeClipboardText(alloc, self.hwnd, text) catch |err| {
+    writeClipboardText(self.app.core_app.alloc, self.hwnd, text) catch |err| {
         log.warn("error writing clipboard err={}", .{err});
         return;
     };

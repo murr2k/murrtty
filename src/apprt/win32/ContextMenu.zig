@@ -126,14 +126,43 @@ const tab_items = [_]Item{
     act("&Move Tab to New Window", .move_tab_to_new_window),
 };
 
+/// murrtty's items in the window's system menu (Alt+Space), after Close:
+/// the main menu's reach while the tab strip is hidden (roadmap 3.9).
+/// Their access keys avoid the system's own (system_keys), so Alt+Space
+/// then C still closes the window.
+const system_items = [_]Item{
+    act("New &Window", .new_window),
+    act("New &Tab", .new_tab),
+    .{ .submenu = .{ .label = "Sp&lit", .items = &split_submenu } },
+    .separator,
+    act("Command &Palette", .toggle_command_palette),
+    act("Terminal &Inspector", .{ .inspector = .toggle }),
+    .{ .submenu = .{ .label = "C&onfig", .items = &config_submenu } },
+    .separator,
+    .{ .about = "Abo&ut murrtty" },
+    act("&Quit", .quit),
+};
+
+/// The access keys of the system menu's own items: Restore, Move, Size,
+/// Minimize, Maximize, Close.
+const system_keys = "rmsnxc";
+
 /// Where the tab a tab menu is for sits in its window's strip.
 pub const TabPlace = struct { index: usize, count: usize };
 
-/// The choices of the menu being shown, by item id (index + 1).
+/// The choices of the menu being shown, by item id: index + 1, shifted
+/// left by `shift`.
 const Built = struct {
     choices: std.ArrayList(Choice) = .empty,
     /// The menu's strings, alive while it shows.
     strings: std.ArrayList([:0]u16) = .empty,
+    /// 4 for the system menu: WM_SYSCOMMAND keeps an id's low four bits
+    /// for the system's use.
+    shift: u4 = 0,
+
+    fn nextId(self: *const Built) usize {
+        return self.choices.items.len << self.shift;
+    }
 
     fn deinit(self: *Built, alloc: Allocator) void {
         self.choices.deinit(alloc);
@@ -208,9 +237,15 @@ fn show(
 const BuildError = error{ CreateMenuFailed, OutOfMemory, InvalidUtf8 };
 
 fn build(surface: *Surface, built: *Built, list: []const Item, place: ?TabPlace) BuildError!c.HMENU {
-    const alloc = surface.app.core_app.alloc;
     const menu = c.CreatePopupMenu() orelse return error.CreateMenuFailed;
     errdefer _ = c.DestroyMenu(menu);
+    try fill(surface, built, menu, list, place);
+    return menu;
+}
+
+/// Append `list`'s items to `menu`.
+fn fill(surface: *Surface, built: *Built, menu: c.HMENU, list: []const Item, place: ?TabPlace) BuildError!void {
+    const alloc = surface.app.core_app.alloc;
     for (list) |item| switch (item) {
         .separator => _ = c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null),
         .unavailable => |label| {
@@ -223,12 +258,12 @@ fn build(surface: *Surface, built: *Built, list: []const Item, place: ?TabPlace)
             const text = try addString(alloc, built, label);
             try built.choices.append(alloc, .{ .action = a.action });
             const flags: c.UINT = if (enabled(surface, a.action, place)) c.MF_STRING else c.MF_STRING | c.MF_GRAYED;
-            _ = c.AppendMenuW(menu, flags, built.choices.items.len, text.ptr);
+            _ = c.AppendMenuW(menu, flags, built.nextId(), text.ptr);
         },
         .about => |label| {
             const text = try addString(alloc, built, label);
             try built.choices.append(alloc, .about);
-            _ = c.AppendMenuW(menu, c.MF_STRING, built.choices.items.len, text.ptr);
+            _ = c.AppendMenuW(menu, c.MF_STRING, built.nextId(), text.ptr);
         },
         .submenu => |s| {
             const sub = try build(surface, built, s.items, place);
@@ -238,8 +273,52 @@ fn build(surface: *Surface, built: *Built, list: []const Item, place: ?TabPlace)
             _ = c.AppendMenuW(menu, c.MF_POPUP, @intFromPtr(sub), text.ptr);
         },
     };
-    return menu;
 }
+
+/// murrtty's items in a window's system menu, refilled each time it opens
+/// so bindings and grayed items are current.
+pub const SystemMenu = struct {
+    /// How many items Windows put in the menu, recorded before murrtty's.
+    base: ?c_int = null,
+    /// What murrtty's items run, by WM_SYSCOMMAND id (index + 1) << 4.
+    choices: std.ArrayList(Choice) = .empty,
+
+    pub fn deinit(self: *SystemMenu, alloc: Allocator) void {
+        self.choices.deinit(alloc);
+    }
+
+    /// Put murrtty's items, for `surface`, after Windows' in `menu`.
+    pub fn refresh(self: *SystemMenu, surface: *Surface, menu: c.HMENU) void {
+        const alloc = surface.app.core_app.alloc;
+        const base = self.base orelse base: {
+            const n = c.GetMenuItemCount(menu);
+            if (n < 0) return;
+            self.base = n;
+            break :base n;
+        };
+        // DeleteMenu destroys a submenu with its item.
+        while (c.GetMenuItemCount(menu) > base) {
+            if (c.DeleteMenu(menu, @intCast(base), c.MF_BYPOSITION) == 0) break;
+        }
+        var built: Built = .{ .shift = 4 };
+        defer built.deinit(alloc);
+        _ = c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null);
+        fill(surface, &built, menu, &system_items, null) catch |err| {
+            log.warn("system menu items not added err={}", .{err});
+        };
+        // Built.deinit frees the old list.
+        std.mem.swap(std.ArrayList(Choice), &self.choices, &built.choices);
+    }
+
+    /// What WM_SYSCOMMAND's `wparam` asks for, if it is one of murrtty's.
+    pub fn choice(self: *const SystemMenu, wparam: c.WPARAM) ?Choice {
+        const id = wparam & 0xFFF0;
+        // The system's own commands (SC_*) start at 0xF000.
+        if (id == 0 or id >= 0xF000) return null;
+        const i = (id >> 4) - 1;
+        return if (i < self.choices.items.len) self.choices.items[i] else null;
+    }
+};
 
 /// A UTF-16 copy of `s` that lives as long as the menu (Built.strings).
 fn addString(alloc: Allocator, built: *Built, s: []const u8) BuildError![:0]u16 {
@@ -351,5 +430,22 @@ test "writeTrigger: Windows menu style" {
         var w: std.Io.Writer = .fixed(&buf);
         try writeTrigger(&w, case[0]);
         try testing.expectEqualStrings(case[1], w.buffered());
+    }
+}
+
+test "system menu items: access keys of their own, clear of the system's" {
+    var taken: [256]bool = @splat(false);
+    for (system_keys) |k| taken[k] = true;
+    for (system_items) |item| {
+        const label = switch (item) {
+            .action => |a| a.label,
+            .submenu => |s| s.label,
+            .about, .unavailable => |l| l,
+            .separator => continue,
+        };
+        const amp = std.mem.indexOfScalar(u8, label, '&') orelse return error.NoAccessKey;
+        const k = std.ascii.toLower(label[amp + 1]);
+        try std.testing.expect(!taken[k]);
+        taken[k] = true;
     }
 }

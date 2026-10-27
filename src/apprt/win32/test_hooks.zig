@@ -41,6 +41,12 @@ pub const State = if (enabled) struct {
     overlay_class: bool = false,
     /// Context menus shown (ContextMenu.track).
     menus_shown: u32 = 0,
+    /// The last task dialog's heading and body (App.taskDialog), which
+    /// can't be read from outside (a DirectUIHWND draws them).
+    dialog_heading: [128]u8 = undefined,
+    dialog_heading_len: usize = 0,
+    dialog_body: [256]u8 = undefined,
+    dialog_body_len: usize = 0,
     /// Panes ignore WM_MOUSELEAVE (dump wparam 7): on the hidden desktop
     /// the real cursor is never over a window, so Windows answers a posted
     /// move's leave tracking at once, and hover state (a link's preview)
@@ -83,6 +89,15 @@ pub fn deinit(state: *State, alloc: Allocator) void {
     for (state.launches.items) |l| alloc.free(l);
     state.launches.deinit(alloc);
     state.overlays.deinit(alloc);
+}
+
+/// Record a task dialog's heading and body as it shows (cut to fit).
+pub fn recordDialog(state: *State, heading: []const u8, body: []const u8) void {
+    if (comptime !enabled) return;
+    state.dialog_heading_len = @min(heading.len, state.dialog_heading.len);
+    @memcpy(state.dialog_heading[0..state.dialog_heading_len], heading[0..state.dialog_heading_len]);
+    state.dialog_body_len = @min(body.len, state.dialog_body.len);
+    @memcpy(state.dialog_body[0..state.dialog_body_len], body[0..state.dialog_body_len]);
 }
 
 /// Record a launch instead of performing it, if the hooks are on. Returns
@@ -181,7 +196,12 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
 }
 
 fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
-    try out.print(alloc, "{{\"modal_depth\":{d},\"menus_shown\":{d},\"windows\":[", .{ app.modal_depth, app.test_state.menus_shown });
+    const ts = &app.test_state;
+    try out.print(alloc, "{{\"modal_depth\":{d},\"menus_shown\":{d},\"dialog\":{{\"heading\":", .{ app.modal_depth, ts.menus_shown });
+    try writeString(alloc, out, ts.dialog_heading[0..ts.dialog_heading_len]);
+    try out.appendSlice(alloc, ",\"body\":");
+    try writeString(alloc, out, ts.dialog_body[0..ts.dialog_body_len]);
+    try out.appendSlice(alloc, "},\"windows\":[");
     for (app.windows.items, 0..) |w, wi| {
         if (wi > 0) try out.append(alloc, ',');
         var client: c.RECT = .{};

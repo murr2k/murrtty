@@ -21,6 +21,8 @@ pub const all = [_]Scenario{
     .{ .name = "copy-keys", .about = "a word selected by a double click is copied 10 times each by Ctrl+Insert, the numpad's Ctrl+Ins (NumLock off) and Ctrl+Shift+C; the numpad's Left moves, its Shift+Ins pastes", .run = copyKeys },
     .{ .name = "alt-f4", .about = "Alt+F4 asks, then closes", .run = altF4 },
     .{ .name = "clipboard-queue", .about = "a burst of OSC 52 writes asks one dialog at a time", .run = clipboardQueue },
+    .{ .name = "clipboard-dialog", .about = "GTK's clipboard dialog: the whole text in a box, Deny the default, remember for OSC 52; an unsafe paste's warning", .run = clipboardDialog },
+    .{ .name = "system-menu", .about = "murrtty's items in the system menu (Alt+Space) after Windows' own: About, New Tab; its Close still asks", .run = systemMenu },
     .{ .name = "close-all", .about = "close-all asks and disables the other windows meanwhile", .run = closeAll },
     .{ .name = "window-size", .about = "window-width/height give the exact grid", .run = windowSize },
     .{ .name = "links", .about = "Ctrl+click links: programs and UNC paths blocked, web opens, other schemes ask", .run = links },
@@ -64,6 +66,7 @@ pub const all = [_]Scenario{
     .{ .name = "cwd-fallback", .about = "without shell integration, cmd's cd still carries to new tabs and relative links", .run = cwdFallback },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
+    .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
     .{ .name = "transparency", .about = "spike S2: background-opacity through DWM blur-behind, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
 };
 
@@ -94,6 +97,7 @@ fn start(h: *Harness, name: []const u8, extra: []const u8, prompt: []const u8) !
 fn quit(h: *Harness, g: *Harness.Ghostty, target: w.HWND) !void {
     h.key(target, .{ .ctrl = true, .shift = true }, 'Q');
     const dlg = try h.waitDialog(g, 5000);
+    try expectDialogText(h, g, "Quit murrtty?", "All terminal sessions will be terminated.");
     h.answer(g, dlg, w.IDYES);
     const code = g.waitExit(10000);
     try h.expect(code != null and code.? == 0, "exits with code 0 after quit (got {?d})", .{code});
@@ -165,6 +169,50 @@ fn pixelsOffscreen(h: *Harness) !void {
     try h.expect(px == 0x282c34, "background pixel #{x:0>6}, expected #282c34", .{px});
 }
 
+/// Opt-in (GHOSTTY_GUI_SNAPSHOT = a folder): pictures of the whole window,
+/// for comparing with Ghostty's GTK app by eye: one tab, then split right
+/// (snapshot-tab.bmp, snapshot-split.bmp). Off-screen on the user's
+/// desktop, like pixels; no menus, which Windows would pull on screen.
+fn snapshot(h: *Harness) anyerror!void {
+    var dir_w: [260:0]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &dir_w, dir_w.len);
+    if (n == 0 or n >= dir_w.len) return h.skip("set GHOSTTY_GUI_SNAPSHOT to a folder to run it", .{});
+    if (h.capturesWork()) |why| return h.skip("{s}", .{why});
+    var dir_buf: [1024]u8 = undefined;
+    const dir_len = std.unicode.utf16LeToUtf8(&dir_buf, dir_w[0..n]) catch return h.fail("bad folder name", .{});
+    const Ctx = struct { h: *Harness, dir: []const u8, err: ?anyerror = null };
+    var ctx: Ctx = .{ .h = h, .dir = dir_buf[0..dir_len] };
+    h.runOnUserDesktop(&ctx, struct {
+        fn run(c: *Ctx) void {
+            snapshotOffscreen(c.h, c.dir) catch |err| {
+                c.err = err;
+            };
+        }
+    }.run);
+    if (ctx.err) |err| return err;
+}
+
+fn snapshotOffscreen(h: *Harness, dir: []const u8) !void {
+    var g = try h.launchAt("snapshot", base_config, .offscreen);
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const win = try h.mainWindow(&g);
+    for ([_][]const u8{ "snapshot-tab.bmp", "snapshot-split.bmp" }, 0..) |name, i| {
+        if (i == 1) {
+            h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
+            try waitPanes(h, &g, 2);
+            try waitActivePaneText(h, &g, win, ">");
+        }
+        w.Sleep(800);
+        var img = h.capture(win) catch return h.fail("capture failed", .{});
+        defer img.deinit();
+        const path = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ dir, name });
+        defer h.alloc.free(path);
+        try img.save(path);
+        try h.expect(true, "wrote {s} ({d}x{d})", .{ path, img.width, img.height });
+    }
+}
+
 fn typing(h: *Harness) anyerror!void {
     var g = try start(h, "typing", "", ">");
     defer g.deinit();
@@ -174,10 +222,12 @@ fn typing(h: *Harness) anyerror!void {
     // The command line and its output.
     try h.waitText(&g, "ghostty-gui-test", 2, 10000);
 
-    // Ctrl+Shift+W closes the tab; the shell is running, so it asks first.
+    // Ctrl+Shift+W closes the tab; the shell is running, so it asks first,
+    // in GTK's words.
     h.key(surf, .{ .ctrl = true, .shift = true }, 'W');
     const dlg = try h.waitDialog(&g, 5000);
-    h.answer(&g, dlg, w.IDNO);
+    try expectDialogText(h, &g, "Close Tab?", "All terminal sessions in this tab will be terminated.");
+    h.answer(&g, dlg, w.IDCANCEL);
     w.Sleep(500);
     try h.expect(g.exitCode() == null, "No keeps the tab", .{});
     h.key(surf, .{ .ctrl = true, .shift = true }, 'W');
@@ -250,7 +300,7 @@ fn tabs(h: *Harness) anyerror!void {
     const cx = @divTrunc(close[0] + close[2], 2);
     const cy = @divTrunc(close[1] + close[3], 2);
     h.click(win, cx, cy, .left);
-    h.answer(&g, try h.waitDialog(&g, 5000), w.IDNO);
+    h.answer(&g, try h.waitDialog(&g, 5000), w.IDCANCEL);
     w.Sleep(500);
     try h.expect(try tabCount(h, &g) == 3, "No keeps the tab", .{});
     h.click(win, cx, cy, .left);
@@ -407,9 +457,7 @@ fn altF4(h: *Harness) anyerror!void {
     const surf = try h.surface(&g, try h.mainWindow(&g));
     h.key(surf, .{ .alt = true }, w.VK_F4);
     const dlg = try h.waitDialog(&g, 5000);
-    const t = try h.title(dlg);
-    defer h.alloc.free(t);
-    try h.expect(std.mem.indexOf(u8, t, "Close Window") != null, "Alt+F4 asks to close the window ('{s}')", .{t});
+    try expectDialogText(h, &g, "Close Window?", "All terminal sessions in this window will be terminated.");
     h.answer(&g, dlg, w.IDYES);
     const code = g.waitExit(10000);
     try h.expect(code != null and code.? == 0, "exits with code 0 (got {?d})", .{code});
@@ -450,6 +498,150 @@ fn clipboardQueue(h: *Harness) anyerror!void {
     try quit(h, &g, surf);
 }
 
+/// The clipboard confirmation (roadmap 3.9), GTK's: an OSC 52 write shows
+/// its whole text in the box (the line break kept, ESC as U+241B), Deny is
+/// the default, and remembering an Allow lets the next write through
+/// unasked; an unsafe paste gets GTK's warning, with nothing to remember,
+/// and Deny pastes nothing.
+fn clipboardDialog(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    try h.setClipboard("before");
+    {
+        var g = try start(h, "clipboard-dialog",
+            \\command = powershell.exe -NoLogo -NoProfile
+            \\clipboard-write = ask
+            \\
+        , "PS ");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        // "first line\nsecond\x1bline"
+        try h.typeText(surf, "Write-Host -NoNewline \"$([char]27)]52;c;Zmlyc3QgbGluZQpzZWNvbmQbbGluZQ==$([char]7)\"");
+        h.enter(surf);
+        const dlg = try h.waitDialog(&g, 10000);
+        try expectTitle(h, dlg, "Authorize Clipboard Access");
+        const text = try dialogItemText(h, dlg, 100);
+        defer h.alloc.free(text);
+        try h.expect(std.mem.eql(u8, text, "first line\r\nsecond\u{241B}line"), "the box shows the whole text, the line break kept, ESC as a picture ('{s}')", .{text});
+        try h.expect(defaultButton(dlg) == w.IDNO, "Deny is the default (got {d})", .{defaultButton(dlg)});
+        const box = w.GetDlgItem(dlg, 101) orelse return h.fail("no remember box for an OSC 52 write", .{});
+        var r: usize = 0;
+        _ = w.SendMessageTimeoutW(box, w.BM_SETCHECK, 1, 0, w.SMTO_ABORTIFHUNG, 2000, &r);
+        h.answer(&g, dlg, w.IDYES);
+        try waitNoDialog(h, &g);
+        try waitClipboardHas(h, "second");
+        try h.expect(true, "Allow wrote the text", .{});
+
+        // "again": remembered, so no dialog.
+        try h.typeText(surf, "Write-Host -NoNewline \"$([char]27)]52;c;YWdhaW4=$([char]7)\"");
+        h.enter(surf);
+        try waitClipboardHas(h, "again");
+        try h.expect(try h.dialogCount(&g) == 0, "remembered: the next write asks nothing", .{});
+        try quit(h, &g, surf);
+    }
+    {
+        try h.setClipboard("echo one\r\necho two");
+        var g = try start(h, "clipboard-dialog-paste", "", ">");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'V');
+        const dlg = try h.waitDialog(&g, 5000);
+        try expectTitle(h, dlg, "Warning: Potentially Unsafe Paste");
+        try h.expect(w.GetDlgItem(dlg, 101) == null, "nothing to remember for a paste", .{});
+        const text = try dialogItemText(h, dlg, 100);
+        defer h.alloc.free(text);
+        try h.expect(std.mem.eql(u8, text, "echo one\r\necho two"), "the box shows both lines ('{s}')", .{text});
+        h.answer(&g, dlg, w.IDNO);
+        try waitNoDialog(h, &g);
+        w.Sleep(500);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const screen = d.value.windows[0].tabs[0].text orelse "";
+            try h.expect(std.mem.indexOf(u8, screen, "echo one") == null, "Deny pasted nothing", .{});
+        }
+        try quit(h, &g, surf);
+    }
+}
+
+/// The text of dialog item `id`, another process's control (WM_GETTEXT).
+fn dialogItemText(h: *Harness, dlg: w.HWND, id: c_int) ![]u8 {
+    const item = w.GetDlgItem(dlg, id) orelse return h.fail("the dialog has no item {d}", .{id});
+    var buf: [4096]u16 = undefined;
+    var n: usize = 0;
+    _ = w.SendMessageTimeoutW(item, w.WM_GETTEXT, buf.len, @bitCast(@intFromPtr(&buf)), w.SMTO_ABORTIFHUNG, 2000, &n);
+    return std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
+}
+
+/// The dialog's default button's id (DM_GETDEFID).
+fn defaultButton(dlg: w.HWND) usize {
+    var r: usize = 0;
+    _ = w.SendMessageTimeoutW(dlg, w.DM_GETDEFID, 0, 0, w.SMTO_ABORTIFHUNG, 2000, &r);
+    return r & 0xFFFF;
+}
+
+/// Wait until the clipboard's text holds `needle`.
+fn waitClipboardHas(h: *Harness, needle: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 250) {
+        w.Sleep(250);
+        const got = (try h.getClipboard()) orelse "";
+        defer if (got.len > 0) h.alloc.free(got);
+        if (std.mem.indexOf(u8, got, needle) != null) return;
+    }
+    return h.fail("the clipboard never held '{s}'", .{needle});
+}
+
+/// The system menu (roadmap 3.9): murrtty's items after Windows' own, with
+/// access keys clear of them; About and New Tab from it, and its Close (C)
+/// still closing the window, asked first.
+fn systemMenu(h: *Harness) anyerror!void {
+    var g = try start(h, "system-menu", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    var menu = try openSystemMenu(h, &g, win);
+    {
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        var close: ?usize = null;
+        var new_window: ?usize = null;
+        var about = false;
+        var quit_item = false;
+        for (items, 0..) |item, i| {
+            if (std.mem.startsWith(u8, item.text, "&Close")) close = i;
+            if (std.mem.startsWith(u8, item.text, "New &Window")) new_window = i;
+            if (std.mem.eql(u8, item.text, "Abo&ut murrtty")) about = true;
+            if (std.mem.startsWith(u8, item.text, "&Quit")) quit_item = true;
+        }
+        try h.expect(close != null and new_window != null and close.? < new_window.?, "murrtty's items follow Windows' Close", .{});
+        try h.expect(about and quit_item, "with About murrtty and Quit", .{});
+    }
+    h.menuKey(menu, 'u');
+    const about = try h.waitDialog(&g, 5000);
+    try expectTitle(h, about, "About murrtty");
+    h.answer(&g, about, w.IDOK);
+    try waitNoDialog(h, &g);
+
+    menu = try openSystemMenu(h, &g, win);
+    h.menuKey(menu, 't');
+    try waitWindowTabs(h, &g, win, 2);
+    try h.expect(true, "its New Tab opens a tab", .{});
+
+    menu = try openSystemMenu(h, &g, win);
+    h.menuKey(menu, 'c');
+    const close = try h.waitDialog(&g, 5000);
+    try expectDialogText(h, &g, "Close Window?", "All terminal sessions in this window will be terminated.");
+    h.answer(&g, close, w.IDCANCEL);
+    try waitNoDialog(h, &g);
+    try quit(h, &g, try h.surface(&g, win));
+}
+
+/// Open the window's system menu as Alt+Space does.
+fn openSystemMenu(h: *Harness, g: *Harness.Ghostty, win: w.HWND) !w.HWND {
+    _ = w.PostMessageW(win, w.WM_SYSCOMMAND, w.SC_KEYMENU, ' ');
+    return h.waitMenu(g, 1, 5000);
+}
+
 fn closeAll(h: *Harness) anyerror!void {
     var g = try start(h, "close-all", "keybind = ctrl+shift+k=close_all_windows\n", ">");
     defer g.deinit();
@@ -463,8 +655,9 @@ fn closeAll(h: *Harness) anyerror!void {
 
     h.key(try h.surface(&g, first), .{ .ctrl = true, .shift = true }, 'K');
     const dlg = try h.waitDialog(&g, 5000);
+    try expectDialogText(h, &g, "Close All Windows?", "All terminal sessions will be terminated.");
     for (wins) |win| try h.expect(w.IsWindowEnabled(win) == 0, "every window is disabled while the dialog is open", .{});
-    h.answer(&g, dlg, w.IDNO);
+    h.answer(&g, dlg, w.IDCANCEL);
     w.Sleep(800);
     for (wins) |win| try h.expect(w.IsWindowEnabled(win) != 0, "No re-enables every window", .{});
     const still = try h.windows(&g, "MurrttyWindow");
@@ -517,6 +710,19 @@ fn ctrlClickRow(h: *Harness, g: *Harness.Ghostty, surf: w.HWND, label: []const u
     const y: c_int = @intCast(pad[1] + row * cell[1] + cell[1] / 2);
     h.log("ctrl+click {s} at row {d} col {d} ({d},{d})", .{ label, row, col, x, y });
     h.clickMods(surf, x, y, .left, .{ .ctrl = true });
+}
+
+/// The dialog showing is a task dialog with `heading` and `body` (its text,
+/// drawn by a DirectUIHWND, comes from the dump).
+fn expectDialogText(h: *Harness, g: *Harness.Ghostty, heading: []const u8, body: []const u8) !void {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dl = d.value.dialog;
+    try h.expect(
+        std.mem.eql(u8, dl.heading, heading) and std.mem.eql(u8, dl.body, body),
+        "the dialog says '{s}' / '{s}'",
+        .{ dl.heading, dl.body },
+    );
 }
 
 fn waitNoDialog(h: *Harness, g: *Harness.Ghostty) !void {
@@ -1107,7 +1313,7 @@ fn contextMenu(h: *Harness) anyerror!void {
     // Close Tab from the new tab's menu: its shell runs, so it asks first.
     const second = try h.surface(&g, win);
     try waitActivePaneText(h, &g, win, ">");
-    for ([_]c_int{ w.IDNO, w.IDYES }) |answer| {
+    for ([_]c_int{ w.IDCANCEL, w.IDYES }) |answer| {
         h.rightPress(second, 40, 20);
         menu = try h.waitMenu(&g, 1, 5000);
         h.menuKey(menu, 't');
@@ -1116,7 +1322,7 @@ fn contextMenu(h: *Harness) anyerror!void {
         const dlg = try h.waitDialog(&g, 5000);
         h.answer(&g, dlg, answer);
         try waitNoDialog(h, &g);
-        try waitWindowTabs(h, &g, win, if (answer == w.IDNO) 2 else 1);
+        try waitWindowTabs(h, &g, win, if (answer == w.IDCANCEL) 2 else 1);
     }
     // A program reporting the mouse takes the right button (the core says
     // so, and no menu opens), but no shell here can turn reporting on:
@@ -1592,6 +1798,7 @@ fn tabMenu(h: *Harness) anyerror!void {
     // idle prompt does without shell integration).
     h.menuKey(menu, 'r');
     var dlg = try h.waitDialog(&g, 5000);
+    try expectDialogText(h, &g, "Close Tabs?", "All terminal sessions in these tabs will be terminated.");
     h.answer(&g, dlg, w.IDYES);
     try waitWindowTabs(h, &g, win, 1);
     try h.expect(true, "Close Tabs to the Right closes the tabs after the one clicked", .{});
@@ -4053,7 +4260,9 @@ fn splitCommands(h: *Harness) anyerror!void {
     h.enter(cc);
     try waitPanes(h, &g, 2);
     h.key(b, cs, 'W');
-    h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
+    const split_dlg = try h.waitDialog(&g, 5000);
+    try expectDialogText(h, &g, "Close Split?", "The currently running process in this split will be terminated.");
+    h.answer(&g, split_dlg, w.IDYES);
     try waitPanes(h, &g, 1);
     w.Sleep(300);
     {
@@ -4613,7 +4822,7 @@ fn powershellIntegration(h: *Harness, name: []const u8, command: []const u8) !vo
     try waitTabTitle(h, &g, 0, "Start-Sleep 30");
     h.key(first, cs, 'W');
     const dlg = try h.waitDialog(&g, 5000);
-    h.answer(&g, dlg, w.IDNO);
+    h.answer(&g, dlg, w.IDCANCEL);
     try waitNoDialog(h, &g);
     try waitWindowTabs(h, &g, win, 1);
     h.key(first, .{ .ctrl = true }, 'C');
@@ -4769,7 +4978,7 @@ fn cmdIntegrationRun(h: *Harness, name: []const u8, run: CmdRun) !void {
     try waitAtPrompt(h, &g, 0, false);
     h.key(first, cs, 'W');
     const dlg = try h.waitDialog(&g, 5000);
-    h.answer(&g, dlg, w.IDNO);
+    h.answer(&g, dlg, w.IDCANCEL);
     try waitNoDialog(h, &g);
     try waitWindowTabs(h, &g, win, 1);
     h.key(first, .{ .ctrl = true }, 'C');

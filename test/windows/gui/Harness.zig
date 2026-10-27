@@ -1172,6 +1172,8 @@ pub const Dump = struct {
     modal_depth: u32,
     /// Context menus shown so far.
     menus_shown: u32 = 0,
+    /// The last task dialog's heading and body.
+    dialog: struct { heading: []const u8 = "", body: []const u8 = "" } = .{},
     windows: []const Window,
     /// Links that would have opened, as "verb target" (Ghostty records
     /// them instead of opening them while the test hooks are on).

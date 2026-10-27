@@ -11,6 +11,7 @@ pub fn preInit() void {
 }
 
 test {
+    _ = @import("win32/ClipboardDialog.zig");
     _ = @import("win32/CommandPalette.zig");
     _ = @import("win32/ContextMenu.zig");
     _ = @import("win32/TitleDialog.zig");
