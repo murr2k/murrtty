@@ -771,7 +771,11 @@ fn dwmRefreshes() ?u64 {
 /// drawing it. The scenarios that capture skip themselves otherwise.
 pub fn capturesWork(self: *const Harness) ?[]const u8 {
     if (!self.userDesktopShown()) return "the desktop isn't being drawn (screen saver or lock screen is up)";
-    if (!self.displayDriven()) return "DWM isn't driving a display (the monitor is off), so captures come back blank";
+    // DWM's vblank count also idles (a few a second) on a static screen with
+    // the monitor on, so with GHOSTTY_GUI_ONSCREEN (the owner is at the
+    // screen) it isn't asked.
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) != 0) return null;
+    if (!self.displayDriven()) return "DWM isn't driving a display (the monitor may be off; set GHOSTTY_GUI_ONSCREEN=1 if you are at the screen), so captures may come back blank";
     return null;
 }
 
