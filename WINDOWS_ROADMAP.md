@@ -221,9 +221,12 @@ roadmap item behind it.
   GTK queues them, each with a close button.
 - **Read-only badge** (3.6): shown at once; GTK fades it in over 500 ms.
 
+- **Tab menu** (3.8): a tab's right-click menu has Change Tab Title, Close
+  Tab, Close Other Tabs and Close Tabs to the Right, acting on the tab
+  clicked (Move Tab to New Window, grayed, comes with 4.5); GTK's offers
+  only Change Tab Title.
+
 *Decided, not built yet:*
-- **Tab menu** (3.8): Rename, Close, Close Others, Close to the Right and
-  Move to New Window; GTK's offers only Change Tab Title.
 - **Tab overview** (3.8): a list with a filter box, not GTK's live
   thumbnails.
 - **Tab tooltips** (3.8): the title and the working directory; GTK's shows
@@ -1520,6 +1523,17 @@ toast queue and close button; the key state's spinner.
 
 *Done when:* 40 tabs are all reachable, right-click Close Others works, and
 the menu button and `+` dropdown work.
+
+*3.8a (the tab menu) done 2026-10-26.* A right press on a tab (GTK opens
+menus on the press) shows `ContextMenu.trackTab`'s menu, owned by the
+window: Change Tab Title..., Close Tab, Close Other Tabs and Close Tabs to
+the Right, each with its binding if it has one, then Move Tab to New
+Window, grayed until 4.5 moves terminals between windows. Close Other
+Tabs is grayed with one tab, Close Tabs to the Right on the last. The
+choice runs as the core's action (`prompt_tab_title`, `close_tab:this`,
+`:other`, `:right`) on the clicked tab's focused pane after the menu's
+loop, so it confirms and closes as those bindings do, and the clicked tab
+stays in the background. Scenario `tab-menu`.
 
 **3.9 Dialog polish, S.**
 - Replace `MessageBox` confirmations with TaskDialogs, worded as GTK's

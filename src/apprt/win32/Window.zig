@@ -11,6 +11,7 @@ const c = @import("c.zig");
 const split_layout = @import("split_layout.zig");
 const App = @import("App.zig");
 const CommandPalette = @import("CommandPalette.zig");
+const ContextMenu = @import("ContextMenu.zig");
 const Overlay = @import("Overlay.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
@@ -918,6 +919,20 @@ fn paint(self: *Window) void {
     }
 }
 
+/// The tab strip's menu for tab `index`, at the press in `lparam`. What
+/// was chosen runs on the tab's focused pane after the menu's loop, during
+/// which closes wait (App.request), so that pane is still there.
+fn tabMenu(self: *Window, index: usize, lparam: c.LPARAM) void {
+    const surface = self.tabs.items[index].focused;
+    var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
+    _ = c.ClientToScreen(self.hwnd, &pt);
+    const chosen = ContextMenu.trackTab(surface, .{ .index = index, .count = self.tabs.items.len }, pt) orelse return;
+    if (!surface.core_initialized) return;
+    _ = surface.core_surface.performBindingAction(chosen) catch |err| {
+        log.warn("error performing a tab menu action err={}", .{err});
+    };
+}
+
 fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {
     if (!self.tabBarVisible()) return .none;
     return self.tab_bar.hitTest(
@@ -1028,6 +1043,16 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_MBUTTONUP => {
             switch (self.tabBarHit(lparam)) {
                 .tab, .close => |i| self.requestCloseTab(i),
+                else => {},
+            }
+            return 0;
+        },
+
+        // A tab's menu, on the press as the terminal's (GTK opens menus on
+        // the press).
+        c.WM_RBUTTONDOWN => {
+            switch (self.tabBarHit(lparam)) {
+                .tab, .close => |i| self.tabMenu(i, lparam),
                 else => {},
             }
             return 0;

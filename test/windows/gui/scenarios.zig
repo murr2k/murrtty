@@ -32,6 +32,7 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
+    .{ .name = "tab-menu", .about = "a tab's right-click menu: Change Tab Title, Close Tab, Close Other Tabs, Close Tabs to the Right, on the tab clicked; graying", .run = tabMenu },
     .{ .name = "bell", .about = "bell-features title: a bell before the tab's title and caption until input; a background tab's mark until selected", .run = bell },
     .{ .name = "status-overlays", .about = "link preview, read-only badge, key sequence and table, renderer panel, toasts (copy, reload), child-exited banner (Close, any key)", .run = statusOverlays },
     .{ .name = "titles", .about = "rename prompts (tab, terminal) over program titles, blank restores, Cancel, set_window_title, copy_title_to_clipboard, double-click a tab", .run = titles },
@@ -1536,6 +1537,111 @@ fn bell(h: *Harness) anyerror!void {
     t = try waitTabState(h, &g, 0, TabState.seen, "the tab seen");
     try h.expect(true, "selecting it clears the mark and answers the bell", .{});
     try quit(h, &g, first);
+}
+
+/// The tab strip's right-click menu (roadmap 3.8): Change Tab Title, Close
+/// Tab, Close Other Tabs and Close Tabs to the Right, each with its
+/// binding, and Move Tab to New Window grayed (roadmap 4.5); Close Others
+/// is grayed with one tab, Close to the Right on the last. It acts on the
+/// tab clicked, which stays in the background.
+fn tabMenu(h: *Harness) anyerror!void {
+    var g = try start(h, "tab-menu", "window-show-tab-bar = always\nkeybind = ctrl+shift+f6=close_tab:other\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    h.key(try h.surface(&g, win), cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    h.key(try h.surface(&g, win), cs, 'T');
+    try waitWindowTabs(h, &g, win, 3);
+
+    // On tab 0 while tab 2 is active.
+    var at = try tabCenter(h, &g, 0);
+    h.rightPress(win, at.x, at.y);
+    var menu = try h.waitMenu(&g, 1, 5000);
+    {
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        const want = [_]struct { text: []const u8, grayed: bool }{
+            .{ .text = "Change Tab &Title...", .grayed = false },
+            .{ .text = "", .grayed = false },
+            .{ .text = "&Close Tab\tCtrl+Shift+W", .grayed = false },
+            .{ .text = "Close &Other Tabs\tCtrl+Shift+F6", .grayed = false },
+            .{ .text = "Close Tabs to the &Right", .grayed = false },
+            .{ .text = "", .grayed = false },
+            .{ .text = "&Move Tab to New Window", .grayed = true },
+        };
+        try h.expect(items.len == want.len, "seven entries (got {d})", .{items.len});
+        for (items, want) |got, exp| {
+            if (exp.text.len == 0) {
+                try h.expect(got.separator, "a separator where expected", .{});
+                continue;
+            }
+            try h.expect(std.mem.eql(u8, got.text, exp.text) and got.grayed == exp.grayed, "'{s}' ({s})", .{ got.text, if (got.grayed) "grayed" else "enabled" });
+        }
+    }
+    // Close Tabs to the Right of tab 0: the two after it (they ask, as an
+    // idle prompt does without shell integration).
+    h.menuKey(menu, 'r');
+    var dlg = try h.waitDialog(&g, 5000);
+    h.answer(&g, dlg, w.IDYES);
+    try waitWindowTabs(h, &g, win, 1);
+    try h.expect(true, "Close Tabs to the Right closes the tabs after the one clicked", .{});
+
+    // With one tab, nothing else to close.
+    at = try tabCenter(h, &g, 0);
+    h.rightPress(win, at.x, at.y);
+    menu = try h.waitMenu(&g, 1, 5000);
+    {
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        try h.expect(items.len == 7 and items[3].grayed and items[4].grayed and !items[2].grayed, "with one tab, Close Other Tabs and Close Tabs to the Right are grayed", .{});
+    }
+    _ = w.PostMessageW(menu, w.WM_KEYDOWN, w.VK_ESCAPE, 1);
+    try waitNoMenu(h, &g);
+
+    // Renaming a background tab: it stays in the background.
+    h.key(try h.surface(&g, win), cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    at = try tabCenter(h, &g, 0);
+    h.rightPress(win, at.x, at.y);
+    menu = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu, 't');
+    dlg = try h.waitDialog(&g, 5000);
+    try setDialogText(h, dlg, "renamed-bg");
+    const field = w.GetDlgItem(dlg, 100) orelse return h.fail("the prompt has no field", .{});
+    h.key(field, .{}, w.VK_RETURN);
+    try waitNoDialog(h, &g);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const dw = d.value.windows[0];
+        try h.expect(std.mem.eql(u8, dw.tabs[0].tab_name, "renamed-bg") and dw.active == 1, "Change Tab Title names the tab clicked ('{s}'), which stays in the background", .{dw.tabs[0].tab_name});
+    }
+
+    // Close Other Tabs from the background tab: it is the one left.
+    at = try tabCenter(h, &g, 0);
+    h.rightPress(win, at.x, at.y);
+    menu = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu, 'o');
+    dlg = try h.waitDialog(&g, 5000);
+    h.answer(&g, dlg, w.IDYES);
+    try waitWindowTabs(h, &g, win, 1);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(std.mem.eql(u8, d.value.windows[0].tabs[0].tab_name, "renamed-bg"), "Close Other Tabs keeps the tab clicked", .{});
+    }
+    try quit(h, &g, try h.surface(&g, win));
+}
+
+/// The middle of tab `i` of the first window's strip, in its client area.
+fn tabCenter(h: *Harness, g: *Harness.Ghostty, i: usize) !struct { x: c_int, y: c_int } {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const strip = d.value.windows[0].tab_bar.tabs;
+    if (i >= strip.len) return h.fail("no tab {d} in the strip", .{i});
+    const r = strip[i].rect;
+    return .{ .x = @divTrunc(r[0] + r[2], 2), .y = @divTrunc(r[1] + r[3], 2) };
 }
 
 /// A tab's label, the bell's state, and the window's caption (copies).

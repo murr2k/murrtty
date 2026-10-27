@@ -103,7 +103,9 @@ hosted Windows runner and then the unit tests.
   `Ctrl+Shift+C` copies that.)
 - Tabs: a tab strip themed from your terminal colors, new tab (the `+`
   button or a keybinding), switching tabs (clicking or a keybinding), and
-  closing a tab (its close button, a middle-click or a keybinding).
+  closing a tab (its close button, a middle-click or a keybinding). A
+  tab's right-click menu renames it or closes it, the other tabs, or the
+  tabs to its right.
 - Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
   and down, a pane closes with its shell (the last one closes the tab), and
   the tab shows the focused pane's title. `Ctrl+Shift+W` closes the whole

@@ -2,7 +2,8 @@
 //! on Next Command Finish, Clear and Reset, then Split, Tab, Window and
 //! Config submenus. Each item shows its key binding, and is grayed when its
 //! action can't run here (App.supportsAction) or now (Copy with no
-//! selection, Paste with no text on the clipboard).
+//! selection, Paste with no text on the clipboard). Also the tab strip's
+//! right-click menu (roadmap 3.8, trackTab).
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const input = @import("../../input.zig");
@@ -63,6 +64,23 @@ const items = [_]Item{
     } } },
 };
 
+/// The tab strip's menu: the fuller one Windows users expect (decided
+/// 2026-10-25), where GTK's offers only Change Tab Title. It acts on the
+/// tab clicked, which needn't be the active one.
+const tab_items = [_]Item{
+    act("Change Tab &Title...", .prompt_tab_title),
+    .separator,
+    act("&Close Tab", .{ .close_tab = .this }),
+    act("Close &Other Tabs", .{ .close_tab = .other }),
+    act("Close Tabs to the &Right", .{ .close_tab = .right }),
+    .separator,
+    // Roadmap 4.5: moving terminals between windows.
+    .{ .unavailable = "&Move Tab to New Window" },
+};
+
+/// Where the tab a tab menu is for sits in its window's strip.
+pub const TabPlace = struct { index: usize, count: usize };
+
 /// The actions of the menu being shown, by item id (index + 1).
 const Built = struct {
     actions: std.ArrayList(Action) = .empty,
@@ -79,11 +97,22 @@ const Built = struct {
 /// Show the menu at `screen` (screen pixels) over `surface` and return the
 /// action chosen, if any. The caller performs it, after the menu is gone.
 pub fn track(surface: *Surface, screen: c.POINT) ?Action {
+    return show(surface, &items, null, surface.hwnd, screen);
+}
+
+/// Show the tab strip's menu for the tab at `place`, whose focused pane is
+/// `surface`, and return the action chosen for that pane, if any. The
+/// window owns the menu: a background tab's pane is hidden.
+pub fn trackTab(surface: *Surface, place: TabPlace, screen: c.POINT) ?Action {
+    return show(surface, &tab_items, place, surface.window.hwnd, screen);
+}
+
+fn show(surface: *Surface, list: []const Item, place: ?TabPlace, owner: c.HWND, screen: c.POINT) ?Action {
     const app = surface.app;
     const alloc = app.core_app.alloc;
     var built: Built = .{};
     defer built.deinit(alloc);
-    const menu = build(surface, &built, &items) catch |err| {
+    const menu = build(surface, &built, list, place) catch |err| {
         log.warn("context menu not built err={}", .{err});
         return null;
     };
@@ -94,16 +123,16 @@ pub fn track(surface: *Surface, screen: c.POINT) ?Action {
     var modal = app.beginModal(surface.window.hwnd, .{ .disable_others = false });
     defer modal.end();
     if (comptime @import("test_hooks.zig").enabled) app.test_state.menus_shown += 1;
-    const id = c.TrackPopupMenuEx(menu, c.TPM_RETURNCMD | c.TPM_RIGHTBUTTON | c.TPM_NONOTIFY, screen.x, screen.y, surface.hwnd, null);
+    const id = c.TrackPopupMenuEx(menu, c.TPM_RETURNCMD | c.TPM_RIGHTBUTTON | c.TPM_NONOTIFY, screen.x, screen.y, owner, null);
     // So the menu closes properly the next time (KB135788).
-    _ = c.PostMessageW(surface.hwnd, c.WM_NULL, 0, 0);
+    _ = c.PostMessageW(owner, c.WM_NULL, 0, 0);
     if (id <= 0 or id > built.actions.items.len) return null;
     return built.actions.items[@intCast(id - 1)];
 }
 
 const BuildError = error{ CreateMenuFailed, OutOfMemory, InvalidUtf8 };
 
-fn build(surface: *Surface, built: *Built, list: []const Item) BuildError!c.HMENU {
+fn build(surface: *Surface, built: *Built, list: []const Item, place: ?TabPlace) BuildError!c.HMENU {
     const alloc = surface.app.core_app.alloc;
     const menu = c.CreatePopupMenu() orelse return error.CreateMenuFailed;
     errdefer _ = c.DestroyMenu(menu);
@@ -118,11 +147,11 @@ fn build(surface: *Surface, built: *Built, list: []const Item) BuildError!c.HMEN
             const label = labelWithBinding(surface.app, a.label, a.action, &buf);
             const text = try addString(alloc, built, label);
             try built.actions.append(alloc, a.action);
-            const flags: c.UINT = if (enabled(surface, a.action)) c.MF_STRING else c.MF_STRING | c.MF_GRAYED;
+            const flags: c.UINT = if (enabled(surface, a.action, place)) c.MF_STRING else c.MF_STRING | c.MF_GRAYED;
             _ = c.AppendMenuW(menu, flags, built.actions.items.len, text.ptr);
         },
         .submenu => |s| {
-            const sub = try build(surface, built, s.items);
+            const sub = try build(surface, built, s.items, place);
             errdefer _ = c.DestroyMenu(sub);
             const text = try addString(alloc, built, s.label);
             // The parent menu owns the submenu from here.
@@ -140,11 +169,17 @@ fn addString(alloc: Allocator, built: *Built, s: []const u8) BuildError![:0]u16 
     return text;
 }
 
-fn enabled(surface: *Surface, action: Action) bool {
+fn enabled(surface: *Surface, action: Action, place: ?TabPlace) bool {
     if (!App.supportsAction(action)) return false;
     return switch (action) {
         .copy_to_clipboard => surface.core_initialized and surface.core_surface.hasSelection(),
         .paste_from_clipboard => c.IsClipboardFormatAvailable(c.CF_UNICODETEXT) != 0,
+        // In the tab menu, only when there are tabs to close.
+        .close_tab => |mode| if (place) |p| switch (mode) {
+            .this => true,
+            .other => p.count > 1,
+            .right => p.index + 1 < p.count,
+        } else true,
         else => true,
     };
 }
