@@ -536,6 +536,7 @@ pub extern "user32" fn GetDpiForWindow(HWND) callconv(.winapi) UINT;
 pub extern "user32" fn AdjustWindowRectExForDpi(*RECT, DWORD, BOOL, DWORD, UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.winapi) BOOL;
 pub extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.winapi) ?HMONITOR;
+pub extern "user32" fn MonitorFromRect(*const RECT, DWORD) callconv(.winapi) ?HMONITOR;
 pub extern "user32" fn GetMonitorInfoW(HMONITOR, *MONITORINFO) callconv(.winapi) BOOL;
 pub extern "user32" fn GetWindowPlacement(HWND, *WINDOWPLACEMENT) callconv(.winapi) BOOL;
 pub extern "user32" fn SetWindowPlacement(HWND, *const WINDOWPLACEMENT) callconv(.winapi) BOOL;

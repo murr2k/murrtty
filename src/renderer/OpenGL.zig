@@ -645,6 +645,9 @@ const overlay_fragment =
 /// the GUI tests; then `frame_ready`.
 fn readFrame(state: *Wgl, win_w: gl.c.GLint, win_h: gl.c.GLint) void {
     if (win_w <= 0 or win_h <= 0) return;
+    // A frame not yet taken is the UI thread's: a second request while
+    // this one ran is answered by it, not by writing over it.
+    if (state.frame_ready.load(.acquire)) return;
     const width: usize = @intCast(win_w);
     const height: usize = @intCast(win_h);
     const pixels = std.heap.page_allocator.alloc(u8, width * height * 4) catch return;

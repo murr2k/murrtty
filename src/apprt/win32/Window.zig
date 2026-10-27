@@ -222,6 +222,10 @@ pub fn addTab(
     const tab = try Tab.create(self, self.tabRect(self.tabs.items.len + 1), parent, context);
     self.tabs.insertAssumeCapacity(index, tab);
     if (had_bar != self.tabBarVisible()) _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+    // The pane took the bars' shade before the tab counted (Tab.create):
+    // the row this tab brings casts one too. Created at its final size, it
+    // hears no WM_SIZE to lay it out again.
+    tab.focused.setShade(self.shade());
     self.select(index);
     return tab.focused;
 }
@@ -659,7 +663,7 @@ fn tabsShownFor(self: *const Window, count: usize) bool {
 
 /// gtk-titlebar-style = tabs: the tab row is the title bar, with the
 /// header bar's buttons in it (HeaderBar.tabs_style), and no header bar.
-fn tabsTitlebar(self: *const Window) bool {
+pub fn tabsTitlebar(self: *const Window) bool {
     return self.app.config.@"gtk-titlebar-style" == .tabs;
 }
 
@@ -767,9 +771,11 @@ pub fn isFrameAt(self: *const Window, x: c_int, y: c_int) bool {
 /// A maximized client area that covers its monitor reads to the shell as
 /// a fullscreen window, which keeps an auto-hide taskbar from sliding in:
 /// leave it 2 px at each edge where one hides (as Windows Terminal does;
-/// with an auto-hide taskbar the work area is the whole monitor).
-fn insetForAutoHideTaskbars(hwnd: c.HWND, rect: *c.RECT) void {
-    const monitor = c.MonitorFromWindow(hwnd, c.MONITOR_DEFAULTTONEAREST) orelse return;
+/// with an auto-hide taskbar the work area is the whole monitor). The
+/// monitor is the one `rect`, the new client area, is on: WM_NCCALCSIZE
+/// comes before the window moves (Win+Shift+arrow to another monitor).
+fn insetForAutoHideTaskbars(rect: *c.RECT) void {
+    const monitor = c.MonitorFromRect(rect, c.MONITOR_DEFAULTTONEAREST) orelse return;
     var info: c.MONITORINFO = .{};
     if (c.GetMonitorInfoW(monitor, &info) == 0) return;
     const inset = 2;
@@ -1121,8 +1127,6 @@ pub fn paintChrome(self: *Window, hdc: c.HDC) void {
         self.header.paint(hdc, width, self.header.height(), title[0..@intCast(@max(n, 0))], self.tab_bar.hover, self.pressed, maximized, pal);
     }
     if (!self.tabBarVisible()) return;
-    // The tab row as the title bar: the header's buttons around the tabs.
-    if (self.tabsTitlebar()) self.header.paint(hdc, width, self.tab_bar.height(), &.{}, self.tab_bar.hover, self.pressed, maximized, pal);
 
     // Every title: the row is laid out (and hit-tested) for all the tabs.
     const alloc = self.app.core_app.alloc;
@@ -1138,7 +1142,25 @@ pub fn paintChrome(self: *Window, hdc: c.HDC) void {
         a.* = tab.attention;
     }
 
-    self.tab_bar.paint(hdc, self.headerHeight(), width, titles, attention, self.active, pal);
+    if (self.tabsTitlebar()) {
+        // The tab row as the title bar: the header's buttons around the
+        // tabs, put together off screen and shown at once, so no frame
+        // shows the row without its tabs.
+        const h = self.tab_bar.height();
+        if (c.CreateCompatibleDC(hdc)) |mem| {
+            defer _ = c.DeleteDC(mem);
+            if (c.CreateCompatibleBitmap(hdc, width, h)) |bmp| {
+                defer _ = c.DeleteObject(bmp);
+                const old = c.SelectObject(mem, bmp);
+                defer _ = c.SelectObject(mem, old);
+                self.header.paint(mem, width, h, &.{}, self.tab_bar.hover, self.pressed, maximized, pal);
+                self.tab_bar.paint(mem, 0, width, titles, attention, self.active, pal);
+                _ = c.BitBlt(hdc, 0, 0, width, h, mem, 0, 0, c.SRCCOPY);
+            }
+        }
+    } else {
+        self.tab_bar.paint(hdc, self.headerHeight(), width, titles, attention, self.active, pal);
+    }
     self.painted_bell = 0;
     self.painted_attention = 0;
     for (titles, attention, 0..) |t, a, i| {
@@ -1623,7 +1645,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             params.rgrc[0].top = top;
             if (c.IsZoomed(hwnd) != 0) {
                 params.rgrc[0].top += self.frameY();
-                insetForAutoHideTaskbars(hwnd, &params.rgrc[0]);
+                insetForAutoHideTaskbars(&params.rgrc[0]);
             }
             return ret;
         },

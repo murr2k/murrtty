@@ -1240,6 +1240,8 @@ pub const Dump = struct {
     /// while it's hidden).
     pub const Header = struct {
         visible: bool = false,
+        /// Its buttons show in the tab row (gtk-titlebar-style = tabs).
+        in_row: bool = false,
         height: i32 = 0,
         /// The title's font face.
         font: []const u8 = "",

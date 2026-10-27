@@ -308,7 +308,11 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         var face_buf: [128]u8 = undefined;
         {
             const p = w.header.place(client.right);
-            try out.print(alloc, "\"header\":{{\"visible\":{},\"height\":{d},\"font\":", .{ w.headerHeight() > 0, w.headerHeight() });
+            try out.print(alloc, "\"header\":{{\"visible\":{},\"in_row\":{},\"height\":{d},\"font\":", .{
+                w.headerHeight() > 0,
+                w.tabsTitlebar() and w.tabBarVisible(),
+                w.headerHeight(),
+            });
             try writeString(alloc, out, draw.faceName(w.header.title_font, &face_buf));
             const tip = try w.tooltipText(alloc, .new_tab);
             defer alloc.free(tip);

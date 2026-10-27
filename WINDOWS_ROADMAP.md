@@ -1919,6 +1919,17 @@ reference's pixels. The test hooks also paint the chrome into a bitmap
 `paint-*.bmp` from the hidden desktop: the `tabs` row compared with GTK's
 picture button for button.
 
+*End-of-4.3 review (2026-10-27, steps 4c to 6), fixed:* a tab whose
+opening brings the tab row (window-show-tab-bar = auto without a header
+bar) missed the row's shade, being made at its final size before it
+counted (`Window.addTab` gives it the shade after; `shade` checks it); the
+auto-hide taskbar check looks at the monitor the new client area is on
+(`MonitorFromRect`), not the one the window was on (Win+Shift+arrow); the
+frame read-back no longer writes over a frame not yet taken; in `tabs`
+style the row's buttons and tabs are put together off screen and shown in
+one step; the dump says when the header's buttons are in the tab row
+(`header.in_row`), which `stripButton` checks.
+
 *4.3b step 1, the menus, done 2026-10-27.* GTK's menus measured with
 `gtkref.ps1 -Actions` (xdotool clicks in the Xvfb display): popovers in
 the popover color (#36363a in dark, #ffffff in light; the terminal's with

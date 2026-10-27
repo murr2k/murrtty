@@ -2543,10 +2543,9 @@ fn stripButton(h: *Harness, g: *Harness.Ghostty, which: enum { new_tab, new_tab_
     var d = try h.dump(g);
     defer d.deinit();
     const bar = d.value.windows[0].header;
-    // Its buttons show in the header bar, or in the tab row at the top
+    // Its buttons show in the header bar, or in the tab row
     // (gtk-titlebar-style = tabs).
-    const row = d.value.windows[0].tab_bar;
-    if (!bar.visible and !(row.visible and row.top == 0)) return h.fail("the header bar isn't showing", .{});
+    if (!bar.visible and !bar.in_row) return h.fail("the header bar isn't showing", .{});
     const r = switch (which) {
         .new_tab => bar.new_tab,
         .new_tab_menu => bar.new_tab_menu,
@@ -4842,7 +4841,14 @@ fn shade(h: *Harness) anyerror!void {
         defer d.deinit();
         try h.expect(d.value.windows[0].tabs[0].panes.?[0].shade == 0, "no bar, no shade", .{});
         try expectColor(h, try h.probePane(&g, 0, 1, 0), bg, "the top row is the background");
-        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+        // A second tab brings the tab row, whose shade falls on the new tab
+        // too (it starts at its final size, so no relayout gives it one).
+        const win = try h.mainWindow(&g);
+        h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        try waitActivePaneText(h, &g, win, ">");
+        try expectColor(h, try h.probePane(&g, 0, 1, 0), shaded, "the new tab's top row is under the row's shade");
+        try quit(h, &g, try h.surface(&g, win));
     }
     {
         var g = try start(h, "shade-border", "gtk-toolbar-style = raised-border\n", ">");
