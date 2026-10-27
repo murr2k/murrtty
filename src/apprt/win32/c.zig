@@ -687,6 +687,7 @@ pub const ES_AUTOVSCROLL = 0x0040;
 pub const ES_READONLY = 0x0800;
 pub const BS_AUTOCHECKBOX = 0x0003;
 pub const BM_GETCHECK = 0x00F0;
+pub const BM_SETCHECK = 0x00F1;
 pub const BST_CHECKED = 1;
 pub const SS_NOPREFIX = 0x0080;
 pub const WM_CTLCOLORSTATIC = 0x0138;

@@ -11,6 +11,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const c = @import("c.zig");
 const text_util = @import("text.zig");
+const AlertDialog = @import("AlertDialog.zig");
 const TitleDialog = @import("TitleDialog.zig");
 
 const log = std.log.scoped(.win32_clipboard_dialog);
@@ -63,14 +64,42 @@ const State = struct {
 };
 
 /// Ask about `text`. Anything but Allow (Deny, Escape, the close box, a
-/// dialog that couldn't be shown) denies.
+/// dialog that couldn't be shown) denies. A libadwaita alert dialog
+/// (AlertDialog), as GTK's: Deny suggested and the default, Allow
+/// destructive, the text in a monospace box 500 x 200, and for OSC 52
+/// GTK's "Remember choice for this split" row; Windows' own dialog if that
+/// can't show.
 pub fn ask(
     alloc: Allocator,
     owner: ?c.HWND,
     kind: Kind,
     text: []const u8,
     can_remember: bool,
+    dark: bool,
 ) Answer {
+    alert: {
+        const wide = displayText(alloc, text) catch break :alert;
+        defer alloc.free(wide);
+        const result = AlertDialog.run(alloc, .{
+            .owner = owner,
+            .heading = kind.heading(),
+            .body = kind.body(),
+            .responses = &.{
+                .{ .id = id_deny, .label = "Deny", .appearance = .suggested },
+                .{ .id = id_allow, .label = "Allow", .appearance = .destructive },
+            },
+            .default = id_deny,
+            .dark = dark,
+            .text = .{ .content = wide, .monospace = true },
+            .remember = if (can_remember) .{
+                .title = "Remember choice for this split",
+                .subtitle = "Reload configuration to show this prompt again",
+            } else null,
+        }) orelse break :alert;
+        // Escape and Alt+F4 decide nothing to remember.
+        return .{ .allow = result.id == id_allow, .remember = result.id != c.IDCANCEL and result.remember };
+    }
+
     var template: std.ArrayList(u8) = .empty;
     defer template.deinit(alloc);
     buildTemplate(alloc, &template, kind, can_remember) catch return .{};

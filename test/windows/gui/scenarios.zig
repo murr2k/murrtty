@@ -280,6 +280,22 @@ fn saveMenu(h: *Harness, g: *const Harness.Ghostty, dir: []const u8, name: []con
     w.Sleep(300);
 }
 
+/// With GHOSTTY_GUI_SNAPSHOT set, write the dialog's picture there as
+/// `name` (as it paints itself; it works on the hidden desktop).
+fn snapshotDialog(h: *Harness, dlg: w.HWND, name: []const u8) !void {
+    var dir_w: [260:0]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &dir_w, dir_w.len);
+    if (n == 0 or n >= dir_w.len) return;
+    var dir_buf: [1024]u8 = undefined;
+    const len = std.unicode.utf16LeToUtf8(&dir_buf, dir_w[0..n]) catch return;
+    w.Sleep(300);
+    var img = h.capturePrint(dlg) catch return;
+    defer img.deinit();
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ dir_buf[0..len], name });
+    defer h.alloc.free(path);
+    try img.save(path);
+}
+
 /// Copy `name` from beside `g`'s dump file to `dir` as `as`.
 fn copyOut(h: *Harness, g: *const Harness.Ghostty, name: []const u8, dir: []const u8, as: []const u8) !void {
     const from = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ std.fs.path.dirname(g.dump_path).?, name });
@@ -646,6 +662,7 @@ fn clipboardDialog(h: *Harness) anyerror!void {
         try h.expect(std.mem.eql(u8, text, "first line\r\nsecond\u{241B}line"), "the box shows the whole text, the line break kept, ESC as a picture ('{s}')", .{text});
         try h.expect(defaultButton(dlg) == w.IDNO, "Deny is the default (got {d})", .{defaultButton(dlg)});
         const box = w.GetDlgItem(dlg, 101) orelse return h.fail("no remember box for an OSC 52 write", .{});
+        try snapshotDialog(h, dlg, "paint-clipboard-dialog.bmp");
         var r: usize = 0;
         _ = w.SendMessageTimeoutW(box, w.BM_SETCHECK, 1, 0, w.SMTO_ABORTIFHUNG, 2000, &r);
         h.answer(&g, dlg, w.IDYES);
@@ -1322,6 +1339,7 @@ fn configErrors(h: *Harness) anyerror!void {
     defer g.deinit();
     var dlg = try h.waitDialog(&g, 5000);
     try expectTitle(h, dlg, "Configuration Errors");
+    try snapshotDialog(h, dlg, "paint-config-errors.bmp");
 
     h.answer(&g, dlg, id_open_config);
     w.Sleep(1000);

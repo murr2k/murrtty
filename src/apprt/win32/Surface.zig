@@ -722,7 +722,7 @@ fn runClipboardConfirms(self: *Surface) void {
 fn askClipboard(self: *Surface, kind: ClipboardDialog.Kind, text: []const u8, can_remember: bool) ClipboardDialog.Answer {
     var modal = self.app.beginModal(self.window.hwnd, .{});
     defer modal.end();
-    return ClipboardDialog.ask(self.app.core_app.alloc, self.window.hwnd, kind, text, can_remember);
+    return ClipboardDialog.ask(self.app.core_app.alloc, self.window.hwnd, kind, text, can_remember, self.app.chromeTheme().dark);
 }
 
 fn confirmClipboardRead(

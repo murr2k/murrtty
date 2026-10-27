@@ -123,7 +123,8 @@ hosted Windows runner and then the unit tests.
   terminal (`gtk-toolbar-style` `raised`, or `raised-border` and `flat`).
   The title bar and tabs are in Adwaita Sans, GNOME's interface font
   (bundled, not installed). Menus look like libadwaita's popover menus,
-  and the close confirmations and title prompts like its alert dialogs. `window-new-tab-position` and
+  and the close confirmations, title prompts, clipboard confirmations and
+  configuration errors like its alert dialogs. `window-new-tab-position` and
   `window-title-font-family` (the chrome's font) work.
 - Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
   and down, a pane closes with its shell (the last one closes the tab), and

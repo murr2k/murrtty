@@ -137,6 +137,15 @@ pub const DialogPalette = struct {
     suggested_pressed: c.COLORREF,
     /// The keyboard focus ring: the accent at half opacity.
     focus: c.COLORREF,
+    /// A text box's background (libadwaita's view color), a card's (the
+    /// "Remember choice" row), a row's subtitle at 55%, a switch's track
+    /// off (15% of the text) and on (the accent), and its knob.
+    view: c.COLORREF,
+    card: c.COLORREF,
+    subtitle: c.COLORREF,
+    switch_off: c.COLORREF,
+    switch_on: c.COLORREF,
+    knob: c.COLORREF,
 };
 
 pub fn dialogPalette(dark: bool) DialogPalette {
@@ -162,6 +171,13 @@ pub fn dialogPalette(dark: bool) DialogPalette {
         .suggested = ref(accent),
         .suggested_pressed = ref(blend(accent, white, 0.10)),
         .focus = ref(blend(bg, accent, 0.5)),
+        // view-bg #1d1d20 in dark; card-bg white at 8% over the dialog.
+        .view = ref(if (dark) .{ .r = 0x1d, .g = 0x1d, .b = 0x20 } else white),
+        .card = ref(if (dark) blend(bg, white, 0.08) else white),
+        .subtitle = ref(blend(bg, fg, 0.55)),
+        .switch_off = ref(blend(bg, fg, 0.15)),
+        .switch_on = ref(accent),
+        .knob = ref(white),
     };
 }
 

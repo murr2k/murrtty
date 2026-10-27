@@ -272,10 +272,14 @@ roadmap item behind it.
   writes them (Ctrl+Shift+T, Ctrl+Ins); GTK writes Shift+Ctrl+T and
   Ctrl+Insert.
 - **Dialogs** (4.3b): libadwaita's alert dialogs (the close confirmations,
-  the title prompt) are Windows dialogs drawn that way: their own window
-  centered over the dimmed one (GTK's sit inside the window), with
-  Windows 11's rounded frame (libadwaita rounds 18 px); Escape, Enter and
-  Tab behave as in any Windows dialog.
+  the title prompt, the clipboard confirmation, the config errors) are
+  Windows dialogs drawn that way: their own window centered over the
+  dimmed one (GTK's sit inside the window), with Windows 11's rounded
+  frame (libadwaita rounds 18 px); Escape, Enter and Tab behave as in any
+  Windows dialog. Text boxes are in Consolas, not GNOME's monospace.
+- **Configuration errors** (0.x, 4.3b): the dialog adds Open
+  Configuration, which opens the file and leaves the dialog open; GTK's
+  offers Ignore and Reload Configuration.
 - **System menu** (3.9): Alt+Space's menu adds New Window, New Tab, Split,
   Command Palette, Terminal Inspector, Config, About murrtty and Quit
   after Windows' own items; GTK has no such menu.
@@ -1977,9 +1981,26 @@ the response. The close confirmations (Cancel, the default, and Close,
 destructive) and the title prompt (Cancel, and OK, suggested and the
 default) use it; task dialogs and the old template stay as the fallback.
 `typing` checks the default, the responses and the dimming; `snapshot`
-writes both as they paint. Next (step 2b): the clipboard confirmation
-(Deny suggested, Allow destructive, the text in a monospace box, a
-"Remember choice" switch row), the config errors and About.
+writes both as they paint.
+
+*Step 2b done 2026-10-27:* the clipboard confirmation and the config
+errors, GTK's alert dialogs with an extra child. `AlertDialog` takes a
+read-only text box (GTK's 500 DIP wide, which widens the dialog; rounded
+10 in the view color, its text 8 in, scroll bars light or dark as the
+dialog), a switch row (libadwaita's card, rounded 12, its title and
+subtitle at 55%, a switch 46 x 26, the accent when on; the whole row
+toggles it, and it answers BM_GETCHECK and BM_SETCHECK as the check box it
+replaces did) and responses that run without closing. The clipboard
+confirmation: GTK's heading and body, the text in Consolas 11 pt 200 tall,
+"Remember choice for this split" with "Reload configuration to show this
+prompt again" for OSC 52, Deny (suggested, the default) and Allow
+(destructive). The config errors: GTK's heading and body, every error in
+a box 100 tall, Ignore (the default), murrtty's Open Configuration
+(leaves it open) and Reload Configuration (suggested), stacked as
+libadwaita stacks responses that don't fit a row, the first at the
+bottom. `clipboard-dialog` and `config-errors` write their dialogs'
+pictures with `GHOSTTY_GUI_SNAPSHOT` set. About stays Windows' task dialog
+(GTK's is libadwaita's About window, a different thing).
 
 *Mid-phase review (2026-10-27, steps 1 to 4b), fixed:* the window's
 minimum width now holds the header bar's buttons side by side

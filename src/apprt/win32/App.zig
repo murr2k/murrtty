@@ -1109,6 +1109,43 @@ fn showConfigErrors(self: *App) void {
     if (diags.len > shown_max) content.print(alloc, "...and {d} more.", .{diags.len - shown_max}) catch return;
 
     const owner: ?c.HWND = if (self.windows.items.len > 0) self.windows.items[0].hwnd else null;
+
+    // GTK's dialog, a libadwaita alert dialog (AlertDialog): every error in
+    // a box under its body, Ignore and Reload Configuration (suggested),
+    // and murrtty's Open Configuration, which leaves it open.
+    alert: {
+        const heading = "Configuration Errors";
+        const body = "One or more configuration errors were found. Please review the errors below, and either reload your configuration or ignore these errors.";
+        var lines: std.ArrayList(u8) = .empty;
+        defer lines.deinit(alloc);
+        var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, all.items, "\n"), '\n');
+        while (it.next()) |line| lines.print(alloc, "{s}\r\n", .{line}) catch break :alert;
+        const wide = text_util.utf16Lossy(alloc, lines.items) catch break :alert;
+        defer alloc.free(wide);
+        test_hooks.recordDialog(&self.test_state, heading, body);
+        var modal = self.beginModal(owner, .{});
+        defer modal.end();
+        const result = AlertDialog.run(alloc, .{
+            .owner = owner,
+            .heading = heading,
+            .body = body,
+            .responses = &.{
+                .{ .id = id_ignore_config, .label = "Ignore" },
+                .{ .id = id_open_config, .label = "Open Configuration" },
+                .{ .id = id_reload_config, .label = "Reload Configuration", .appearance = .suggested },
+            },
+            .default = id_ignore_config,
+            .dark = self.chromeTheme().dark,
+            .text = .{ .content = wide, .height = 100 },
+            .stay = .{ .ids = &.{id_open_config}, .ctx = self, .action = openConfigFromAlert },
+        }) orelse break :alert;
+        modal.end();
+        if (result.id == id_reload_config) self.reloadConfig(.app, false) catch |err| {
+            log.warn("error reloading the config err={}", .{err});
+        };
+        return;
+    }
+
     const chosen = self.taskDialog(.{
         .owner = owner,
         .title = "murrtty:Configuration Errors",
@@ -1140,6 +1177,11 @@ fn showConfigErrors(self: *App) void {
 }
 
 fn openConfigFromDialog(self: *App, _: c_int) void {
+    _ = self.openConfig();
+}
+
+fn openConfigFromAlert(ctx: *anyopaque, _: u16) void {
+    const self: *App = @ptrCast(@alignCast(ctx));
     _ = self.openConfig();
 }
 
