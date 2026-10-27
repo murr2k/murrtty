@@ -54,6 +54,9 @@ pub const State = if (enabled) struct {
     /// move's leave tracking at once, and hover state (a link's preview)
     /// would go before a test could see it.
     pin_mouse: bool = false,
+    /// Blur with the accent policy, as before Windows 11 22H2, whatever
+    /// the build (dump wparam 13), so that path runs here too.
+    force_accent: bool = false,
 } else struct {};
 
 /// Whether the hooks are on, for code with no App at hand.
@@ -144,6 +147,8 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   and write it as `chrome-<n>.bmp` beside the dump file, and its active
 ///   tab's container (the dividers) as `tab-<n>.bmp`: what WM_PAINT draws,
 ///   alpha included, where captures can't see it (the hidden desktop).
+/// - 13: blur with the accent policy whatever Windows' build (`lparam` 1),
+///   or as the build says (0).
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -174,6 +179,12 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     };
     // As if Windows' "Always show scrollbars" changed (lparam 1 on).
     if (wparam == 8) app.setScrollbarsAlways(lparam != 0);
+    // The accent policy's blur whatever the build (lparam 1), or the
+    // build's own (0); the windows switch at once.
+    if (wparam == 13) {
+        app.test_state.force_accent = lparam != 0;
+        for (app.windows.items) |w| w.syncBlur();
+    }
     if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
@@ -245,6 +256,11 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         const caption: i64 = if (w.chrome.caption) |ref| rgbOf(ref) else -1;
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
         try out.print(alloc, "\"translucent\":{},", .{w.translucent});
+        // The blur applied, and the system backdrop DWM reports (-1 when it
+        // can't say, before Windows 11 22H2).
+        var backdrop: c.DWORD = 0;
+        const backdrop_type: i64 = if (c.DwmGetWindowAttribute(w.hwnd, c.DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, @sizeOf(c.DWORD)) >= 0) backdrop else -1;
+        try out.print(alloc, "\"blur\":\"{t}\",\"backdrop_type\":{d},", .{ w.blur, backdrop_type });
         // The caption's text, and the user's name for the window ("" for
         // none).
         {

@@ -201,6 +201,11 @@ roadmap item behind it.
   macOS; GTK moves it.
 - **`resize_split`** (1.5): each step is clamped, since upstream's resize
   asserts on large deltas; GTK doesn't clamp.
+- **Background blur** (4.2): Windows' own: Acrylic, its documented
+  backdrop (tinted for the light or dark theme, with its grain), from
+  Windows 11 22H2, and a plain blur through the undocumented accent
+  policy only before it. GTK's blur is the compositor's (KWin's, or
+  `ext-background-effect-v1`); both ignore the intensity.
 - **Background opacity toggle** (4.1): `toggle_background_opacity` works
   as on macOS: every window turns opaque, or translucent again, and new
   windows follow; with `background-opacity` at 1 it does nothing. GTK
@@ -1780,6 +1785,18 @@ then AMD and Intel (no such GPU here), and Phase B only if one fails.
 - Windows 10, and Windows 11 before build 22621: the undocumented
   accent-policy call.
 - Off when opaque, fullscreen or forced opaque.
+
+*Built 2026-10-27:* `Window.syncBlur` blurs a translucent window while
+`background-blur` is on (any intensity: GTK ignores it too), over 4.1's
+blur-behind, the combination Tauri's window-vibrancy uses: Acrylic
+(`DWMSBT_TRANSIENTWINDOW`) from build 22621, before it
+`SetWindowCompositionAttribute`'s `ACCENT_ENABLE_BLURBEHIND` (resolved at
+run time, from build 17763), else none. Off when opaque (an opacity of
+1, or toggled); fullscreen keeps it, as GTK does, rather than turning it
+off as planned. The `blur` scenario checks the state, DWM's reported
+backdrop type and the accent path (forced by a test hook) on the hidden
+desktop; `blur-display` (on screen, the owner's) checks that striped
+backdrop blurs. Left: that run, and Windows 10 (no machine here).
 
 **4.3 Tabs in the title bar, L.** Windows Terminal-style integrated caption:
 - Keep `WS_OVERLAPPEDWINDOW` (snap, animations, rounded corners and shadow

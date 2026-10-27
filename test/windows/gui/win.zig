@@ -405,6 +405,15 @@ pub extern "user32" fn WindowFromPoint(POINT) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetAncestor(HWND, UINT) callconv(.winapi) ?HWND;
 pub const GA_ROOT = 2;
 pub extern "user32" fn GetForegroundWindow() callconv(.winapi) ?HWND;
+pub const OSVERSIONINFOW = extern struct {
+    dwOSVersionInfoSize: DWORD = @sizeOf(OSVERSIONINFOW),
+    dwMajorVersion: DWORD = 0,
+    dwMinorVersion: DWORD = 0,
+    dwBuildNumber: DWORD = 0,
+    dwPlatformId: DWORD = 0,
+    szCSDVersion: [128]u16 = @splat(0),
+};
+pub extern "ntdll" fn RtlGetVersion(*OSVERSIONINFOW) callconv(.winapi) c_long;
 pub extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.winapi) isize;
 pub const GWL_EXSTYLE = -20;
 

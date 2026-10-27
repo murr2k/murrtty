@@ -80,6 +80,8 @@ csd_frame: bool = false,
 /// Whether the window is translucent (App.translucent), as last applied
 /// by syncTranslucent.
 translucent: bool = false,
+/// How it blurs what shows through, as last applied by syncBlur.
+blur: Blur = .none,
 /// GTK's header bar, the title bar with client-side decorations.
 header: HeaderBar = .{},
 /// The window's button pressed (a press on the header bar's minimize,
@@ -112,6 +114,15 @@ system_menu: ContextMenu.SystemMenu = .{},
 /// Open while the system menu's loop runs: closes wait until it ends, as
 /// for every other nested loop.
 menu_modal: ?App.Modal = null,
+
+/// background-blur's ways (App.blurMethod).
+pub const Blur = enum {
+    none,
+    /// DWM's Acrylic system backdrop (DWMSBT_TRANSIENTWINDOW).
+    backdrop,
+    /// The accent policy's blur (ACCENT_ENABLE_BLURBEHIND).
+    accent,
+};
 
 pub const Chrome = struct {
     dark: bool = false,
@@ -1093,8 +1104,9 @@ pub fn configChanged(self: *Window) void {
     self.tab_bar.setDpi(self.tab_bar.dpi, self.app.config.@"window-title-font-family");
     self.header.setDpi(self.header.dpi, self.app.config.@"window-title-font-family");
     self.applyChrome();
-    // background-opacity may have changed.
+    // background-opacity and background-blur may have changed.
     self.syncTranslucent();
+    self.syncBlur();
     for (self.tabs.items) |t| t.syncDim();
     self.layout();
     // An unchanged tab rectangle sends the tabs no WM_SIZE.
@@ -1134,6 +1146,54 @@ pub fn syncTranslucent(self: *Window) void {
     while (it.next()) |s| s.setTranslucent(on);
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
     for (self.tabs.items) |t| _ = c.InvalidateRect(t.hwnd, null, c.FALSE);
+    self.syncBlur();
+}
+
+/// Blur what shows through the translucent window while background-blur
+/// is on (roadmap 4.2), as App.blurMethod says: over the blur-behind that
+/// makes it translucent, as Tauri's window-vibrancy does. As GTK, the
+/// blur's intensity is ignored and fullscreen keeps it; an opaque window
+/// (toggled, or at an opacity of 1) has none.
+pub fn syncBlur(self: *Window) void {
+    const want: Blur = if (self.translucent and self.app.config.@"background-blur".enabled())
+        self.app.blurMethod()
+    else
+        .none;
+    if (want == self.blur) return;
+    // Take the one in place off first (the test hooks switch methods).
+    switch (self.blur) {
+        .none => {},
+        .backdrop => _ = self.setBackdrop(c.DWMSBT_AUTO),
+        .accent => _ = self.setAccent(c.ACCENT_DISABLED),
+    }
+    self.blur = .none;
+    const done = switch (want) {
+        .none => true,
+        .backdrop => self.setBackdrop(c.DWMSBT_TRANSIENTWINDOW),
+        .accent => self.setAccent(c.ACCENT_ENABLE_BLURBEHIND),
+    };
+    if (done) self.blur = want;
+}
+
+/// DWM's system backdrop: Acrylic, or the default (no backdrop under the
+/// client) again. Whether DWM took it.
+fn setBackdrop(self: *Window, kind: c.DWORD) bool {
+    const hr = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_SYSTEMBACKDROP_TYPE, &kind, @sizeOf(c.DWORD));
+    if (hr < 0) log.warn("DWMWA_SYSTEMBACKDROP_TYPE {d} failed hr=0x{x}", .{ kind, @as(u32, @bitCast(hr)) });
+    return hr >= 0;
+}
+
+/// The accent policy: its blur behind the window (untinted, the flags
+/// window-vibrancy passes), or off. Whether user32 took it.
+fn setAccent(self: *Window, state: c.DWORD) bool {
+    const set = App.accentFn() orelse return false;
+    var policy: c.ACCENT_POLICY = .{ .AccentState = state, .AccentFlags = if (state == c.ACCENT_DISABLED) 0 else 2 };
+    var data: c.WINDOWCOMPOSITIONATTRIBDATA = .{ .Attrib = c.WCA_ACCENT_POLICY, .pvData = &policy, .cbData = @sizeOf(c.ACCENT_POLICY) };
+    if (set(self.hwnd, &data) == 0) {
+        log.warn("SetWindowCompositionAttribute accent {d} failed err={}", .{ state, c.GetLastError() });
+        return false;
+    }
+    return true;
 }
 
 //---------------------------------------------------------------

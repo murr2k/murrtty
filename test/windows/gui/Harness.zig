@@ -1206,6 +1206,10 @@ pub const Dump = struct {
         chrome: ?struct { dark: bool, caption: i64 } = null,
         /// Whether the desktop shows through the background (roadmap 4.1).
         translucent: bool = false,
+        /// How what shows through is blurred (4.2: "none", "backdrop",
+        /// "accent"), and the system backdrop DWM reports (-1 if it can't).
+        blur: []const u8 = "none",
+        backdrop_type: i64 = -1,
         /// The caption's text, and the user's name for the window ("" for
         /// none).
         caption: []const u8 = "",
@@ -1511,6 +1515,20 @@ pub fn pinMouse(self: *Harness, g: *const Ghostty, pinned: bool) !void {
     d.deinit();
 }
 
+/// Make Ghostty blur with the accent policy, as before Windows 11 22H2,
+/// whatever the build (`on`), or as the build says.
+pub fn forceAccentBlur(self: *Harness, g: *const Ghostty, on: bool) !void {
+    var d = try self.dumpWith(g, 13, @intFromBool(on));
+    d.deinit();
+}
+
+/// Windows' build number.
+pub fn windowsBuild() u32 {
+    var info: w.OSVERSIONINFOW = .{};
+    if (w.RtlGetVersion(&info) != 0) return 0;
+    return info.dwBuildNumber;
+}
+
 /// Make Ghostty act as if Windows' "Always show scrollbars" changed.
 pub fn setScrollbarsAlways(self: *Harness, g: *const Ghostty, always: bool) !void {
     var d = try self.dumpWith(g, 8, @intFromBool(always));
@@ -1703,8 +1721,9 @@ fn grab(self: *Harness, width: c_int, height: c_int, source: union(enum) { windo
 }
 
 /// A solid window to put behind an `.onscreen` Ghostty, for transparency
-/// checks. It is topmost (raise the Ghostty above it), never activates,
-/// and is a layered window filled once, so it needs no painting.
+/// checks. It is topmost, never activates, and is a layered window filled
+/// once, so it needs no painting. Put it under the Ghostty (SetWindowPos
+/// after it): a background harness can't raise the Ghostty over it.
 pub const Backdrop = struct {
     hwnd: w.HWND,
     rect: w.RECT,
@@ -1736,6 +1755,12 @@ pub const Backdrop = struct {
 
     /// Fill it with `rgb`. Returns whether that worked.
     pub fn fill(self: *Backdrop, rgb: u32) bool {
+        return self.fillStripes(rgb, rgb, 1);
+    }
+
+    /// Fill it with upright stripes `period` pixels wide, `a` then `b`
+    /// from the left (for blur checks). Returns whether that worked.
+    pub fn fillStripes(self: *Backdrop, a: u32, b: u32, period: u32) bool {
         const rect = self.rect;
         const width = rect.right - rect.left;
         const height = rect.bottom - rect.top;
@@ -1752,7 +1777,11 @@ pub const Backdrop = struct {
             _ = w.SelectObject(dc, o);
         };
         const px: [*]u32 = @ptrCast(@alignCast(bits orelse return false));
-        @memset(px[0..@intCast(width * height)], 0xFF000000 | rgb);
+        const wd: usize = @intCast(width);
+        for (px[0..@intCast(width * height)], 0..) |*p, i| {
+            const stripe = (i % wd) / @max(period, 1);
+            p.* = 0xFF000000 | (if (stripe % 2 == 0) a else b);
+        }
         const pos: w.POINT = .{ .x = rect.left, .y = rect.top };
         const size: w.SIZE = .{ .cx = width, .cy = height };
         const origin: w.POINT = .{};

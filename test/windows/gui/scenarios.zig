@@ -57,6 +57,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
     .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar; gtk-toolbar-style raised-border and flat", .run = shade },
     .{ .name = "translucent", .about = "background-opacity < 1: frames with its alpha (a split's too), the header bar and dividers opaque, toggle_background_opacity in every window and new ones, a reload to 1", .run = translucent },
+    .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
@@ -70,6 +71,7 @@ pub const all = [_]Scenario{
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
+    .{ .name = "blur-display", .about = "background-blur blurs a striped backdrop seen through the background ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = blurDisplay },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -4434,21 +4436,8 @@ fn transparencyOnScreen(h: *Harness) !void {
     const by: usize = @intCast(client.bottom - client.top - 30);
     // The header bar, a quarter of the way along (clear of the title).
     const hx: usize = @intCast(@divTrunc(client.right - client.left, 4));
-    // Nothing else may cover murrtty where it is read (no capture needed to
-    // tell): another program's window in front, the foreground one say,
-    // would be read instead.
     printZOrder(win, backdrop.hwnd, wr, client);
-    for ([_][2]usize{ .{ bx, by }, .{ hx, 4 }, .{ @intCast(@divTrunc(client.right - client.left, 2)), @intCast(@divTrunc(client.bottom - client.top, 2)) } }) |p| {
-        const pt: w.POINT = .{ .x = client.left + @as(c_int, @intCast(p[0])), .y = client.top + @as(c_int, @intCast(p[1])) };
-        const hit = w.WindowFromPoint(pt) orelse continue;
-        const root = w.GetAncestor(hit, w.GA_ROOT) orelse hit;
-        if (root == win) continue;
-        var class: [128]u16 = undefined;
-        const cn: usize = @intCast(@max(w.GetClassNameW(root, &class, class.len), 0));
-        return h.skip("a window of class '{f}' covers murrtty at ({d},{d}); move it off ({d},{d})-({d},{d}) and run again", .{
-            std.unicode.fmtUtf16Le(class[0..cn]), pt.x, pt.y, wr.left, wr.top, wr.right, wr.bottom,
-        });
-    }
+    try uncovered(h, win, wr, client, &.{ .{ bx, by }, .{ hx, 4 }, .{ @intCast(@divTrunc(client.right - client.left, 2)), @intCast(@divTrunc(client.bottom - client.top, 2)) } });
     const at_start = try displayPixel(h, &g, client, bx, by, "start.bmp");
 
     // Opaque, by the toggle.
@@ -4519,6 +4508,116 @@ fn transparencyOnScreen(h: *Harness) !void {
     try h.expect(near(divider_px, divider_color, 2), "the divider stays opaque (got #{x:0>6}, painted #{x:0>6})", .{ divider_px, divider_color });
     try h.expect(near(new_pane, 0x14951a, 4), "the new pane shows the backdrop through half (got #{x:0>6})", .{new_pane});
     try h.expect(near(opaque_again, 0x282c34, 2), "opaque again (got #{x:0>6})", .{opaque_again});
+}
+
+/// background-blur on the display (roadmap 4.2): murrtty at
+/// background-opacity 0.5 over upright green and black stripes 12 px wide.
+/// Unblurred, the stripes show through the background, its green channel
+/// swinging across a row by about half their contrast; blurred (a reload
+/// to background-blur = true), the swing shrinks to a fraction of that
+/// while the backdrop still shows through. It shows windows ON SCREEN, so
+/// it runs only with GHOSTTY_GUI_ONSCREEN=1.
+fn blurDisplay(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
+        return h.skip("it shows windows on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    }
+    if (h.capturesWork()) |why| return h.skip("{s}", .{why});
+    const Ctx = struct { h: *Harness, err: ?anyerror = null };
+    var ctx: Ctx = .{ .h = h };
+    h.runOnUserDesktop(&ctx, struct {
+        fn run(cx: *Ctx) void {
+            blurOnScreen(cx.h) catch |err| {
+                cx.err = err;
+            };
+        }
+    }.run);
+    if (ctx.err) |err| return err;
+}
+
+fn blurOnScreen(h: *Harness) !void {
+    const config = base_config ++ "background-opacity = 0.5\napp-notifications = no-config-reload\n";
+    var g = try h.launchAt("blur-display", config, .onscreen);
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const win = try h.mainWindow(&g);
+    var wr: w.RECT = .{};
+    _ = w.GetWindowRect(win, &wr);
+    var backdrop = try Harness.Backdrop.create(wr, 0);
+    defer backdrop.destroy();
+    if (!backdrop.fillStripes(0x00ff00, 0x000000, 12)) return h.fail("the stripes didn't fill", .{});
+    // Under murrtty, as `transparency` puts its backdrop.
+    _ = w.SetWindowPos(win, w.HWND_TOPMOST, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
+    _ = w.SetWindowPos(backdrop.hwnd, win, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
+    h.pump(500);
+    const client = clientOnScreen(win);
+    // A row across the empty middle of the pane.
+    const y: usize = @intCast(@divTrunc(client.bottom - client.top, 2));
+    try uncovered(h, win, wr, client, &.{ .{ 40, y }, .{ 400, y } });
+    const sharp = try greenSwing(h, &g, client, y, "sharp.bmp");
+
+    const cfg_path = try std.fmt.allocPrint(h.alloc, "{s}\\blur-display\\murrtty\\config.ghostty", .{h.temp_dir});
+    defer h.alloc.free(cfg_path);
+    try h.writeFileAt(cfg_path, config ++ "background-blur = true\n");
+    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
+    var d = try h.dump(&g);
+    var waited: u32 = 0;
+    while (std.mem.eql(u8, d.value.windows[0].blur, "none") and waited < 3000) : (waited += 100) {
+        d.deinit();
+        w.Sleep(100);
+        d = try h.dump(&g);
+    }
+    const method = try h.alloc.dupe(u8, d.value.windows[0].blur);
+    defer h.alloc.free(method);
+    d.deinit();
+    h.pump(800);
+    const soft = try greenSwing(h, &g, client, y, "blurred.bmp");
+
+    std.debug.print("\n    green across the stripes: sharp {x:0>2}..{x:0>2} (mean {x:0>2}); blurred ({s}) {x:0>2}..{x:0>2} (mean {x:0>2})\n", .{
+        sharp.min, sharp.max, sharp.mean, method, soft.min, soft.max, soft.mean,
+    });
+    try h.expect(!std.mem.eql(u8, method, "none"), "the reload turns the blur on ({s})", .{method});
+    try h.expect(sharp.max - sharp.min > 0x60, "unblurred, the stripes show through (swing {x})", .{sharp.max - sharp.min});
+    try h.expect((soft.max - soft.min) * 3 < sharp.max - sharp.min, "blurred, the swing shrinks to under a third ({x})", .{soft.max - soft.min});
+    try h.expect(soft.mean > 0x1a, "and the backdrop still shows through (mean green {x}, the background alone #16)", .{soft.mean});
+}
+
+const Swing = struct { min: u32, max: u32, mean: u32 };
+
+/// The display's green channel along row `y` of `client`, over a run of
+/// stripes from x = 40; the capture is kept as `name`.
+fn greenSwing(h: *Harness, g: *Harness.Ghostty, client: w.RECT, y: usize, name: []const u8) !Swing {
+    var img = try h.captureDisplay(client);
+    defer img.deinit();
+    saveImage(h, g, &img, name);
+    const end = @min(img.width - 40, 40 + 24 * 12);
+    if (y >= img.height or end <= 40) return h.fail("row {d} is outside the capture", .{y});
+    var s: Swing = .{ .min = 0xff, .max = 0, .mean = 0 };
+    var sum: u32 = 0;
+    for (40..end) |x| {
+        const green = (img.rgb(x, y) >> 8) & 0xff;
+        s.min = @min(s.min, green);
+        s.max = @max(s.max, green);
+        sum += green;
+    }
+    s.mean = sum / @as(u32, @intCast(end - 40));
+    return s;
+}
+
+/// Skip unless murrtty's `win` is on top at each of `points` (client
+/// pixels): another program's window in front, the foreground one say,
+/// would be read instead. No capture is needed to tell.
+fn uncovered(h: *Harness, win: w.HWND, wr: w.RECT, client: w.RECT, points: []const [2]usize) error{Skipped}!void {
+    for (points) |p| {
+        const pt: w.POINT = .{ .x = client.left + @as(c_int, @intCast(p[0])), .y = client.top + @as(c_int, @intCast(p[1])) };
+        const hit = w.WindowFromPoint(pt) orelse continue;
+        const root = w.GetAncestor(hit, w.GA_ROOT) orelse hit;
+        if (root == win) continue;
+        var class: [128]u16 = undefined;
+        const cn: usize = @intCast(@max(w.GetClassNameW(root, &class, class.len), 0));
+        return h.skip("a window of class '{f}' covers murrtty at ({d},{d}); move it off ({d},{d})-({d},{d}) and run again", .{
+            std.unicode.fmtUtf16Le(class[0..cn]), pt.x, pt.y, wr.left, wr.top, wr.right, wr.bottom,
+        });
+    }
 }
 
 /// Print where `win` is, whether it shows (visible, minimized, cloaked)
@@ -5134,6 +5233,78 @@ fn translucent(h: *Harness) anyerror!void {
     try expectTranslucent(h, &g, &.{ false, false });
     try expectFrameBackground(h, &g, 0, bg, 0xff);
     try quit(h, &g, surf);
+}
+
+/// background-blur on a translucent window (roadmap 4.2): Acrylic, DWM's
+/// system backdrop, from Windows 11 22H2 (build 22621, DWM reporting it),
+/// before it the accent policy's blur (which the test hooks can force
+/// here, and then hand back); none while toggled opaque, with
+/// background-blur off or at an opacity of 1; a new window takes it up.
+/// What it looks like is for the display (`transparency`'s owner).
+fn blurScenario(h: *Harness) anyerror!void {
+    const build = Harness.windowsBuild();
+    const native: []const u8 = if (build >= 22621) "backdrop" else if (build >= 17763) "accent" else "none";
+    h.log("Windows build {d}: {s}", .{ build, native });
+    const config = "background-opacity = 0.5\nbackground-blur = true\n" ++ toggle_opacity;
+    var g = try start(h, "blur", config, ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    try expectBlur(h, &g, &.{native});
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
+    try expectBlur(h, &g, &.{"none"});
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
+    try expectBlur(h, &g, &.{native});
+
+    // The accent policy's path, then the build's own again.
+    try h.forceAccentBlur(&g, true);
+    try expectBlur(h, &g, &.{"accent"});
+    try h.forceAccentBlur(&g, false);
+    try expectBlur(h, &g, &.{native});
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'N');
+    try waitWindowCount(h, &g, 2);
+    try expectBlur(h, &g, &.{ native, native });
+
+    // Reloads: background-blur off, then on at an opacity of 1.
+    const cfg_path = try std.fmt.allocPrint(h.alloc, "{s}\\blur\\murrtty\\config.ghostty", .{h.temp_dir});
+    defer h.alloc.free(cfg_path);
+    try h.writeFileAt(cfg_path, base_config ++ "background-opacity = 0.5\n" ++ toggle_opacity);
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
+    try expectBlur(h, &g, &.{ "none", "none" });
+    try h.writeFileAt(cfg_path, base_config ++ "background-blur = true\n" ++ toggle_opacity);
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
+    w.Sleep(500);
+    try expectBlur(h, &g, &.{ "none", "none" });
+    try quit(h, &g, surf);
+}
+
+/// Wait until each window's blur is as in `want`; DWM's system backdrop
+/// (where it reports one) must be Acrylic (3) with "backdrop" and the
+/// default (0) otherwise.
+fn expectBlur(h: *Harness, g: *Harness.Ghostty, want: []const []const u8) !void {
+    const names = try std.mem.join(h.alloc, ", ", want);
+    defer h.alloc.free(names);
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const wins = d.value.windows;
+        const same = wins.len == want.len and for (wins, want) |win, blur| {
+            if (!std.mem.eql(u8, win.blur, blur)) break false;
+            const backdrop: i64 = if (std.mem.eql(u8, blur, "backdrop")) 3 else 0;
+            if (win.backdrop_type >= 0 and win.backdrop_type != backdrop) break false;
+        } else true;
+        if (same) {
+            for (wins, 0..) |win, i| h.log("window {d}: DWM's backdrop type {d}", .{ i, win.backdrop_type });
+            return h.expect(true, "the windows' blur is {s}", .{names});
+        }
+        if (waited >= 3000) {
+            for (wins, 0..) |win, i| h.log("window {d}: blur {s}, backdrop type {d}", .{ i, win.blur, win.backdrop_type });
+            return h.fail("the windows' blur isn't {s}", .{names});
+        }
+        w.Sleep(100);
+    }
 }
 
 /// Wait until each window's `translucent` reads as in `want`.

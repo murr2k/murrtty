@@ -161,6 +161,9 @@ force_opaque: bool = false,
 /// balances it.
 buffered_paint: bool = false,
 
+/// Windows' build number, which picks how a window blurs (`blurMethod`).
+windows_build: u32 = 0,
+
 /// Where the mouse was last seen, in screen coordinates: over any of
 /// Ghostty's windows, or where the cursor was when panes were last laid
 /// out (see mouseMoved and Surface.followMouse).
@@ -270,6 +273,7 @@ pub fn init(
         .ole_initialized = ole >= 0,
         // Keeps the buffers a translucent window paints through.
         .buffered_paint = c.BufferedPaintInit() >= 0,
+        .windows_build = windowsBuild(),
         .fonts = draw.registerFonts(),
         .test_state = test_hooks.init(alloc),
     };
@@ -349,6 +353,41 @@ pub fn translucent(self: *const App) bool {
 pub fn backgroundAlpha(self: *const App) u8 {
     const opacity = std.math.clamp(self.config.@"background-opacity", 0, 1);
     return @intFromFloat(@round(opacity * 255.0));
+}
+
+/// How a translucent window blurs what shows through it (roadmap 4.2):
+/// Acrylic, DWM's system backdrop for transient windows, from Windows 11
+/// 22H2 (build 22621); before it the accent policy's blur, from Windows 10
+/// 1809 (build 17763), as Tauri's window-vibrancy does; else none.
+pub fn blurMethod(self: *const App) Window.Blur {
+    if (comptime test_hooks.enabled) if (self.test_state.force_accent) {
+        return if (accentFn() != null) .accent else .none;
+    };
+    if (self.windows_build >= 22621) return .backdrop;
+    if (self.windows_build >= 17763 and accentFn() != null) return .accent;
+    return .none;
+}
+
+/// user32's undocumented SetWindowCompositionAttribute, or null.
+pub fn accentFn() ?c.SetWindowCompositionAttributeFn {
+    const S = struct {
+        var resolved = false;
+        var func: ?c.SetWindowCompositionAttributeFn = null;
+    };
+    if (!S.resolved) {
+        S.resolved = true;
+        if (c.GetModuleHandleW(c.L("user32.dll"))) |lib| {
+            if (c.GetProcAddress(lib, "SetWindowCompositionAttribute")) |p| S.func = @ptrCast(p);
+        }
+        if (S.func == null) log.warn("SetWindowCompositionAttribute unavailable, no blur before Windows 11 22H2", .{});
+    }
+    return S.func;
+}
+
+fn windowsBuild() u32 {
+    var info: c.OSVERSIONINFOW = .{};
+    if (c.RtlGetVersion(&info) != 0) return 0;
+    return info.dwBuildNumber;
 }
 
 /// Queue a request to run from the message loop. It takes ownership of

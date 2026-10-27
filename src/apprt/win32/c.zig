@@ -408,6 +408,41 @@ pub const DWMWA_BORDER_COLOR = 34;
 pub const DWMWA_CAPTION_COLOR = 35;
 pub const DWMWA_TEXT_COLOR = 36;
 pub const DWMWA_COLOR_DEFAULT: COLORREF = 0xFFFFFFFF;
+/// Windows 11 22H2 (build 22621) and later only.
+pub const DWMWA_SYSTEMBACKDROP_TYPE = 38;
+pub const DWMSBT_AUTO: DWORD = 0;
+pub const DWMSBT_TRANSIENTWINDOW: DWORD = 3;
+pub extern "dwmapi" fn DwmGetWindowAttribute(HWND, DWORD, *anyopaque, DWORD) callconv(.winapi) HRESULT;
+
+// user32's undocumented accent policy, resolved at run time (App.accentFn).
+pub const WCA_ACCENT_POLICY = 19;
+pub const ACCENT_DISABLED: DWORD = 0;
+pub const ACCENT_ENABLE_BLURBEHIND: DWORD = 3;
+pub const ACCENT_POLICY = extern struct {
+    AccentState: DWORD,
+    AccentFlags: DWORD = 0,
+    /// AABBGGRR.
+    GradientColor: DWORD = 0,
+    AnimationId: DWORD = 0,
+};
+pub const WINDOWCOMPOSITIONATTRIBDATA = extern struct {
+    Attrib: DWORD,
+    pvData: *anyopaque,
+    cbData: usize,
+};
+pub const SetWindowCompositionAttributeFn = *const fn (HWND, *WINDOWCOMPOSITIONATTRIBDATA) callconv(.winapi) BOOL;
+
+// ntdll's RtlGetVersion: GetVersionExW reports Windows 8 to an exe whose
+// manifest doesn't list the newer versions.
+pub const OSVERSIONINFOW = extern struct {
+    dwOSVersionInfoSize: DWORD = @sizeOf(OSVERSIONINFOW),
+    dwMajorVersion: DWORD = 0,
+    dwMinorVersion: DWORD = 0,
+    dwBuildNumber: DWORD = 0,
+    dwPlatformId: DWORD = 0,
+    szCSDVersion: [128]u16 = @splat(0),
+};
+pub extern "ntdll" fn RtlGetVersion(*OSVERSIONINFOW) callconv(.winapi) c_long;
 
 // Registry
 pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
