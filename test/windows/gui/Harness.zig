@@ -837,7 +837,13 @@ pub fn answer(self: *Harness, g: *const Ghostty, dlg: w.HWND, id: c_int) void {
 //---------------------------------------------------------------
 // Input
 
-pub const Mods = struct { ctrl: bool = false, shift: bool = false, alt: bool = false };
+pub const Mods = struct {
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
+    /// NumLock off while the key is handled (numpadKey).
+    num_lock_off: bool = false,
+};
 
 /// Type text as WM_CHAR messages (UTF-16 units).
 pub fn typeText(self: *Harness, target: w.HWND, text: []const u8) !void {
@@ -895,6 +901,7 @@ const Held = struct {
             state[w.VK_MENU] = 0x80;
             state[w.VK_LMENU] = 0x80;
         }
+        if (mods.num_lock_off) state[w.VK_NUMLOCK] &= ~@as(u8, 1);
         _ = w.SetKeyboardState(&state);
         return self;
     }
@@ -940,10 +947,6 @@ pub fn sync(self: *Harness, target: w.HWND) void {
 
 /// A key press with modifiers held (see Held).
 pub fn key(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
-    var held: Held = .init(self.dump_msg, target, mods);
-    defer held.release();
-
-    const sc = w.MapVirtualKeyW(vk, w.MAPVK_VK_TO_VSC);
     // Keys of the navigation block: without the flag their scan codes read
     // as the numeric keypad's (Up as keypad 8).
     const extended = switch (vk) {
@@ -951,6 +954,23 @@ pub fn key(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
         0x23...0x28, 0x2E => true, // End, Home, Left, Up, Right, Down, Delete
         else => false,
     };
+    self.postKey(target, mods, vk, extended);
+}
+
+/// A navigation key from the numeric keypad with NumLock off: Windows
+/// sends the navigation key's code (VK_INSERT for 0/Ins) with the keypad's
+/// scan code, without the extended flag.
+pub fn numpadKey(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
+    var off = mods;
+    off.num_lock_off = true;
+    self.postKey(target, off, vk, false);
+}
+
+fn postKey(self: *Harness, target: w.HWND, mods: Mods, vk: u8, extended: bool) void {
+    var held: Held = .init(self.dump_msg, target, mods);
+    defer held.release();
+
+    const sc = w.MapVirtualKeyW(vk, w.MAPVK_VK_TO_VSC);
     var flags: usize = 1 | (@as(usize, sc) << 16);
     if (extended) flags |= 1 << 24;
     if (mods.alt) flags |= 1 << 29;
@@ -1239,6 +1259,8 @@ pub const Dump = struct {
         focused: bool,
         visible: bool,
         core_focused: ?bool = null,
+        /// Whether text is selected.
+        selection: ?bool = null,
         frames: ?u32 = null,
         /// As the tab's `probe`, for this pane.
         probe: ?u32 = null,

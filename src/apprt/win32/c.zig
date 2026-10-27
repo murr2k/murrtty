@@ -629,10 +629,17 @@ pub const LB_GETITEMHEIGHT = 0x01A1;
 pub const DT_TOP = 0x00000000;
 pub const DT_BOTTOM = 0x00000008;
 pub const DT_WORDBREAK = 0x00000010;
+pub const VK_CLEAR = 0x0C;
 pub const VK_PRIOR = 0x21;
 pub const VK_NEXT = 0x22;
+pub const VK_END = 0x23;
+pub const VK_HOME = 0x24;
+pub const VK_LEFT = 0x25;
 pub const VK_UP = 0x26;
+pub const VK_RIGHT = 0x27;
 pub const VK_DOWN = 0x28;
+pub const VK_INSERT = 0x2D;
+pub const VK_DELETE = 0x2E;
 pub extern "user32" fn IsChild(HWND, HWND) callconv(.winapi) BOOL;
 pub extern "uxtheme" fn SetWindowTheme(HWND, ?LPCWSTR, ?LPCWSTR) callconv(.winapi) HRESULT;
 

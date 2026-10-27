@@ -2701,6 +2701,14 @@ pub const Set = struct {
         };
         if (self.get(trigger)) |v| return v;
 
+        // murrtty: a numpad navigation key (NumLock off) without a binding
+        // of its own takes its dedicated key's, as in other apps: Ctrl+Ins
+        // on the numpad copies, Shift+Ins pastes.
+        if (numpadNavigation(event.key)) |dedicated| {
+            trigger.key = .{ .physical = dedicated };
+            if (self.get(trigger)) |v| return v;
+        }
+
         // If our UTF-8 text is exactly one codepoint, we try to match that.
         if (event.utf8.len > 0) unicode: {
             const view = std.unicode.Utf8View.init(event.utf8) catch break :unicode;
@@ -2732,6 +2740,23 @@ pub const Set = struct {
         }
 
         return null;
+    }
+
+    /// The dedicated key a numpad navigation key stands for, or null.
+    fn numpadNavigation(k: key.Key) ?key.Key {
+        return switch (k) {
+            .numpad_insert => .insert,
+            .numpad_delete => .delete,
+            .numpad_home => .home,
+            .numpad_end => .end,
+            .numpad_page_up => .page_up,
+            .numpad_page_down => .page_down,
+            .numpad_up => .arrow_up,
+            .numpad_down => .arrow_down,
+            .numpad_left => .arrow_left,
+            .numpad_right => .arrow_right,
+            else => null,
+        };
     }
 
     /// Remove a binding for a given trigger.
@@ -4346,6 +4371,50 @@ test "set: getEvent physical" {
         });
         try testing.expect(action == null);
     }
+}
+
+test "set: getEvent numpad navigation takes the dedicated key's binding" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var s: Set = .{};
+    defer s.deinit(alloc);
+
+    try s.parseAndPut(alloc, "ctrl+insert=copy_to_clipboard");
+    try s.parseAndPut(alloc, "shift+arrow_up=scroll_page_up");
+    try s.parseAndPut(alloc, "ctrl+kp_home=new_window");
+    try s.parseAndPut(alloc, "ctrl+home=new_tab");
+
+    // The numpad's Ins with NumLock off copies, as the dedicated key does.
+    {
+        const action = s.getEvent(.{
+            .key = .numpad_insert,
+            .mods = .{ .ctrl = true },
+        }).?.value_ptr.*.leaf;
+        try testing.expect(action.action == .copy_to_clipboard);
+    }
+    {
+        const action = s.getEvent(.{
+            .key = .numpad_up,
+            .mods = .{ .shift = true },
+        }).?.value_ptr.*.leaf;
+        try testing.expect(action.action == .scroll_page_up);
+    }
+
+    // A binding of the numpad key itself wins.
+    {
+        const action = s.getEvent(.{
+            .key = .numpad_home,
+            .mods = .{ .ctrl = true },
+        }).?.value_ptr.*.leaf;
+        try testing.expect(action.action == .new_window);
+    }
+
+    // A numpad digit (NumLock on) isn't a navigation key.
+    try testing.expect(s.getEvent(.{
+        .key = .numpad_0,
+        .mods = .{ .ctrl = true },
+    }) == null);
 }
 
 test "set: getEvent codepoint" {

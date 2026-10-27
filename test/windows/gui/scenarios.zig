@@ -18,6 +18,7 @@ pub const all = [_]Scenario{
     .{ .name = "ctrl-c", .about = "Ctrl+C interrupts a running program", .run = ctrlC },
     .{ .name = "tabs", .about = "new, switch, close button, middle-click, tab bar auto-hide", .run = tabs },
     .{ .name = "clipboard", .about = "Ctrl+Shift+V, Shift+Insert, Ctrl+Shift+A/C", .run = clipboard },
+    .{ .name = "copy-keys", .about = "a word selected by a double click is copied 10 times each by Ctrl+Insert, the numpad's Ctrl+Ins (NumLock off) and Ctrl+Shift+C; the numpad's Left moves, its Shift+Ins pastes", .run = copyKeys },
     .{ .name = "alt-f4", .about = "Alt+F4 asks, then closes", .run = altF4 },
     .{ .name = "clipboard-queue", .about = "a burst of OSC 52 writes asks one dialog at a time", .run = clipboardQueue },
     .{ .name = "close-all", .about = "close-all asks and disables the other windows meanwhile", .run = closeAll },
@@ -298,6 +299,94 @@ fn clipboard(h: *Harness) anyerror!void {
     try h.expect(std.mem.indexOf(u8, copied, "gui-paste-two") != null, "Ctrl+Shift+A then C copies the screen", .{});
 
     try quit(h, &g, surf);
+}
+
+/// The copy keys users expect, each copying a double-clicked word ten
+/// times: Ctrl+Insert on the dedicated key and on the numpad's 0/Ins with
+/// NumLock off (Windows treats both as Insert), and Ctrl+Shift+C. With
+/// NumLock off the numpad's other keys move, as GTK has them, and its
+/// Shift+Ins pastes.
+fn copyKeys(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    var g = try start(h, "copy-keys", "", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+
+    const Way = enum { ctrl_insert, numpad_ctrl_ins, ctrl_shift_c };
+    var failed: [3]u32 = @splat(0);
+    var round: u32 = 0;
+    while (round < 10) : (round += 1) {
+        for (std.enums.values(Way)) |way| {
+            var buf: [48]u8 = undefined;
+            const word = try std.fmt.bufPrint(&buf, "copy-{s}-{d}", .{ @tagName(way), round });
+            try h.typeText(surf, "echo ");
+            try h.typeText(surf, word);
+            h.enter(surf);
+            try waitOutputSettled(h, &g, word);
+            const at = try cellPoint(h, &g, word);
+            try h.setClipboard("stale");
+            // Two clicks, as a real double click reaches a pane (its class
+            // takes no double clicks; the core counts the clicks).
+            h.click(surf, at.x, at.y, .left);
+            h.click(surf, at.x, at.y, .left);
+            h.sync(surf);
+            {
+                var d = try h.dump(&g);
+                defer d.deinit();
+                const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{});
+                if (panes[0].selection != true) return h.fail("{s}: the double click selected nothing", .{word});
+            }
+            switch (way) {
+                .ctrl_insert => h.key(surf, .{ .ctrl = true }, w.VK_INSERT),
+                .numpad_ctrl_ins => h.numpadKey(surf, .{ .ctrl = true }, w.VK_INSERT),
+                .ctrl_shift_c => h.key(surf, .{ .ctrl = true, .shift = true }, 'C'),
+            }
+            const got = (try h.getClipboard()) orelse "";
+            defer if (got.len > 0) h.alloc.free(got);
+            if (!std.mem.eql(u8, got, word)) {
+                failed[@intFromEnum(way)] += 1;
+                h.log("{s}: the clipboard holds '{s}', not '{s}'", .{ @tagName(way), got, word });
+            }
+        }
+    }
+    try h.expect(failed[0] == 0, "Ctrl+Insert copied the word 10 of 10 times (missed {d})", .{failed[0]});
+    try h.expect(failed[1] == 0, "the numpad's Ctrl+Ins (NumLock off) copied it 10 of 10 times (missed {d})", .{failed[1]});
+    try h.expect(failed[2] == 0, "Ctrl+Shift+C copied it 10 of 10 times (missed {d})", .{failed[2]});
+
+    // With NumLock off the numpad's keys move rather than type digits (Left
+    // typed 4): Left twice, then X, inside a typed word.
+    try h.typeText(surf, "echo abc");
+    h.numpadKey(surf, .{}, w.VK_LEFT);
+    h.numpadKey(surf, .{}, w.VK_LEFT);
+    try h.typeText(surf, "X");
+    h.enter(surf);
+    try h.waitText(&g, "aXbc", 2, 10000);
+    try h.expect(true, "the numpad's Left (NumLock off) moves the cursor", .{});
+    // And its Shift+Ins pastes.
+    try h.setClipboard("numpad-paste");
+    h.numpadKey(surf, .{ .shift = true }, w.VK_INSERT);
+    try h.waitText(&g, "numpad-paste", 1, 5000);
+    try h.expect(true, "the numpad's Shift+Ins (NumLock off) pastes", .{});
+    try quit(h, &g, surf);
+}
+
+/// Wait until `word` is a whole line of the first tab with cmd's prompt
+/// after it: once the prompt is out nothing scrolls, so a click computed
+/// from the text lands on the word.
+fn waitOutputSettled(h: *Harness, g: *Harness.Ghostty, word: []const u8) !void {
+    var buf: [64]u8 = undefined;
+    const line = try std.fmt.bufPrint(&buf, "\n{s}\n", .{word});
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const text = d.value.windows[0].tabs[0].text orelse "";
+        if (std.mem.indexOf(u8, text, line) != null and
+            std.mem.endsWith(u8, std.mem.trimEnd(u8, text, " \n"), ">")) return;
+        w.Sleep(100);
+    }
+    return h.fail("'{s}' and the prompt after it never showed", .{word});
 }
 
 fn altF4(h: *Harness) anyerror!void {

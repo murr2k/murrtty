@@ -176,6 +176,10 @@ roadmap item behind it.
   Ghostty".
 - **Extra split keys** (1.9): `Ctrl+Shift+[` and `]` also go to the previous
   and next split, because Windows holds upstream's `Win+Ctrl+[` and `]`.
+- **Numpad navigation keys** (6.2): with NumLock off, a numpad key without
+  a binding of its own takes its dedicated key's, so the numpad's
+  `Ctrl+Ins` copies and `Shift+Ins` pastes, as in other Windows apps;
+  GTK's binds only the dedicated keys.
 - **Links** (0.1): untrusted links (OSC 8, unknown kinds) are vetted. Web
   and mail links open; a file opens only if it is inert (code runners are
   blocked, symbolic links are not followed); anything else asks first. GTK
@@ -1684,6 +1688,20 @@ is not treated as AltGr, so German `Ctrl+Alt+Q` does not give `@`. Also answer
 TSF-based IMEs; candidate placement through `ImmSetCompositionWindow` already
 works. *Done when:* every row types correctly in pwsh
 and nvim, and the README entries move to tested.
+
+*Found and fixed 2026-10-26 (owner's report: Ctrl+Insert didn't always
+copy):* with NumLock off the numpad's keys typed digits. Windows sends the
+navigation key's virtual key (VK_INSERT for 0/Ins) with the keypad's
+scancode, and murrtty reported the physical key (`numpad_0`), which the
+core encodes as a digit, so Ctrl+Ins there typed `0` and cleared the
+selection, and the numpad's arrows typed 8, 2, 4 and 6. It now reports
+the keypad's navigation key (`numpad_insert`, `key.remapKeypad`), as GTK
+does from the keysym. A numpad navigation key without a binding of its own
+also takes its dedicated key's (`Binding.Set.getEvent`, a shared-code
+change), so the numpad's Ctrl+Ins copies and Shift+Ins pastes, as in other
+Windows apps. Scenario `copy-keys` copies a double-clicked word ten times
+each with Ctrl+Insert, the numpad's Ctrl+Ins and Ctrl+Shift+C, moves with
+the numpad's Left and pastes with its Shift+Ins.
 
 **6.3 OpenGL fallbacks, M.**
 - Diagnose failures: no driver, Remote Desktop, the basic display adapter or an

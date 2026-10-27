@@ -89,8 +89,9 @@ hosted Windows runner and then the unit tests.
   test machine murrtty draws the echo of a key about 1.5 ms after it
   receives the key.
 - Ctrl and Alt shortcuts: `Ctrl+C` interrupting a running program,
-  `Ctrl+Shift+A`/`C`/`V` to select all, copy and paste, `Shift+Insert` to
-  paste, `Ctrl+Shift+T`, `Ctrl+Shift+W`, `Ctrl+Tab` and `Ctrl+PgUp` for tabs,
+  `Ctrl+Shift+A`/`C`/`V` to select all, copy and paste, `Ctrl+Insert` to
+  copy and `Shift+Insert` to paste (also on the numpad's Ins with NumLock
+  off, whose other keys then move as the dedicated ones), `Ctrl+Shift+T`, `Ctrl+Shift+W`, `Ctrl+Tab` and `Ctrl+PgUp` for tabs,
   `Ctrl+Shift+N` for a new window, `Alt+F4` to close the window,
   `Ctrl+Shift+Q` to quit.
 - Tabs: a tab strip themed from your terminal colors, new tab (the `+`

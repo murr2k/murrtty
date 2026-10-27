@@ -1409,7 +1409,7 @@ fn handleKey(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c
     self.keys_sent +%= 1;
     const effect = self.core_surface.keyCallback(.{
         .action = action,
-        .key = key.physicalKey(native),
+        .key = key.remapKeypad(key.physicalKey(native), vk),
         .mods = mods,
         .consumed_mods = consumed,
         .composing = dead,
@@ -1458,7 +1458,7 @@ pub fn fieldShortcut(self: *Surface, field: c.HWND, msg: c.UINT, wparam: c.WPARA
     const utf8_len = if (key.isControl(text16[0..n16])) 0 else std.unicode.utf16LeToUtf8(&utf8_buf, text16[0..n16]) catch 0;
     var event: input.KeyEvent = .{
         .action = if (c.hiword(lparam) & c.KF_REPEAT != 0) .repeat else .press,
-        .key = key.physicalKey(native),
+        .key = key.remapKeypad(key.physicalKey(native), wparam),
         .mods = mods,
         .consumed_mods = .{},
         .composing = false,

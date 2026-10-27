@@ -26,6 +26,29 @@ pub fn physicalKey(native: u32) input.Key {
     return .unidentified;
 }
 
+/// A keypad key that moves rather than types. With NumLock off (or Shift
+/// reversing it) Windows sends the navigation key's virtual key, VK_INSERT
+/// for 0/Ins, with the keypad's scancode: report the keypad's navigation
+/// key (numpad_insert), as GTK does from the keysym (KP_Insert). The
+/// physical numpad_0 would type a digit.
+pub fn remapKeypad(physical: input.Key, vk: c.WPARAM) input.Key {
+    if (!physical.keypad()) return physical;
+    return switch (vk) {
+        c.VK_INSERT => .numpad_insert,
+        c.VK_DELETE => .numpad_delete,
+        c.VK_HOME => .numpad_home,
+        c.VK_END => .numpad_end,
+        c.VK_PRIOR => .numpad_page_up,
+        c.VK_NEXT => .numpad_page_down,
+        c.VK_UP => .numpad_up,
+        c.VK_DOWN => .numpad_down,
+        c.VK_LEFT => .numpad_left,
+        c.VK_RIGHT => .numpad_right,
+        c.VK_CLEAR => .numpad_begin,
+        else => physical,
+    };
+}
+
 fn down(vk: c_int) bool {
     return c.GetKeyState(vk) < 0;
 }
@@ -125,4 +148,18 @@ test "physicalKey" {
     try testing.expectEqual(input.Key.key_a, physicalKey(0x1E));
     try testing.expectEqual(input.Key.enter, physicalKey(0x1C));
     try testing.expectEqual(input.Key.numpad_enter, physicalKey(0xE01C));
+}
+
+test "remapKeypad" {
+    const testing = std.testing;
+    // The numpad's 0/Ins with NumLock off: VK_INSERT, scancode 0x52.
+    try testing.expectEqual(input.Key.numpad_insert, remapKeypad(physicalKey(0x52), c.VK_INSERT));
+    try testing.expectEqual(input.Key.numpad_up, remapKeypad(physicalKey(0x48), c.VK_UP));
+    try testing.expectEqual(input.Key.numpad_delete, remapKeypad(physicalKey(0x53), c.VK_DELETE));
+    try testing.expectEqual(input.Key.numpad_begin, remapKeypad(physicalKey(0x4C), c.VK_CLEAR));
+    // NumLock on: the digit stays.
+    try testing.expectEqual(input.Key.numpad_0, remapKeypad(physicalKey(0x52), 0x60));
+    // The dedicated Insert key and the numpad's Enter aren't touched.
+    try testing.expectEqual(input.Key.insert, remapKeypad(physicalKey(0xE052), c.VK_INSERT));
+    try testing.expectEqual(input.Key.numpad_enter, remapKeypad(physicalKey(0xE01C), 0x0D));
 }

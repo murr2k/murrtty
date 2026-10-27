@@ -176,6 +176,7 @@ pub const VK_MENU = 0x12;
 pub const VK_PRIOR = 0x21;
 pub const VK_NEXT = 0x22;
 pub const VK_INSERT = 0x2D;
+pub const VK_LEFT = 0x25;
 pub const VK_SPACE = 0x20;
 pub const VK_F2 = 0x71;
 pub const VK_F3 = 0x72;
@@ -192,6 +193,7 @@ pub const VK_OEM_COMMA = 0xBC;
 pub const VK_LSHIFT = 0xA0;
 pub const VK_LCONTROL = 0xA2;
 pub const VK_LMENU = 0xA4;
+pub const VK_NUMLOCK = 0x90;
 
 // kernel32
 pub extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) DWORD;
