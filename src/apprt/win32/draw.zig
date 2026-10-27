@@ -369,6 +369,59 @@ pub fn ref(v: Color) c.COLORREF {
     return c.rgb(v.r, v.g, v.b);
 }
 
+/// `v` premultiplied by `alpha`, as DWM reads a translucent window's
+/// pixels (and as the renderer presents them).
+pub fn premultiply(v: Color, alpha: u8) Color {
+    return blend(.{ .r = 0, .g = 0, .b = 0 }, v, @as(f32, @floatFromInt(alpha)) / 255.0);
+}
+
+/// Painting for a window DWM composes with per-pixel alpha (a translucent
+/// window, roadmap 4.1). GDI leaves alpha 0 wherever it draws, which DWM
+/// shows as fully transparent (spike S2: a divider read as its color plus
+/// the whole backdrop), so the paint goes to a 32-bit buffer whose alpha is
+/// set before it reaches the window.
+pub const AlphaPaint = struct {
+    buffer: c.HPAINTBUFFER,
+    /// Drawn in at the target's own coordinates.
+    dc: c.HDC,
+    /// What the buffer covers, in those coordinates.
+    rect: c.RECT,
+
+    /// A cleared buffer over `rect` of `target`, or null if none can be
+    /// made.
+    pub fn begin(target: c.HDC, rect: c.RECT) ?AlphaPaint {
+        var dc: ?c.HDC = null;
+        const params: c.BP_PAINTPARAMS = .{ .dwFlags = c.BPPF_ERASE };
+        const buffer = c.BeginBufferedPaint(target, &rect, c.BPBF_TOPDOWNDIB, &params, &dc) orelse return null;
+        return .{ .buffer = buffer, .rect = rect, .dc = dc orelse {
+            _ = c.EndBufferedPaint(buffer, c.FALSE);
+            return null;
+        } };
+    }
+
+    /// Give what is drawn in `rect` (or all of the buffer) `alpha`; colors
+    /// there must be premultiplied by it (`premultiply`). The part outside
+    /// the buffer (a partial repaint) is left out.
+    pub fn setAlpha(self: AlphaPaint, rect: ?*const c.RECT, alpha: u8) void {
+        var r = self.rect;
+        if (rect) |want| {
+            r = .{
+                .left = @max(r.left, want.left),
+                .top = @max(r.top, want.top),
+                .right = @min(r.right, want.right),
+                .bottom = @min(r.bottom, want.bottom),
+            };
+            if (r.left >= r.right or r.top >= r.bottom) return;
+        }
+        _ = c.BufferedPaintSetAlpha(self.buffer, &r, alpha);
+    }
+
+    /// Copy the buffer, alpha and all, to the target.
+    pub fn end(self: AlphaPaint) void {
+        _ = c.EndBufferedPaint(self.buffer, c.TRUE);
+    }
+};
+
 /// `v` device-independent pixels at `dpi`.
 pub fn scale(dpi: c.UINT, v: c_int) c_int {
     return @intCast(@divTrunc(@as(i64, v) * dpi, c.USER_DEFAULT_SCREEN_DPI));
@@ -571,6 +624,55 @@ test "shadeAlpha: GTK's shade under its bar at 96 DPI" {
     try testing.expectEqual(12, shadeRows(192));
     try testing.expect(@abs(shadeAlpha(0.36, 192, 0) - shadeAlpha(0.36, 96, 0)) < 0.02);
     try testing.expect(shadeAlpha(0.36, 192, 9) > shadeAlpha(0.36, 192, 10));
+}
+
+test "premultiply: as the renderer presents a translucent background" {
+    const bg: Color = .{ .r = 0x28, .g = 0x2c, .b = 0x34 };
+    try std.testing.expectEqual(Color{ .r = 0x14, .g = 0x16, .b = 0x1a }, premultiply(bg, 128));
+    try std.testing.expectEqual(bg, premultiply(bg, 255));
+    try std.testing.expectEqual(Color{ .r = 0, .g = 0, .b = 0 }, premultiply(bg, 0));
+}
+
+test "AlphaPaint: the target gets the alpha set, at its own coordinates" {
+    const screen = c.GetDC(null) orelse return error.SkipZigTest;
+    defer _ = c.ReleaseDC(null, screen);
+    const info: c.BITMAPINFOHEADER = .{ .biWidth = 8, .biHeight = -4 };
+    var bits: ?[*]u8 = null;
+    const bmp = c.CreateDIBSection(screen, &info, c.DIB_RGB_COLORS, &bits, null, 0) orelse return error.SkipZigTest;
+    defer _ = c.DeleteObject(bmp);
+    const mem = c.CreateCompatibleDC(screen) orelse return error.SkipZigTest;
+    defer _ = c.DeleteDC(mem);
+    const old = c.SelectObject(mem, bmp);
+    defer _ = c.SelectObject(mem, old);
+
+    // The right half, translucent but for one opaque cell.
+    const half: c.RECT = .{ .left = 4, .top = 0, .right = 8, .bottom = 4 };
+    const cell: c.RECT = .{ .left = 6, .top = 1, .right = 7, .bottom = 2 };
+    const paint = AlphaPaint.begin(mem, half) orelse return error.SkipZigTest;
+    fill(paint.dc, half, ref(premultiply(.{ .r = 0x28, .g = 0x2c, .b = 0x34 }, 128)));
+    fill(paint.dc, cell, ref(.{ .r = 0xff, .g = 0, .b = 0 }));
+    paint.setAlpha(null, 128);
+    paint.setAlpha(&cell, 255);
+    // Reaching past the buffer, as a partial repaint's rectangles do: only
+    // its own part changes.
+    paint.setAlpha(&c.RECT{ .left = 0, .top = 3, .right = 5, .bottom = 9 }, 255);
+    paint.end();
+    _ = c.GdiFlush();
+
+    const px = bits.?[0 .. 8 * 4 * 4];
+    const at = struct {
+        fn f(p: []const u8, x: usize, y: usize) [4]u8 {
+            return p[(y * 8 + x) * 4 ..][0..4].*;
+        }
+    }.f;
+    // BGRA. The left half is the target's own (cleared) pixels.
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 0 }, at(px, 3, 0));
+    try std.testing.expectEqual([4]u8{ 0x1a, 0x16, 0x14, 0x80 }, at(px, 4, 0));
+    try std.testing.expectEqual([4]u8{ 0x1a, 0x16, 0x14, 0x80 }, at(px, 7, 3));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0xff, 0xff }, at(px, 6, 1));
+    try std.testing.expectEqual([4]u8{ 0x1a, 0x16, 0x14, 0x80 }, at(px, 6, 2));
+    try std.testing.expectEqual([4]u8{ 0x1a, 0x16, 0x14, 0xff }, at(px, 4, 3));
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 0 }, at(px, 3, 3));
 }
 
 test "chromeFont: the bundled Adwaita Sans, regular and bold" {

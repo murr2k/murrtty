@@ -27,7 +27,7 @@ pub const all = [_]Scenario{
     .{ .name = "window-size", .about = "window-width/height give the exact grid", .run = windowSize },
     .{ .name = "links", .about = "Ctrl+click links: programs and UNC paths blocked, web opens, other schemes ask", .run = links },
     .{ .name = "links-open", .about = "links really open: a test protocol and file type registered in HKCU", .run = linksOpen },
-    .{ .name = "present", .about = "background-opacity doesn't darken the (opaque) window; exact background pixels", .run = present },
+    .{ .name = "present", .about = "background-opacity doesn't darken an opaque (toggled) window; exact background pixels; translucent, premultiplied", .run = present },
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
     .{ .name = "resize-overlay", .about = "the grid size shows while a pane resizes: after-first, never, always, position, duration", .run = resizeOverlay },
@@ -56,6 +56,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-mouse", .about = "dragging a divider, Esc (none of that keystroke reaches the core), double-click to equalize, the grip band", .run = splitMouse },
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
     .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar; gtk-toolbar-style raised-border and flat", .run = shade },
+    .{ .name = "translucent", .about = "background-opacity < 1: frames with its alpha (a split's too), the header bar and dividers opaque, toggle_background_opacity in every window and new ones, a reload to 1", .run = translucent },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
@@ -68,7 +69,7 @@ pub const all = [_]Scenario{
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
-    .{ .name = "transparency", .about = "spike S2: background-opacity through DWM blur-behind, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
+    .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -1162,22 +1163,42 @@ fn presentedPixel(h: *Harness, name: []const u8, config: []const u8) !u32 {
     return h.fail("{s}: no frame was presented", .{name});
 }
 
-/// The window is opaque, so background-opacity below 1 must show the
-/// background color as configured, not darkened toward black (roadmap 0.3).
+/// The background Ghostty presents with `config` (background-opacity below
+/// 1) once toggle_background_opacity has made its window opaque, read from
+/// a frame drawn after the toggle (the left padding, clear of the bars'
+/// shade).
+fn opaquePixel(h: *Harness, name: []const u8, comptime config: []const u8) !u32 {
+    var g = try start(h, name, config ++ toggle_opacity, ">");
+    defer g.deinit();
+    h.key(try h.surface(&g, try h.mainWindow(&g)), .{ .ctrl = true, .shift = true }, w.VK_F3);
+    try expectTranslucent(h, &g, &.{false});
+    const px = try h.probePane(&g, 0, 1, 40);
+    h.log("{s}: #{x:0>6}", .{ name, px });
+    return px;
+}
+
+/// An opaque window (background-opacity 1, or toggled opaque below it)
+/// shows the background color as configured, not darkened toward black
+/// (roadmap 0.3); a translucent one presents it premultiplied by the
+/// opacity, for DWM to compose over what is behind (4.1).
 fn present(h: *Harness) anyerror!void {
     const default = try presentedPixel(h, "present-default", "");
     try h.expect(default == 0x282c34, "default background #{x:0>6}, expected #282c34", .{default});
     const half = try presentedPixel(h, "present-opacity", "background-opacity = 0.5\n");
-    try h.expect(half == 0x282c34, "opacity 0.5 gives #{x:0>6}, expected #282c34", .{half});
-    const color = try presentedPixel(h, "present-color", "background = #336699\nbackground-opacity = 0.3\n");
-    try h.expect(color == 0x336699, "#336699 at opacity 0.3 gives #{x:0>6}", .{color});
+    try h.expect(nearColor(half, 0x14161a), "translucent at opacity 0.5, #{x:0>6}: #282c34 premultiplied (#14161a)", .{half});
+    const half_opaque = try opaquePixel(h, "present-opacity-opaque", "background-opacity = 0.5\n");
+    try h.expect(half_opaque == 0x282c34, "opacity 0.5 toggled opaque gives #{x:0>6}, expected #282c34", .{half_opaque});
+    const color = try opaquePixel(h, "present-color", "background = #336699\nbackground-opacity = 0.3\n");
+    try h.expect(color == 0x336699, "#336699 at opacity 0.3, opaque, gives #{x:0>6}", .{color});
     // Native (non-linear) blending, whose colors used to be encoded twice
     // (#336699 showed as #7caacb). Its sRGB values pass through the sRGB
     // target's 8-bit encoding, which can be off by one.
     const native_opaque = try presentedPixel(h, "present-native-1", "background = #336699\nalpha-blending = native\n");
     try h.expect(nearColor(native_opaque, 0x336699), "native blending gives #{x:0>6}, expected #336699", .{native_opaque});
-    const native_part = try presentedPixel(h, "present-native-0.3", "background = #336699\nbackground-opacity = 0.3\nalpha-blending = native\n");
-    try h.expect(nearColor(native_part, 0x336699), "native blending at opacity 0.3 gives #{x:0>6}", .{native_part});
+    const native_part = try opaquePixel(h, "present-native-0.3", "background = #336699\nbackground-opacity = 0.3\nalpha-blending = native\n");
+    try h.expect(nearColor(native_part, 0x336699), "native blending at opacity 0.3, opaque, gives #{x:0>6}", .{native_part});
+    const native_clear = try presentedPixel(h, "present-native-0.3-translucent", "background = #336699\nbackground-opacity = 0.3\nalpha-blending = native\n");
+    try h.expect(nearColor(native_clear, 0x0f1f2e), "and translucent #{x:0>6}: #336699 premultiplied (#0f1f2e)", .{native_clear});
 
     // The frame itself reaches the window, at its top-left corner and not
     // blended into the background: the prompt starts with a cell whose
@@ -4358,10 +4379,12 @@ fn overlayRemoved(h: *Harness, g: *Harness.Ghostty, win: w.HWND, kind: u8) !usiz
     return n;
 }
 
-/// Spike S2 (roadmap 4.1): with blur-behind (an empty region) on the
-/// top-level window, does DWM compose the panes' GL output with its alpha?
-/// Ghostty at background-opacity 0.5 over a green backdrop, read back from
-/// the screen. Both windows show on the owner's screen for a few seconds,
+/// Roadmap 4.1 on the display (begun as spike S2): at background-opacity
+/// 0.5 over a green backdrop, DWM composes the panes' GL output with its
+/// alpha (blur-behind with an empty region on the top-level window), while
+/// layered children, the header bar and a split's divider stay opaque;
+/// toggle_background_opacity switches it off and on. Read back from the
+/// screen. Both windows show on the owner's screen for a few seconds,
 /// above everything else, so it runs only when asked.
 fn transparency(h: *Harness) anyerror!void {
     if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
@@ -4383,23 +4406,55 @@ fn transparency(h: *Harness) anyerror!void {
 const backdrop_green = 0x00FF00;
 
 fn transparencyOnScreen(h: *Harness) !void {
-    var g = try h.launchAt("transparency", base_config ++ "background-opacity = 0.5\n", .onscreen);
+    var g = try h.launchAt("transparency", base_config ++ "background-opacity = 0.5\n" ++ toggle_opacity, .onscreen);
     defer g.deinit();
     try h.waitText(&g, ">", 1, 20000);
     const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    try expectTranslucent(h, &g, &.{true});
     var wr: w.RECT = .{};
     _ = w.GetWindowRect(win, &wr);
     var backdrop = try Harness.Backdrop.create(wr, backdrop_green);
     defer backdrop.destroy();
+    // murrtty on top, the backdrop right under it. Windows raises a window
+    // only for a process with foreground rights, which a background
+    // harness (and the murrtty it starts) may lack: murrtty then got the
+    // topmost style but stayed under the backdrop, and the display read
+    // only green (2026-10-27). Lowering the backdrop needs no such right.
     _ = w.SetWindowPos(win, w.HWND_TOPMOST, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
+    _ = w.SetWindowPos(backdrop.hwnd, win, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
     h.pump(500);
 
     // Read from the display (desktop duplication): on screen the GL panes
     // may be presented outside the window's GDI surface, which BitBlt and
-    // PrintWindow read. A background pixel near the bottom right.
+    // PrintWindow read. A background pixel near the bottom right, as it
+    // opens translucent.
     const client = clientOnScreen(win);
     const bx: usize = @intCast(client.right - client.left - 30);
     const by: usize = @intCast(client.bottom - client.top - 30);
+    // The header bar, a quarter of the way along (clear of the title).
+    const hx: usize = @intCast(@divTrunc(client.right - client.left, 4));
+    // Nothing else may cover murrtty where it is read (no capture needed to
+    // tell): another program's window in front, the foreground one say,
+    // would be read instead.
+    printZOrder(win, backdrop.hwnd, wr, client);
+    for ([_][2]usize{ .{ bx, by }, .{ hx, 4 }, .{ @intCast(@divTrunc(client.right - client.left, 2)), @intCast(@divTrunc(client.bottom - client.top, 2)) } }) |p| {
+        const pt: w.POINT = .{ .x = client.left + @as(c_int, @intCast(p[0])), .y = client.top + @as(c_int, @intCast(p[1])) };
+        const hit = w.WindowFromPoint(pt) orelse continue;
+        const root = w.GetAncestor(hit, w.GA_ROOT) orelse hit;
+        if (root == win) continue;
+        var class: [128]u16 = undefined;
+        const cn: usize = @intCast(@max(w.GetClassNameW(root, &class, class.len), 0));
+        return h.skip("a window of class '{f}' covers murrtty at ({d},{d}); move it off ({d},{d})-({d},{d}) and run again", .{
+            std.unicode.fmtUtf16Le(class[0..cn]), pt.x, pt.y, wr.left, wr.top, wr.right, wr.bottom,
+        });
+    }
+    const at_start = try displayPixel(h, &g, client, bx, by, "start.bmp");
+
+    // Opaque, by the toggle.
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
+    try expectTranslucent(h, &g, &.{false});
+    h.pump(500);
     const opaque_px = try displayPixel(h, &g, client, bx, by, "opaque.bmp");
     const opaque_gdi = try screenPixel(h, client, bx, by);
 
@@ -4407,22 +4462,32 @@ fn transparencyOnScreen(h: *Harness) !void {
     var hosts: [3]u32 = undefined;
     for (&hosts, 1..) |*px, kind| px.* = try overlayOnDisplay(h, &g, client, @intCast(kind));
 
-    try h.setTransparent(&g, true);
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
+    try expectTranslucent(h, &g, &.{true});
     h.pump(500);
     const see_through = try displayPixel(h, &g, client, bx, by, "see-through.bmp");
     const see_through_gdi = try screenPixel(h, client, bx, by);
     const layered_over_clear = try overlayOnDisplay(h, &g, client, 3);
+    // The header bar, as its paint has it.
+    const header_px = try displayPixel(h, &g, client, hx, 4, "header.bmp");
+    try h.saveChrome(&g);
+    const header_paint = paint: {
+        var chrome = try h.loadPicture(&g, "chrome-0.bmp");
+        defer chrome.deinit();
+        break :paint chrome.rgb(hx, 4);
+    };
 
-    // A split's divider is painted with GDI, which leaves alpha 0. The new
-    // pane starts opaque until it is switched too.
-    h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
+    // A split's divider, painted with GDI (opaque through the alpha
+    // buffer), beside a new pane that starts translucent.
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'O');
     try waitPanes(h, &g, 2);
-    try h.setTransparent(&g, true);
     h.pump(800);
+    var divider_color: u32 = 0;
     const divider_px = divider: {
         var d = try h.dump(&g);
         defer d.deinit();
         const t = d.value.windows[0].tabs[0];
+        divider_color = @intCast(t.divider_color orelse 0);
         const dv = (t.dividers orelse break :divider @as(u32, 0));
         if (dv.len == 0) break :divider @as(u32, 0);
         const container = w.GetParent(hwndOf(t.panes.?[0].hwnd)) orelse break :divider @as(u32, 0);
@@ -4430,22 +4495,71 @@ fn transparencyOnScreen(h: *Harness) !void {
         _ = w.MapWindowPoints(container, null, &pt, 1);
         break :divider try displayPixel(h, &g, client, @intCast(pt[0].x - client.left), @intCast(pt[0].y - client.top), "split.bmp");
     };
+    const new_pane = try displayPixel(h, &g, client, bx, by, "split-see-through.bmp");
 
-    try h.setTransparent(&g, false);
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
+    try expectTranslucent(h, &g, &.{false});
     h.pump(500);
     const opaque_again = try displayPixel(h, &g, client, bx, by, "opaque-again.bmp");
 
     std.debug.print("\n    display: opaque #{x:0>6}; overlays on it: sibling #{x:0>6}, child #{x:0>6}, layered child #{x:0>6}; " ++
         "see-through #{x:0>6} (#14951a if DWM blends with the alpha, #14161a if it ignores it); layered child on it #{x:0>6}; " ++
-        "GDI divider #{x:0>6}; opaque again #{x:0>6}\n    GDI's view (BitBlt): opaque #{x:0>6}, see-through #{x:0>6}\n", .{
-        opaque_px,  hosts[0],     hosts[1],   hosts[2],        see_through, layered_over_clear,
-        divider_px, opaque_again, opaque_gdi, see_through_gdi,
+        "header #{x:0>6} (painted #{x:0>6}); divider #{x:0>6} (painted #{x:0>6}); new pane #{x:0>6}; opaque again #{x:0>6}\n" ++
+        "    GDI's view (BitBlt): opaque #{x:0>6}, see-through #{x:0>6}\n", .{
+        opaque_px,  hosts[0],        hosts[1],   hosts[2],      see_through, layered_over_clear,
+        header_px,  header_paint,    divider_px, divider_color, new_pane,    opaque_again,
+        opaque_gdi, see_through_gdi,
     });
+    try h.expect(near(at_start, 0x14951a, 4), "it opens see-through, the backdrop through half (got #{x:0>6})", .{at_start});
     try h.expect(near(opaque_px, 0x282c34, 2), "opaque, the background is #282c34 (got #{x:0>6})", .{opaque_px});
     try h.expect(hosts[2] == overlay_magenta, "a layered child shows over the pane (got #{x:0>6})", .{hosts[2]});
     try h.expect(near(see_through, 0x14951a, 4), "see-through, the backdrop shows through half (got #{x:0>6})", .{see_through});
     try h.expect(layered_over_clear == overlay_magenta, "a layered child stays opaque over it (got #{x:0>6})", .{layered_over_clear});
+    try h.expect(near(header_px, header_paint, 2), "the header bar stays opaque (got #{x:0>6}, painted #{x:0>6})", .{ header_px, header_paint });
+    try h.expect(near(divider_px, divider_color, 2), "the divider stays opaque (got #{x:0>6}, painted #{x:0>6})", .{ divider_px, divider_color });
+    try h.expect(near(new_pane, 0x14951a, 4), "the new pane shows the backdrop through half (got #{x:0>6})", .{new_pane});
     try h.expect(near(opaque_again, 0x282c34, 2), "opaque again (got #{x:0>6})", .{opaque_again});
+}
+
+/// Print where `win` is, whether it shows (visible, minimized, cloaked)
+/// and which top-level window is hit at its client's middle: it, the
+/// backdrop or another.
+fn printZOrder(win: w.HWND, backdrop: w.HWND, wr: w.RECT, client: w.RECT) void {
+    var cloaked: w.DWORD = 0;
+    _ = w.DwmGetWindowAttribute(win, w.DWMWA_CLOAKED, &cloaked, @sizeOf(w.DWORD));
+    const mid: w.POINT = .{ .x = @divTrunc(client.left + client.right, 2), .y = @divTrunc(client.top + client.bottom, 2) };
+    const hit = w.WindowFromPoint(mid);
+    const root = if (hit) |hw| w.GetAncestor(hw, w.GA_ROOT) else null;
+    const which = if (root == win) "murrtty" else if (root == backdrop) "the backdrop" else "another window";
+    std.debug.print("\n    window ({d},{d})-({d},{d}), client ({d},{d})-({d},{d}), visible {}, iconic {}, cloaked {d}; on top at ({d},{d}): {s}\n", .{
+        wr.left,                     wr.top,               wr.right,     wr.bottom,
+        client.left,                 client.top,           client.right, client.bottom,
+        w.IsWindowVisible(win) != 0, w.IsIconic(win) != 0, cloaked,      mid.x,
+        mid.y,                       which,
+    });
+    // Another window's top level: class, process, text.
+    if (root != win) if (root) |hw| {
+        var class: [128]u16 = undefined;
+        const cn: usize = @intCast(@max(w.GetClassNameW(hw, &class, class.len), 0));
+        var text: [128]u16 = undefined;
+        const tn: usize = @intCast(@max(w.GetWindowTextW(hw, &text, text.len), 0));
+        var pid: w.DWORD = 0;
+        _ = w.GetWindowThreadProcessId(hw, &pid);
+        var my_pid: w.DWORD = 0;
+        _ = w.GetWindowThreadProcessId(win, &my_pid);
+        std.debug.print("    hit 0x{x}: class '{f}', text '{f}', pid {d} (murrtty's {d})\n", .{
+            @intFromPtr(hw), std.unicode.fmtUtf16Le(class[0..cn]), std.unicode.fmtUtf16Le(text[0..tn]), pid, my_pid,
+        });
+    };
+    const topmost = struct {
+        fn f(hw: ?w.HWND) bool {
+            return if (hw) |x| w.GetWindowLongPtrW(x, w.GWL_EXSTYLE) & w.WS_EX_TOPMOST != 0 else false;
+        }
+    }.f;
+    const fg = w.GetForegroundWindow();
+    std.debug.print("    topmost: murrtty {}, backdrop {}, hit {}; foreground 0x{x} (murrtty {}, hit {})\n", .{
+        topmost(win), topmost(backdrop), topmost(root), if (fg) |x| @intFromPtr(x) else 0, fg == win, fg == root,
+    });
 }
 
 /// The display's pixel at (`x`, `y`) of `area`; the capture is kept as
@@ -4941,6 +5055,116 @@ fn shade(h: *Harness) anyerror!void {
         const chrome = try chromeOf(h, &g);
         try h.expect(chrome.caption == 0x222226, "and the bar is the window's background (#{x:0>6})", .{@as(u64, @bitCast(chrome.caption))});
         try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+}
+
+const toggle_opacity = "keybind = ctrl+shift+f3=toggle_background_opacity\n";
+
+/// background-opacity below 1 makes the windows translucent (roadmap 4.1,
+/// Phase A). Each pane presents its background at the opacity's alpha,
+/// premultiplied as DWM composes it (read back from the renderer); the
+/// header bar and a split's divider, which GDI paints, stay opaque, and
+/// what the panes don't cover yet takes the background's alpha (read back
+/// from their paint, alpha included). A pane split off presents so too
+/// (its renderer takes it up as it starts; the unfocused pane's dimming,
+/// composed over the background, is off here). toggle_background_opacity
+/// makes every window opaque and back, a window opened meanwhile
+/// following; a reload to an opacity of 1 makes them opaque, and the
+/// toggle then does nothing. What the display shows is the `transparency`
+/// scenario's.
+fn translucent(h: *Harness) anyerror!void {
+    const bg: u32 = 0x282c34;
+    // The background at alpha 128, premultiplied.
+    const half: u32 = 0x14161a;
+    const config = "background-opacity = 0.5\nunfocused-split-opacity = 1\n" ++ toggle_opacity;
+    var g = try start(h, "translucent", config, ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    try expectTranslucent(h, &g, &.{true});
+    try expectFrameBackground(h, &g, 0, half, 0x80);
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    try expectFrameBackground(h, &g, 1, half, 0x80);
+    try h.saveChrome(&g);
+    {
+        var chrome = try h.loadPicture(&g, "chrome-0.bmp");
+        defer chrome.deinit();
+        for ([_][2]usize{ .{ 1, 1 }, .{ chrome.width / 2, chrome.height / 2 }, .{ chrome.width - 2, chrome.height - 2 } }) |p| {
+            const px = chrome.argb(p[0], p[1]);
+            try h.expect(px >> 24 == 0xff, "the header bar is opaque at ({d},{d}) (#{x:0>8})", .{ p[0], p[1], px });
+        }
+        var tab = try h.loadPicture(&g, "tab-0.bmp");
+        defer tab.deinit();
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[0];
+        const dv = (t.dividers orelse return h.fail("no divider", .{}))[0];
+        const color: u32 = @intCast(t.divider_color orelse return h.fail("no divider color", .{}));
+        // Halfway down, clear of the bars' shade at its top.
+        const line = tab.argb(@intCast(@divTrunc(dv[0] + dv[2], 2)), @intCast(@divTrunc(dv[1] + dv[3], 2)));
+        try h.expect(line >> 24 == 0xff and line & 0xffffff == color, "the divider is opaque #{x:0>6} (#{x:0>8})", .{ color, line });
+        const under = tab.argb(10, tab.height - 10);
+        try h.expect(under >> 24 == 0x80 and near(under & 0xffffff, half, 1), "what the panes don't cover has the background's alpha (#{x:0>8})", .{under});
+    }
+
+    // Opaque, then translucent again; a window opened while opaque follows.
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
+    try expectTranslucent(h, &g, &.{false});
+    try expectFrameBackground(h, &g, 0, bg, 0xff);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'N');
+    try waitWindowCount(h, &g, 2);
+    try expectTranslucent(h, &g, &.{ false, false });
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
+    try expectTranslucent(h, &g, &.{ true, true });
+    try expectFrameBackground(h, &g, 0, half, 0x80);
+
+    // A reload to an opacity of 1; the toggle then does nothing.
+    const cfg_path = try std.fmt.allocPrint(h.alloc, "{s}\\translucent\\murrtty\\config.ghostty", .{h.temp_dir});
+    defer h.alloc.free(cfg_path);
+    try h.writeFileAt(cfg_path, base_config ++ "unfocused-split-opacity = 1\n" ++ toggle_opacity);
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
+    try expectTranslucent(h, &g, &.{ false, false });
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
+    w.Sleep(300);
+    try expectTranslucent(h, &g, &.{ false, false });
+    try expectFrameBackground(h, &g, 0, bg, 0xff);
+    try quit(h, &g, surf);
+}
+
+/// Wait until each window's `translucent` reads as in `want`.
+fn expectTranslucent(h: *Harness, g: *Harness.Ghostty, want: []const bool) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const wins = d.value.windows;
+        const same = wins.len == want.len and for (wins, want) |win, on| {
+            if (win.translucent != on) break false;
+        } else true;
+        if (same) return h.expect(true, "the windows' translucency is {any}", .{want});
+        if (waited >= 3000) return h.fail("the windows' translucency isn't {any}", .{want});
+        w.Sleep(100);
+    }
+}
+
+/// Read pane `pane`'s frames back until its background, low in the middle,
+/// is `rgb` at `alpha`.
+fn expectFrameBackground(h: *Harness, g: *Harness.Ghostty, pane: usize, rgb: u32, alpha: u32) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 250) {
+        try h.saveFrames(g);
+        var name_buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "frame-{d}.bmp", .{pane});
+        var img = try h.loadPicture(g, name);
+        defer img.deinit();
+        const px = img.argb(img.width / 2, img.height - 12);
+        if (near(px & 0xffffff, rgb, 2) and near(px >> 24, alpha, 1)) {
+            return h.expect(true, "pane {d}'s background reads #{x:0>8}", .{ pane, px });
+        }
+        if (waited >= 2000) return h.fail("pane {d}'s background reads #{x:0>8}, not #{x:0>2}{x:0>6}", .{ pane, px, alpha, rgb });
+        w.Sleep(250);
     }
 }
 

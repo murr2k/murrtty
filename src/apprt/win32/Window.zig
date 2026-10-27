@@ -77,6 +77,9 @@ chrome_zoomed: bool = false,
 active_window: bool = true,
 /// Whether the frame was last computed for client-side decorations.
 csd_frame: bool = false,
+/// Whether the window is translucent (App.translucent), as last applied
+/// by syncTranslucent.
+translucent: bool = false,
 /// GTK's header bar, the title bar with client-side decorations.
 header: HeaderBar = .{},
 /// The window's button pressed (a press on the header bar's minimize,
@@ -186,6 +189,8 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     _ = c.GetSystemMenu(self.hwnd, c.FALSE);
     self.setClientSize(default_width, default_height);
     self.applyChrome();
+    // Before the first pane, which takes it up.
+    self.syncTranslucent();
 
     try app.windows.append(alloc, self);
     errdefer _ = app.windows.pop();
@@ -1088,11 +1093,44 @@ pub fn configChanged(self: *Window) void {
     self.tab_bar.setDpi(self.tab_bar.dpi, self.app.config.@"window-title-font-family");
     self.header.setDpi(self.header.dpi, self.app.config.@"window-title-font-family");
     self.applyChrome();
+    // background-opacity may have changed.
+    self.syncTranslucent();
     for (self.tabs.items) |t| t.syncDim();
     self.layout();
     // An unchanged tab rectangle sends the tabs no WM_SIZE.
     for (self.tabs.items) |t| t.layoutPanes();
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+}
+
+/// Make the window translucent, or opaque again, as App.translucent says
+/// (roadmap 4.1, Phase A; spike S2). Blur-behind with an empty region
+/// makes DWM compose the window with per-pixel alpha, blurring nothing
+/// (4.2 brings the blur); the panes then present their frames' own alpha,
+/// and what GDI paints goes through draw.AlphaPaint (the chrome and the
+/// dividers opaque, as GTK's).
+pub fn syncTranslucent(self: *Window) void {
+    const on = self.app.translucent();
+    if (on == self.translucent) return;
+    const region = if (on) c.CreateRectRgn(0, 0, -1, -1) else null;
+    defer if (region) |r| {
+        _ = c.DeleteObject(r);
+    };
+    const bb: c.DWM_BLURBEHIND = .{
+        .dwFlags = c.DWM_BB_ENABLE | @as(c.DWORD, if (on) c.DWM_BB_BLURREGION else 0),
+        .fEnable = @intFromBool(on),
+        .hRgnBlur = region,
+    };
+    const hr = c.DwmEnableBlurBehindWindow(self.hwnd, &bb);
+    if (hr < 0) {
+        log.warn("DwmEnableBlurBehindWindow failed hr=0x{x}", .{@as(u32, @bitCast(hr))});
+        // Frames with their own alpha would show darker, not see-through.
+        if (on) return;
+    }
+    self.translucent = on;
+    var it = self.panes();
+    while (it.next()) |s| s.setTranslucent(on);
+    _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+    for (self.tabs.items) |t| _ = c.InvalidateRect(t.hwnd, null, c.FALSE);
 }
 
 //---------------------------------------------------------------
@@ -1105,12 +1143,27 @@ fn paint(self: *Window) void {
     var ps: c.PAINTSTRUCT = undefined;
     const hdc = c.BeginPaint(self.hwnd, &ps) orelse return;
     defer _ = c.EndPaint(self.hwnd, &ps);
-    self.paintChrome(hdc);
+    self.paintTo(hdc, ps.rcPaint);
 }
 
-/// What `paint` draws, into `hdc` (also the test hooks' read-back of the
-/// chrome).
-pub fn paintChrome(self: *Window, hdc: c.HDC) void {
+/// What `paint` draws over `rect`, into `hdc` (also the test hooks'
+/// read-back of the chrome). Translucent, through a buffer that makes the
+/// chrome opaque, as GTK's bars are, and what the tabs don't cover yet the
+/// background at its opacity.
+pub fn paintTo(self: *Window, hdc: c.HDC, rect: c.RECT) void {
+    const buffer = if (self.translucent) draw.AlphaPaint.begin(hdc, rect) else null;
+    const buf = buffer orelse return self.paintChrome(hdc);
+    defer buf.end();
+    self.paintChrome(buf.dc);
+    buf.setAlpha(null, 255);
+    const alpha = self.app.backgroundAlpha();
+    const below = self.tabRect(self.tabs.items.len);
+    draw.fill(buf.dc, below, draw.ref(draw.premultiply(self.chromeColors().bg, alpha)));
+    buf.setAlpha(&below, alpha);
+}
+
+/// The chrome, and what the tabs don't cover yet, into `hdc`.
+fn paintChrome(self: *Window, hdc: c.HDC) void {
     const colors = self.chromeColors();
     var below = self.tabRect(self.tabs.items.len);
     if (c.CreateSolidBrush(c.rgb(colors.bg.r, colors.bg.g, colors.bg.b))) |brush| {

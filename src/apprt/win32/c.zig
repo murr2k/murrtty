@@ -1077,6 +1077,23 @@ pub const DWM_BLURBEHIND = extern struct {
 pub extern "dwmapi" fn DwmEnableBlurBehindWindow(HWND, *const DWM_BLURBEHIND) callconv(.winapi) HRESULT;
 pub extern "gdi32" fn CreateRectRgn(c_int, c_int, c_int, c_int) callconv(.winapi) ?HRGN;
 
+// uxtheme's buffered painting: a 32-bit buffer whose alpha can be set
+// before it reaches the window.
+pub const HPAINTBUFFER = *opaque {};
+pub const BPBF_TOPDOWNDIB = 2;
+pub const BPPF_ERASE = 0x0001;
+pub const BP_PAINTPARAMS = extern struct {
+    cbSize: DWORD = @sizeOf(BP_PAINTPARAMS),
+    dwFlags: DWORD = 0,
+    prcExclude: ?*const RECT = null,
+    pBlendFunction: ?*const anyopaque = null,
+};
+pub extern "uxtheme" fn BufferedPaintInit() callconv(.winapi) HRESULT;
+pub extern "uxtheme" fn BufferedPaintUnInit() callconv(.winapi) HRESULT;
+pub extern "uxtheme" fn BeginBufferedPaint(HDC, *const RECT, c_int, ?*const BP_PAINTPARAMS, *?HDC) callconv(.winapi) ?HPAINTBUFFER;
+pub extern "uxtheme" fn EndBufferedPaint(HPAINTBUFFER, BOOL) callconv(.winapi) HRESULT;
+pub extern "uxtheme" fn BufferedPaintSetAlpha(HPAINTBUFFER, ?*const RECT, u8) callconv(.winapi) HRESULT;
+
 // comctl32. TaskDialogIndirect exists only in comctl32 v6, which the exe's
 // manifest selects; it is resolved at run time (App.taskDialog) so a
 // binary without that manifest still loads and falls back to a MessageBox.

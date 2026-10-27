@@ -70,6 +70,7 @@ pub fn complete(self: *const Self, sync: bool) void {
             self.renderer.presentationHealth(),
             .{
                 .rgb = uniforms.bg_color[0..3].*,
+                .alpha = uniforms.bg_color[3],
                 .linear = uniforms.bools.use_linear_blending,
             },
         ) catch |err| {

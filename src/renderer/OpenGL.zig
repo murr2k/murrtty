@@ -91,9 +91,10 @@ const Wgl = struct {
     frame: []u8 = &.{},
     frame_width: u32 = 0,
     frame_height: u32 = 0,
-    /// Spike S2 (roadmap), set by a GUI test hook: present the frame with
-    /// its own alpha, for DWM to compose over what is behind the window,
-    /// instead of over the opaque background.
+    /// Set by the apprt while its window is translucent (roadmap 4.1,
+    /// `background-opacity` below 1): present the frame with its own alpha,
+    /// for DWM to compose over what is behind the window, instead of over
+    /// the opaque background.
     transparent: std.atomic.Value(bool) = .init(false),
 
     /// Rectangles drawn over the frame in the present pass, set by the UI
@@ -144,6 +145,9 @@ pub fn setOverlay(self: *OpenGL, rects: []const Overlay.Rect) void {
 pub const Background = struct {
     /// sRGB.
     rgb: [3]u8,
+    /// `background-opacity`, which a translucent window shows where the
+    /// frame doesn't reach yet.
+    alpha: u8 = 255,
     /// Whether the frame holds linear colors (alpha-blending is linear).
     linear: bool,
 };
@@ -230,6 +234,9 @@ fn initWgl(
             .hwnd = hwnd,
             .hdc = hdc,
             .context = context,
+            // A pane opening in a translucent window presents so from its
+            // first frame (the win32 runtime's; an embedding host has none).
+            .transparent = .init(if (@hasDecl(apprt.Surface, "translucent")) opts.rt_surface.translucent() else false),
             .sampling = builtin.mode == .debug and
                 wgl.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("GHOSTTY_WIN32_TEST_DUMP"), null, 0) != 0,
         },
@@ -491,11 +498,13 @@ pub fn present(
 /// Draw the render target into the window's back buffer and swap.
 ///
 /// The target holds premultiplied color with the background's alpha set
-/// by `background-opacity`. The window is opaque, so this composites the
-/// frame over the opaque terminal background (rather than copying it onto
-/// black, which darkened any opacity below 1), and it fills whatever part
-/// of the window the target doesn't cover yet during a resize with the
-/// background too. The shader works in the frame's own color space:
+/// by `background-opacity`. An opaque window gets the frame composited over
+/// the opaque terminal background (rather than copied onto black, which
+/// darkened any opacity below 1), and whatever part of the window the
+/// target doesn't cover yet during a resize gets the background too. A
+/// translucent one (`transparent`) gets the frame's own alpha, and the
+/// background at its opacity where the frame doesn't reach. The shader
+/// works in the frame's own color space:
 /// linear (the target is sRGB, so sampling decodes, and the window's back
 /// buffer is sRGB with GL_FRAMEBUFFER_SRGB on, so storing encodes), or with
 /// native alpha blending the sRGB values the shaders wrote.
@@ -539,6 +548,7 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     // DWM takes premultiplied sRGB, which the shader works out itself.
     const transparent = state.transparent.load(.monotonic);
     try p.program.setUniform("transparent", transparent);
+    try p.program.setUniform("background_alpha", @as(f32, @floatFromInt(background.alpha)) / 255.0);
     try p.program.setUniform("frame_linear", background.linear);
     try p.program.setUniform("frame_size", @Vector(2, f32){ frame_w, frame_h });
     // The frame sits at the window's top-left corner.
@@ -691,12 +701,14 @@ const present_vertex =
     \\}
 ;
 
-/// The frame (premultiplied) over the opaque background.
+/// The frame (premultiplied) over the opaque background, or with its own
+/// alpha.
 const present_fragment =
     \\#version 430 core
     \\layout(binding = 0) uniform sampler2D frame;
     \\uniform vec4 background;
     \\uniform bool transparent;
+    \\uniform float background_alpha;
     \\uniform bool frame_linear;
     \\uniform vec2 frame_size;
     \\uniform float frame_offset_y;
@@ -707,7 +719,9 @@ const present_fragment =
     \\void main() {
     \\    ivec2 p = ivec2(gl_FragCoord.xy) - ivec2(0, int(frame_offset_y));
     \\    ivec2 size = ivec2(frame_size);
-    \\    vec4 color = vec4(0.0);
+    \\    // Beyond the frame (a resize), translucent, the background at its
+    \\    // opacity.
+    \\    vec4 color = transparent ? vec4(background.rgb, 1.0) * background_alpha : vec4(0.0);
     \\    if (p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y) {
     \\        color = texelFetch(frame, p, 0);
     \\    }

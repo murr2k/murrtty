@@ -399,6 +399,14 @@ pub extern "user32" fn GetClipboardFormatNameW(UINT, [*]u16, c_int) callconv(.wi
 
 // dwmapi
 pub extern "dwmapi" fn DwmGetCompositionTimingInfo(?HWND, *anyopaque) callconv(.winapi) c_long;
+pub extern "dwmapi" fn DwmGetWindowAttribute(HWND, DWORD, *anyopaque, DWORD) callconv(.winapi) c_long;
+pub const DWMWA_CLOAKED = 14;
+pub extern "user32" fn WindowFromPoint(POINT) callconv(.winapi) ?HWND;
+pub extern "user32" fn GetAncestor(HWND, UINT) callconv(.winapi) ?HWND;
+pub const GA_ROOT = 2;
+pub extern "user32" fn GetForegroundWindow() callconv(.winapi) ?HWND;
+pub extern "user32" fn GetWindowLongPtrW(HWND, c_int) callconv(.winapi) isize;
+pub const GWL_EXSTYLE = -20;
 
 // gdi32
 pub extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(.winapi) ?HDC;

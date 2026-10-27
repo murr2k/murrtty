@@ -324,6 +324,20 @@ pub fn updateOverlay(self: *Surface) void {
         n += 1;
     }
     api.setOverlay(rects[0..n]);
+    self.postFrame();
+}
+
+/// Present the frame with its own alpha (the window is translucent,
+/// roadmap 4.1) or over the opaque background, from the next frame.
+pub fn setTranslucent(self: *Surface, on: bool) void {
+    if (!self.core_initialized) return;
+    self.core_surface.renderer.api.wgl_state.transparent.store(on, .monotonic);
+    self.postFrame();
+}
+
+/// Ask for a frame from the message loop (WM_FORCE_FRAME), once for any
+/// number of asks before it runs.
+fn postFrame(self: *Surface) void {
     if (self.frame_posted) return;
     if (c.PostMessageW(self.hwnd, WM_FORCE_FRAME, 0, 0) != 0) self.frame_posted = true;
 }
@@ -576,6 +590,12 @@ pub fn rtApp(self: *const Surface) *App {
 /// The window the renderer draws into.
 pub fn nativeWindow(self: *const Surface) *anyopaque {
     return self.hwnd;
+}
+
+/// Whether the pane's window is translucent, which the renderer reads as
+/// it starts (setTranslucent changes it later).
+pub fn translucent(self: *const Surface) bool {
+    return self.window.translucent;
 }
 
 pub fn close(self: *Surface, process_active: bool) void {

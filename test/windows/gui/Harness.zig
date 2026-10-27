@@ -1204,6 +1204,8 @@ pub const Dump = struct {
         /// The title bar as Ghostty set it: dark or light, and the caption
         /// color (0xRRGGBB) or -1 for the system's.
         chrome: ?struct { dark: bool, caption: i64 } = null,
+        /// Whether the desktop shows through the background (roadmap 4.1).
+        translucent: bool = false,
         /// The caption's text, and the user's name for the window ("" for
         /// none).
         caption: []const u8 = "",
@@ -1472,11 +1474,33 @@ pub fn saveFrames(self: *Harness, g: *const Ghostty) !void {
 }
 
 /// Have each window paint its chrome (header bar and tab row) into a bitmap
-/// and write it as `chrome-<n>.bmp` beside the dump file: what WM_PAINT
-/// draws, which works on the hidden desktop.
+/// and write it as `chrome-<n>.bmp` beside the dump file, and its active
+/// tab's container (the dividers) as `tab-<n>.bmp`: what WM_PAINT draws,
+/// alpha included, which works on the hidden desktop.
 pub fn saveChrome(self: *Harness, g: *const Ghostty) !void {
     var d = try self.dumpWith(g, 12, 0);
     d.deinit();
+}
+
+/// A picture Ghostty wrote beside its dump file (`saveFrames`,
+/// `saveChrome`): a top-down 32-bit BMP, alpha kept.
+pub fn loadPicture(self: *Harness, g: *const Ghostty, name: []const u8) !Image {
+    const path = try std.fmt.allocPrint(self.alloc, "{s}\\{s}", .{ std.fs.path.dirname(g.dump_path).?, name });
+    defer self.alloc.free(path);
+    const bytes = self.readFileOrNull(path) orelse return self.fail("no {s}", .{path});
+    defer self.alloc.free(bytes);
+    if (bytes.len < 54 or bytes[0] != 'B' or bytes[1] != 'M') return self.fail("{s} is not a BMP", .{name});
+    const offset = std.mem.readInt(u32, bytes[10..14], .little);
+    const width = std.mem.readInt(i32, bytes[18..22], .little);
+    const height = std.mem.readInt(i32, bytes[22..26], .little);
+    const bpp = std.mem.readInt(u16, bytes[28..30], .little);
+    if (width <= 0 or height >= 0 or bpp != 32) return self.fail("{s} is not a top-down 32-bit BMP", .{name});
+    const wd: usize = @intCast(width);
+    const ht: usize = @intCast(-height);
+    if (bytes.len < offset + wd * ht * 4) return self.fail("{s} is cut short", .{name});
+    const pixels = try self.alloc.alloc(u32, wd * ht);
+    for (pixels, 0..) |*p, i| p.* = std.mem.readInt(u32, bytes[offset + i * 4 ..][0..4], .little);
+    return .{ .alloc = self.alloc, .width = wd, .height = ht, .pixels = pixels };
 }
 
 /// Make panes ignore WM_MOUSELEAVE (`pinned`), which Windows sends for a
@@ -1512,13 +1536,6 @@ pub fn setSystemDark(self: *Harness, g: *const Ghostty, dark: bool) !void {
 /// layered child (3). Returns the dump taken after.
 pub fn setOverlays(self: *Harness, g: *const Ghostty, kind: u8) !std.json.Parsed(Dump) {
     return self.dumpWith(g, 4, kind);
-}
-
-/// Spike S2: blur-behind (with an empty region) on Ghostty's windows and
-/// each pane presenting its frame's own alpha, or neither.
-pub fn setTransparent(self: *Harness, g: *const Ghostty, on: bool) !void {
-    var d = try self.dumpWith(g, 5, @intFromBool(on));
-    d.deinit();
 }
 
 fn dumpWith(self: *Harness, g: *const Ghostty, wparam: w.WPARAM, lparam: w.LPARAM) !std.json.Parsed(Dump) {

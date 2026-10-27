@@ -153,6 +153,14 @@ dark: bool = false,
 /// effects): then the scrollbar doesn't fade.
 scrollbars_always: bool = false,
 
+/// toggle_background_opacity made the windows opaque despite a
+/// background-opacity below 1 (`translucent`).
+force_opaque: bool = false,
+
+/// Whether BufferedPaintInit succeeded (draw.AlphaPaint), so terminate
+/// balances it.
+buffered_paint: bool = false,
+
 /// Where the mouse was last seen, in screen coordinates: over any of
 /// Ghostty's windows, or where the cursor was when panes were last laid
 /// out (see mouseMoved and Surface.followMouse).
@@ -260,6 +268,8 @@ pub fn init(
         .dark = systemDark(),
         .scrollbars_always = scrollbarsAlwaysShown(),
         .ole_initialized = ole >= 0,
+        // Keeps the buffers a translucent window paints through.
+        .buffered_paint = c.BufferedPaintInit() >= 0,
         .fonts = draw.registerFonts(),
         .test_state = test_hooks.init(alloc),
     };
@@ -322,8 +332,23 @@ pub fn terminate(self: *App) void {
     _ = c.DestroyWindow(self.wakeup_hwnd);
     test_hooks.deinit(&self.test_state, self.core_app.alloc);
     self.config.deinit();
+    if (self.buffered_paint) _ = c.BufferedPaintUnInit();
     if (self.ole_initialized) c.OleUninitialize();
     if (self.fonts) |h| _ = c.RemoveFontMemResourceEx(h);
+}
+
+/// Whether the windows let the desktop show through the terminal's
+/// background (roadmap 4.1): background-opacity below 1, unless
+/// toggle_background_opacity made them opaque. GTK keeps it fullscreen
+/// too.
+pub fn translucent(self: *const App) bool {
+    return self.config.@"background-opacity" < 1 and !self.force_opaque;
+}
+
+/// background-opacity as an alpha byte, as the renderer rounds it.
+pub fn backgroundAlpha(self: *const App) u8 {
+    const opacity = std.math.clamp(self.config.@"background-opacity", 0, 1);
+    return @intFromFloat(@round(opacity * 255.0));
 }
 
 /// Queue a request to run from the message loop. It takes ownership of
@@ -1314,6 +1339,14 @@ pub fn performAction(
             window.toggleMaximize();
         },
 
+        // As macOS (GTK leaves it out): every window at once, and new ones
+        // follow; nothing to toggle while background-opacity is 1.
+        .toggle_background_opacity => {
+            if (self.config.@"background-opacity" >= 1) return false;
+            self.force_opaque = !self.force_opaque;
+            for (self.windows.items) |w| w.syncTranslucent();
+        },
+
         .initial_size => {
             // Only the window's first surface sizes the window; a new
             // tab must not resize an existing window. (A tab joins the
@@ -1619,7 +1652,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         .toggle_secure_input,
         .toggle_quick_terminal,
         .toggle_visibility,
-        .toggle_background_opacity,
         .check_for_updates,
         .undo,
         .redo,

@@ -571,11 +571,19 @@ fn paint(self: *Tab) void {
     var ps: c.PAINTSTRUCT = undefined;
     const hdc = c.BeginPaint(self.hwnd, &ps) orelse return;
     defer _ = c.EndPaint(self.hwnd, &ps);
-    const bg = self.focused.colors.bg;
-    if (c.CreateSolidBrush(c.rgb(bg.r, bg.g, bg.b))) |brush| {
-        defer _ = c.DeleteObject(brush);
-        _ = c.FillRect(hdc, &ps.rcPaint, brush);
-    }
+    self.paintTo(hdc, ps.rcPaint);
+}
+
+/// What `paint` draws over `rect`, into `hdc` (also the test hooks'
+/// read-back). Translucent, through a buffer that gives the background
+/// its opacity and the dividers none of it, as GTK's.
+pub fn paintTo(self: *Tab, target: c.HDC, rect: c.RECT) void {
+    const buffer = if (self.window.translucent) draw.AlphaPaint.begin(target, rect) else null;
+    defer if (buffer) |b| b.end();
+    const hdc = if (buffer) |b| b.dc else target;
+    const alpha: u8 = if (buffer != null) self.window.app.backgroundAlpha() else 255;
+    draw.fill(hdc, rect, draw.ref(draw.premultiply(self.focused.colors.bg, alpha)));
+    if (buffer) |b| b.setAlpha(null, alpha);
     if (!self.tree.isSplit()) return;
 
     const alloc = self.window.app.core_app.alloc;
@@ -590,6 +598,8 @@ fn paint(self: *Tab) void {
     const dpi = c.GetDpiForWindow(self.hwnd);
     for (layout.splits) |s| {
         const r = toRect(s.divider);
+        // Opaque once drawn: GDI clears the alpha of what it draws.
+        defer if (buffer) |b| b.setAlpha(&r, 255);
         _ = c.FillRect(hdc, &r, brush);
         // The bars' shade falls on a divider that reaches them, as on the
         // panes beside it.

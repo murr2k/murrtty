@@ -215,6 +215,12 @@ hosted Windows runner and then the unit tests.
   close, copy, paste, clear, reset, the palette, and the config's.
 - CLI actions such as `murrtty +version` print to the console they were
   started from.
+- Transparency: `background-opacity` below 1 lets the desktop show through
+  the terminal's background, while the header bar, tabs and dividers stay
+  opaque, as in Ghostty's GTK app; `toggle_background_opacity` turns every
+  window opaque and back, as on macOS. Tested by reading back what murrtty
+  draws, alpha included; what the display shows was checked on NVIDIA
+  (spike S2), not yet on AMD or Intel.
 
 **Implemented but not yet tested**
 
@@ -240,16 +246,14 @@ hosted Windows runner and then the unit tests.
 **Not implemented yet**
 
 - Terminal inspector, quick terminal, desktop notifications.
-- Transparency: with `background-opacity` the window stays opaque and shows
-  the background color as configured. Also background blur and the
-  `window-decoration` options.
+- Background blur (`background-blur`), `window-decoration = none` and
+  `toggle_window_decorations`.
 - Dragging tabs with the mouse, and moving a tab to a new window. Dragging
   panes to rearrange splits.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with window chrome (Phase 4: GTK's look for the menus and dialogs, then
-transparency and blur).
+with background blur and the rest of the window chrome (Phase 4).
 
 **Known issues**
 

@@ -201,6 +201,10 @@ roadmap item behind it.
   macOS; GTK moves it.
 - **`resize_split`** (1.5): each step is clamped, since upstream's resize
   asserts on large deltas; GTK doesn't clamp.
+- **Background opacity toggle** (4.1): `toggle_background_opacity` works
+  as on macOS: every window turns opaque, or translucent again, and new
+  windows follow; with `background-opacity` at 1 it does nothing. GTK
+  doesn't implement it.
 - **Command palette** (3.3): each "Focus:" row says where its terminal is
   ("Tab 2: C:\src", "Window 2, tab 1: ..."), and typing matches that line
   too; GTK's rows show only the title. Results are ranked (title matches,
@@ -1745,6 +1749,31 @@ Implement `toggle_background_opacity` too. *Done when:* the desktop shows
 through the background on NVIDIA, AMD and Intel with opaque text, and drivers
 without interop fall back to opaque cleanly.
 
+*Phase A built 2026-10-27:* a window is translucent while
+`background-opacity` is below 1 (`App.translucent`, also fullscreen, as
+GTK keeps it). `Window.syncTranslucent` turns on blur-behind with an empty
+region and switches every pane's present pass to the frame's own alpha
+(premultiplied sRGB; beyond the frame during a resize, the background at
+its opacity); a new pane's renderer takes it up as it starts, so its first
+frame is translucent too. The header bar, tab row and dividers paint
+through `draw.AlphaPaint` (uxtheme's buffered paint with
+`BufferedPaintSetAlpha`): opaque, as GTK's bars and separators, and what
+the panes don't cover yet at the background's opacity, premultiplied.
+Overlays are layered children, which S2 showed stay opaque; the
+unfocused-split dimming and the bars' shade are present-pass shapes,
+blended over the translucent frame as GTK's CSS blends them.
+`toggle_background_opacity` follows macOS (every window, new ones too;
+nothing at an opacity of 1). A failing `DwmEnableBlurBehindWindow` leaves
+the window opaque. The `translucent` scenario reads the frames and paints
+back with their alpha on the hidden desktop; `transparency` (on screen)
+checks what DWM shows, header and divider included. Its first run
+(2026-10-27, the owner at the screen) showed only the green backdrop:
+the harness, a background job, set murrtty's topmost style but couldn't
+raise it over the backdrop (raising needs foreground rights). It now
+lowers the backdrop under murrtty and skips, naming the window, when
+another one covers murrtty. Left: a passing on-screen run on NVIDIA,
+then AMD and Intel (no such GPU here), and Phase B only if one fails.
+
 **4.2 Blur, M.**
 - Windows 11 22H2 (build 22621) and later: Acrylic via
   `DWMWA_SYSTEMBACKDROP_TYPE`.
@@ -2403,7 +2432,6 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 | prompt_title, set_tab_title, set_window_title, copy_title_to_clipboard | 3.5 |
 | mouse_over_link, key_sequence, key_table, readonly, show_child_exited | 3.6 |
 | toggle_tab_overview | 3.8 |
-| toggle_background_opacity | 4.1 |
 | toggle_window_decorations | 4.4 |
 | move_tab_to_new_window | 4.5 |
 | cell_size, reset_window_size, float_window | 4.6 |

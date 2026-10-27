@@ -23,6 +23,7 @@ const global = @import("../../global.zig");
 const App = @import("App.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
+const Window = @import("Window.zig");
 
 const log = std.log.scoped(.win32_test_hooks);
 
@@ -131,8 +132,6 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 /// - 4: replace spike S1's overlays (see setOverlays): none (`lparam` 0),
 ///   or one per pane as a sibling of the surface (1), a child of it (2) or
 ///   a layered child of it (3).
-/// - 5: spike S2's transparency (see setTransparent) on (`lparam` 1) or
-///   off (0).
 /// - 6: every pane's renderer failed (`lparam` 1) or recovered (0), through
 ///   the core's renderer_health action.
 /// - 7: panes ignore WM_MOUSELEAVE (`lparam` 1) or act on it (0).
@@ -142,9 +141,11 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 /// - 11: write the frames read as `frame-<n>.bmp` beside the dump file, n
 ///   counting the panes window by window, tab by tab.
 /// - 12: paint each window's chrome (header bar and tab row) into a bitmap
-///   and write it as `chrome-<n>.bmp` beside the dump file: what WM_PAINT
-///   draws, where captures can't see it (the hidden desktop).
-/// (9 is the perf-trace branch's.)
+///   and write it as `chrome-<n>.bmp` beside the dump file, and its active
+///   tab's container (the dividers) as `tab-<n>.bmp`: what WM_PAINT draws,
+///   alpha included, where captures can't see it (the hidden desktop).
+/// (5 was spike S2's transparency switch, now background-opacity itself;
+/// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
     if (wparam == 3) {
@@ -187,7 +188,6 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
             }
         }
     }
-    if (wparam == 5) setTransparent(app, lparam != 0);
     if (wparam == 10) for (app.windows.items) |w| {
         var it = w.panes();
         while (it.next()) |s| {
@@ -244,6 +244,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         // or -1 for the system's.
         const caption: i64 = if (w.chrome.caption) |ref| rgbOf(ref) else -1;
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
+        try out.print(alloc, "\"translucent\":{},", .{w.translucent});
         // The caption's text, and the user's name for the window ("" for
         // none).
         {
@@ -641,39 +642,56 @@ fn saveFrames(app: *App) void {
     }
 }
 
-/// Paint each window's chrome into a 32-bit bitmap and write it as
-/// `chrome-<n>.bmp` beside the dump file.
+/// Paint each window's chrome, and its active tab's container, into 32-bit
+/// bitmaps and write them as `chrome-<n>.bmp` and `tab-<n>.bmp` beside the
+/// dump file.
 fn saveChrome(app: *App) void {
-    const dump_path = app.test_state.path orelse return;
-    const sep = std.mem.lastIndexOfScalar(u16, dump_path, '\\') orelse return;
     for (app.windows.items, 0..) |w, n| {
         var client: c.RECT = .{};
         _ = c.GetClientRect(w.hwnd, &client);
-        const width = client.right;
-        const height = w.chromeHeight();
-        if (width <= 0 or height <= 0) continue;
-        const info: c.BITMAPINFOHEADER = .{ .biWidth = width, .biHeight = -height };
-        var bits: ?[*]u8 = null;
-        const screen = c.GetDC(null) orelse continue;
-        defer _ = c.ReleaseDC(null, screen);
-        const bmp = c.CreateDIBSection(screen, &info, c.DIB_RGB_COLORS, &bits, null, 0) orelse continue;
-        defer _ = c.DeleteObject(bmp);
-        const mem = c.CreateCompatibleDC(screen) orelse continue;
-        defer _ = c.DeleteDC(mem);
-        const old = c.SelectObject(mem, bmp);
-        defer _ = c.SelectObject(mem, old);
-        w.paintChrome(mem);
-        _ = c.GdiFlush();
-        var name_buf: [32]u8 = undefined;
-        const name = std.fmt.bufPrint(&name_buf, "chrome-{d}.bmp", .{n}) catch continue;
-        var path: [1024:0]u16 = undefined;
-        if (sep + 1 + name.len >= path.len) continue;
-        @memcpy(path[0 .. sep + 1], dump_path[0 .. sep + 1]);
-        for (name, 0..) |ch, i| path[sep + 1 + i] = ch;
-        path[sep + 1 + name.len] = 0;
-        const size: usize = @intCast(width * height * 4);
-        writeBmp(&path, (bits orelse continue)[0..size], @intCast(width), @intCast(height));
+        savePaint(app, "chrome", n, client.right, w.chromeHeight(), w, Window.paintTo);
+        if (w.tabs.items.len == 0) continue;
+        const tab = w.tabs.items[w.active];
+        _ = c.GetClientRect(tab.hwnd, &client);
+        savePaint(app, "tab", n, client.right, client.bottom, tab, Tab.paintTo);
     }
+}
+
+/// What `paint` draws into a `width` x `height` bitmap, as
+/// `<prefix>-<n>.bmp` beside the dump file.
+fn savePaint(
+    app: *App,
+    prefix: []const u8,
+    n: usize,
+    width: c_int,
+    height: c_int,
+    target: anytype,
+    paint: fn (@TypeOf(target), c.HDC, c.RECT) void,
+) void {
+    const dump_path = app.test_state.path orelse return;
+    const sep = std.mem.lastIndexOfScalar(u16, dump_path, '\\') orelse return;
+    if (width <= 0 or height <= 0) return;
+    const info: c.BITMAPINFOHEADER = .{ .biWidth = width, .biHeight = -height };
+    var bits: ?[*]u8 = null;
+    const screen = c.GetDC(null) orelse return;
+    defer _ = c.ReleaseDC(null, screen);
+    const bmp = c.CreateDIBSection(screen, &info, c.DIB_RGB_COLORS, &bits, null, 0) orelse return;
+    defer _ = c.DeleteObject(bmp);
+    const mem = c.CreateCompatibleDC(screen) orelse return;
+    defer _ = c.DeleteDC(mem);
+    const old = c.SelectObject(mem, bmp);
+    defer _ = c.SelectObject(mem, old);
+    paint(target, mem, .{ .left = 0, .top = 0, .right = width, .bottom = height });
+    _ = c.GdiFlush();
+    var name_buf: [32]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "{s}-{d}.bmp", .{ prefix, n }) catch return;
+    var path: [1024:0]u16 = undefined;
+    if (sep + 1 + name.len >= path.len) return;
+    @memcpy(path[0 .. sep + 1], dump_path[0 .. sep + 1]);
+    for (name, 0..) |ch, i| path[sep + 1 + i] = ch;
+    path[sep + 1 + name.len] = 0;
+    const size: usize = @intCast(width * height * 4);
+    writeBmp(&path, (bits orelse return)[0..size], @intCast(width), @intCast(height));
 }
 
 /// `pixels` (BGRA rows, top first) as a top-down 32-bit BMP at `path`.
@@ -705,33 +723,6 @@ fn redraw(s: *Surface) void {
     core.renderer_state.terminal.flags.dirty.clear = true;
     core.renderer_state.mutex.unlock(global.io());
     core.renderer_thread.wakeup.notify() catch {};
-}
-
-/// Spike S2 (roadmap): does DWM honor per-pixel alpha from the panes' GL
-/// child windows when the top-level window has blur-behind with an empty
-/// region (which turns on per-pixel alpha without blurring)? Each pane then
-/// presents its frame's own alpha (background-opacity) instead of
-/// compositing over the opaque background.
-fn setTransparent(app: *App, enable: bool) void {
-    for (app.windows.items) |w| {
-        const region = if (enable) c.CreateRectRgn(0, 0, -1, -1) else null;
-        defer if (region) |r| {
-            _ = c.DeleteObject(r);
-        };
-        const bb: c.DWM_BLURBEHIND = .{
-            .dwFlags = c.DWM_BB_ENABLE | @as(c.DWORD, if (enable) c.DWM_BB_BLURREGION else 0),
-            .fEnable = @intFromBool(enable),
-            .hRgnBlur = region,
-        };
-        const hr = c.DwmEnableBlurBehindWindow(w.hwnd, &bb);
-        if (hr < 0) log.err("DwmEnableBlurBehindWindow failed hr=0x{x}", .{@as(u32, @bitCast(hr))});
-        var it = w.panes();
-        while (it.next()) |s| {
-            if (!s.core_initialized) continue;
-            s.core_surface.renderer.api.wgl_state.transparent.store(enable, .monotonic);
-            redraw(s);
-        }
-    }
 }
 
 /// Spike S1 (roadmap): does a window drawn over a WGL surface stay clean
