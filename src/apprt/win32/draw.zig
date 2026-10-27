@@ -22,6 +22,8 @@ pub const Palette = struct {
     text_dim: c.COLORREF,
     /// Separators between tabs, at its border opacity.
     separator: c.COLORREF,
+    /// The split button's divider (30%, as GTK's measures).
+    divider: c.COLORREF,
     /// The line under the header bar (libadwaita's shade).
     shade: c.COLORREF,
     /// The window controls' circles: at rest, hovered, pressed.
@@ -88,6 +90,7 @@ pub fn palette(theme: Theme, backdrop: bool) Palette {
         .text = ref(fg),
         .text_dim = ref(blend(bar, fg, 0.55)),
         .separator = ref(blend(bar, fg, 0.15)),
+        .divider = ref(blend(bar, fg, 0.30)),
         .shade = ref(blend(bar, ink, theme.shade)),
         .control = ref(blend(bar, fg, 0.10)),
         .control_hover = ref(blend(bar, fg, 0.15)),

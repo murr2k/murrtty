@@ -3,8 +3,15 @@
 //! window's title centered in bold, the tab list's and the main menu's
 //! buttons, then the window's buttons, drawn as libadwaita's round window
 //! controls (with minimize and maximize, as GTK shows them when the button
-//! layout has them). Metrics in DIP from libadwaita's stylesheet: a 46 px
-//! title bar, 34 px buttons 6 apart, 7 px at the sides, controls 3 apart.
+//! layout has them).
+//!
+//! Geometry and glyphs as measured on the GTK app at 96 DPI (a headless
+//! reference capture, roadmap 4.3 step 4), in DIP: a 46 px bar, 34 px
+//! buttons 6 px from its edges and 6 px from the window's buttons, the tab
+//! list and menu buttons side by side (GTK's box has no spacing), the
+//! split arrow 21 px wide past a 22 px divider, the controls 3 apart with
+//! 24 px circles. Icons are GTK's symbolic ones on their 16 px grid, drawn
+//! as filled shapes so they land on whole pixels.
 //!
 //! The Window draws it while the window has client-side decorations;
 //! between the buttons it is the caption (WM_NCHITTEST), and the window's
@@ -18,15 +25,17 @@ const Hit = @import("TabBar.zig").Hit;
 
 /// Unscaled metrics, in device-independent pixels.
 const bar_height = 46;
-const pad_x = 7;
+const pad_x = 6;
 const pad_top = 6;
 const button = 34;
 const spacing = 6;
 /// The split button's arrow part.
-const arrow_width = 20;
+const arrow_width = 21;
 const control_spacing = 3;
 const control_circle = 24;
 const button_radius = 9;
+/// Where a 16 px icon sits in a 34 px button.
+const icon_inset = 9;
 
 dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 title_font: ?c.HFONT = null,
@@ -73,7 +82,7 @@ pub fn place(self: *const HeaderBar, width: c_int) Place {
     const maximize_right = window_close.left - self.scale(control_spacing);
     const minimize_right = maximize_right - b - self.scale(control_spacing);
     const menu_right = minimize_right - b - self.scale(spacing);
-    const list_right = menu_right - b - self.scale(spacing);
+    const list_right = menu_right - b;
     return .{
         .new_tab = new_tab,
         .new_tab_menu = .{ .left = new_tab.right, .top = top, .right = new_tab.right + self.scale(arrow_width), .bottom = bottom },
@@ -106,6 +115,72 @@ pub fn hitTest(self: *const HeaderBar, x: c_int, y: c_int, width: c_int) Hit {
     return .none;
 }
 
+/// A glyph drawn on a grid of `unit`-DIP cells from an origin, scaled.
+const Glyph = struct {
+    bar: *const HeaderBar,
+    hdc: c.HDC,
+    x: c_int,
+    y: c_int,
+    color: c.COLORREF,
+
+    /// The rectangle from (x0, y0) to (x1, y1) of the grid, scaled.
+    fn rect(g: Glyph, x0: c_int, y0: c_int, x1: c_int, y1: c_int) c.RECT {
+        return .{
+            .left = g.x + g.bar.scale(x0),
+            .top = g.y + g.bar.scale(y0),
+            .right = g.x + g.bar.scale(x1),
+            .bottom = g.y + g.bar.scale(y1),
+        };
+    }
+
+    fn fill(g: Glyph, x0: c_int, y0: c_int, x1: c_int, y1: c_int) void {
+        draw.fill(g.hdc, g.rect(x0, y0, x1, y1), g.color);
+    }
+
+    /// An outlined square, `stroke` thick, with rounded corners.
+    fn outline(g: Glyph, x0: c_int, y0: c_int, x1: c_int, y1: c_int, stroke: c_int, radius: c_int, back: c.COLORREF) void {
+        draw.roundRect(g.hdc, g.rect(x0, y0, x1, y1), g.bar.scale(radius), g.color, null, 0);
+        const inner = g.rect(x0 + stroke, y0 + stroke, x1 - stroke, y1 - stroke);
+        if (radius > stroke) {
+            draw.roundRect(g.hdc, inner, g.bar.scale(radius - stroke), back, null, 0);
+        } else {
+            draw.fill(g.hdc, inner, back);
+        }
+    }
+
+    /// A 2-unit-thick diagonal across the box from (x0, y0) to (x1, y1)
+    /// (either direction), as a filled parallelogram.
+    fn diagonal(g: Glyph, x0: c_int, y0: c_int, x1: c_int, y1: c_int) void {
+        const r = g.rect(@min(x0, x1), @min(y0, y1), @max(x0, x1), @max(y0, y1));
+        // A band ±t from the box's diagonal is √2·t wide across: 2 units.
+        const t: c_int = @intFromFloat(@round(1.414 * @as(f32, @floatFromInt(g.bar.dpi)) / 96.0));
+        const down = (y1 > y0) == (x1 > x0);
+        const pts = if (down) [_]c.POINT{
+            .{ .x = r.left, .y = r.top + t },
+            .{ .x = r.left + t, .y = r.top },
+            .{ .x = r.right, .y = r.bottom - t },
+            .{ .x = r.right - t, .y = r.bottom },
+        } else [_]c.POINT{
+            .{ .x = r.right - t, .y = r.top },
+            .{ .x = r.right, .y = r.top + t },
+            .{ .x = r.left + t, .y = r.bottom },
+            .{ .x = r.left, .y = r.bottom - t },
+        };
+        polygon(g.hdc, &pts, g.color);
+    }
+};
+
+/// A filled polygon in `color`, without an outline.
+fn polygon(hdc: c.HDC, pts: []const c.POINT, color: c.COLORREF) void {
+    const brush = c.CreateSolidBrush(color) orelse return;
+    defer _ = c.DeleteObject(brush);
+    const old_pen = c.SelectObject(hdc, c.GetStockObject(c.NULL_PEN));
+    defer _ = c.SelectObject(hdc, old_pen);
+    const old_brush = c.SelectObject(hdc, @ptrCast(brush));
+    defer _ = c.SelectObject(hdc, old_brush);
+    _ = c.Polygon(hdc, pts.ptr, @intCast(pts.len));
+}
+
 /// Paint the bar into `hdc` at the top, double buffered. `title` is
 /// UTF-16, as the window's caption holds it.
 pub fn paint(
@@ -132,83 +207,78 @@ pub fn paint(
     draw.fill(mem, .{ .top = h - 1, .right = width, .bottom = h }, pal.shade);
 
     const p = self.place(width);
-    const pen_w = @max(1, self.scale(1));
-    const stroke = @max(1, self.scale(2));
-    const half = self.scale(7);
+    const inset = self.scale(icon_inset);
 
     // New tab: tab-new, a rounded square holding a plus.
-    self.buttonBack(mem, p.new_tab, state(.new_tab, hover, pressed), pal);
-    var cx = @divTrunc(p.new_tab.left + p.new_tab.right, 2);
-    var cy = @divTrunc(p.new_tab.top + p.new_tab.bottom, 2);
-    draw.roundRect(mem, .{ .left = cx - half, .top = cy - half, .right = cx + half + 1, .bottom = cy + half + 1 }, self.scale(3), null, pal.text, stroke);
-    const arm = self.scale(3);
-    draw.line(mem, cx - arm, cy, cx + arm + 1, cy, pal.text, stroke);
-    draw.line(mem, cx, cy - arm, cx, cy + arm + 1, pal.text, stroke);
+    var back = self.buttonBack(mem, p.new_tab, state(.new_tab, hover, pressed), pal);
+    var g: Glyph = .{ .bar = self, .hdc = mem, .x = p.new_tab.left + inset, .y = p.new_tab.top + inset, .color = pal.text };
+    g.outline(0, 0, 16, 16, 2, 3, back);
+    g.fill(7, 4, 9, 12);
+    g.fill(4, 7, 12, 9);
 
-    // Its arrow: pan-down, a filled triangle, past a thin divider (GTK's
-    // split button).
-    self.buttonBack(mem, p.new_tab_menu, state(.new_tab_menu, hover, pressed), pal);
-    const inset = self.scale(9);
-    draw.line(mem, p.new_tab_menu.left, p.new_tab_menu.top + inset, p.new_tab_menu.left, p.new_tab_menu.bottom - inset, pal.separator, pen_w);
-    cx = @divTrunc(p.new_tab_menu.left + p.new_tab_menu.right, 2);
-    cy = @divTrunc(p.new_tab_menu.top + p.new_tab_menu.bottom, 2);
-    const tw = self.scale(4);
-    draw.triangleDown(mem, cx, cy, tw, @divTrunc(tw + 1, 2) + 1, pal.text);
+    // Its arrow: pan-down, a 12 x 6 triangle, past the split button's
+    // divider (in the button's last column, 6 from its top and bottom).
+    back = self.buttonBack(mem, p.new_tab_menu, state(.new_tab_menu, hover, pressed), pal);
+    const divider_x = p.new_tab_menu.left - 1;
+    draw.fill(mem, .{
+        .left = divider_x,
+        .top = p.new_tab_menu.top + self.scale(6),
+        .right = divider_x + @max(1, self.scale(1)),
+        .bottom = p.new_tab_menu.bottom - self.scale(6),
+    }, pal.divider);
+    g = .{ .bar = self, .hdc = mem, .x = p.new_tab_menu.left, .y = p.new_tab_menu.top, .color = pal.text };
+    const tri = g.rect(5, 14, 17, 20);
+    polygon(mem, &.{
+        .{ .x = tri.left, .y = tri.top },
+        .{ .x = tri.right, .y = tri.top },
+        .{ .x = @divTrunc(tri.left + tri.right, 2), .y = tri.bottom },
+    }, pal.text);
 
     // The tab list's button: view-grid, four squares (GTK's overview).
-    self.buttonBack(mem, p.list, state(.list, hover, pressed), pal);
-    cx = @divTrunc(p.list.left + p.list.right, 2);
-    cy = @divTrunc(p.list.top + p.list.bottom, 2);
-    const cell = self.scale(6);
-    const gap = self.scale(2);
-    for ([_]c_int{ -1, 1 }) |sy| for ([_]c_int{ -1, 1 }) |sx| {
-        const left = if (sx < 0) cx - @divTrunc(gap, 2) - cell else cx + gap - @divTrunc(gap, 2);
-        const top = if (sy < 0) cy - @divTrunc(gap, 2) - cell else cy + gap - @divTrunc(gap, 2);
-        draw.roundRect(mem, .{ .left = left, .top = top, .right = left + cell, .bottom = top + cell }, @max(1, self.scale(1)), pal.text, null, 0);
-    };
+    back = self.buttonBack(mem, p.list, state(.list, hover, pressed), pal);
+    g = .{ .bar = self, .hdc = mem, .x = p.list.left + inset, .y = p.list.top + inset, .color = pal.text };
+    for ([_]c_int{ 1, 9 }) |y0| for ([_]c_int{ 1, 9 }) |x0| g.fill(x0, y0, x0 + 6, y0 + 6);
 
-    // The main menu's button: open-menu, three lines.
-    self.buttonBack(mem, p.menu, state(.menu, hover, pressed), pal);
-    cx = @divTrunc(p.menu.left + p.menu.right, 2);
-    cy = @divTrunc(p.menu.top + p.menu.bottom, 2);
-    const step = self.scale(5);
-    for ([_]c_int{ cy - step, cy, cy + step }) |y| {
-        draw.line(mem, cx - half + 1, y, cx + half, y, pal.text, stroke);
-    }
+    // The main menu's button: open-menu, three bars.
+    back = self.buttonBack(mem, p.menu, state(.menu, hover, pressed), pal);
+    g = .{ .bar = self, .hdc = mem, .x = p.menu.left + inset, .y = p.menu.top + inset, .color = pal.text };
+    for ([_]c_int{ 2, 7, 12 }) |y0| g.fill(1, y0, 15, y0 + 2);
 
-    // The window's buttons: libadwaita's round controls.
+    // The window's buttons: libadwaita's round controls, their 8 px
+    // glyphs 13 px into the button.
     for ([_]struct { Hit, c.RECT }{
         .{ .minimize, p.minimize },
         .{ .maximize, p.maximize },
         .{ .window_close, p.window_close },
     }) |control| {
         const r = control[1];
-        cx = @divTrunc(r.left + r.right, 2);
-        cy = @divTrunc(r.top + r.bottom, 2);
-        const radius = @divTrunc(self.scale(control_circle), 2);
-        const back = switch (state(control[0], hover, pressed)) {
+        draw.fill(mem, r, pal.bar);
+        const circle = self.scale(control_circle);
+        const off = @divTrunc(r.right - r.left - circle, 2);
+        const disc = switch (state(control[0], hover, pressed)) {
             .normal => pal.control,
             .hover => pal.control_hover,
             .pressed => pal.control_pressed,
         };
-        draw.roundRect(mem, .{ .left = cx - radius, .top = cy - radius, .right = cx + radius, .bottom = cy + radius }, radius, back, null, 0);
-        const g = self.scale(4);
+        const round: c.RECT = .{ .left = r.left + off, .top = r.top + off, .right = r.left + off + circle, .bottom = r.top + off + circle };
+        draw.roundRect(mem, round, @divTrunc(circle, 2), disc, null, 0);
+        g = .{ .bar = self, .hdc = mem, .x = r.left, .y = r.top, .color = pal.text };
         switch (control[0]) {
-            // window-minimize: a line low in the circle.
-            .minimize => draw.line(mem, cx - g, cy + self.scale(2), cx + g + 1, cy + self.scale(2), pal.text, stroke),
-            // window-maximize, or window-restore when maximized.
+            // window-minimize: a bar low in the box.
+            .minimize => g.fill(13, 19, 21, 21),
+            // window-maximize, or window-restore when maximized: one
+            // square, or two overlapping.
             .maximize => if (maximized) {
-                const s = self.scale(3);
-                draw.roundRect(mem, .{ .left = cx - g, .top = cy - g + s, .right = cx + g - s + 1, .bottom = cy + g + 1 }, 0, null, pal.text, pen_w);
-                draw.line(mem, cx - g + s, cy - g, cx + g, cy - g, pal.text, pen_w);
-                draw.line(mem, cx + g, cy - g, cx + g, cy + g - s, pal.text, pen_w);
+                g.outline(13, 15, 19, 21, 2, 0, disc);
+                g.fill(15, 13, 21, 15);
+                g.fill(19, 13, 21, 19);
             } else {
-                draw.roundRect(mem, .{ .left = cx - g, .top = cy - g, .right = cx + g + 1, .bottom = cy + g + 1 }, @max(1, self.scale(1)), null, pal.text, pen_w);
+                g.outline(13, 13, 21, 21, 2, 0, disc);
             },
             // window-close: an X.
             else => {
-                draw.line(mem, cx - g, cy - g, cx + g + 1, cy + g + 1, pal.text, stroke);
-                draw.line(mem, cx + g, cy - g, cx - g - 1, cy + g + 1, pal.text, stroke);
+                g.diagonal(13, 13, 21, 21);
+                g.diagonal(21, 13, 13, 21);
             },
         }
     }
@@ -244,15 +314,16 @@ fn state(item: Hit, hover: Hit, pressed: Hit) State {
 }
 
 /// A button's background: the bar, and a rounded highlight when hovered or
-/// pressed (libadwaita's flat button).
-fn buttonBack(self: *const HeaderBar, hdc: c.HDC, r: c.RECT, s: State, pal: draw.Palette) void {
+/// pressed (libadwaita's flat button). Returns the color behind its icon.
+fn buttonBack(self: *const HeaderBar, hdc: c.HDC, r: c.RECT, s: State, pal: draw.Palette) c.COLORREF {
     draw.fill(hdc, r, pal.bar);
     const color = switch (s) {
-        .normal => return,
+        .normal => return pal.bar,
         .hover => pal.hover,
         .pressed => pal.pressed,
     };
     draw.roundRect(hdc, r, self.scale(button_radius), color, null, 0);
+    return color;
 }
 
 test "hitTest: the buttons, the caption between them, close to the edge" {
@@ -272,8 +343,21 @@ test "hitTest: the buttons, the caption between them, close to the edge" {
     // Between the buttons: the caption.
     try testing.expectEqual(Hit.none, bar.hitTest(width / 2, 20, width));
     try testing.expectEqual(Hit.none, bar.hitTest(width / 2, bar_height, width));
-    // Left to right, no overlaps.
+    // Left to right, no overlaps; the list and menu buttons side by side.
     try testing.expect(p.new_tab_menu.left >= p.new_tab.right);
-    try testing.expect(p.list.right <= p.menu.left and p.menu.right <= p.minimize.left);
+    try testing.expect(p.list.right == p.menu.left and p.menu.right <= p.minimize.left);
     try testing.expect(p.minimize.right <= p.maximize.left and p.maximize.right <= p.window_close.left);
+}
+
+test "place: GTK's geometry at 96 DPI" {
+    const testing = std.testing;
+    const bar: HeaderBar = .{};
+    // The reference capture's 794 px bar, measured from its left edge.
+    const p = bar.place(794);
+    try testing.expectEqual(@as(c_int, 6), p.new_tab.left);
+    try testing.expectEqual(@as(c_int, 61), p.new_tab_menu.right);
+    try testing.expectEqual(@as(c_int, 606), p.list.left);
+    try testing.expectEqual(@as(c_int, 680), p.minimize.left);
+    try testing.expectEqual(@as(c_int, 754), p.window_close.left);
+    try testing.expectEqual(@as(c_int, 788), p.window_close.right);
 }

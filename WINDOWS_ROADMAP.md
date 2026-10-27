@@ -1828,6 +1828,25 @@ font faces are what GDI chose (`GetTextFace`), so a missing font shows
 as its substitute; `launch` expects Adwaita Sans and a unit test
 registers it and selects both weights.
 
+*Step 4, begun 2026-10-27: the header bar matched.* `test/windows/look/`
+takes a GTK reference picture headless (the snap under Xvfb at 96 DPI,
+GNOME's font in an isolated config, the screen from Xvfb's framebuffer
+file) and measures it against murrtty's chrome pictures (README there).
+Measured on GTK: the bar is 46 px; its buttons sit 6 px from the edges
+(libadwaita's 7 px less its -1 px margin); the tab list and menu buttons
+touch (a plain box); 6 px from the menu button to minimize, the controls
+37 px apart with 24 px circles at 10%; the split arrow 21 px wide past a
+1 x 22 px divider at 30%; the icons GTK's 16 px glyphs (tab-new a 2 px
+rounded square with an 8 px plus, pan-down 12 x 6, view-grid two 6 px
+squares 2 apart, open-menu three 14 x 2 bars, the controls' 8 px glyphs
+13 px into the button). `HeaderBar` now lays out and draws exactly that,
+glyphs as filled shapes on the 16 px grid; a unit test pins the geometry
+to the reference's. Still to compare: the tab row against GTK's tab bar,
+the terminal's font, cells and padding (which needs a read-back of a
+frame, since window captures read white while DWM idles), and GTK's
+shade, which falls 5 px onto the content below the bar where murrtty
+draws a 1 px line inside it.
+
 *With the Look rule* (decided 2026-10-26, which made 4.3 Phase 4's first
 item): the bar and tab row take libadwaita's colors and metrics (taken from
 its stylesheet when built, not from memory): Adwaita light or dark by the
