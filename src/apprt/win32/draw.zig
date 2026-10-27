@@ -119,6 +119,66 @@ pub const MenuPalette = struct {
     separator: c.COLORREF,
 };
 
+/// An alert dialog's colors (libadwaita's stylesheet): the dialog's
+/// background and text, its plain buttons at 10% of the text (15% hovered,
+/// 30% pressed), a destructive one's text in the destructive color over
+/// 15% of it, a suggested one white over the accent (GNOME's blue).
+pub const DialogPalette = struct {
+    bg: c.COLORREF,
+    text: c.COLORREF,
+    button: c.COLORREF,
+    button_hover: c.COLORREF,
+    button_pressed: c.COLORREF,
+    destructive_text: c.COLORREF,
+    destructive: c.COLORREF,
+    destructive_pressed: c.COLORREF,
+    suggested_text: c.COLORREF,
+    suggested: c.COLORREF,
+    suggested_pressed: c.COLORREF,
+    /// The keyboard focus ring: the accent at half opacity.
+    focus: c.COLORREF,
+};
+
+pub fn dialogPalette(dark: bool) DialogPalette {
+    const bg: Color = if (dark) .{ .r = 0x36, .g = 0x36, .b = 0x3a } else .{ .r = 0xfa, .g = 0xfa, .b = 0xfb };
+    const white: Color = .{ .r = 0xff, .g = 0xff, .b = 0xff };
+    const fg: Color = if (dark) white else blend(white, ink, 0.8);
+    // destructive-bg is red_4 in dark, red_3 in light; the destructive
+    // color its OKLab lightness raised to 0.85 in dark, lowered to 0.5 in
+    // light.
+    const red: Color = if (dark) .{ .r = 0xc0, .g = 0x1c, .b = 0x28 } else .{ .r = 0xe0, .g = 0x1b, .b = 0x24 };
+    const destructive = clampLightness(red, if (dark) 0.85 else 0.0, if (dark) 1.0 else 0.5);
+    const accent: Color = .{ .r = 0x35, .g = 0x84, .b = 0xe4 };
+    return .{
+        .bg = ref(bg),
+        .text = ref(fg),
+        .button = ref(blend(bg, fg, 0.10)),
+        .button_hover = ref(blend(bg, fg, 0.15)),
+        .button_pressed = ref(blend(bg, fg, 0.30)),
+        .destructive_text = ref(destructive),
+        .destructive = ref(blend(bg, destructive, 0.15)),
+        .destructive_pressed = ref(blend(bg, destructive, 0.35)),
+        .suggested_text = ref(white),
+        .suggested = ref(accent),
+        .suggested_pressed = ref(blend(accent, white, 0.10)),
+        .focus = ref(blend(bg, accent, 0.5)),
+    };
+}
+
+/// `color` with its OKLab lightness kept between `lo` and `hi`, as CSS's
+/// `oklab(from color max(l, lo) a b)` and `min(l, hi)`.
+pub fn clampLightness(color: Color, lo: f32, hi: f32) Color {
+    const r = toLinear(color.r);
+    const g = toLinear(color.g);
+    const b = toLinear(color.b);
+    const l_ = std.math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m_ = std.math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s_ = std.math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    const L = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_;
+    if (L <= 0) return color;
+    return scaleLightness(color, std.math.clamp(L, lo, hi) / L);
+}
+
 pub fn menuPalette(theme: Theme) MenuPalette {
     const bg = theme.popover;
     const fg = theme.popover_fg;
@@ -407,8 +467,13 @@ pub fn registerFonts() ?c.HANDLE {
 /// Sans 11, or `family` (window-title-font-family), bold if asked, with
 /// grayscale antialiasing as GTK draws text.
 pub fn chromeFont(dpi: c.UINT, family: ?[]const u8, bold: bool) ?c.HFONT {
+    return chromeFontSized(dpi, family, chrome_points, bold);
+}
+
+/// The chrome's font at `points` (an alert dialog's heading is 15).
+pub fn chromeFontSized(dpi: c.UINT, family: ?[]const u8, points: c.UINT, bold: bool) ?c.HFONT {
     var lf: c.LOGFONTW = std.mem.zeroes(c.LOGFONTW);
-    lf.lfHeight = -@as(c_long, @intCast((chrome_points * dpi + 36) / 72));
+    lf.lfHeight = -@as(c_long, @intCast((points * dpi + 36) / 72));
     lf.lfWeight = if (bold) 700 else 400;
     lf.lfCharSet = 1; // DEFAULT_CHARSET
     lf.lfQuality = 4; // ANTIALIASED_QUALITY

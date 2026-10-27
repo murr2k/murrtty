@@ -219,6 +219,7 @@ fn snapshotFrame(h: *Harness, dir: []const u8) !void {
     };
     const config = try std.fmt.allocPrint(h.alloc, base_config ++
         \\command = direct:cmd.exe /c "echo {s}&& pause>nul"
+        \\keybind = ctrl+shift+f2=prompt_surface_title
         \\font-size = {d}
         \\window-width = 80
         \\window-height = 24
@@ -250,6 +251,19 @@ fn snapshotFrame(h: *Harness, dir: []const u8) !void {
     const surf = try h.surface(&g, win);
     h.rightPress(surf, 200, 150);
     try saveMenu(h, &g, dir, "paint-context-menu.bmp");
+    // The alert dialogs: a close confirmation, the title prompt.
+    for ([_]struct { u8, []const u8 }{ .{ 'W', "paint-dialog.bmp" }, .{ w.VK_F2, "paint-title-dialog.bmp" } }) |d| {
+        h.key(surf, .{ .ctrl = true, .shift = true }, d[0]);
+        const dlg = try h.waitDialog(&g, 5000);
+        w.Sleep(300);
+        var img = h.capturePrint(dlg) catch return h.fail("dialog capture failed", .{});
+        defer img.deinit();
+        const path = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ dir, d[1] });
+        defer h.alloc.free(path);
+        try img.save(path);
+        h.answer(&g, dlg, w.IDCANCEL);
+        try waitNoDialog(h, &g);
+    }
     try h.expect(true, "wrote frame-tab.bmp, paint-header.bmp and paint-tabs-style.bmp to {s} at {d} DPI", .{ dir, dpi });
 }
 
@@ -324,6 +338,16 @@ fn typing(h: *Harness) anyerror!void {
     h.key(surf, .{ .ctrl = true, .shift = true }, 'W');
     const dlg = try h.waitDialog(&g, 5000);
     try expectDialogText(h, &g, "Close Tab?", "All terminal sessions in this tab will be terminated.");
+    // libadwaita's alert dialog (roadmap 4.3b): Cancel the default, Close
+    // the other response, the window dimmed behind it.
+    try h.expect(defaultButton(dlg) == w.IDCANCEL, "Cancel is the default ({d})", .{defaultButton(dlg)});
+    {
+        const label = try dialogItemText(h, dlg, w.IDYES);
+        defer h.alloc.free(label);
+        try h.expect(std.mem.eql(u8, label, "Close"), "the other response is Close ('{s}')", .{label});
+    }
+    const top = childAt(try h.mainWindow(&g), 10, 10);
+    try h.expect(top != null and hasClass(top.?, std.unicode.utf8ToUtf16LeStringLiteral("MurrttyPaletteDim")), "the window is dimmed behind it", .{});
     h.answer(&g, dlg, w.IDCANCEL);
     w.Sleep(500);
     try h.expect(g.exitCode() == null, "No keeps the tab", .{});
@@ -3507,6 +3531,13 @@ fn waitKeyboard(h: *Harness, win: w.HWND, target: w.HWND, comptime what: []const
         w.Sleep(100);
     }
     return h.fail("not so: " ++ what, .{});
+}
+
+/// Whether `hwnd`'s window class is `class`.
+fn hasClass(hwnd: w.HWND, class: []const u16) bool {
+    var buf: [64]u16 = undefined;
+    const n = w.GetClassNameW(hwnd, &buf, buf.len);
+    return n > 0 and std.mem.eql(u16, buf[0..@intCast(n)], class);
 }
 
 /// The direct child of `parent` under its client point (`x`, `y`): what a

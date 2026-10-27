@@ -401,6 +401,9 @@ pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
 /// Windows 11 (build 22000) and later only.
+pub const SWP_SHOWWINDOW = 0x0040;
+pub const DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+pub const DWMWCP_ROUND: c_int = 2;
 pub const DWMWA_BORDER_COLOR = 34;
 pub const DWMWA_CAPTION_COLOR = 35;
 pub const DWMWA_TEXT_COLOR = 36;
@@ -820,6 +823,11 @@ pub const MEASUREITEMSTRUCT = extern struct {
     itemData: usize,
 };
 pub const ODT_MENU = 1;
+pub const ODS_FOCUS = 0x0010;
+pub const ODS_NOFOCUSRECT = 0x0200;
+pub const DM_SETDEFID = 0x0401;
+pub const EN_SETFOCUS = 0x0100;
+pub const EN_KILLFOCUS = 0x0200;
 pub const SM_CXMENUCHECK = 71;
 pub const ODS_GRAYED = 0x0002;
 pub const ODS_NOACCEL = 0x0100;

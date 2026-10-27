@@ -14,6 +14,7 @@ const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
 const Banner = @import("Banner.zig");
+const AlertDialog = @import("AlertDialog.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const draw = @import("draw.zig");
 const Overlay = @import("Overlay.zig");
@@ -358,7 +359,7 @@ fn runTitlePrompt(self: *App, surface: *Surface, which: apprt.action.PromptTitle
     // Closes wait until it ends, so the pane, tab and window stay.
     var modal = self.beginModal(window.hwnd, .{});
     defer modal.end();
-    const name = TitleDialog.ask(alloc, window.hwnd, which, initial) catch |err| {
+    const name = TitleDialog.ask(alloc, window.hwnd, which, initial, self.chromeTheme().dark) catch |err| {
         log.warn("title prompt failed err={}", .{err});
         return;
     } orelse return;
@@ -624,10 +625,27 @@ pub fn confirm(self: *App, owner: ?c.HWND, text: []const u8, caption: []const u8
     );
 }
 
-/// GTK's close confirmation: its heading and body, then Cancel (the
-/// default; Escape too) and Close. True to close. Close requests made
-/// while it is open are held until it closes.
+/// GTK's close confirmation, a libadwaita alert dialog (AlertDialog): its
+/// heading and body, then Cancel (the default; Escape too) and Close, in
+/// the destructive color. True to close. Close requests made while it is
+/// open are held until it closes.
 pub fn confirmClose(self: *App, owner: ?c.HWND, target: CloseTarget) bool {
+    {
+        test_hooks.recordDialog(&self.test_state, target.heading(), target.body());
+        var modal = self.beginModal(owner, .{});
+        defer modal.end();
+        if (AlertDialog.run(self.core_app.alloc, .{
+            .owner = owner,
+            .heading = target.heading(),
+            .body = target.body(),
+            .responses = &.{
+                .{ .id = c.IDCANCEL, .label = "Cancel" },
+                .{ .id = id_close, .label = "Close", .appearance = .destructive },
+            },
+            .default = c.IDCANCEL,
+            .dark = self.chromeTheme().dark,
+        })) |chosen| return chosen.id == id_close;
+    }
     const chosen = self.taskDialog(.{
         .owner = owner,
         .title = "murrtty",

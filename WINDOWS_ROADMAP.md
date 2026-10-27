@@ -271,6 +271,11 @@ roadmap item behind it.
   keyboard opens a menu; GTK's menus have none. Bindings read as Windows
   writes them (Ctrl+Shift+T, Ctrl+Ins); GTK writes Shift+Ctrl+T and
   Ctrl+Insert.
+- **Dialogs** (4.3b): libadwaita's alert dialogs (the close confirmations,
+  the title prompt) are Windows dialogs drawn that way: their own window
+  centered over the dimmed one (GTK's sit inside the window), with
+  Windows 11's rounded frame (libadwaita rounds 18 px); Escape, Enter and
+  Tab behave as in any Windows dialog.
 - **System menu** (3.9): Alt+Space's menu adds New Window, New Tab, Split,
   Command Palette, Terminal Inspector, Config, About murrtty and Quit
   after Windows' own items; GTK has no such menu.
@@ -1948,8 +1953,33 @@ Windows'. Popup menu frames follow the chrome's light or dark
 (`App.syncMenuTheme`, uxtheme's SetPreferredAppMode forced either way),
 not Windows' app setting. `snapshot` writes the main and terminal menus as
 they paint (`Harness.capturePrint`, WM_PRINT, on the hidden desktop).
-Still to see on a real screen: Windows 11's frame around them. Next
-(step 2): the dialogs as libadwaita's alert dialogs.
+Still to see on a real screen: Windows 11's frame around them.
+
+*4.3b step 2a, the alert dialogs, done 2026-10-27.* GTK's (`gtkref.ps1
+-Actions 'xdotool key ctrl+shift+w'`) are libadwaita 1.5's, a full-width
+row of responses split by lines; the current stylesheet (followed, as
+for the colors) has rounded buttons instead: a dialog 372 DIP wide at
+most (300 at least) in the dialog color (#36363a in dark, #fafafb in
+light), 32 above the heading (15 pt bold), 10 to the body, 24 at the
+sides, then a response area padded 24 (12 above) of buttons 44 tall,
+rounded 12, 12 apart, sharing the row or stacked when a label doesn't
+fit; a plain response 10% of the text, a destructive one in the
+destructive color (red_4's OKLab lightness raised to 0.85 in dark,
+red_3's lowered to 0.5 in light) over 15% of it, a suggested one white
+on the accent; the window behind dimmed with the shade color at twice its
+opacity (50% in dark, 14% in light). `AlertDialog` builds that as a
+Windows dialog (an in-memory template with an owner-drawn button per
+response, so Enter, Escape and the GUI tests' answers work as before),
+its frame rounded by DWM, over a layered dimming child of the owner; an
+entry (the title prompt's extra child: 34 tall, rounded 6, 10% of the
+text, the accent's ring while it has the keyboard) returns its text with
+the response. The close confirmations (Cancel, the default, and Close,
+destructive) and the title prompt (Cancel, and OK, suggested and the
+default) use it; task dialogs and the old template stay as the fallback.
+`typing` checks the default, the responses and the dimming; `snapshot`
+writes both as they paint. Next (step 2b): the clipboard confirmation
+(Deny suggested, Allow destructive, the text in a monospace box, a
+"Remember choice" switch row), the config errors and About.
 
 *Mid-phase review (2026-10-27, steps 1 to 4b), fixed:* the window's
 minimum width now holds the header bar's buttons side by side

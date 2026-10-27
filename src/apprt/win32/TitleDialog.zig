@@ -10,6 +10,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const apprt = @import("../../apprt.zig");
 const c = @import("c.zig");
+const AlertDialog = @import("AlertDialog.zig");
 const text_util = @import("text.zig");
 
 const log = std.log.scoped(.win32_title_dialog);
@@ -39,13 +40,35 @@ pub fn heading(which: apprt.action.PromptTitle) []const u8 {
 
 /// Ask for a title, showing `initial`. Returns what OK left in the field
 /// (empty to restore the default title; the caller frees it), or null for
-/// Cancel.
+/// Cancel. A libadwaita alert dialog with an entry (AlertDialog), as
+/// GTK's: Cancel, then OK, suggested and the default; Windows' own dialog
+/// if that can't show.
 pub fn ask(
     alloc: Allocator,
     owner: ?c.HWND,
     which: apprt.action.PromptTitle,
     initial: []const u8,
+    dark: bool,
 ) Allocator.Error!?[]u8 {
+    if (AlertDialog.run(alloc, .{
+        .owner = owner,
+        .heading = heading(which),
+        .body = "Leave blank to restore the default title.",
+        .responses = &.{
+            .{ .id = c.IDCANCEL, .label = "Cancel" },
+            .{ .id = c.IDOK, .label = "OK", .appearance = .suggested },
+        },
+        .default = c.IDOK,
+        .dark = dark,
+        .entry = initial,
+    })) |result| {
+        // An entry that couldn't be read is Cancel, never a blank name
+        // that would clear the title.
+        if (result.id == c.IDOK) if (result.text) |t| return t;
+        if (result.text) |t| alloc.free(t);
+        return null;
+    }
+
     var template: std.ArrayList(u8) = .empty;
     defer template.deinit(alloc);
     try buildTemplate(alloc, &template, heading(which));
