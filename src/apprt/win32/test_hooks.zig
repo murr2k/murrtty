@@ -55,8 +55,9 @@ pub const State = if (enabled) struct {
     /// would go before a test could see it.
     pin_mouse: bool = false,
     /// Blur with the accent policy, as before Windows 11 22H2, whatever
-    /// the build (dump wparam 13), so that path runs here too.
-    force_accent: bool = false,
+    /// the build, so that path runs here too; or with Acrylic even while
+    /// inactive, to see what Windows draws then (dump wparam 13).
+    force_blur: enum { none, accent, acrylic } = .none,
 } else struct {};
 
 /// Whether the hooks are on, for code with no App at hand.
@@ -148,7 +149,7 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   tab's container (the dividers) as `tab-<n>.bmp`: what WM_PAINT draws,
 ///   alpha included, where captures can't see it (the hidden desktop).
 /// - 13: blur with the accent policy whatever Windows' build (`lparam` 1),
-///   or as the build says (0).
+///   with Acrylic even while inactive (2), or as the build says (0).
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -179,10 +180,15 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     };
     // As if Windows' "Always show scrollbars" changed (lparam 1 on).
     if (wparam == 8) app.setScrollbarsAlways(lparam != 0);
-    // The accent policy's blur whatever the build (lparam 1), or the
-    // build's own (0); the windows switch at once.
+    // The accent policy's blur whatever the build (lparam 1), Acrylic even
+    // while inactive (2), or the build's own (0); the windows switch at
+    // once.
     if (wparam == 13) {
-        app.test_state.force_accent = lparam != 0;
+        app.test_state.force_blur = switch (lparam) {
+            1 => .accent,
+            2 => .acrylic,
+            else => .none,
+        };
         for (app.windows.items) |w| w.syncBlur();
     }
     if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));

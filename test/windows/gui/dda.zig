@@ -126,7 +126,9 @@ pub fn capture(rect: w.RECT, out: []u32, ctx: anytype, comptime poke: fn (@TypeO
     while (true) : (tries += 1) {
         if (tries >= 100) {
             std.debug.print("    desktop duplication: no frame in 10 s\n", .{});
-            return error.CaptureFailed;
+            // DWM presents nothing: no monitor is on (off, or showing
+            // another input), whatever Windows' own power settings say.
+            return error.NoDisplayFrames;
         }
         var info: FRAME_INFO = undefined;
         const hr = acquire(dup.?, 100, &info, &resource);

@@ -406,6 +406,8 @@ pub extern "user32" fn WindowFromPoint(POINT) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetAncestor(HWND, UINT) callconv(.winapi) ?HWND;
 pub const GA_ROOT = 2;
 pub extern "user32" fn GetForegroundWindow() callconv(.winapi) ?HWND;
+pub extern "user32" fn SetForegroundWindow(HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn BringWindowToTop(HWND) callconv(.winapi) BOOL;
 pub const OSVERSIONINFOW = extern struct {
     dwOSVersionInfoSize: DWORD = @sizeOf(OSVERSIONINFOW),
     dwMajorVersion: DWORD = 0,

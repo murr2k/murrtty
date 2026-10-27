@@ -360,8 +360,10 @@ pub fn backgroundAlpha(self: *const App) u8 {
 /// 22H2 (build 22621); before it the accent policy's blur, from Windows 10
 /// 1809 (build 17763), as Tauri's window-vibrancy does; else none.
 pub fn blurMethod(self: *const App) Window.Blur {
-    if (comptime test_hooks.enabled) if (self.test_state.force_accent) {
-        return if (accentFn() != null) .accent else .none;
+    if (comptime test_hooks.enabled) switch (self.test_state.force_blur) {
+        .none => {},
+        .accent => return if (accentFn() != null) .accent else .none,
+        .acrylic => return .backdrop,
     };
     if (self.windows_build >= 22621) return .backdrop;
     if (self.windows_build >= 17763 and accentFn() != null) return .accent;

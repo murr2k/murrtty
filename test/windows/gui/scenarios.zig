@@ -4419,14 +4419,10 @@ fn transparencyOnScreen(h: *Harness) !void {
     _ = w.GetWindowRect(win, &wr);
     var backdrop = try Harness.Backdrop.create(wr, backdrop_green);
     defer backdrop.destroy();
-    // murrtty on top, the backdrop right under it. Windows raises a window
-    // only for a process with foreground rights, which a background
-    // harness (and the murrtty it starts) may lack: murrtty then got the
-    // topmost style but stayed under the backdrop, and the display read
-    // only green (2026-10-27). Lowering the backdrop needs no such right.
-    _ = w.SetWindowPos(win, w.HWND_TOPMOST, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
-    _ = w.SetWindowPos(backdrop.hwnd, win, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
-    h.pump(500);
+    const previous = stage(h, win, backdrop.hwnd);
+    defer if (previous) |p| {
+        _ = Harness.bringToFront(p);
+    };
 
     // Read from the display (desktop duplication): on screen the GL panes
     // may be presented outside the window's GDI surface, which BitBlt and
@@ -4514,10 +4510,14 @@ fn transparencyOnScreen(h: *Harness) !void {
 /// background-blur on the display (roadmap 4.2): murrtty at
 /// background-opacity 0.5 over upright green and black stripes 12 px wide.
 /// Unblurred, the stripes show through the background, its green channel
-/// swinging across a row by about half their contrast; blurred (a reload
-/// to background-blur = true), the swing shrinks to a fraction of that
-/// while the backdrop still shows through. It shows windows ON SCREEN, so
-/// it runs only with GHOSTTY_GUI_ONSCREEN=1.
+/// swinging across a row by about half their contrast. Blurred (a reload
+/// to background-blur = true), active (Acrylic) and inactive (the accent
+/// policy's blur), the swing shrinks to a fraction of that while the
+/// backdrop still shows through, and stripes repainted red bring red and
+/// take green away. Then, only reported: Acrylic kept while inactive
+/// (which Microsoft says turns solid, the reason for the accent there).
+/// It shows windows ON SCREEN, so it runs only with
+/// GHOSTTY_GUI_ONSCREEN=1.
 fn blurDisplay(h: *Harness) anyerror!void {
     if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
         return h.skip("it shows windows on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
@@ -4546,51 +4546,87 @@ fn blurOnScreen(h: *Harness) !void {
     var backdrop = try Harness.Backdrop.create(wr, 0);
     defer backdrop.destroy();
     if (!backdrop.fillStripes(0x00ff00, 0x000000, 12)) return h.fail("the stripes didn't fill", .{});
-    // Under murrtty, as `transparency` puts its backdrop.
-    _ = w.SetWindowPos(win, w.HWND_TOPMOST, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
-    _ = w.SetWindowPos(backdrop.hwnd, win, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
-    h.pump(500);
+    const previous = stage(h, win, backdrop.hwnd);
+    defer if (previous) |p| {
+        _ = Harness.bringToFront(p);
+    };
     const client = clientOnScreen(win);
     // A row across the empty middle of the pane.
     const y: usize = @intCast(@divTrunc(client.bottom - client.top, 2));
     try uncovered(h, win, wr, client, &.{ .{ 40, y }, .{ 400, y } });
     const sharp = try greenSwing(h, &g, client, y, "sharp.bmp");
+    std.debug.print("\n    unblurred: green {x:0>2}..{x:0>2} (mean {x:0>2})\n", .{ sharp.min, sharp.max, sharp.mean });
+    try h.expect(sharp.max - sharp.min > 0x60, "unblurred, the stripes show through (swing {x})", .{sharp.max - sharp.min});
 
     const cfg_path = try std.fmt.allocPrint(h.alloc, "{s}\\blur-display\\murrtty\\config.ghostty", .{h.temp_dir});
     defer h.alloc.free(cfg_path);
     try h.writeFileAt(cfg_path, config ++ "background-blur = true\n");
     h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
-    var d = try h.dump(&g);
+    const active = try waitBlurNot(h, &g, "none");
+    try expectBlurred(h, &g, &backdrop, client, y, sharp, active, "active");
+
+    // Inactive: the backdrop takes the foreground, then goes back under.
+    _ = Harness.bringToFront(backdrop.hwnd);
+    _ = w.SetWindowPos(backdrop.hwnd, win, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
+    const inactive = try waitBlurNot(h, &g, active);
+    try expectBlurred(h, &g, &backdrop, client, y, sharp, inactive, "inactive");
+
+    // Acrylic kept while inactive, reported only.
+    try h.forceAcrylic(&g, true);
+    defer h.forceAcrylic(&g, false) catch {};
+    const kept = try waitBlurNot(h, &g, inactive);
+    const kept_green, const kept_red = try blurReadings(h, &g, &backdrop, client, y, "acrylic-inactive");
+    const verdict = if (follows(kept_green, kept_red)) "it follows the backdrop" else "it doesn't follow the backdrop: solid";
+    std.debug.print("    {s} while inactive: green {x:0>2}..{x:0>2} (mean {x:0>2}); red stripes: green mean {x:0>2}, red mean {x:0>2} ({s})\n", .{
+        kept, kept_green.min, kept_green.max, kept_green.mean, kept_red[1].mean, kept_red[0].mean, verdict,
+    });
+}
+
+/// Wait until the first window's blur isn't `old`; return the new one (a
+/// static string, as nativeBlur gives).
+fn waitBlurNot(h: *Harness, g: *Harness.Ghostty, old: []const u8) ![]const u8 {
     var waited: u32 = 0;
-    while (std.mem.eql(u8, d.value.windows[0].blur, "none") and waited < 3000) : (waited += 100) {
-        d.deinit();
+    while (waited <= 3000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const now = d.value.windows[0].blur;
+        if (!std.mem.eql(u8, now, old)) {
+            for ([_][]const u8{ "none", "backdrop", "accent" }) |name| if (std.mem.eql(u8, now, name)) return name;
+        }
         w.Sleep(100);
-        d = try h.dump(&g);
     }
-    const method = try h.alloc.dupe(u8, d.value.windows[0].blur);
-    defer h.alloc.free(method);
-    const active = d.value.windows[0].active_window;
-    d.deinit();
+    return h.fail("the blur stayed {s}", .{old});
+}
+
+/// Green across green stripes, then all three channels across red ones
+/// (the stripes are green again after); captures kept as `<name>-*.bmp`.
+fn blurReadings(h: *Harness, g: *Harness.Ghostty, backdrop: *Harness.Backdrop, client: w.RECT, y: usize, comptime name: []const u8) !struct { Swing, [3]Swing } {
     h.pump(800);
-    const soft = try greenSwing(h, &g, client, y, "blurred.bmp");
-    // The same stripes in red: what is blurred must follow the backdrop (a
-    // solid fallback, which Acrylic is when inactive, wouldn't).
+    const green = try greenSwing(h, g, client, y, name ++ "-green.bmp");
     if (!backdrop.fillStripes(0xff0000, 0x000000, 12)) return h.fail("the stripes didn't fill", .{});
     h.pump(800);
-    const red = try rowStats(h, &g, client, y, "blurred-red.bmp");
+    const red = try rowStats(h, g, client, y, name ++ "-red.bmp");
+    if (!backdrop.fillStripes(0x00ff00, 0x000000, 12)) return h.fail("the stripes didn't fill", .{});
+    return .{ green, red };
+}
 
-    std.debug.print("\n    green across the stripes: sharp {x:0>2}..{x:0>2} (mean {x:0>2}); blurred ({s}, murrtty {s}) {x:0>2}..{x:0>2} (mean {x:0>2}); " ++
-        "red stripes behind: green mean {x:0>2}, red mean {x:0>2}\n", .{
-        sharp.min, sharp.max, sharp.mean, method,      if (active) "active" else "inactive",
-        soft.min,  soft.max,  soft.mean,  red[1].mean, red[0].mean,
+/// Whether what shows through followed the stripes turning red: green
+/// went away and red came (a solid fallback would do neither).
+fn follows(green: Swing, red: [3]Swing) bool {
+    return red[1].mean + 0x10 < green.mean and red[0].mean > 0x14 + 0x10;
+}
+
+/// The blur `method` (the window `state`, active or not) flattens the
+/// stripes yet shows them through, and follows them as they change.
+fn expectBlurred(h: *Harness, g: *Harness.Ghostty, backdrop: *Harness.Backdrop, client: w.RECT, y: usize, sharp: Swing, method: []const u8, comptime state: []const u8) !void {
+    const green, const red = try blurReadings(h, g, backdrop, client, y, state);
+    std.debug.print("    {s} ({s}): green {x:0>2}..{x:0>2} (mean {x:0>2}); red stripes: green mean {x:0>2}, red mean {x:0>2}\n", .{
+        state, method, green.min, green.max, green.mean, red[1].mean, red[0].mean,
     });
-    try h.expect(!std.mem.eql(u8, method, "none"), "the reload turns the blur on ({s})", .{method});
-    try h.expect(sharp.max - sharp.min > 0x60, "unblurred, the stripes show through (swing {x})", .{sharp.max - sharp.min});
-    try h.expect((soft.max - soft.min) * 3 < sharp.max - sharp.min, "blurred, the swing shrinks to under a third ({x})", .{soft.max - soft.min});
-    try h.expect(soft.mean > 0x1a, "and the backdrop still shows through (mean green {x}, the background alone #16)", .{soft.mean});
-    try h.expect(red[1].mean + 0x10 < soft.mean and red[0].mean > 0x14 + 0x10, "the blur follows the backdrop: red stripes take green away ({x} from {x}) and bring red ({x})", .{
-        red[1].mean, soft.mean, red[0].mean,
-    });
+    try h.expect(!std.mem.eql(u8, method, "none"), state ++ ": blurred ({s})", .{method});
+    try h.expect((green.max - green.min) * 3 < sharp.max - sharp.min, state ++ ": the swing shrinks to under a third ({x})", .{green.max - green.min});
+    try h.expect(green.mean > 0x1a, state ++ ": the backdrop still shows through (mean green {x}, the background alone #16)", .{green.mean});
+    try h.expect(follows(green, red), state ++ ": the blur follows the backdrop (red stripes: green {x} from {x}, red {x})", .{ red[1].mean, green.mean, red[0].mean });
 }
 
 const Swing = struct { min: u32, max: u32, mean: u32 };
@@ -4622,6 +4658,21 @@ fn rowStats(h: *Harness, g: *Harness.Ghostty, client: w.RECT, y: usize, name: []
     }
     for (&stats, sums) |*s, sum| s.mean = sum / @as(u32, @intCast(end - 40));
     return stats;
+}
+
+/// Stage an `.onscreen` murrtty for reading the display: the foreground
+/// window, in front of the owner's (Harness.bringToFront), topmost, with
+/// the backdrop right under it. Without the first, a background harness
+/// left murrtty under the backdrop and the owner's foreground window
+/// (2026-10-27: the display read only green). Returns the window that was
+/// in front, to put back.
+fn stage(h: *Harness, win: w.HWND, backdrop: w.HWND) ?w.HWND {
+    const front = Harness.bringToFront(win);
+    h.log("murrtty brought to the front: {}", .{front.ok});
+    _ = w.SetWindowPos(win, w.HWND_TOPMOST, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
+    _ = w.SetWindowPos(backdrop, win, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
+    h.pump(500);
+    return front.previous;
 }
 
 /// Skip unless murrtty's `win` is on top at each of `points` (client

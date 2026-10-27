@@ -20,6 +20,7 @@ const Overlay = @import("Overlay.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 const TabBar = @import("TabBar.zig");
+const test_hooks = @import("test_hooks.zig");
 
 const log = std.log.scoped(.win32_window);
 
@@ -1222,9 +1223,11 @@ pub fn syncTranslucent(self: *Window) void {
 /// and later, which only an active window is.
 pub fn syncBlur(self: *Window) void {
     const method = self.app.blurMethod();
+    // The test hooks can ask for Acrylic while inactive, to see it.
+    const keep_acrylic = if (comptime test_hooks.enabled) self.app.test_state.force_blur == .acrylic else false;
     const want: Blur = if (!self.translucent or !self.app.config.@"background-blur".enabled())
         .none
-    else if (method == .backdrop and (!self.active_window or self.acrylic_refused) and App.accentFn() != null)
+    else if (method == .backdrop and !keep_acrylic and (!self.active_window or self.acrylic_refused) and App.accentFn() != null)
         .accent
     else
         method;

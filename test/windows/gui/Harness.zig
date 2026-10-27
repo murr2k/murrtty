@@ -779,6 +779,28 @@ pub fn capturesWork(self: *const Harness) ?[]const u8 {
     return null;
 }
 
+/// Put `win` (an `.onscreen` window) in front of the owner's windows and
+/// make it the foreground one. Windows lets only a process with foreground
+/// rights do that, which a background harness never has here (the
+/// foreground lock never times out on this machine), but a thread attached
+/// to the foreground window's input may. Returns the window that was in
+/// front, for putting back with the same call, and whether `win` is in
+/// front now.
+pub fn bringToFront(win: w.HWND) struct { previous: ?w.HWND, ok: bool } {
+    const previous = w.GetForegroundWindow();
+    if (previous != win) {
+        const me = w.GetCurrentThreadId();
+        const theirs: w.DWORD = if (previous) |p| w.GetWindowThreadProcessId(p, null) else 0;
+        const attached = theirs != 0 and theirs != me and w.AttachThreadInput(me, theirs, w.TRUE) != 0;
+        defer if (attached) {
+            _ = w.AttachThreadInput(me, theirs, w.FALSE);
+        };
+        _ = w.BringWindowToTop(win);
+        _ = w.SetForegroundWindow(win);
+    }
+    return .{ .previous = previous, .ok = w.GetForegroundWindow() == win };
+}
+
 /// Run `func(ctx)` on a new thread, which starts on the user's desktop
 /// (only the harness's main thread moved to the hidden one), and wait for
 /// it. Windows are enumerated and messaged per desktop, so an `.offscreen`
@@ -1528,6 +1550,13 @@ pub fn forceAccentBlur(self: *Harness, g: *const Ghostty, on: bool) !void {
     d.deinit();
 }
 
+/// Make Ghostty keep Acrylic even while inactive (`on`), where it otherwise
+/// takes the accent policy's blur, to see what Windows draws then.
+pub fn forceAcrylic(self: *Harness, g: *const Ghostty, on: bool) !void {
+    var d = try self.dumpWith(g, 13, if (on) 2 else 0);
+    d.deinit();
+}
+
 /// Windows' build number.
 pub fn windowsBuild() u32 {
     var info: w.OSVERSIONINFOW = .{};
@@ -1688,7 +1717,12 @@ pub fn captureDisplay(self: *Harness, rect: w.RECT) !Image {
         }
     };
     var tick: Tick = .{ .ticker = &ticker };
-    try dda.capture(rect, pixels, &tick, Tick.tick);
+    dda.capture(rect, pixels, &tick, Tick.tick) catch |err| switch (err) {
+        // Nothing to read without a monitor that is on: not the build's
+        // fault (2026-10-27: Windows listed the monitor as off line).
+        error.NoDisplayFrames => return self.skip("no monitor shows the desktop (DWM presented no frame in 10 s): it is off or on another input", .{}),
+        else => return err,
+    };
     return .{ .alloc = self.alloc, .width = @intCast(width), .height = @intCast(height), .pixels = pixels };
 }
 
