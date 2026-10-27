@@ -116,6 +116,8 @@ pub const MenuPalette = struct {
     dim: c.COLORREF,
     disabled: c.COLORREF,
     hover: c.COLORREF,
+    /// A grayed item under the keyboard: half the highlight.
+    hover_disabled: c.COLORREF,
     separator: c.COLORREF,
 };
 
@@ -204,6 +206,7 @@ pub fn menuPalette(theme: Theme) MenuPalette {
         .dim = ref(blend(bg, fg, 0.55)),
         .disabled = ref(blend(bg, fg, 0.5)),
         .hover = ref(blend(bg, fg, 0.10)),
+        .hover_disabled = ref(blend(bg, fg, 0.05)),
         .separator = ref(blend(bg, fg, 0.15)),
     };
 }

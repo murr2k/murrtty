@@ -308,8 +308,9 @@ pub fn drawItem(lparam: c.LPARAM) bool {
         return true;
     }
     const grayed = item.itemState & c.ODS_GRAYED != 0;
-    if (item.itemState & c.ODS_SELECTED != 0 and !grayed) {
-        draw.roundRect(dc, r, look.scale(6), pal.hover, null, 0);
+    // The keyboard stops on grayed items too: a fainter highlight there.
+    if (item.itemState & c.ODS_SELECTED != 0) {
+        draw.roundRect(dc, r, look.scale(6), if (grayed) pal.hover_disabled else pal.hover, null, 0);
     }
     const old = if (look.font) |f| c.SelectObject(dc, f) else null;
     defer if (old) |o| {
@@ -350,7 +351,11 @@ pub fn menuChar(wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
     const built = showing orelse return null;
     if (built.look == null) return null;
     const menu: c.HMENU = @ptrFromInt(@as(usize, @bitCast(lparam)));
-    const typed = std.ascii.toLower(@truncate(c.loword(wparam)));
+    // Access keys are ASCII; a letter beyond (Czech š, U+0161) must not
+    // match by its low byte ('a').
+    const char = c.loword(wparam);
+    if (char >= 128) return null;
+    const typed = std.ascii.toLower(@intCast(char));
     var pos: usize = 0;
     for (built.draws.items) |d| {
         if (d.menu != menu) continue;

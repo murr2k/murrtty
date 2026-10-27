@@ -2002,6 +2002,21 @@ bottom. `clipboard-dialog` and `config-errors` write their dialogs'
 pictures with `GHOSTTY_GUI_SNAPSHOT` set. About stays Windows' task dialog
 (GTK's is libadwaita's About window, a different thing).
 
+*End-of-4.3b review (2026-10-27), fixed:* Enter took the default
+response whatever button had the keyboard (Windows never makes an
+owner-drawn button the default): the response buttons now ask for Enter
+(WM_GETDLGCODE) and click themselves, as GTK's do, and the switch toggles
+on it (`titles` presses Enter on Cancel); responses act on a click only,
+not a double click's second (Open Configuration opened the file twice),
+while the switch counts both (`clipboard-dialog` clicks it twice); a
+dialog whose owner is minimized centers where the owner is when restored
+and stays inside its monitor's work area (it opened near -32000);
+WM_MENUCHAR ignores letters beyond ASCII (Czech š ran "Close T&ab" by its
+low byte); the body is a static control and the switch is named by its
+title, for screen readers; a grayed menu item the keyboard stops on gets
+a fainter highlight; the remember row measures its text as it draws it;
+the `tabs` row paints straight to the window if no bitmap can be made.
+
 *Mid-phase review (2026-10-27, steps 1 to 4b), fixed:* the window's
 minimum width now holds the header bar's buttons side by side
 (`HeaderBar.minWidth`, 255 DIP; narrower, they overlapped and clicks

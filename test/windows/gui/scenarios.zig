@@ -663,6 +663,17 @@ fn clipboardDialog(h: *Harness) anyerror!void {
         try h.expect(defaultButton(dlg) == w.IDNO, "Deny is the default (got {d})", .{defaultButton(dlg)});
         const box = w.GetDlgItem(dlg, 101) orelse return h.fail("no remember box for an OSC 52 write", .{});
         try snapshotDialog(h, dlg, "paint-clipboard-dialog.bmp");
+        // The switch toggles on a click, and on a double click's second
+        // (BN_DOUBLECLICKED), so two quick clicks leave it as it was.
+        const clicked: w.WPARAM = 101;
+        const double: w.WPARAM = 101 | (5 << 16);
+        for ([_]struct { w.WPARAM, usize }{ .{ clicked, 1 }, .{ double, 0 } }) |step| {
+            _ = w.PostMessageW(dlg, w.WM_COMMAND, step[0], @bitCast(@intFromPtr(box)));
+            w.Sleep(200);
+            var state: usize = 9;
+            _ = w.SendMessageTimeoutW(box, w.BM_GETCHECK, 0, 0, w.SMTO_ABORTIFHUNG, 2000, &state);
+            try h.expect(state == step[1], "the switch reads {d} after a click (expected {d})", .{ state, step[1] });
+        }
         var r: usize = 0;
         _ = w.SendMessageTimeoutW(box, w.BM_SETCHECK, 1, 0, w.SMTO_ABORTIFHUNG, 2000, &r);
         h.answer(&g, dlg, w.IDYES);
@@ -2967,6 +2978,21 @@ fn titles(h: *Harness) anyerror!void {
     try waitNoDialog(h, &g);
     t = try titleState(h, &g);
     try h.expect(std.mem.eql(u8, t.label(), "program-two"), "Cancel keeps the title ('{s}')", .{t.label()});
+
+    // Enter clicks the button with the keyboard, as in GTK's dialogs: Tab
+    // from the field to Cancel, then Enter cancels (Windows would take
+    // the default, OK).
+    h.key(surf, cs, w.VK_F2);
+    dlg = try h.waitDialog(&g, 5000);
+    try setDialogText(h, dlg, "nor-this");
+    const entry = w.GetDlgItem(dlg, 100) orelse return h.fail("the prompt has no field", .{});
+    _ = w.PostMessageW(entry, w.WM_KEYDOWN, w.VK_TAB, 0);
+    w.Sleep(300);
+    const cancel = w.GetDlgItem(dlg, w.IDCANCEL) orelse return h.fail("the prompt has no Cancel", .{});
+    _ = w.PostMessageW(cancel, w.WM_KEYDOWN, w.VK_RETURN, 0);
+    try waitNoDialog(h, &g);
+    t = try titleState(h, &g);
+    try h.expect(std.mem.eql(u8, t.label(), "program-two"), "Enter on Cancel cancels ('{s}')", .{t.label()});
 
     // The window's name: the caption only; empty clears it.
     h.key(surf, cs, w.VK_F3);

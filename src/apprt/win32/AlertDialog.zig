@@ -78,6 +78,9 @@ pub const Options = struct {
 pub const id_entry = 100;
 pub const id_text = 100;
 pub const id_remember = 101;
+/// The body: a static control, so screen readers read it (and it names
+/// the entry after it).
+const id_body = 102;
 
 /// The response chosen, what the entry held then (the caller frees it;
 /// null without an entry, or if it couldn't be read), and the switch.
@@ -131,6 +134,9 @@ const State = struct {
     mono_font: ?c.HFONT = null,
     entry_brush: ?c.HBRUSH = null,
     view_brush: ?c.HBRUSH = null,
+    bg_brush: ?c.HBRUSH = null,
+    /// The procedure the response buttons had (Button's).
+    button_proc: isize = 0,
     heading_rect: c.RECT = .{},
     body_rect: c.RECT = .{},
     /// The entry's or the text box's.
@@ -150,7 +156,7 @@ const State = struct {
         for ([_]?c.HFONT{ self.heading_font, self.body_font, self.button_font, self.small_font, self.mono_font }) |f| if (f) |font| {
             _ = c.DeleteObject(font);
         };
-        for ([_]?c.HBRUSH{ self.entry_brush, self.view_brush }) |b| if (b) |brush| {
+        for ([_]?c.HBRUSH{ self.entry_brush, self.view_brush, self.bg_brush }) |b| if (b) |brush| {
             _ = c.DeleteObject(brush);
         };
     }
@@ -228,14 +234,14 @@ fn dimOver(owner: c.HWND, alpha: u8) ?c.HWND {
     return dim;
 }
 
-/// A popup with no caption: the entry or text box, the remember switch
-/// and one owner-drawn button per response, in that order (Tab's), sized
-/// and placed when it starts (WM_INITDIALOG).
+/// A popup with no caption: the body, the entry or text box, the remember
+/// switch and one owner-drawn button per response, in that order (Tab's),
+/// sized and placed when it starts (WM_INITDIALOG).
 fn buildTemplate(alloc: Allocator, out: *std.ArrayList(u8), opts: Options) !void {
     const put16 = TitleDialog.put16;
     const put32 = TitleDialog.put32;
     const child = opts.entry != null or opts.text != null;
-    const items = opts.responses.len + @intFromBool(child) + @intFromBool(opts.remember != null);
+    const items = opts.responses.len + @intFromBool(opts.body.len > 0) + @intFromBool(child) + @intFromBool(opts.remember != null);
     try put32(alloc, out, c.WS_POPUP | c.WS_CLIPCHILDREN);
     try put32(alloc, out, 0);
     try put16(alloc, out, @intCast(items));
@@ -246,7 +252,12 @@ fn buildTemplate(alloc: Allocator, out: *std.ArrayList(u8), opts: Options) !void
     try TitleDialog.putString(alloc, out, "murrtty");
     const edit_class = 0x0081;
     const button_class = 0x0080;
+    const static_class = 0x0082;
     const shown = c.WS_CHILD | c.WS_VISIBLE | c.WS_TABSTOP;
+    // Its text is set at the start (it needn't be ASCII).
+    if (opts.body.len > 0) {
+        try TitleDialog.putItem(alloc, out, c.WS_CHILD | c.WS_VISIBLE | c.SS_CENTER | c.SS_NOPREFIX, .{ 0, 0, 10, 10 }, id_body, static_class, "");
+    }
     if (opts.entry != null) {
         try TitleDialog.putItem(alloc, out, shown | c.ES_AUTOHSCROLL, .{ 0, 0, 10, 10 }, id_entry, edit_class, "");
     } else if (opts.text != null) {
@@ -273,6 +284,15 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = c.SetWindowLongPtrW(hwnd, c.GWLP_USERDATA, lparam);
             // No caption shows it; Alt+Tab and the GUI tests read it.
             _ = c.SetWindowTextW(hwnd, state.heading.ptr);
+            if (c.GetDlgItem(hwnd, id_body)) |body| _ = c.SetWindowTextW(body, state.body.ptr);
+            // The switch named by its title, for screen readers.
+            if (c.GetDlgItem(hwnd, id_remember)) |sw| _ = c.SetWindowTextW(sw, state.remember_title.ptr);
+            // Enter clicks the response button with the keyboard, not the
+            // default one (owner-drawn buttons never become the default).
+            for (state.opts.responses) |r| if (c.GetDlgItem(hwnd, r.id)) |button| {
+                const prev = c.SetWindowLongPtrW(button, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&buttonProc)));
+                if (state.button_proc == 0) state.button_proc = prev;
+            };
             layout(hwnd, state);
             const corner = c.DWMWCP_ROUND;
             _ = c.DwmSetWindowAttribute(hwnd, c.DWMWA_WINDOW_CORNER_PREFERENCE, &corner, @sizeOf(c_int));
@@ -308,11 +328,17 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             _ = c.SetBkColor(dc, state.pal.button);
             return @bitCast(@intFromPtr(state.entry_brush));
         },
-        // The read-only text box: the view's color.
+        // The body on the dialog's color, the read-only text box on the
+        // view's.
         c.WM_CTLCOLORSTATIC => {
             const state = fromHwnd(hwnd) orelse return 0;
             const dc: c.HDC = @ptrFromInt(wparam);
             _ = c.SetTextColor(dc, state.pal.text);
+            const body = c.GetDlgItem(hwnd, id_body);
+            if (body != null and lparam == @as(c.LPARAM, @bitCast(@intFromPtr(body.?)))) {
+                _ = c.SetBkColor(dc, state.pal.bg);
+                return @bitCast(@intFromPtr(state.bg_brush));
+            }
             _ = c.SetBkColor(dc, state.pal.view);
             return @bitCast(@intFromPtr(state.view_brush));
         },
@@ -339,6 +365,7 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         },
         c.WM_COMMAND => {
             const id = c.loword(wparam);
+            const code = c.hiword(wparam);
             const state = fromHwnd(hwnd) orelse return 0;
             if (id == id_entry and state.opts.entry != null) {
                 switch (c.hiword(wparam)) {
@@ -352,14 +379,18 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
                 }
                 return 0;
             }
-            if (id == id_text) return 0;
+            if (id == id_text or id == id_body) return 0;
             if (id == id_remember) {
-                if (c.hiword(wparam) == c.BN_CLICKED) {
+                // A double click's second click comes as BN_DOUBLECLICKED.
+                if (code == c.BN_CLICKED or code == c.BN_DOUBLECLICKED) {
                     state.remember = !state.remember;
                     if (c.GetDlgItem(hwnd, id_remember)) |b| _ = c.InvalidateRect(b, null, c.FALSE);
                 }
                 return 0;
             }
+            // A response's click, not a double click's second one (Open
+            // Configuration would open the file twice).
+            if (code != c.BN_CLICKED) return 0;
             if (state.opts.stay) |stay| for (stay.ids) |s| if (s == id) {
                 stay.action(stay.ctx, id);
                 return 1;
@@ -381,22 +412,18 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
     return 0;
 }
 
-/// The heading and body, and the entry's or text box's rounded box.
+/// The heading (the body is its own control), and the entry's or text
+/// box's rounded box.
 fn paint(state: *const State, dc: c.HDC) void {
     _ = c.SetBkMode(dc, c.TRANSPARENT);
     _ = c.SetTextColor(dc, state.pal.text);
-    const flags: c.UINT = c.DT_CENTER | c.DT_WORDBREAK | c.DT_NOPREFIX;
-    for ([_]struct { []const u16, ?c.HFONT, c.RECT }{
-        .{ state.heading, state.heading_font, state.heading_rect },
-        .{ state.body, state.body_font, state.body_rect },
-    }) |part| {
-        if (part[0].len == 0) continue;
-        const old = if (part[1]) |f| c.SelectObject(dc, f) else null;
+    if (state.heading.len > 0) {
+        const old = if (state.heading_font) |f| c.SelectObject(dc, f) else null;
         defer if (old) |o| {
             _ = c.SelectObject(dc, o);
         };
-        var r = part[2];
-        _ = c.DrawTextW(dc, part[0].ptr, @intCast(part[0].len), &r, flags);
+        var hr = state.heading_rect;
+        _ = c.DrawTextW(dc, state.heading.ptr, @intCast(state.heading.len), &hr, c.DT_CENTER | c.DT_WORDBREAK | c.DT_NOPREFIX);
     }
     const r = state.child_rect;
     if (state.opts.entry != null) {
@@ -414,20 +441,55 @@ fn paint(state: *const State, dc: c.HDC) void {
 }
 
 /// The switch's button: answers BM_GETCHECK and BM_SETCHECK from the
-/// dialog's state, else is the button it was.
+/// dialog's state, and toggles on Enter as on a click (libadwaita's row
+/// activates), else is the button it was.
 fn rememberProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
     const dialog = c.GetParent(hwnd);
     const state = if (dialog) |d| fromHwnd(d) else null;
-    if (state) |s| switch (msg) {
-        c.BM_GETCHECK => return if (s.remember) c.BST_CHECKED else 0,
-        c.BM_SETCHECK => {
-            s.remember = wparam == c.BST_CHECKED;
-            _ = c.InvalidateRect(hwnd, null, c.FALSE);
+    if (state) |s| {
+        if (enterClick(hwnd, dialog.?, msg, wparam, lparam)) |r| return r;
+        switch (msg) {
+            c.BM_GETCHECK => return if (s.remember) c.BST_CHECKED else 0,
+            c.BM_SETCHECK => {
+                s.remember = wparam == c.BST_CHECKED;
+                _ = c.InvalidateRect(hwnd, null, c.FALSE);
+                return 0;
+            },
+            else => return c.CallWindowProcW(s.remember_proc, hwnd, msg, wparam, lparam),
+        }
+    }
+    return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+/// A response's button: Enter clicks it while it has the keyboard, as in
+/// GTK's dialogs, where Windows would take the default response (it never
+/// makes an owner-drawn button the default). Else the button it was.
+fn buttonProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    const dialog = c.GetParent(hwnd);
+    const state = if (dialog) |d| fromHwnd(d) else null;
+    if (state) |s| {
+        if (enterClick(hwnd, dialog.?, msg, wparam, lparam)) |r| return r;
+        return c.CallWindowProcW(s.button_proc, hwnd, msg, wparam, lparam);
+    }
+    return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+/// Enter on a focused button: it asks the dialog manager for the key
+/// (WM_GETDLGCODE) and, given it, clicks itself. Null for anything else.
+fn enterClick(hwnd: c.HWND, dialog: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
+    switch (msg) {
+        c.WM_GETDLGCODE => if (lparam != 0) {
+            const m: *const c.MSG = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            if (m.message == c.WM_KEYDOWN and m.wParam == c.VK_RETURN) return c.DLGC_WANTALLKEYS;
+        },
+        c.WM_KEYDOWN => if (wparam == c.VK_RETURN) {
+            const id: usize = @intCast(c.GetDlgCtrlID(hwnd));
+            _ = c.SendMessageW(dialog, c.WM_COMMAND, id, @bitCast(@intFromPtr(hwnd)));
             return 0;
         },
-        else => return c.CallWindowProcW(s.remember_proc, hwnd, msg, wparam, lparam),
-    };
-    return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        else => {},
+    }
+    return null;
 }
 
 /// What the entry holds, as UTF-8, into `state.entry_text` (left null if
@@ -450,6 +512,7 @@ fn layout(hwnd: c.HWND, state: *State) void {
     state.small_font = draw.chromeFontSized(state.dpi, null, 9, false);
     state.entry_brush = c.CreateSolidBrush(state.pal.button);
     state.view_brush = c.CreateSolidBrush(state.pal.view);
+    state.bg_brush = c.CreateSolidBrush(state.pal.bg);
 
     const content_w = if (state.opts.text) |t| t.min_width + 2 * pad_side else 0;
     const w = state.scale(@max(width, content_w));
@@ -465,6 +528,10 @@ fn layout(hwnd: c.HWND, state: *State) void {
         y += state.scale(heading_gap);
         const body_h = textHeight(dc, state.body_font, state.body, text_w);
         state.body_rect = .{ .left = side, .top = y, .right = side + text_w, .bottom = y + body_h };
+        if (c.GetDlgItem(hwnd, id_body)) |body| {
+            _ = c.SendMessageW(body, c.WM_SETFONT, @intFromPtr(state.body_font), 0);
+            _ = c.SetWindowPos(body, null, side, y, text_w, body_h, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+        }
         y += body_h;
     }
     if (state.opts.entry != null) if (c.GetDlgItem(hwnd, id_entry)) |edit| {
@@ -491,8 +558,10 @@ fn layout(hwnd: c.HWND, state: *State) void {
     if (state.opts.remember != null) if (c.GetDlgItem(hwnd, id_remember)) |button| {
         y += state.scale(row_gap);
         const pad = state.scale(row_pad);
-        const title_h = textHeight(dc, state.body_font, state.remember_title, text_w);
-        const subtitle_h = textHeight(dc, state.small_font, state.remember_subtitle, text_w);
+        // As drawRemember lays the text out: clear of the switch.
+        const line_w = text_w - 3 * pad - state.scale(switch_width);
+        const title_h = textHeight(dc, state.body_font, state.remember_title, line_w);
+        const subtitle_h = textHeight(dc, state.small_font, state.remember_subtitle, line_w);
         const row_h = @max(state.scale(50), pad + title_h + state.scale(2) + subtitle_h + pad);
         _ = c.SetWindowPos(button, null, side, y, text_w, row_h, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
         y += row_h;
@@ -525,14 +594,29 @@ fn layout(hwnd: c.HWND, state: *State) void {
     y += if (fits) bh else n * bh + (n - 1) * gap;
     y += state.scale(area_pad);
 
-    // Centered over the owner (libadwaita's floating dialog).
+    // Centered over the owner (libadwaita's floating dialog), where it is
+    // when restored if it is minimized (its rectangle is then far off
+    // screen), and inside its monitor's work area.
     var x: c_int = 0;
     var top: c_int = 0;
     if (state.opts.owner) |owner| {
         var o: c.RECT = .{};
         _ = c.GetWindowRect(owner, &o);
+        if (c.IsIconic(owner) != 0) {
+            var placement: c.WINDOWPLACEMENT = .{};
+            if (c.GetWindowPlacement(owner, &placement) != 0) o = placement.rcNormalPosition;
+        }
         x = o.left + @divTrunc(o.right - o.left - w, 2);
         top = o.top + @divTrunc(o.bottom - o.top - y, 2);
+    }
+    const wanted: c.RECT = .{ .left = x, .top = top, .right = x + w, .bottom = top + y };
+    if (c.MonitorFromRect(&wanted, c.MONITOR_DEFAULTTONEAREST)) |monitor| {
+        var info: c.MONITORINFO = .{};
+        if (c.GetMonitorInfoW(monitor, &info) != 0) {
+            const work = info.rcWork;
+            x = std.math.clamp(x, work.left, @max(work.left, work.right - w));
+            top = std.math.clamp(top, work.top, @max(work.top, work.bottom - y));
+        }
     }
     _ = c.SetWindowPos(hwnd, null, x, top, w, y, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
 }

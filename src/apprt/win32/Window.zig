@@ -1147,16 +1147,24 @@ pub fn paintChrome(self: *Window, hdc: c.HDC) void {
         // tabs, put together off screen and shown at once, so no frame
         // shows the row without its tabs.
         const h = self.tab_bar.height();
-        if (c.CreateCompatibleDC(hdc)) |mem| {
-            defer _ = c.DeleteDC(mem);
-            if (c.CreateCompatibleBitmap(hdc, width, h)) |bmp| {
-                defer _ = c.DeleteObject(bmp);
-                const old = c.SelectObject(mem, bmp);
-                defer _ = c.SelectObject(mem, old);
-                self.header.paint(mem, width, h, &.{}, self.tab_bar.hover, self.pressed, maximized, pal);
-                self.tab_bar.paint(mem, 0, width, titles, attention, self.active, pal);
-                _ = c.BitBlt(hdc, 0, 0, width, h, mem, 0, 0, c.SRCCOPY);
-            }
+        const mem = c.CreateCompatibleDC(hdc);
+        defer if (mem) |m| {
+            _ = c.DeleteDC(m);
+        };
+        const bmp = if (mem != null) c.CreateCompatibleBitmap(hdc, width, h) else null;
+        defer if (bmp) |b| {
+            _ = c.DeleteObject(b);
+        };
+        if (mem != null and bmp != null) {
+            const old = c.SelectObject(mem.?, bmp);
+            defer _ = c.SelectObject(mem.?, old);
+            self.header.paint(mem.?, width, h, &.{}, self.tab_bar.hover, self.pressed, maximized, pal);
+            self.tab_bar.paint(mem.?, 0, width, titles, attention, self.active, pal);
+            _ = c.BitBlt(hdc, 0, 0, width, h, mem.?, 0, 0, c.SRCCOPY);
+        } else {
+            // No bitmap to spare: straight to the window, as before.
+            self.header.paint(hdc, width, h, &.{}, self.tab_bar.hover, self.pressed, maximized, pal);
+            self.tab_bar.paint(hdc, 0, width, titles, attention, self.active, pal);
         }
     } else {
         self.tab_bar.paint(hdc, self.headerHeight(), width, titles, attention, self.active, pal);
@@ -1773,12 +1781,6 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             return 0;
         },
 
-        // The system menu: murrtty's items, current, as it opens (not its
-        // submenus, which open inside it), and its loop in a modal scope.
-        // The scope opens on WM_ENTERMENULOOP (wparam FALSE; TrackPopupMenu
-        // menus, wparam TRUE, have their own) or, for a way in that doesn't
-        // say so (the taskbar's), when the system menu itself opens; it
-        // ends with the loop. Only one menu loop runs at a time.
         // The strip's and header's menus, owner-drawn (ContextMenu).
         c.WM_MEASUREITEM => {
             if (ContextMenu.measureItem(lparam)) return 1;
@@ -1793,6 +1795,12 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
+        // The system menu: murrtty's items, current, as it opens (not its
+        // submenus, which open inside it), and its loop in a modal scope.
+        // The scope opens on WM_ENTERMENULOOP (wparam FALSE; TrackPopupMenu
+        // menus, wparam TRUE, have their own) or, for a way in that doesn't
+        // say so (the taskbar's), when the system menu itself opens; it
+        // ends with the loop. Only one menu loop runs at a time.
         c.WM_INITMENUPOPUP => {
             const menu: c.HMENU = @ptrFromInt(wparam);
             if (c.hiword(lparam) != 0) if (c.GetSystemMenu(hwnd, c.FALSE)) |sys| if (sys == menu) {

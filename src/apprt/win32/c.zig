@@ -400,8 +400,8 @@ pub const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4;
 // DWM
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
 pub const DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
-/// Windows 11 (build 22000) and later only.
 pub const SWP_SHOWWINDOW = 0x0040;
+/// Windows 11 (build 22000) and later only.
 pub const DWMWA_WINDOW_CORNER_PREFERENCE = 33;
 pub const DWMWCP_ROUND: c_int = 2;
 pub const DWMWA_BORDER_COLOR = 34;
@@ -827,6 +827,10 @@ pub const ODT_MENU = 1;
 pub const ODS_FOCUS = 0x0010;
 pub const ODS_NOFOCUSRECT = 0x0200;
 pub const DM_SETDEFID = 0x0401;
+pub const WM_GETDLGCODE = 0x0087;
+pub extern "user32" fn GetDlgCtrlID(HWND) callconv(.winapi) c_int;
+pub const DLGC_WANTALLKEYS = 0x0004;
+pub const SS_CENTER = 0x0001;
 pub const EN_SETFOCUS = 0x0100;
 pub const EN_KILLFOCUS = 0x0200;
 pub const SM_CXMENUCHECK = 71;
