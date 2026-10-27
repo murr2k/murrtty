@@ -1,7 +1,7 @@
 # Runs on the self-hosted runner on the development desktop
-# (WINDOWS_ROADMAP.md 0.13): the unit tests and the GUI suite on every push
-# to windows-port, then installs the release build where the runner's
-# GHOSTTY_INSTALL_PREFIX points. The runner runs in the owner's signed-in
+# (WINDOWS_ROADMAP.md 0.13): on every push to windows-port, the GUI suite,
+# then (if it passed) the release build installed where the runner's
+# GHOSTTY_INSTALL_PREFIX points, then the unit tests. The runner runs in the owner's signed-in
 # session: the GUI suite needs the GPU's OpenGL, which a service (session 0)
 # doesn't get. windows-port.yml stays as the manual clean-machine test.
 #
@@ -58,13 +58,11 @@ jobs:
         shell: cmd
         run: .\build-windows.cmd -SetupOnly
 
-      - name: Unit tests
-        shell: pwsh
-        run: |
-          $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
-          & $zig build test -Dtarget=x86_64-windows-gnu --summary failures
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
+      # The GUI suite and the install come before the unit tests (14 minutes
+      # of the run), so a build that passes the GUI suite is installed about
+      # 9 minutes after the push. The unit tests still decide the run's
+      # status, and the build replaced is kept for a rollback.
+      #
       # pixels is left out: it briefly adds a taskbar button on the owner's
       # desktop.
       - name: GUI suite
@@ -83,16 +81,38 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      # The build being replaced moves to bin\murrtty.prev.exe first: Windows
+      # lets a running exe be renamed (not overwritten), so an open murrtty
+      # keeps running and the next launch gets the new build. Copy
+      # murrtty.prev.exe back over murrtty.exe to roll back. Older prev
+      # copies go once nothing has them open.
       - name: Install the release build
         if: success() && github.ref == 'refs/heads/windows-port'
         shell: pwsh
         run: |
           $prefix = $env:GHOSTTY_INSTALL_PREFIX
           if (-not $prefix) { "GHOSTTY_INSTALL_PREFIX isn't set on this runner; skipped"; exit 0 }
-          $exe = Join-Path $prefix 'bin\murrtty.exe'
-          if (Get-Process murrtty -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }) {
-            "::notice::$exe is running, so it was not replaced"
-            exit 0
+          $bin = Join-Path $prefix 'bin'
+          $exe = Join-Path $bin 'murrtty.exe'
+          Get-ChildItem $bin -Filter 'murrtty.prev*.exe' -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+          $prev = $null
+          if (Test-Path $exe) {
+            $prev = Join-Path $bin 'murrtty.prev.exe'
+            if (Test-Path $prev) { $prev = Join-Path $bin ('murrtty.prev-{0:yyyyMMdd-HHmmss}.exe' -f (Get-Date)) }
+            $running = @(Get-Process murrtty -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }).Count -gt 0
+            Move-Item $exe $prev
+            if ($running) { "::notice::murrtty was running; it keeps running, and its next launch gets this build" }
           }
           & .\build-windows.cmd -Prefix $prefix
-          exit $LASTEXITCODE
+          $code = $LASTEXITCODE
+          if ($code -ne 0 -and $prev -and -not (Test-Path $exe)) { Move-Item $prev $exe }
+          exit $code
+
+      - name: Unit tests
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
+          & $zig build test -Dtarget=x86_64-windows-gnu --summary failures
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

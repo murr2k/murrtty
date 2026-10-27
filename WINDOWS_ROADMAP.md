@@ -676,6 +676,12 @@ becomes optional.
 *Decided 2026-10-24:* account A; green runs on `windows-port` install the
 ReleaseFast build into the project's `build\` (skipped while that Ghostty
 runs); the runner's folders are excluded from Defender scanning.
+*Changed 2026-10-26 (owner's choice):* the install comes after the GUI
+suite and before the unit tests, so a build is in `build\` about 9 minutes
+after a push instead of 20; the unit tests still decide the run's status.
+It no longer waits for a closed murrtty: the running exe is renamed to
+`murrtty.prev.exe` (Windows allows that, not overwriting), which is also
+the copy to roll back to.
 
 *Done 2026-10-24. As built:* runner 2.338.1 (checksum verified) in
 `C:\actions-runner`, registered as `surrey-desktop`, started at logon by the
