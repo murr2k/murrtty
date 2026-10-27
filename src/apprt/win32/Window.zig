@@ -1021,31 +1021,9 @@ fn chromeColors(self: *const Window) Surface.Colors {
     return .fromConfig(&self.app.config);
 }
 
-/// The chrome's colors for `window-theme`, GTK's (roadmap 4.3, the Look
-/// rule):
-/// - `auto` (the default): Adwaita's, light or dark by the configured
-///   background's luminance (not following programs that change it).
-/// - `ghostty`: `window-titlebar-background`/`-foreground`, or the
-///   configured background and foreground.
-/// - `system`: Adwaita's, following the system's light or dark setting.
-/// - `light`, `dark`: Adwaita's, as named.
+/// The chrome's colors (App.chromeTheme).
 pub fn chromeTheme(self: *const Window) draw.Theme {
-    const config = &self.app.config;
-    var theme = switch (config.@"window-theme") {
-        .auto => draw.adwaita(draw.isDark(config.background)),
-        .ghostty => draw.ghosttyTheme(
-            config.@"window-titlebar-background" orelse config.background,
-            config.@"window-titlebar-foreground" orelse config.foreground,
-        ),
-        .system => draw.adwaita(self.app.dark),
-        .light => draw.adwaita(false),
-        .dark => draw.adwaita(true),
-    };
-    // A flat top bar has no background of its own, so the window's shows
-    // (gtk-toolbar-style = flat). Ghostty's stylesheet for the ghostty
-    // theme colors the header's window handle anyway.
-    if (config.@"gtk-toolbar-style" == .flat and config.@"window-theme" != .ghostty) theme.bar = theme.window;
-    return theme;
+    return self.app.chromeTheme();
 }
 
 /// Color the window for `window-theme` (chromeTheme): the header bar and
@@ -1779,6 +1757,20 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         // menus, wparam TRUE, have their own) or, for a way in that doesn't
         // say so (the taskbar's), when the system menu itself opens; it
         // ends with the loop. Only one menu loop runs at a time.
+        // The strip's and header's menus, owner-drawn (ContextMenu).
+        c.WM_MEASUREITEM => {
+            if (ContextMenu.measureItem(lparam)) return 1;
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_DRAWITEM => {
+            if (ContextMenu.drawItem(lparam)) return 1;
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_MENUCHAR => {
+            if (ContextMenu.menuChar(wparam, lparam)) |r| return r;
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
         c.WM_INITMENUPOPUP => {
             const menu: c.HMENU = @ptrFromInt(wparam);
             if (c.hiword(lparam) != 0) if (c.GetSystemMenu(hwnd, c.FALSE)) |sys| if (sys == menu) {

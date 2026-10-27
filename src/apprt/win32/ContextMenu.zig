@@ -4,10 +4,19 @@
 //! action can't run here (App.supportsAction) or now (Copy with no
 //! selection, Paste with no text on the clipboard). Also the tab strip's
 //! right-click menu (roadmap 3.8, trackTab).
+//!
+//! They look like libadwaita's popover menus (roadmap 4.3b, measured on
+//! GTK's): owner-drawn rows 32 DIP tall in the popover's colors and
+//! GNOME's font, the binding at the right in a dimmer color, a rounded
+//! highlight under the mouse, thin separators with room around them, and
+//! a chevron for a submenu. Windows keeps the menu itself (its frame,
+//! placement, keyboard and accessibility), as the strings stay stored in
+//! the items. The system menu's items stay Windows' own.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const input = @import("../../input.zig");
 const c = @import("c.zig");
+const draw = @import("draw.zig");
 const App = @import("App.zig");
 const Surface = @import("Surface.zig");
 
@@ -19,6 +28,9 @@ const Item = union(enum) {
     action: struct { label: []const u8, action: Action },
     /// Not available yet: always grayed.
     unavailable: []const u8,
+    /// A check item, not available yet: grayed. GTK's menus leave room
+    /// for the check before every item of a menu that has one.
+    unavailable_toggle: []const u8,
     separator,
     submenu: struct { label: []const u8, items: []const Item },
     /// murrtty's About box, which no core action shows.
@@ -58,7 +70,7 @@ const items = [_]Item{
     act("&Copy", .{ .copy_to_clipboard = .mixed }),
     act("&Paste", .paste_from_clipboard),
     // Roadmap 5.3.
-    .{ .unavailable = "&Notify on Next Command Finish" },
+    .{ .unavailable_toggle = "&Notify on Next Command Finish" },
     .separator,
     act("C&lear", .clear_screen),
     act("&Reset", .reset),
@@ -163,6 +175,10 @@ const Built = struct {
     /// 4 for the system menu: WM_SYSCOMMAND keeps an id's low four bits
     /// for the system's use.
     shift: u4 = 0,
+    /// How the owner-drawn items look, by their data (index + 1); none
+    /// for the system menu, whose items Windows draws.
+    look: ?Look = null,
+    draws: std.ArrayList(Draw) = .empty,
 
     fn nextId(self: *const Built) usize {
         return self.choices.items.len << self.shift;
@@ -172,8 +188,179 @@ const Built = struct {
         self.choices.deinit(alloc);
         for (self.strings.items) |s| alloc.free(s);
         self.strings.deinit(alloc);
+        self.draws.deinit(alloc);
+        if (self.look) |l| l.deinit();
     }
 };
+
+/// An owner-drawn item.
+const Draw = struct {
+    menu: c.HMENU,
+    /// The label, with its access key's "&", and the binding, if any.
+    label: []const u16,
+    binding: []const u16,
+    kind: enum { item, separator, submenu },
+    /// Room before the label for a check (the menu has a check item).
+    indent: bool = false,
+};
+
+/// The menus' colors, font and size, for the owner window's DPI.
+const Look = struct {
+    dpi: c.UINT,
+    pal: draw.MenuPalette,
+    font: ?c.HFONT,
+    brush: ?c.HBRUSH,
+
+    fn init(surface: *Surface, owner: c.HWND) Look {
+        const dpi = c.GetDpiForWindow(owner);
+        const pal = draw.menuPalette(surface.window.chromeTheme());
+        return .{
+            .dpi = dpi,
+            .pal = pal,
+            .font = draw.chromeFont(dpi, null, false),
+            .brush = c.CreateSolidBrush(pal.bg),
+        };
+    }
+
+    fn deinit(self: Look) void {
+        if (self.font) |f| _ = c.DeleteObject(f);
+        if (self.brush) |b| _ = c.DeleteObject(b);
+    }
+
+    fn scale(self: Look, v: c_int) c_int {
+        return draw.scale(self.dpi, v);
+    }
+};
+
+/// Metrics, in DIP, as GTK's popover menu: rows 32 tall, separators a
+/// line with 6 on either side, text 12 in from the row's ends (6 of
+/// popover padding and 12 of row padding, less the menu's own margin),
+/// 23 more before it in a menu with a check item, the binding 24 clear of
+/// the label, a submenu's chevron in the last 16.
+const row_height = 32;
+const separator_height = 13;
+const text_pad = 12;
+const check_room = 23;
+const binding_gap = 24;
+const chevron_room = 16;
+
+/// The menu showing, for its owner window's WM_MEASUREITEM, WM_DRAWITEM
+/// and WM_MENUCHAR (one at a time: a menu's loop is modal).
+var showing: ?*Built = null;
+
+fn drawOf(data: usize) ?*const Draw {
+    const built = showing orelse return null;
+    if (data == 0 or data > built.draws.items.len) return null;
+    return &built.draws.items[data - 1];
+}
+
+/// WM_MEASUREITEM for a menu item: its size. Returns whether it was one
+/// of the menu's.
+pub fn measureItem(lparam: c.LPARAM) bool {
+    const m: *c.MEASUREITEMSTRUCT = @ptrFromInt(@as(usize, @bitCast(lparam)));
+    if (m.CtlType != c.ODT_MENU) return false;
+    const built = showing orelse return false;
+    const look = built.look orelse return false;
+    const d = drawOf(m.itemData) orelse return false;
+    if (d.kind == .separator) {
+        m.itemWidth = 0;
+        m.itemHeight = @intCast(look.scale(separator_height));
+        return true;
+    }
+    const dc = c.GetDC(null) orelse return false;
+    defer _ = c.ReleaseDC(null, dc);
+    const old = if (look.font) |f| c.SelectObject(dc, f) else null;
+    defer if (old) |o| {
+        _ = c.SelectObject(dc, o);
+    };
+    var width = look.scale(2 * text_pad) + textWidth(dc, d.label, true);
+    if (d.indent) width += look.scale(check_room);
+    if (d.binding.len > 0) width += look.scale(binding_gap) + textWidth(dc, d.binding, false);
+    if (d.kind == .submenu) width += look.scale(chevron_room);
+    // Windows adds a check mark's width of its own to every item.
+    width -= c.GetSystemMetricsForDpi(c.SM_CXMENUCHECK, look.dpi) - 1;
+    m.itemWidth = @intCast(@max(width, look.scale(40)));
+    m.itemHeight = @intCast(look.scale(row_height));
+    return true;
+}
+
+fn textWidth(dc: c.HDC, text: []const u16, prefix: bool) c_int {
+    var r: c.RECT = .{};
+    const flags: c.UINT = c.DT_SINGLELINE | c.DT_CALCRECT | @as(c.UINT, if (prefix) 0 else c.DT_NOPREFIX);
+    _ = c.DrawTextW(dc, text.ptr, @intCast(text.len), &r, flags);
+    return r.right - r.left;
+}
+
+/// WM_DRAWITEM for a menu item. Returns whether it was one of the menu's.
+pub fn drawItem(lparam: c.LPARAM) bool {
+    const item: *const c.DRAWITEMSTRUCT = @ptrFromInt(@as(usize, @bitCast(lparam)));
+    if (item.CtlType != c.ODT_MENU) return false;
+    const built = showing orelse return false;
+    const look = built.look orelse return false;
+    const d = drawOf(item.itemData) orelse return false;
+    const dc = item.hDC;
+    const r = item.rcItem;
+    const pal = look.pal;
+    draw.fill(dc, r, pal.bg);
+    if (d.kind == .separator) {
+        const y = r.top + @divTrunc(r.bottom - r.top, 2);
+        draw.fill(dc, .{ .left = r.left + look.scale(3), .top = y, .right = r.right - look.scale(3), .bottom = y + @max(1, look.scale(1)) }, pal.separator);
+        return true;
+    }
+    const grayed = item.itemState & c.ODS_GRAYED != 0;
+    if (item.itemState & c.ODS_SELECTED != 0 and !grayed) {
+        draw.roundRect(dc, r, look.scale(6), pal.hover, null, 0);
+    }
+    const old = if (look.font) |f| c.SelectObject(dc, f) else null;
+    defer if (old) |o| {
+        _ = c.SelectObject(dc, o);
+    };
+    _ = c.SetBkMode(dc, c.TRANSPARENT);
+    var text = r;
+    text.left += look.scale(text_pad) + if (d.indent) look.scale(check_room) else 0;
+    text.right -= look.scale(text_pad) + if (d.kind == .submenu) look.scale(chevron_room) else 0;
+    // Access keys underlined only when the keyboard opened the menu, as
+    // Windows shows them; GTK's menus show none.
+    const prefix: c.UINT = if (item.itemState & c.ODS_NOACCEL != 0) c.DT_HIDEPREFIX else 0;
+    _ = c.SetTextColor(dc, if (grayed) pal.disabled else pal.text);
+    _ = c.DrawTextW(dc, d.label.ptr, @intCast(d.label.len), &text, c.DT_SINGLELINE | c.DT_VCENTER | prefix);
+    if (d.binding.len > 0) {
+        _ = c.SetTextColor(dc, if (grayed) pal.disabled else pal.dim);
+        _ = c.DrawTextW(dc, d.binding.ptr, @intCast(d.binding.len), &text, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_RIGHT | c.DT_NOPREFIX);
+    }
+    if (d.kind == .submenu) {
+        // pan-end: a chevron pointing right, in the last 16 DIP.
+        const x = r.right - look.scale(text_pad) - @divTrunc(look.scale(chevron_room), 2);
+        const y = r.top + @divTrunc(r.bottom - r.top, 2);
+        const arm = look.scale(4);
+        const stroke = @max(1, look.scale(2));
+        const color = if (grayed) pal.disabled else pal.text;
+        draw.line(dc, x - @divTrunc(arm, 2), y - arm, x + @divTrunc(arm, 2), y + 1, color, stroke);
+        draw.line(dc, x - @divTrunc(arm, 2), y + arm, x + @divTrunc(arm, 2), y - 1, color, stroke);
+        // Windows draws its own arrow after this: keep it off the item.
+        _ = c.ExcludeClipRect(dc, r.left, r.top, r.right, r.bottom);
+    }
+    return true;
+}
+
+/// WM_MENUCHAR: the item of the showing menu `lparam` whose access key
+/// was typed, run (or its submenu opened), as Windows does for its own
+/// items' access keys. Null when it isn't one of the menu's.
+pub fn menuChar(wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
+    const built = showing orelse return null;
+    if (built.look == null) return null;
+    const menu: c.HMENU = @ptrFromInt(@as(usize, @bitCast(lparam)));
+    const typed = std.ascii.toLower(@truncate(c.loword(wparam)));
+    var pos: usize = 0;
+    for (built.draws.items) |d| {
+        if (d.menu != menu) continue;
+        defer pos += 1;
+        if (d.kind == .separator) continue;
+        const key = accessKey(u16, d.label) orelse continue;
+        if (key == typed) return @intCast((@as(usize, c.MNC_EXECUTE) << 16) | pos);
+    }
+    return null;
+}
 
 /// Show the menu at `screen` (screen pixels) over `surface` and return the
 /// action chosen, if any. The caller performs it, after the menu is gone.
@@ -216,13 +403,15 @@ fn show(
 ) ?Choice {
     const app = surface.app;
     const alloc = app.core_app.alloc;
-    var built: Built = .{};
+    var built: Built = .{ .look = Look.init(surface, owner) };
     defer built.deinit(alloc);
     const menu = build(surface, &built, list, place) catch |err| {
         log.warn("context menu not built err={}", .{err});
         return null;
     };
     defer _ = c.DestroyMenu(menu);
+    showing = &built;
+    defer showing = null;
 
     // A nested modal loop: close requests wait until it ends. Other
     // windows stay enabled; a click on one just closes the menu.
@@ -243,6 +432,10 @@ const BuildError = error{ CreateMenuFailed, OutOfMemory, InvalidUtf8 };
 fn build(surface: *Surface, built: *Built, list: []const Item, place: ?TabPlace) BuildError!c.HMENU {
     const menu = c.CreatePopupMenu() orelse return error.CreateMenuFailed;
     errdefer _ = c.DestroyMenu(menu);
+    if (built.look) |look| {
+        const info: c.MENUINFO = .{ .fMask = c.MIM_BACKGROUND, .hbrBack = look.brush };
+        _ = c.SetMenuInfo(menu, &info);
+    }
     try fill(surface, built, menu, list, place, null);
     return menu;
 }
@@ -257,12 +450,15 @@ fn fill(
     taken: ?*const Taken,
 ) BuildError!void {
     const alloc = surface.app.core_app.alloc;
+    const first = built.draws.items.len;
+    var toggles = false;
     for (list) |item| switch (item) {
-        .separator => _ = c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null),
-        .unavailable => |label| {
+        .separator => try append(alloc, built, menu, .separator, null, 0, false, null),
+        .unavailable, .unavailable_toggle => |label| {
+            if (item == .unavailable_toggle) toggles = true;
             var free: [64]u8 = undefined;
             const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
-            _ = c.AppendMenuW(menu, c.MF_STRING | c.MF_GRAYED, 0, text.ptr);
+            try append(alloc, built, menu, .item, text, 0, true, null);
         },
         .action => |a| {
             var free: [64]u8 = undefined;
@@ -270,14 +466,13 @@ fn fill(
             const label = labelWithBinding(surface.app, freeAccessKey(a.label, taken, &free), a.action, &buf);
             const text = try addString(alloc, built, label);
             try built.choices.append(alloc, .{ .action = a.action });
-            const flags: c.UINT = if (enabled(surface, a.action, place)) c.MF_STRING else c.MF_STRING | c.MF_GRAYED;
-            _ = c.AppendMenuW(menu, flags, built.nextId(), text.ptr);
+            try append(alloc, built, menu, .item, text, built.nextId(), !enabled(surface, a.action, place), null);
         },
         .about => |label| {
             var free: [64]u8 = undefined;
             const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
             try built.choices.append(alloc, .about);
-            _ = c.AppendMenuW(menu, c.MF_STRING, built.nextId(), text.ptr);
+            try append(alloc, built, menu, .item, text, built.nextId(), false, null);
         },
         .submenu => |s| {
             // A submenu's access keys are its own.
@@ -286,9 +481,62 @@ fn fill(
             var free: [64]u8 = undefined;
             const text = try addString(alloc, built, freeAccessKey(s.label, taken, &free));
             // The parent menu owns the submenu from here.
-            _ = c.AppendMenuW(menu, c.MF_POPUP, @intFromPtr(sub), text.ptr);
+            try append(alloc, built, menu, .submenu, text, 0, false, sub);
         },
     };
+    // GTK's menu leaves room for the check before all of a menu's items.
+    if (toggles) for (built.draws.items[first..]) |*d| {
+        if (d.menu == menu) d.indent = true;
+    };
+}
+
+/// Add an item to `menu`: owner-drawn when the menu has a look (its
+/// string stored all the same, for reading back and access keys),
+/// Windows' own otherwise (the system menu).
+fn append(
+    alloc: Allocator,
+    built: *Built,
+    menu: c.HMENU,
+    kind: @FieldType(Draw, "kind"),
+    text: ?[:0]const u16,
+    id: usize,
+    grayed: bool,
+    sub: ?c.HMENU,
+) BuildError!void {
+    if (built.look == null) {
+        _ = switch (kind) {
+            .separator => c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null),
+            .item => c.AppendMenuW(menu, c.MF_STRING | @as(c.UINT, if (grayed) c.MF_GRAYED else 0), id, text.?.ptr),
+            .submenu => c.AppendMenuW(menu, c.MF_POPUP, @intFromPtr(sub.?), text.?.ptr),
+        };
+        return;
+    }
+    const full = text orelse &[_:0]u16{};
+    // The label, then the binding after its tab.
+    const tab = std.mem.indexOfScalar(u16, full, '\t');
+    try built.draws.append(alloc, .{
+        .menu = menu,
+        .label = if (tab) |t| full[0..t] else full,
+        .binding = if (tab) |t| full[t + 1 ..] else &.{},
+        .kind = kind,
+    });
+    var info: c.MENUITEMINFOW = .{
+        .fMask = c.MIIM_FTYPE | c.MIIM_DATA | c.MIIM_ID | c.MIIM_STATE,
+        .fType = c.MFT_OWNERDRAW | @as(c.UINT, if (kind == .separator) c.MFT_SEPARATOR else 0),
+        .fState = if (grayed) c.MFS_GRAYED else 0,
+        .wID = @intCast(id),
+        .dwItemData = built.draws.items.len,
+    };
+    if (text) |t| {
+        info.fMask |= c.MIIM_STRING;
+        info.dwTypeData = t.ptr;
+        info.cch = @intCast(t.len);
+    }
+    if (sub) |s| {
+        info.fMask |= c.MIIM_SUBMENU;
+        info.hSubMenu = s;
+    }
+    _ = c.InsertMenuItemW(menu, std.math.maxInt(c.UINT), c.TRUE, &info);
 }
 
 /// murrtty's items in a window's system menu, refilled each time it opens

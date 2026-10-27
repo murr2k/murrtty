@@ -263,6 +263,14 @@ roadmap item behind it.
   what the program would write (GTK's says the current contents, but shows
   the same text); control characters show as Control Pictures; Escape or
   the close box denies without remembering (GTK's remembers a Deny then).
+- **Menus** (4.3b): Windows' popup menus with their items drawn as
+  libadwaita's popover menus (its rows, colors, font, separators and
+  chevrons): the frame, its rounded corners and shadow are Windows 11's,
+  and a submenu opens beside its item as Windows' do (GTK's context menu
+  nests its submenus the same way). Access keys stay, underlined when the
+  keyboard opens a menu; GTK's menus have none. Bindings read as Windows
+  writes them (Ctrl+Shift+T, Ctrl+Ins); GTK writes Shift+Ctrl+T and
+  Ctrl+Insert.
 - **System menu** (3.9): Alt+Space's menu adds New Window, New Tab, Split,
   Command Palette, Terminal Inspector, Config, About murrtty and Quit
   after Windows' own items; GTK has no such menu.
@@ -1910,6 +1918,27 @@ reference's pixels. The test hooks also paint the chrome into a bitmap
 (dump wparam 12, `Harness.saveChrome`), which `snapshot` writes as
 `paint-*.bmp` from the hidden desktop: the `tabs` row compared with GTK's
 picture button for button.
+
+*4.3b step 1, the menus, done 2026-10-27.* GTK's menus measured with
+`gtkref.ps1 -Actions` (xdotool clicks in the Xvfb display): popovers in
+the popover color (#36363a in dark, #ffffff in light; the terminal's with
+`window-theme = ghostty`), 6 px of padding, rows 32 px with the text 18 px
+in (41 in a menu with a check item, as the terminal's Notify on Next
+Command Finish), the binding right-aligned at 55%, grayed items at 50%, a
+hovered row a rounded 10% highlight, separators 1 px at 15% with 6 px
+above and below, a chevron for a submenu; the context menu's submenus
+open as nested popovers beside it, as Windows' do. So murrtty keeps
+Windows' menus (TrackPopupMenuEx: placement, keyboard, accessibility, the
+harness's reading of them) and owner-draws their items that way
+(`ContextMenu`: `MFT_OWNERDRAW` with the string still stored, so
+GetMenuString and access keys keep working, `WM_MENUCHAR` as well; the
+popover color as the menu's background), the system menu's own items left
+Windows'. Popup menu frames follow the chrome's light or dark
+(`App.syncMenuTheme`, uxtheme's SetPreferredAppMode forced either way),
+not Windows' app setting. `snapshot` writes the main and terminal menus as
+they paint (`Harness.capturePrint`, WM_PRINT, on the hidden desktop).
+Still to see on a real screen: Windows 11's frame around them. Next
+(step 2): the dialogs as libadwaita's alert dialogs.
 
 *Mid-phase review (2026-10-27, steps 1 to 4b), fixed:* the window's
 minimum width now holds the header bar's buttons side by side

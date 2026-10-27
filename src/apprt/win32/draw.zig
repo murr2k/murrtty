@@ -40,6 +40,9 @@ pub const Theme = struct {
     /// The window's background (libadwaita's window-bg-color): a flat
     /// bar's, and the split dividers'.
     window: Color,
+    /// Menus' background and text (libadwaita's popover colors).
+    popover: Color,
+    popover_fg: Color,
     /// The opacity of the shade color (`shade_color`), which the top bars
     /// cast onto the content (`shadeAlpha`).
     shade: f32,
@@ -71,6 +74,8 @@ pub fn adwaita(dark: bool) Theme {
         .fg = .{ .r = 0xff, .g = 0xff, .b = 0xff },
         .backdrop = .{ .r = 0x22, .g = 0x22, .b = 0x26 },
         .window = .{ .r = 0x22, .g = 0x22, .b = 0x26 },
+        .popover = .{ .r = 0x36, .g = 0x36, .b = 0x3a },
+        .popover_fg = .{ .r = 0xff, .g = 0xff, .b = 0xff },
         .shade = 0.36,
         .dark = true,
     } else .{
@@ -78,6 +83,8 @@ pub fn adwaita(dark: bool) Theme {
         .fg = blend(.{ .r = 0xff, .g = 0xff, .b = 0xff }, ink, 0.8),
         .backdrop = .{ .r = 0xfa, .g = 0xfa, .b = 0xfb },
         .window = .{ .r = 0xfa, .g = 0xfa, .b = 0xfb },
+        .popover = .{ .r = 0xff, .g = 0xff, .b = 0xff },
+        .popover_fg = blend(.{ .r = 0xff, .g = 0xff, .b = 0xff }, ink, 0.8),
         .shade = 0.12,
         .dark = false,
     };
@@ -93,8 +100,35 @@ pub fn ghosttyTheme(bg: Color, fg: Color) Theme {
         .fg = fg,
         .backdrop = scaleLightness(bg, 0.9),
         .window = bg,
+        .popover = bg,
+        .popover_fg = fg,
         .shade = if (dark) 0.36 else 0.12,
         .dark = dark,
+    };
+}
+
+/// A menu's colors (libadwaita's popover menu, as measured on GTK's): the
+/// text over the popover, a binding at 55%, a grayed item at 50%, a
+/// hovered row 10%, separators 15%.
+pub const MenuPalette = struct {
+    bg: c.COLORREF,
+    text: c.COLORREF,
+    dim: c.COLORREF,
+    disabled: c.COLORREF,
+    hover: c.COLORREF,
+    separator: c.COLORREF,
+};
+
+pub fn menuPalette(theme: Theme) MenuPalette {
+    const bg = theme.popover;
+    const fg = theme.popover_fg;
+    return .{
+        .bg = ref(bg),
+        .text = ref(fg),
+        .dim = ref(blend(bg, fg, 0.55)),
+        .disabled = ref(blend(bg, fg, 0.5)),
+        .hover = ref(blend(bg, fg, 0.10)),
+        .separator = ref(blend(bg, fg, 0.15)),
     };
 }
 

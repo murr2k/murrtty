@@ -1042,6 +1042,11 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
     switch (msg) {
         c.WM_ERASEBKGND => return 1,
 
+        // The terminal's menu, owner-drawn (ContextMenu).
+        c.WM_MEASUREITEM => return if (ContextMenu.measureItem(lparam)) 1 else null,
+        c.WM_DRAWITEM => return if (ContextMenu.drawItem(lparam)) 1 else null,
+        c.WM_MENUCHAR => return ContextMenu.menuChar(wparam, lparam),
+
         c.WM_PAINT => {
             _ = c.ValidateRect(self.hwnd, null);
             if (self.core_initialized) self.core_surface.refreshCallback() catch {};

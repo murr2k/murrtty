@@ -241,7 +241,29 @@ fn snapshotFrame(h: *Harness, dir: []const u8) !void {
     w.Sleep(500);
     try h.saveChrome(&styled);
     try copyOut(h, &styled, "chrome-0.bmp", dir, "paint-tabs-style.bmp");
+    // The menus as they paint themselves: the main menu, then the
+    // terminal's.
+    const win = try h.mainWindow(&g);
+    const at = try stripButton(h, &g, .menu);
+    h.press(win, at.x, at.y);
+    try saveMenu(h, &g, dir, "paint-main-menu.bmp");
+    const surf = try h.surface(&g, win);
+    h.rightPress(surf, 200, 150);
+    try saveMenu(h, &g, dir, "paint-context-menu.bmp");
     try h.expect(true, "wrote frame-tab.bmp, paint-header.bmp and paint-tabs-style.bmp to {s} at {d} DPI", .{ dir, dpi });
+}
+
+/// Wait for a menu, write its picture to `dir` as `name`, and close it.
+fn saveMenu(h: *Harness, g: *const Harness.Ghostty, dir: []const u8, name: []const u8) !void {
+    const menu = try h.waitMenu(g, 1, 5000);
+    w.Sleep(300);
+    var img = h.capturePrint(menu) catch return h.fail("menu capture failed", .{});
+    defer img.deinit();
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ dir, name });
+    defer h.alloc.free(path);
+    try img.save(path);
+    _ = w.PostMessageW(menu, w.WM_KEYDOWN, w.VK_ESCAPE, 0);
+    w.Sleep(300);
 }
 
 /// Copy `name` from beside `g`'s dump file to `dir` as `as`.

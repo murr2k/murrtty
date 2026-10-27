@@ -620,6 +620,8 @@ pub const DT_SINGLELINE = 0x00000020;
 pub const DT_NOPREFIX = 0x00000800;
 pub const DT_END_ELLIPSIS = 0x00008000;
 pub const DT_CALCRECT = 0x00000400;
+pub const DT_RIGHT = 0x00000002;
+pub const DT_HIDEPREFIX = 0x00100000;
 pub const PS_SOLID = 0;
 pub const WS_EX_TRANSPARENT = 0x00000020;
 pub const SW_SHOWNA = 8;
@@ -771,6 +773,57 @@ pub const TPM_RETURNCMD = 0x0100;
 pub const WM_NULL = 0x0000;
 pub extern "user32" fn CreatePopupMenu() callconv(.winapi) ?HMENU;
 pub extern "user32" fn AppendMenuW(HMENU, UINT, usize, ?LPCWSTR) callconv(.winapi) BOOL;
+pub const MENUITEMINFOW = extern struct {
+    cbSize: UINT = @sizeOf(MENUITEMINFOW),
+    fMask: UINT = 0,
+    fType: UINT = 0,
+    fState: UINT = 0,
+    wID: UINT = 0,
+    hSubMenu: ?HMENU = null,
+    hbmpChecked: ?HBITMAP = null,
+    hbmpUnchecked: ?HBITMAP = null,
+    dwItemData: usize = 0,
+    dwTypeData: ?[*:0]const u16 = null,
+    cch: UINT = 0,
+    hbmpItem: ?HBITMAP = null,
+};
+pub const MIIM_STATE = 0x0001;
+pub const MIIM_ID = 0x0002;
+pub const MIIM_SUBMENU = 0x0004;
+pub const MIIM_DATA = 0x0020;
+pub const MIIM_STRING = 0x0040;
+pub const MIIM_FTYPE = 0x0100;
+pub const MFT_OWNERDRAW = 0x0100;
+pub const MFT_SEPARATOR = 0x0800;
+pub const MFS_GRAYED = 0x0003;
+pub extern "user32" fn InsertMenuItemW(HMENU, UINT, BOOL, *const MENUITEMINFOW) callconv(.winapi) BOOL;
+pub const MENUINFO = extern struct {
+    cbSize: DWORD = @sizeOf(MENUINFO),
+    fMask: DWORD = 0,
+    dwStyle: DWORD = 0,
+    cyMax: UINT = 0,
+    hbrBack: ?HBRUSH = null,
+    dwContextHelpID: DWORD = 0,
+    dwMenuData: usize = 0,
+};
+pub const MIM_BACKGROUND = 0x00000002;
+pub extern "user32" fn SetMenuInfo(HMENU, *const MENUINFO) callconv(.winapi) BOOL;
+pub const WM_MEASUREITEM = 0x002C;
+pub const WM_MENUCHAR = 0x0120;
+pub const MEASUREITEMSTRUCT = extern struct {
+    CtlType: UINT,
+    CtlID: UINT,
+    itemID: UINT,
+    itemWidth: UINT,
+    itemHeight: UINT,
+    itemData: usize,
+};
+pub const ODT_MENU = 1;
+pub const SM_CXMENUCHECK = 71;
+pub const ODS_GRAYED = 0x0002;
+pub const ODS_NOACCEL = 0x0100;
+pub const MNC_EXECUTE = 2;
+pub extern "gdi32" fn ExcludeClipRect(HDC, c_int, c_int, c_int, c_int) callconv(.winapi) c_int;
 /// With TPM_RETURNCMD it returns the chosen item's id, 0 for none.
 pub extern "user32" fn TrackPopupMenuEx(HMENU, UINT, c_int, c_int, HWND, ?*anyopaque) callconv(.winapi) c_int;
 pub extern "user32" fn DestroyMenu(HMENU) callconv(.winapi) BOOL;

@@ -1598,6 +1598,14 @@ pub fn capture(self: *Harness, hwnd: w.HWND) !Image {
     return self.grab(r.right - r.left, r.bottom - r.top, .{ .window = hwnd });
 }
 
+/// A window as it paints itself into a bitmap (PrintWindow without DWM,
+/// WM_PRINT): a popup menu's owner-drawn items, on the hidden desktop.
+pub fn capturePrint(self: *Harness, hwnd: w.HWND) !Image {
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(hwnd, &r);
+    return self.grab(r.right - r.left, r.bottom - r.top, .{ .print = hwnd });
+}
+
 /// A window's client area as it last painted it with GDI, read from its
 /// device context: current even where DWM hasn't composed it again (an
 /// off-screen window on a still screen), but without what OpenGL drew.
@@ -1641,7 +1649,7 @@ pub fn captureDisplay(self: *Harness, rect: w.RECT) !Image {
     return .{ .alloc = self.alloc, .width = @intCast(width), .height = @intCast(height), .pixels = pixels };
 }
 
-fn grab(self: *Harness, width: c_int, height: c_int, source: union(enum) { window: w.HWND, client: w.HWND, screen: w.POINT }) !Image {
+fn grab(self: *Harness, width: c_int, height: c_int, source: union(enum) { window: w.HWND, print: w.HWND, client: w.HWND, screen: w.POINT }) !Image {
     if (width <= 0 or height <= 0) return error.CaptureFailed;
 
     const screen = w.GetDC(null) orelse return error.CaptureFailed;
@@ -1658,6 +1666,7 @@ fn grab(self: *Harness, width: c_int, height: c_int, source: union(enum) { windo
     };
     const ok = switch (source) {
         .window => |hwnd| w.PrintWindow(hwnd, dc, w.PW_RENDERFULLCONTENT),
+        .print => |hwnd| w.PrintWindow(hwnd, dc, 0),
         .client => |hwnd| client: {
             const src = w.GetDC(hwnd) orelse return error.CaptureFailed;
             defer _ = w.ReleaseDC(hwnd, src);

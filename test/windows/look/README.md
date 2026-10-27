@@ -18,8 +18,12 @@ These tools measure that rather than judging it by eye.
    `.\gtkref.ps1 -Out gtk-text.png -Extra "command = printf '<line>\n'; exec sleep 60"`
    shows (`look_text` in `scenarios.zig`), and `paint-header.bmp` and
    `paint-tabs-style.bmp`, the chrome as WM_PAINT draws it (also read back
-   on the hidden desktop), at the window's DPI. `-Extra` takes several
-   config lines (`-Extra 'a = 1', 'b = 2'`). With
+   on the hidden desktop), at the window's DPI, and `paint-main-menu.bmp`
+   and `paint-context-menu.bmp`, the menus as they paint themselves.
+   `-Extra` takes several config lines (`-Extra 'a = 1', 'b = 2'`), and
+   `-Actions` commands run in the display before the picture, to open a
+   menu (`-Actions 'xdotool mousemove 662 28 click 1'`: the main menu's
+   button at 96 DPI; click 3 at a point in the terminal for its menu). With
    `GHOSTTY_GUI_ONSCREEN=1` on a still screen it then writes
    `chrome-*.bmp`, the header bar and tab row as last painted, at the
    window's DPI. The window is inactive there, so its chrome shows

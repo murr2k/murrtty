@@ -210,7 +210,6 @@ pub fn init(
     // Before any window exists, so all of them take it.
     const aumid = c.SetCurrentProcessExplicitAppUserModelID(app_user_model_id);
     if (aumid < 0) log.warn("SetCurrentProcessExplicitAppUserModelID failed hr=0x{x}", .{@as(u32, @bitCast(aumid))});
-    allowDarkMenus();
     // The common controls' classes (the tab strip's tooltip).
     _ = c.InitCommonControlsEx(&.{ .dwICC = c.ICC_WIN95_CLASSES });
 
@@ -264,6 +263,8 @@ pub fn init(
         .test_state = test_hooks.init(alloc),
     };
     if (self.fonts == null) log.warn("the chrome's font (Adwaita Sans) could not be registered", .{});
+    // Before any menu shows.
+    self.syncMenuTheme();
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
 
@@ -918,6 +919,7 @@ pub fn systemThemeChanged(self: *App) void {
 pub fn setSystemDark(self: *App, dark: bool) void {
     if (dark == self.dark) return;
     self.dark = dark;
+    self.syncMenuTheme();
     for (self.windows.items) |w| w.applyChrome();
     self.reportColorScheme();
 }
@@ -1354,6 +1356,8 @@ pub fn performAction(
                 const config = try value.config.clone(self.core_app.alloc);
                 self.config.deinit();
                 self.config = config;
+                // window-theme or the colors may have changed.
+                self.syncMenuTheme();
                 for (self.windows.items) |w| {
                     w.configChanged();
                     // `scrollbar` may have changed.
@@ -1492,17 +1496,45 @@ pub fn performAction(
     return true;
 }
 
-/// Dark popup menus (the context menu) while Windows uses dark mode for
-/// apps. Windows has no public API for it; this uses uxtheme's exports by
-/// ordinal, as Windows Terminal and File Explorer do: 135 is
-/// SetPreferredAppMode (1, AllowDark) since Windows 10 1903 and
-/// AllowDarkModeForApp (1, true) before, 136 FlushMenuThemes. Missing, it
-/// does nothing.
-fn allowDarkMenus() void {
+/// The chrome's colors for `window-theme`, GTK's (roadmap 4.3, the Look
+/// rule):
+/// - `auto` (the default): Adwaita's, light or dark by the configured
+///   background's luminance (not following programs that change it).
+/// - `ghostty`: `window-titlebar-background`/`-foreground`, or the
+///   configured background and foreground.
+/// - `system`: Adwaita's, following the system's light or dark setting.
+/// - `light`, `dark`: Adwaita's, as named.
+pub fn chromeTheme(self: *const App) draw.Theme {
+    const config = &self.config;
+    var theme = switch (config.@"window-theme") {
+        .auto => draw.adwaita(draw.isDark(config.background)),
+        .ghostty => draw.ghosttyTheme(
+            config.@"window-titlebar-background" orelse config.background,
+            config.@"window-titlebar-foreground" orelse config.foreground,
+        ),
+        .system => draw.adwaita(self.dark),
+        .light => draw.adwaita(false),
+        .dark => draw.adwaita(true),
+    };
+    // A flat top bar has no background of its own, so the window's shows
+    // (gtk-toolbar-style = flat). Ghostty's stylesheet for the ghostty
+    // theme colors the header's window handle anyway.
+    if (config.@"gtk-toolbar-style" == .flat and config.@"window-theme" != .ghostty) theme.bar = theme.window;
+    return theme;
+}
+
+/// Popup menus' frames light or dark as the chrome is (the items are
+/// murrtty's own, ContextMenu), whatever Windows uses for apps. Windows
+/// has no public API for it; this uses uxtheme's exports by ordinal, as
+/// Windows Terminal and File Explorer do: 135 is SetPreferredAppMode (2
+/// ForceDark, 3 ForceLight) since Windows 10 1903 (before, it was
+/// AllowDarkModeForApp, which takes only on or off), 136 FlushMenuThemes.
+/// Missing, it does nothing.
+fn syncMenuTheme(self: *const App) void {
     const uxtheme = c.LoadLibraryW(c.L("uxtheme.dll")) orelse return;
     if (c.GetProcAddress(uxtheme, @ptrFromInt(135))) |p| {
         const setMode: *const fn (c_int) callconv(.winapi) c_int = @ptrCast(p);
-        _ = setMode(1);
+        _ = setMode(if (self.chromeTheme().dark) 2 else 3);
     }
     if (c.GetProcAddress(uxtheme, @ptrFromInt(136))) |p| {
         const flush: *const fn () callconv(.winapi) void = @ptrCast(p);
