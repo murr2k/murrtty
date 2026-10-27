@@ -68,6 +68,17 @@ fullscreen: ?Saved = null,
 /// What applyChrome last set, for the GUI tests' state dump.
 chrome: Chrome = .{},
 
+/// The tab strip's tooltip (a tab's title and directory, a button's name),
+/// its text asked for when it shows (TTN_GETDISPINFOW).
+tooltip: ?c.HWND = null,
+tooltip_text: [512:0]u16 = @splat(0),
+
+/// The icons at the window's DPI (the class's would be scaled from 32 px),
+/// and the widths asked for, for the GUI tests' dump.
+small_icon: ?c.HICON = null,
+big_icon: ?c.HICON = null,
+icon_widths: [2]c_int = .{ 0, 0 },
+
 pub const Chrome = struct {
     dark: bool = false,
     /// The caption color, or null for the system's.
@@ -125,7 +136,10 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     }
 
     // Size the client area for the monitor's DPI (setClientSize scales).
-    self.tab_bar.setDpi(c.GetDpiForWindow(self.hwnd));
+    const dpi = c.GetDpiForWindow(self.hwnd);
+    self.tab_bar.setDpi(dpi, app.config.@"window-title-font-family");
+    self.loadIcons(dpi);
+    self.createTooltip();
     self.setClientSize(default_width, default_height);
     self.applyChrome();
 
@@ -152,8 +166,12 @@ pub fn addTab(
     const alloc = self.app.core_app.alloc;
 
     // Make room for the tab bar first so the new pane starts at its
-    // final size.
-    const index = if (self.tabs.items.len == 0) 0 else self.active + 1;
+    // final size. After the active tab, or at the end
+    // (window-new-tab-position).
+    const index = if (self.tabs.items.len == 0) 0 else switch (self.app.config.@"window-new-tab-position") {
+        .current => self.active + 1,
+        .end => self.tabs.items.len,
+    };
     try self.tabs.ensureUnusedCapacity(alloc, 1);
     const had_bar = self.tabBarVisible();
 
@@ -512,6 +530,10 @@ fn onDestroy(self: *Window) void {
     self.palette.deinit(alloc);
     self.toast.deinit();
     if (self.title_override) |v| alloc.free(v);
+    // The tooltip, owned by the window, goes with it; the icons don't.
+    for ([_]?c.HICON{ self.small_icon, self.big_icon }) |icon| if (icon) |i| {
+        _ = c.DestroyIcon(i);
+    };
 
     self.app.windowDestroyed(self);
     alloc.destroy(self);
@@ -624,6 +646,7 @@ fn layout(self: *Window) void {
         if (hdwp == null) _ = c.SetWindowPos(t.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, flags);
     }
     if (hdwp) |h| _ = c.EndDeferWindowPos(h);
+    self.placeTooltip();
     if (self.palette.isOpen()) self.palette.layout();
     if (self.toast.visible()) {
         self.toast.layout();
@@ -872,6 +895,8 @@ pub fn colorsChanged(self: *Window, surface: *Surface) void {
 /// The config changed: the chrome, the tab bar's colors and visibility,
 /// the panes' minimums (padding) and the dividers' color may differ.
 pub fn configChanged(self: *Window) void {
+    // window-title-font-family may have changed.
+    self.tab_bar.setDpi(self.tab_bar.dpi, self.app.config.@"window-title-font-family");
     self.applyChrome();
     for (self.tabs.items) |t| t.syncDim();
     self.layout();
@@ -998,6 +1023,113 @@ fn setHover(self: *Window, hit: TabBar.Hit) void {
     self.tab_bar.hover = hit;
     var r = self.tabBarRect();
     _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
+    // Another item: hide the tooltip, which asks for its text again when
+    // it next shows.
+    if (self.tooltip) |tip| _ = c.SendMessageW(tip, c.TTM_POP, 0, 0);
+}
+
+/// The icons at `dpi`, from the executable's icon (whose sizes run from 16
+/// to 256 px), so neither the caption's nor the taskbar's is a scaled one.
+fn loadIcons(self: *Window, dpi: c.UINT) void {
+    const instance = self.app.instance;
+    const small = c.LoadImageW(instance, 1, c.IMAGE_ICON, c.GetSystemMetricsForDpi(c.SM_CXSMICON, dpi), c.GetSystemMetricsForDpi(c.SM_CYSMICON, dpi), 0);
+    const big = c.LoadImageW(instance, 1, c.IMAGE_ICON, c.GetSystemMetricsForDpi(c.SM_CXICON, dpi), c.GetSystemMetricsForDpi(c.SM_CYICON, dpi), 0);
+    if (small) |h| _ = c.SendMessageW(self.hwnd, c.WM_SETICON, c.ICON_SMALL, @bitCast(@intFromPtr(h)));
+    if (big) |h| _ = c.SendMessageW(self.hwnd, c.WM_SETICON, c.ICON_BIG, @bitCast(@intFromPtr(h)));
+    // The old ones once the new are set.
+    for ([_]struct { ?c.HICON, ?c.HANDLE }{ .{ self.small_icon, small }, .{ self.big_icon, big } }) |pair| {
+        if (pair[1] != null) if (pair[0]) |old| {
+            _ = c.DestroyIcon(old);
+        };
+    }
+    if (small) |h| {
+        self.small_icon = @ptrCast(h);
+        self.icon_widths[0] = c.GetSystemMetricsForDpi(c.SM_CXSMICON, dpi);
+    }
+    if (big) |h| {
+        self.big_icon = @ptrCast(h);
+        self.icon_widths[1] = c.GetSystemMetricsForDpi(c.SM_CXICON, dpi);
+    }
+}
+
+/// The tab strip's tooltip: one tool over the strip, its text asked for
+/// when it shows (WM_NOTIFY, TTN_GETDISPINFOW) for the item under the mouse.
+fn createTooltip(self: *Window) void {
+    const tip = c.CreateWindowExW(0, c.TOOLTIPS_CLASSW, c.L(""), c.WS_POPUP | c.TTS_ALWAYSTIP | c.TTS_NOPREFIX, c.CW_USEDEFAULT, c.CW_USEDEFAULT, c.CW_USEDEFAULT, c.CW_USEDEFAULT, self.hwnd, null, self.app.instance, null) orelse {
+        log.warn("tab strip tooltip not created err={d}", .{c.GetLastError()});
+        return;
+    };
+    var info: c.TTTOOLINFOW = .{
+        .uFlags = c.TTF_SUBCLASS,
+        .hwnd = self.hwnd,
+        .uId = 1,
+        .rect = self.tabBarRect(),
+        .lpszText = c.LPSTR_TEXTCALLBACKW,
+    };
+    _ = c.SendMessageW(tip, c.TTM_ADDTOOLW, 0, @bitCast(@intFromPtr(&info)));
+    // Lines: a tab's title, then its directory.
+    _ = c.SendMessageW(tip, c.TTM_SETMAXTIPWIDTH, 0, 600);
+    self.tooltip = tip;
+}
+
+/// The tool covers the strip (nothing while it is hidden).
+fn placeTooltip(self: *Window) void {
+    const tip = self.tooltip orelse return;
+    var info: c.TTTOOLINFOW = .{
+        .hwnd = self.hwnd,
+        .uId = 1,
+        .rect = if (self.tabBarVisible()) self.tabBarRect() else .{},
+    };
+    _ = c.SendMessageW(tip, c.TTM_NEWTOOLRECTW, 0, @bitCast(@intFromPtr(&info)));
+}
+
+/// What the tooltip says over `hit`: a tab's title and, beneath, its
+/// directory (decided 2026-10-25; GTK's shows only the directory); a
+/// button's name and its key binding. Empty for nothing.
+pub fn tooltipText(self: *Window, alloc: std.mem.Allocator, hit: TabBar.Hit) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+    switch (hit) {
+        .none => {},
+        .tab, .close => |i| if (i < self.tabs.items.len) {
+            const tab = self.tabs.items[i];
+            const title = tab.title();
+            try w.writeAll(title);
+            const s = tab.focused;
+            if (s.core_initialized) if (try s.core_surface.pwd(alloc)) |pwd| {
+                defer alloc.free(pwd);
+                if (pwd.len > 0 and std.mem.indexOf(u8, title, pwd) == null) try w.print("\n{s}", .{pwd});
+            };
+        },
+        .new_tab => try self.writeButton(w, "New Tab", .new_tab),
+        .new_tab_menu => try w.writeAll("Split"),
+        .list => try self.writeButton(w, "Tab List", .toggle_tab_overview),
+        .menu => try w.writeAll("Menu"),
+        .scroll_left => try w.writeAll("Scroll Tabs Left"),
+        .scroll_right => try w.writeAll("Scroll Tabs Right"),
+    }
+    return out.toOwnedSlice();
+}
+
+/// A button's name, then its action's binding in parentheses, if any.
+fn writeButton(self: *Window, w: *std.Io.Writer, name: []const u8, action: input.Binding.Action) !void {
+    try w.writeAll(name);
+    const trigger = self.app.config.keybind.set.getTrigger(action) orelse return;
+    try w.writeAll(" (");
+    try ContextMenu.writeTrigger(w, trigger);
+    try w.writeAll(")");
+}
+
+/// The tooltip asks for its text: the item under the mouse's.
+fn tooltipNeedsText(self: *Window, info: *c.NMTTDISPINFOW) void {
+    const alloc = self.app.core_app.alloc;
+    self.tooltip_text[0] = 0;
+    info.lpszText = &self.tooltip_text;
+    const text = self.tooltipText(alloc, self.tab_bar.hover) catch return;
+    defer alloc.free(text);
+    const n = std.unicode.utf8ToUtf16Le(self.tooltip_text[0 .. self.tooltip_text.len - 1], text[0..@min(text.len, 400)]) catch 0;
+    self.tooltip_text[n] = 0;
 }
 
 fn newTabFromActive(self: *Window) void {
@@ -1184,7 +1316,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_DPICHANGED => {
-            self.tab_bar.setDpi(c.hiword(wparam));
+            self.tab_bar.setDpi(c.hiword(wparam), self.app.config.@"window-title-font-family");
+            self.loadIcons(c.hiword(wparam));
             // The panes first: the suggested size is checked against the
             // window's minimum (WM_GETMINMAXINFO), which their cells and
             // padding at the new DPI make up.
@@ -1211,6 +1344,15 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_CLOSE => {
             self.app.request(.{ .close_window = self.id });
             return 0;
+        },
+
+        c.WM_NOTIFY => {
+            const hdr: *const c.NMHDR = @ptrFromInt(@as(usize, @bitCast(lparam)));
+            if (self.tooltip != null and hdr.hwndFrom == self.tooltip and hdr.code == c.TTN_GETDISPINFOW) {
+                self.tooltipNeedsText(@ptrFromInt(@as(usize, @bitCast(lparam))));
+                return 0;
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
         c.WM_DESTROY => {

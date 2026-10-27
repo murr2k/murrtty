@@ -231,9 +231,11 @@ roadmap item behind it.
 - **Tab overflow** (3.8): tabs that don't fit scroll between chevrons and
   with the wheel; GTK's strip scrolls without chevrons.
 
+- **Tab tooltips** (3.8): a tab's tooltip shows its title and, beneath,
+  its working directory (unless the title shows it); GTK's shows only the
+  directory. The strip's buttons have tooltips with their bindings.
+
 *Decided, not built yet:*
-- **Tab tooltips** (3.8): the title and the working directory; GTK's shows
-  only the directory.
 - **Config editor** (F1): a GUI for every configuration option; Ghostty is
   configured only by editing its file.
 
@@ -1568,6 +1570,26 @@ Tab to New Window in the tab menu is now the core's
 `tab-overflow` (twelve tabs in a 50-column window); TabBar's unit tests
 bring each of 40 tabs into view and click it. The dump reports the list
 button, the chevrons, the span and the scroll.
+
+*3.8d (the strip's details) done 2026-10-26; 3.8 done.*
+- **Tooltips:** one tooltip control over the strip (comctl32 v6, a tool
+  with its text asked for when it shows, hidden on every change of the
+  item under the mouse): a tab's title and, beneath, its directory unless
+  the title shows it; "New Tab (Ctrl+Shift+T)", "Tab List", "Split",
+  "Menu" and the chevrons' names for the buttons.
+- **`window-new-tab-position`:** `end` puts a new tab last instead of after
+  the active one.
+- **`window-title-font-family`:** the strip's font; the caption's is the
+  system's until 4.3 draws the title bar.
+- **Icons at the window's DPI:** the small (caption) and big (Alt+Tab)
+  icons load from the executable's icon at that DPI's sizes, again on a
+  DPI change, rather than the class's 32 px icon scaled.
+- **Not done, on purpose:** progress and read-only marks on tabs. GTK marks
+  only the bell and the zoom in a tab's label; its progress (OSC 9;4) is a
+  bar over the terminal, and read-only a badge (3.6). The progress bar
+  goes with 5.4's taskbar progress.
+Scenario `tab-details`; the dump reports the strip's font, each tab's and
+"+"'s tooltip, the icons' widths and the tooltip's presence.
 
 **3.9 Dialog polish, S.**
 - Replace `MessageBox` confirmations with TaskDialogs, worded as GTK's

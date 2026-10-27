@@ -448,6 +448,65 @@ pub extern "user32" fn MoveWindow(HWND, c_int, c_int, c_int, c_int, BOOL) callco
 pub extern "user32" fn SetWindowTextW(HWND, LPCWSTR) callconv(.winapi) BOOL;
 pub extern "user32" fn LoadCursorW(?HINSTANCE, usize) callconv(.winapi) ?HCURSOR;
 pub extern "user32" fn LoadIconW(?HINSTANCE, usize) callconv(.winapi) ?HICON;
+/// LoadImageW with a resource id (MAKEINTRESOURCE) for the name.
+pub extern "user32" fn LoadImageW(?HINSTANCE, usize, UINT, c_int, c_int, UINT) callconv(.winapi) ?HANDLE;
+pub extern "user32" fn DestroyIcon(HICON) callconv(.winapi) BOOL;
+pub extern "user32" fn GetSystemMetricsForDpi(c_int, UINT) callconv(.winapi) c_int;
+pub const IMAGE_ICON = 1;
+pub const WM_SETICON = 0x0080;
+pub const ICON_SMALL = 0;
+pub const ICON_BIG = 1;
+pub const SM_CXICON = 11;
+pub const SM_CYICON = 12;
+pub const SM_CXSMICON = 49;
+pub const SM_CYSMICON = 50;
+
+// Common controls (version 6, which the manifest asks for): the tooltip.
+pub const INITCOMMONCONTROLSEX = extern struct {
+    dwSize: DWORD = @sizeOf(INITCOMMONCONTROLSEX),
+    dwICC: DWORD,
+};
+pub const ICC_WIN95_CLASSES = 0x000000FF;
+pub extern "comctl32" fn InitCommonControlsEx(*const INITCOMMONCONTROLSEX) callconv(.winapi) BOOL;
+pub const TOOLTIPS_CLASSW = L("tooltips_class32");
+pub const TTS_ALWAYSTIP = 0x01;
+pub const TTS_NOPREFIX = 0x02;
+pub const TTF_SUBCLASS = 0x0010;
+pub const WM_USER = 0x0400;
+pub const TTM_SETMAXTIPWIDTH = WM_USER + 24;
+pub const TTM_POP = WM_USER + 28;
+pub const TTM_ADDTOOLW = WM_USER + 50;
+pub const TTM_NEWTOOLRECTW = WM_USER + 52;
+pub const WM_NOTIFY = 0x004E;
+/// TTN_FIRST (-520) - 10, as NMHDR.code holds it.
+pub const TTN_GETDISPINFOW: UINT = @bitCast(@as(i32, -530));
+pub const NMHDR = extern struct {
+    hwndFrom: ?HWND,
+    idFrom: usize,
+    code: UINT,
+};
+pub const NMTTDISPINFOW = extern struct {
+    hdr: NMHDR,
+    lpszText: ?[*:0]const u16,
+    szText: [80]u16,
+    hinst: ?HINSTANCE,
+    uFlags: UINT,
+    lParam: LPARAM,
+};
+pub const TTTOOLINFOW = extern struct {
+    cbSize: UINT = @sizeOf(TTTOOLINFOW),
+    uFlags: UINT = 0,
+    hwnd: ?HWND = null,
+    uId: usize = 0,
+    rect: RECT = .{},
+    hinst: ?HINSTANCE = null,
+    /// align(1): it can be LPSTR_TEXTCALLBACKW.
+    lpszText: ?[*:0]align(1) const u16 = null,
+    lParam: LPARAM = 0,
+    lpReserved: ?*anyopaque = null,
+};
+/// The tool's text comes from TTN_GETDISPINFOW: (LPWSTR)-1, an odd address.
+pub const LPSTR_TEXTCALLBACKW: [*:0]align(1) const u16 = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 pub extern "user32" fn SetCursor(?HCURSOR) callconv(.winapi) ?HCURSOR;
 pub extern "user32" fn SetFocus(?HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetFocus() callconv(.winapi) ?HWND;
@@ -681,6 +740,7 @@ pub extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(.winapi) ?HDC;
 pub extern "gdi32" fn CreateCompatibleBitmap(HDC, c_int, c_int) callconv(.winapi) ?HBITMAP;
 pub extern "gdi32" fn SelectObject(HDC, ?HGDIOBJ) callconv(.winapi) ?HGDIOBJ;
 pub extern "gdi32" fn DeleteObject(HGDIOBJ) callconv(.winapi) BOOL;
+pub extern "gdi32" fn GetObjectW(HGDIOBJ, c_int, ?*anyopaque) callconv(.winapi) c_int;
 pub extern "gdi32" fn DeleteDC(HDC) callconv(.winapi) BOOL;
 pub extern "gdi32" fn BitBlt(HDC, c_int, c_int, c_int, c_int, ?HDC, c_int, c_int, DWORD) callconv(.winapi) BOOL;
 pub extern "gdi32" fn CreateSolidBrush(COLORREF) callconv(.winapi) ?HBRUSH;

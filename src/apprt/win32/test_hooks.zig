@@ -249,19 +249,41 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             try out.appendSlice(alloc, "]},");
         }
 
-        // Tab bar geometry in client coordinates, for clicks.
+        // The icons' widths at the window's DPI, and whether the strip has
+        // its tooltip.
+        try out.print(alloc, "\"icon_widths\":[{d},{d}],\"has_tooltip\":{},", .{
+            w.icon_widths[0],
+            w.icon_widths[1],
+            w.tooltip != null,
+        });
+
+        // Tab bar geometry in client coordinates, for clicks; each tab's
+        // tooltip; the strip's font.
         const n = w.tabs.items.len;
-        try out.print(alloc, "\"tab_bar\":{{\"visible\":{},\"height\":{d},\"tabs\":[", .{
+        var face_buf: [128]u8 = undefined;
+        try out.print(alloc, "\"tab_bar\":{{\"visible\":{},\"height\":{d},\"font\":", .{
             w.tabBarVisible(),
             w.tab_bar.height(),
         });
+        try writeString(alloc, out, w.tab_bar.faceName(&face_buf));
+        try out.appendSlice(alloc, ",\"tabs\":[");
         for (0..n) |i| {
             if (i > 0) try out.append(alloc, ',');
             const r = w.tab_bar.tabRect(i, n, client.right);
             const x = w.tab_bar.closeRect(r);
-            try out.print(alloc, "{{\"rect\":[{d},{d},{d},{d}],\"close\":[{d},{d},{d},{d}]}}", .{
+            try out.print(alloc, "{{\"rect\":[{d},{d},{d},{d}],\"close\":[{d},{d},{d},{d}],\"tooltip\":", .{
                 r.left, r.top, r.right, r.bottom, x.left, x.top, x.right, x.bottom,
             });
+            const tip = try w.tooltipText(alloc, .{ .tab = i });
+            defer alloc.free(tip);
+            try writeString(alloc, out, tip);
+            try out.append(alloc, '}');
+        }
+        {
+            const tip = try w.tooltipText(alloc, .new_tab);
+            defer alloc.free(tip);
+            try out.appendSlice(alloc, "],\"new_tab_tooltip\":");
+            try writeString(alloc, out, tip);
         }
         const nt = w.tab_bar.newTabRect(n, client.right);
         const ntm = w.tab_bar.newTabMenuRect(n, client.right);
@@ -270,7 +292,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         const sl = w.tab_bar.scrollLeftRect(n, client.right);
         const sr = w.tab_bar.scrollRightRect(n, client.right);
         const view = w.tab_bar.viewRect(n, client.right);
-        try out.print(alloc, "],\"new_tab\":[{d},{d},{d},{d}],\"new_tab_menu\":[{d},{d},{d},{d}],\"menu\":[{d},{d},{d},{d}],\"list\":[{d},{d},{d},{d}]", .{
+        try out.print(alloc, ",\"new_tab\":[{d},{d},{d},{d}],\"new_tab_menu\":[{d},{d},{d},{d}],\"menu\":[{d},{d},{d},{d}],\"list\":[{d},{d},{d},{d}]", .{
             nt.left,  nt.top,  nt.right,  nt.bottom,
             ntm.left, ntm.top, ntm.right, ntm.bottom,
             mr.left,  mr.top,  mr.right,  mr.bottom,

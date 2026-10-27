@@ -145,16 +145,38 @@ pub fn deinit(self: *TabBar) void {
     self.font = null;
 }
 
-/// Recreate the font for the given DPI.
-pub fn setDpi(self: *TabBar, dpi: c.UINT) void {
+/// Recreate the font for the given DPI: the system's message font, in
+/// `family` if set (window-title-font-family).
+pub fn setDpi(self: *TabBar, dpi: c.UINT, family: ?[]const u8) void {
     self.dpi = dpi;
     if (self.font) |f| _ = c.DeleteObject(f);
     self.font = null;
 
     var ncm: c.NONCLIENTMETRICSW = .{};
     if (c.SystemParametersInfoForDpi(c.SPI_GETNONCLIENTMETRICS, @sizeOf(c.NONCLIENTMETRICSW), &ncm, 0, dpi) != 0) {
-        self.font = c.CreateFontIndirectW(&ncm.lfMessageFont);
+        var lf = ncm.lfMessageFont;
+        if (family) |name| setFace(&lf, name);
+        self.font = c.CreateFontIndirectW(&lf);
     }
+}
+
+/// `name` as the font's face, if it fits LOGFONT's 31 characters.
+fn setFace(lf: *c.LOGFONTW, name: []const u8) void {
+    var wide: [32]u16 = undefined;
+    const n = std.unicode.utf8ToUtf16Le(wide[0..31], name) catch return;
+    if (n == 0) return;
+    lf.lfFaceName = @splat(0);
+    @memcpy(lf.lfFaceName[0..n], wide[0..n]);
+}
+
+/// The font's face, for the GUI tests' dump.
+pub fn faceName(self: *const TabBar, buf: []u8) []const u8 {
+    const font = self.font orelse return "";
+    var lf: c.LOGFONTW = undefined;
+    if (c.GetObjectW(font, @sizeOf(c.LOGFONTW), &lf) == 0) return "";
+    const face = std.mem.sliceTo(&lf.lfFaceName, 0);
+    const n = std.unicode.utf16LeToUtf8(buf, face) catch return "";
+    return buf[0..n];
 }
 
 fn scale(self: *const TabBar, v: c_int) c_int {

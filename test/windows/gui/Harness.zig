@@ -1219,13 +1219,20 @@ pub const Dump = struct {
             items: []const []const u8,
             details: []const []const u8,
         } = null,
+        /// The small and big icons' widths at the window's DPI.
+        icon_widths: [2]i32 = .{ 0, 0 },
+        /// Whether the tab strip has its tooltip.
+        has_tooltip: bool = false,
         tab_bar: TabBar,
         tabs: []const Tab,
     };
     pub const TabBar = struct {
         visible: bool,
         height: i32,
-        tabs: []const struct { rect: [4]i32, close: [4]i32 },
+        /// The strip's font face.
+        font: []const u8 = "",
+        tabs: []const struct { rect: [4]i32, close: [4]i32, tooltip: []const u8 = "" },
+        new_tab_tooltip: []const u8 = "",
         new_tab: [4]i32,
         /// The arrow beside "+" (the split menu) and the main menu's button.
         new_tab_menu: [4]i32 = .{ 0, 0, 0, 0 },

@@ -32,6 +32,7 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
+    .{ .name = "tab-details", .about = "the strip's font (window-title-font-family), icons at the DPI, tooltips (title and directory, a button's binding), window-new-tab-position = end", .run = tabDetails },
     .{ .name = "tab-overflow", .about = "twelve tabs in a narrow window scroll between chevrons and with the wheel; the list button and toggle_tab_overview list them", .run = tabOverflow },
     .{ .name = "tab-buttons", .about = "the arrow beside + opens the split menu; the menu button opens GTK's main menu (New Tab, Command Palette, About murrtty)", .run = tabButtons },
     .{ .name = "tab-menu", .about = "a tab's right-click menu: Change Tab Title, Close Tab, Close Other Tabs, Close Tabs to the Right, on the tab clicked; graying", .run = tabMenu },
@@ -1814,6 +1815,84 @@ fn tabOverflow(h: *Harness) anyerror!void {
         try h.expect(true, "with no strip, toggle_tab_overview lists the tabs and Up, Enter picks the first", .{});
         try quit(h, &g, try h.surface(&g, win));
     }
+}
+
+/// The strip's details (roadmap 3.8): window-title-font-family sets its
+/// font; the window's icons are loaded at its DPI; a tab's tooltip shows
+/// its title and, beneath, its directory (GTK's shows only the
+/// directory), a button's its name and binding; window-new-tab-position =
+/// end puts a new tab last.
+fn tabDetails(h: *Harness) anyerror!void {
+    // Shell integration reports the directory the tooltip shows.
+    var g = try start(h, "tab-details",
+        \\window-show-tab-bar = always
+        \\window-title-font-family = Consolas
+        \\window-new-tab-position = end
+        \\shell-integration = detect
+        \\keybind = ctrl+shift+f8=set_tab_title:named
+        \\
+    , ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const dw = d.value.windows[0];
+        try h.expect(std.mem.eql(u8, dw.tab_bar.font, "Consolas"), "window-title-font-family sets the strip's font ('{s}')", .{dw.tab_bar.font});
+        const dpi = w.GetDpiForWindow(win);
+        const small = w.GetSystemMetricsForDpi(w.SM_CXSMICON, dpi);
+        const big = w.GetSystemMetricsForDpi(w.SM_CXICON, dpi);
+        try h.expect(dw.icon_widths[0] == small and dw.icon_widths[1] == big, "the icons are loaded at the window's DPI ({d} and {d} px at {d} dpi; got {d} and {d})", .{ small, big, dpi, dw.icon_widths[0], dw.icon_widths[1] });
+        try h.expect(dw.has_tooltip, "the strip has a tooltip", .{});
+        try h.expect(std.mem.eql(u8, dw.tab_bar.new_tab_tooltip, "New Tab (Ctrl+Shift+T)"), "'+' says what it does and its binding ('{s}')", .{dw.tab_bar.new_tab_tooltip});
+    }
+
+    // A tab's tooltip: its title, then its directory, unless the title
+    // shows it (cmd's integration makes the directory the title).
+    const first = try h.surface(&g, win);
+    try h.typeText(first, "cd /d C:\\Windows");
+    h.enter(first);
+    try waitPwd(h, &g, 0, "C:\\Windows");
+    try waitTabTitle(h, &g, 0, "C:\\Windows");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const tip = d.value.windows[0].tab_bar.tabs[0].tooltip;
+        try h.expect(std.mem.eql(u8, tip, "C:\\Windows"), "with the directory as its title, a tab's tooltip is the title alone ('{s}')", .{tip});
+    }
+    h.key(first, cs, w.VK_F8);
+    {
+        var waited: u32 = 0;
+        var tip_buf: [256]u8 = undefined;
+        var tip_len: usize = 0;
+        while (waited <= 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const tip = d.value.windows[0].tab_bar.tabs[0].tooltip;
+            tip_len = copyInto(&tip_buf, tip);
+            if (std.mem.eql(u8, tip, "named\nC:\\Windows")) break;
+            w.Sleep(100);
+        }
+        try h.expect(std.mem.eql(u8, tip_buf[0..tip_len], "named\nC:\\Windows"), "a named tab's tooltip: the name, then the directory ('{s}')", .{tip_buf[0..tip_len]});
+    }
+
+    // window-new-tab-position = end: from the first of three tabs, the new
+    // one goes last.
+    h.key(first, cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    h.key(try h.surface(&g, win), cs, 'T');
+    try waitWindowTabs(h, &g, win, 3);
+    const at = try tabCenter(h, &g, 0);
+    h.click(win, at.x - 8, at.y, .left);
+    try waitActiveTab(h, &g, win, 0);
+    h.key(try h.surface(&g, win), cs, 'T');
+    try waitWindowTabs(h, &g, win, 4);
+    try waitActiveTab(h, &g, win, 3);
+    try h.expect(true, "window-new-tab-position = end puts the new tab last", .{});
+    // Every prompt idle, so quitting doesn't ask.
+    for (0..4) |i| try waitAtPrompt(h, &g, i, true);
+    try quitIdle(h, &g, try h.surface(&g, win));
 }
 
 /// The middle of one of the strip's buttons, in the window's client area.
@@ -4387,16 +4466,17 @@ fn pwshKeys(h: *Harness) anyerror!void {
         }
         try h.setClipboard("stale");
         h.key(surf, k.mods, 'C');
-        // PowerShell writes the clipboard from its own process.
+        // PowerShell writes the clipboard from its own process, the first
+        // time slowly; polled gently, so it isn't kept out by our reads.
         var waited: u32 = 0;
-        while (waited < 3000) : (waited += 100) {
+        while (waited < 10000) : (waited += 250) {
+            w.Sleep(250);
             const got = (try h.getClipboard()) orelse "";
             defer if (got.len > 0) h.alloc.free(got);
             if (std.mem.eql(u8, got, k.word)) {
                 copied[n] = true;
                 break;
             }
-            w.Sleep(100);
         }
         h.log("{s}: {s}", .{ k.what, if (copied[n]) "copied the highlighted word" else "copied nothing" });
     }

@@ -111,7 +111,9 @@ hosted Windows runner and then the unit tests.
   configuration, About murrtty, Quit). Tabs that don't fit scroll (the
   chevrons at either end, or the mouse wheel), and the list button beside
   the menu button (or `toggle_tab_overview`) lists the window's tabs with
-  a filter box.
+  a filter box. A tab's tooltip shows its title and working directory.
+  `window-new-tab-position` and `window-title-font-family` (the strip's
+  font) work.
 - Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
   and down, a pane closes with its shell (the last one closes the tab), and
   the tab shows the focused pane's title. `Ctrl+Shift+W` closes the whole
@@ -342,8 +344,8 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   themes, keybindings, the shell and so on. Options that the macOS and GTK
   apps implement in their own user interface mostly have no effect here,
   besides the missing features listed above. Among them:
-  `window-position-x`/`-y`, `window-save-state`, `window-new-tab-position`,
-  and the `audio` and `border` bell features (`system`, `attention` and
+  `window-position-x`/`-y`, `window-save-state`, and the `audio` and
+  `border` bell features (`system`, `attention` and
   `title` work). murrtty always opens a window at startup and
   always exits when its last window closes, whatever `initial-window` and
   `quit-after-last-window-closed` say.

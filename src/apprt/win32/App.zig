@@ -169,6 +169,8 @@ pub fn init(
     const aumid = c.SetCurrentProcessExplicitAppUserModelID(app_user_model_id);
     if (aumid < 0) log.warn("SetCurrentProcessExplicitAppUserModelID failed hr=0x{x}", .{@as(u32, @bitCast(aumid))});
     allowDarkMenus();
+    // The common controls' classes (the tab strip's tooltip).
+    _ = c.InitCommonControlsEx(&.{ .dwICC = c.ICC_WIN95_CLASSES });
 
     // OLE, and with it single-threaded COM, for this UI thread. Shell, task
     // dialog and taskbar APIs need COM, and drag and drop needs OLE itself:
