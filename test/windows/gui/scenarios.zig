@@ -616,6 +616,7 @@ fn systemMenu(h: *Harness) anyerror!void {
         try h.expect(close != null and new_window != null and close.? < new_window.?, "murrtty's items follow Windows' Close", .{});
         try h.expect(about and quit_item, "with About murrtty and Quit", .{});
     }
+    try expectModalDepth(h, &g, 1, "closes wait while the system menu is open");
     h.menuKey(menu, 'u');
     const about = try h.waitDialog(&g, 5000);
     try expectTitle(h, about, "About murrtty");
@@ -627,6 +628,19 @@ fn systemMenu(h: *Harness) anyerror!void {
     try waitWindowTabs(h, &g, win, 2);
     try h.expect(true, "its New Tab opens a tab", .{});
 
+    // A right-click on the caption: DefWindowProc shows the menu with
+    // TrackPopupMenu (WM_ENTERMENULOOP's wparam TRUE), with murrtty's items
+    // and closes held all the same.
+    var at: w.POINT = .{ .x = 200, .y = 0 };
+    _ = w.ClientToScreen(win, &at);
+    at.y -= 10;
+    _ = w.PostMessageW(win, w.WM_CONTEXTMENU, @intFromPtr(win), w.makeLParam(at.x, at.y));
+    menu = try h.waitMenu(&g, 1, 5000);
+    try expectModalDepth(h, &g, 1, "closes wait while the caption's menu is open");
+    h.menuKey(menu, 't');
+    try waitWindowTabs(h, &g, win, 3);
+    try expectModalDepth(h, &g, 0, "and the scope ends with it; its New Tab opens a tab");
+
     menu = try openSystemMenu(h, &g, win);
     h.menuKey(menu, 'c');
     const close = try h.waitDialog(&g, 5000);
@@ -634,6 +648,20 @@ fn systemMenu(h: *Harness) anyerror!void {
     h.answer(&g, close, w.IDCANCEL);
     try waitNoDialog(h, &g);
     try quit(h, &g, try h.surface(&g, win));
+}
+
+/// Wait until the dump's modal depth is `depth`.
+fn expectModalDepth(h: *Harness, g: *Harness.Ghostty, depth: u32, what: []const u8) !void {
+    var waited: u32 = 0;
+    var last: u32 = 0;
+    while (waited <= 3000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        last = d.value.modal_depth;
+        if (last == depth) return h.expect(true, "{s}", .{what});
+        w.Sleep(100);
+    }
+    return h.fail("{s}: modal depth {d}, expected {d}", .{ what, last, depth });
 }
 
 /// Open the window's system menu as Alt+Space does.
@@ -1933,7 +1961,7 @@ fn tabOverflow(h: *Harness) anyerror!void {
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
     {
         // window-width counts only with window-height.
-        var g = try start(h, "tab-overflow", "window-width = 50\nwindow-height = 20\nwindow-show-tab-bar = always\n", ">");
+        var g = try start(h, "tab-overflow", "window-width = 50\nwindow-height = 20\nwindow-show-tab-bar = always\nkeybind = ctrl+shift+f9=goto_tab:6\n", ">");
         defer g.deinit();
         const win = try h.mainWindow(&g);
         var count: usize = 1;
@@ -1990,6 +2018,27 @@ fn tabOverflow(h: *Harness) anyerror!void {
             try h.expect(r[2] <= bar.view[1] and r[0] >= bar.view[0], "the wheel scrolls to the last tab (scroll {d})", .{bar.scroll});
         }
 
+        // A touchpad's smaller steps add up: three thirds of a notch back
+        // scroll one tab.
+        var before: i32 = 0;
+        var tab_w: i32 = 0;
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const bar = d.value.windows[0].tab_bar;
+            before = bar.scroll;
+            tab_w = bar.tabs[0].rect[2] - bar.tabs[0].rect[0];
+            const mid = @divTrunc(bar.view[0] + bar.view[1], 2);
+            for (0..3) |_| h.wheelDelta(win, mid, @divTrunc(bar.height, 2), 40);
+        }
+        h.sync(win);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const scroll = d.value.windows[0].tab_bar.scroll;
+            try h.expect(before - scroll == tab_w, "three thirds of a notch scroll one tab (scroll {d} -> {d}, a tab {d})", .{ before, scroll, tab_w });
+        }
+
         // The tab list.
         const at = try stripButton(h, &g, .list);
         h.press(win, at.x, at.y);
@@ -2011,6 +2060,32 @@ fn tabOverflow(h: *Harness) anyerror!void {
         h.key(palette, .{}, w.VK_RETURN);
         try waitActiveTab(h, &g, win, 2);
         try h.expect(true, "filtering by 'Tab 3' and Enter selects the third tab", .{});
+
+        // A middle tab selected while minimized (the strip has no width
+        // then) is in view once the window is restored; the last would be
+        // anyway, the scroll clamped to its end. The pane, found first: a
+        // minimized window's panes don't count as visible.
+        const pane = try h.surface(&g, win);
+        _ = w.ShowWindow(win, w.SW_MINIMIZE);
+        {
+            var waited: u32 = 0;
+            while (w.IsIconic(win) == 0 and waited < 3000) : (waited += 100) w.Sleep(100);
+        }
+        h.key(pane, cs, w.VK_F9);
+        try waitActiveTab(h, &g, win, 5);
+        _ = w.ShowWindow(win, w.SW_RESTORE);
+        {
+            var waited: u32 = 0;
+            while (w.IsIconic(win) != 0 and waited < 3000) : (waited += 100) w.Sleep(100);
+        }
+        h.sync(win);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const bar = d.value.windows[0].tab_bar;
+            const r = bar.tabs[5].rect;
+            try h.expect(r[0] >= bar.view[0] and r[2] <= bar.view[1], "a tab selected while minimized shows once restored (scroll {d})", .{bar.scroll});
+        }
         try quit(h, &g, try h.surface(&g, win));
     }
     {
@@ -2030,11 +2105,6 @@ fn tabOverflow(h: *Harness) anyerror!void {
     }
 }
 
-/// The strip's details (roadmap 3.8): window-title-font-family sets its
-/// font; the window's icons are loaded at its DPI; a tab's tooltip shows
-/// its title and, beneath, its directory (GTK's shows only the
-/// directory), a button's its name and binding; window-new-tab-position =
-/// end puts a new tab last.
 /// GTK's header bar (roadmap 3.8e): with one tab the strip shows its
 /// buttons ("+" at the left end) and no tabs, and "+" there opens a tab;
 /// fullscreen hides the header (with one tab, the whole strip), as
@@ -2100,6 +2170,11 @@ fn waitStrip(h: *Harness, g: *Harness.Ghostty, visible: bool, tabs_shown: bool, 
     return h.fail("{s}: the strip shows {}, its tabs {}", .{ what, last[0], last[1] });
 }
 
+/// The strip's details (roadmap 3.8): window-title-font-family sets its
+/// font; the window's icons are loaded at its DPI; a tab's tooltip shows
+/// its title and, beneath, its directory (GTK's shows only the
+/// directory), a button's its name and binding; window-new-tab-position =
+/// end puts a new tab last.
 fn tabDetails(h: *Harness) anyerror!void {
     // Shell integration reports the directory the tooltip shows.
     var g = try start(h, "tab-details",

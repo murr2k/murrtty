@@ -15,6 +15,7 @@ const TabBar = @This();
 const std = @import("std");
 const configpkg = @import("../../config.zig");
 const c = @import("c.zig");
+const text_util = @import("text.zig");
 
 /// Unscaled metrics, in device-independent pixels.
 const bar_height = 34;
@@ -164,9 +165,11 @@ pub fn setDpi(self: *TabBar, dpi: c.UINT, family: ?[]const u8) void {
 
 /// `name` as the font's face, if it fits LOGFONT's 31 characters.
 fn setFace(lf: *c.LOGFONTW, name: []const u8) void {
-    var wide: [32]u16 = undefined;
-    const n = std.unicode.utf8ToUtf16Le(wide[0..31], name) catch return;
-    if (n == 0) return;
+    // utf8ToUtf16Le assumes the output fits: measure first.
+    const len = std.unicode.calcUtf16LeLen(name) catch return;
+    if (len == 0 or len > 31) return;
+    var wide: [31]u16 = undefined;
+    const n = std.unicode.utf8ToUtf16Le(&wide, name) catch return;
     lf.lfFaceName = @splat(0);
     @memcpy(lf.lfFaceName[0..n], wide[0..n]);
 }
@@ -393,7 +396,8 @@ pub fn paint(
             .bottom = r.bottom,
         };
         var buf: [256]u16 = undefined;
-        const len = std.unicode.utf8ToUtf16Le(&buf, title[0..@min(title.len, 200)]) catch 0;
+        // Cut between characters: a cut inside one would fail the whole title.
+        const len = std.unicode.utf8ToUtf16Le(&buf, text_util.truncate(title, 200)) catch 0;
         _ = c.SetTextColor(mem, if (is_active) pal.text else pal.text_dim);
         _ = c.DrawTextW(mem, &buf, @intCast(len), &text_rect, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_END_ELLIPSIS | c.DT_NOPREFIX);
 
@@ -598,4 +602,17 @@ test "overflow: 40 tabs scroll between the chevrons, all reachable" {
     // Fewer tabs fit again: no scroll left over.
     bar.ensureVisible(0, 2, width);
     try testing.expectEqual(@as(c_int, 0), bar.scroll);
+}
+
+test "setFace: a family longer than LOGFONT holds leaves the face alone" {
+    const testing = std.testing;
+    var lf: c.LOGFONTW = std.mem.zeroes(c.LOGFONTW);
+    setFace(&lf, "Consolas");
+    const consolas = std.unicode.utf8ToUtf16LeStringLiteral("Consolas");
+    try testing.expectEqualSlices(u16, consolas, std.mem.sliceTo(&lf.lfFaceName, 0));
+    // 34 characters: this used to write past the conversion buffer.
+    setFace(&lf, "Segoe UI Variable Display Semibold");
+    try testing.expectEqualSlices(u16, consolas, std.mem.sliceTo(&lf.lfFaceName, 0));
+    setFace(&lf, "abcdefghijklmnopqrstuvwxyz01234");
+    try testing.expectEqual(@as(usize, 31), std.mem.sliceTo(&lf.lfFaceName, 0).len);
 }

@@ -10,6 +10,7 @@ const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
 const split_layout = @import("split_layout.zig");
+const text_util = @import("text.zig");
 const App = @import("App.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const ContextMenu = @import("ContextMenu.zig");
@@ -66,6 +67,11 @@ size_limit: ?apprt.action.SizeLimit = null,
 fullscreen: ?Saved = null,
 /// Whether the strip showed at the last layout.
 strip_shown: bool = false,
+/// Wheel movement over the strip short of a notch, toward its end.
+wheel_rest: c_int = 0,
+/// A tab was selected while the strip had no width (minimized): bring it
+/// into view at the next layout with some.
+reveal_active: bool = false,
 
 /// What applyChrome last set, for the GUI tests' state dump.
 chrome: Chrome = .{},
@@ -141,6 +147,10 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
         _ = c.DestroyWindow(self.hwnd);
         self.tabs.deinit(alloc);
         self.tab_bar.deinit();
+        // onDestroy, which frees them otherwise, doesn't run.
+        for ([_]?c.HICON{ self.small_icon, self.big_icon }) |icon| if (icon) |i| {
+            _ = c.DestroyIcon(i);
+        };
     }
 
     // Size the client area for the monitor's DPI (setClientSize scales).
@@ -418,8 +428,10 @@ fn needsConfirm(self: *Window, surface: *Surface) bool {
 pub fn select(self: *Window, index: usize) void {
     if (index >= self.tabs.items.len) return;
     self.active = index;
-    // In view on an overflowing strip.
-    self.tab_bar.ensureVisible(index, self.stripTabs(), self.tabBarRect().right);
+    // In view on an overflowing strip; while minimized (no width to scroll
+    // in), once restored.
+    const width = self.tabBarRect().right;
+    if (width > 0) self.tab_bar.ensureVisible(index, self.stripTabs(), width) else self.reveal_active = true;
     // Seen: the bell's mark goes.
     self.tabs.items[index].attention = false;
     self.layout();
@@ -661,7 +673,12 @@ fn tabRect(self: *const Window, count: usize) c.RECT {
 fn layout(self: *Window) void {
     // A wider window may show more tabs: keep the scroll in range (not the
     // active tab in view, which would undo the chevrons; select does that).
-    self.tab_bar.clampScroll(self.stripTabs(), self.tabBarRect().right);
+    const strip_width = self.tabBarRect().right;
+    self.tab_bar.clampScroll(self.stripTabs(), strip_width);
+    if (self.reveal_active and strip_width > 0) {
+        self.reveal_active = false;
+        self.tab_bar.ensureVisible(self.active, self.stripTabs(), strip_width);
+    }
     // The strip comes or goes on a maximize (gtk-titlebar-hide-when-
     // maximized) or fullscreen: paint it, or the terminal where it was.
     const strip = self.tabBarVisible();
@@ -1043,6 +1060,10 @@ fn runChoice(self: *Window, surface: *Surface, choice: ContextMenu.Choice) void 
     }
 }
 
+fn beginMenuModal(self: *Window) void {
+    if (self.menu_modal == null) self.menu_modal = self.app.beginModal(self.hwnd, .{ .disable_others = false });
+}
+
 fn endMenuModal(self: *Window) void {
     if (self.menu_modal) |*m| m.end();
     self.menu_modal = null;
@@ -1178,7 +1199,7 @@ fn tooltipNeedsText(self: *Window, info: *c.NMTTDISPINFOW) void {
     info.lpszText = &self.tooltip_text;
     const text = self.tooltipText(alloc, self.tab_bar.hover) catch return;
     defer alloc.free(text);
-    const n = std.unicode.utf8ToUtf16Le(self.tooltip_text[0 .. self.tooltip_text.len - 1], text[0..@min(text.len, 400)]) catch 0;
+    const n = std.unicode.utf8ToUtf16Le(self.tooltip_text[0 .. self.tooltip_text.len - 1], text_util.truncate(text, 400)) catch 0;
     self.tooltip_text[n] = 0;
 }
 
@@ -1290,9 +1311,12 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             if (!self.tabBarVisible() or pt.y < 0 or pt.y >= self.tab_bar.height()) {
                 return c.DefWindowProcW(hwnd, msg, wparam, lparam);
             }
+            // Touchpads and smooth wheels send less than a notch at a time:
+            // the rest waits for the next.
             const delta: i16 = @bitCast(c.hiword(wparam));
-            const notches: c_int = @divTrunc(@as(c_int, delta), c.WHEEL_DELTA);
-            const toward_end = if (msg == c.WM_MOUSEWHEEL) -notches else notches;
+            self.wheel_rest += if (msg == c.WM_MOUSEWHEEL) -@as(c_int, delta) else delta;
+            const toward_end = @divTrunc(self.wheel_rest, c.WHEEL_DELTA);
+            self.wheel_rest -= toward_end * c.WHEEL_DELTA;
             if (toward_end != 0) self.scrollTabs(toward_end);
             return 0;
         },
@@ -1397,23 +1421,25 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         // The system menu: murrtty's items, current, as it opens (not its
-        // submenus, which open inside it), and its loop in a modal scope
-        // (wparam FALSE: not a TrackPopupMenu menu, which has its own).
+        // submenus, which open inside it), and its loop in a modal scope.
+        // The scope opens on WM_ENTERMENULOOP (wparam FALSE; TrackPopupMenu
+        // menus, wparam TRUE, have their own) or, for a way in that doesn't
+        // say so (the taskbar's), when the system menu itself opens; it
+        // ends with the loop. Only one menu loop runs at a time.
         c.WM_INITMENUPOPUP => {
             const menu: c.HMENU = @ptrFromInt(wparam);
             if (c.hiword(lparam) != 0) if (c.GetSystemMenu(hwnd, c.FALSE)) |sys| if (sys == menu) {
+                self.beginMenuModal();
                 if (self.activeSurface()) |s| self.system_menu.refresh(s, menu);
             };
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_ENTERMENULOOP => {
-            if (wparam == 0 and self.menu_modal == null) {
-                self.menu_modal = self.app.beginModal(hwnd, .{ .disable_others = false });
-            }
+            if (wparam == 0) self.beginMenuModal();
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_EXITMENULOOP => {
-            if (wparam == 0) self.endMenuModal();
+            self.endMenuModal();
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_SYSCOMMAND => {

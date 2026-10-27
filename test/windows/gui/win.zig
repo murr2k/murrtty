@@ -101,6 +101,7 @@ pub const BM_GETCHECK = 0x00F0;
 pub const BM_SETCHECK = 0x00F1;
 pub const DM_GETDEFID = 0x0400;
 pub const WM_SYSCOMMAND = 0x0112;
+pub const WM_CONTEXTMENU = 0x007B;
 pub const SC_KEYMENU = 0xF100;
 pub const MK_RBUTTON = 0x0002;
 pub const MN_GETHMENU = 0x01E1;
@@ -363,6 +364,9 @@ pub extern "user32" fn MapWindowPoints(?HWND, ?HWND, [*]POINT, UINT) callconv(.w
 pub extern "user32" fn CreateWindowExW(DWORD, LPCWSTR, LPCWSTR, DWORD, c_int, c_int, c_int, c_int, ?HWND, ?*anyopaque, ?*anyopaque, ?*anyopaque) callconv(.winapi) ?HWND;
 pub extern "user32" fn DestroyWindow(HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn ShowWindow(HWND, c_int) callconv(.winapi) BOOL;
+pub extern "user32" fn IsIconic(HWND) callconv(.winapi) BOOL;
+pub const SW_MINIMIZE = 6;
+pub const SW_RESTORE = 9;
 pub extern "user32" fn PeekMessageW(*MSG, ?HWND, UINT, UINT, UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn DispatchMessageW(*const MSG) callconv(.winapi) LRESULT;
 pub extern "user32" fn UpdateLayeredWindow(HWND, ?HDC, ?*const POINT, ?*const SIZE, ?HDC, ?*const POINT, DWORD, ?*const BLENDFUNCTION, DWORD) callconv(.winapi) BOOL;

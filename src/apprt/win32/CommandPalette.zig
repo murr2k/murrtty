@@ -26,6 +26,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const input = @import("../../input.zig");
 const c = @import("c.zig");
+const text_util = @import("text.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const SearchBox = @import("SearchBox.zig");
@@ -719,7 +720,7 @@ fn keycap(self: *CommandPalette, dc: c.HDC, name: []const u8, right: c_int, mid:
 
 fn drawText(dc: c.HDC, text: []const u8, rect: *c.RECT, color: c.COLORREF, valign: c.UINT) void {
     var wide: [512]u16 = undefined;
-    const n = std.unicode.utf8ToUtf16Le(&wide, text[0..@min(text.len, 500)]) catch 0;
+    const n = std.unicode.utf8ToUtf16Le(&wide, text_util.truncate(text, 500)) catch 0;
     _ = c.SetTextColor(dc, color);
     _ = c.DrawTextW(dc, &wide, @intCast(n), rect, valign | c.DT_SINGLELINE | c.DT_NOPREFIX | c.DT_END_ELLIPSIS);
 }

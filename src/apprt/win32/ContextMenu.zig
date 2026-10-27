@@ -127,9 +127,10 @@ const tab_items = [_]Item{
 };
 
 /// murrtty's items in the window's system menu (Alt+Space), after Close:
-/// the main menu's reach while the tab strip is hidden (roadmap 3.9).
-/// Their access keys avoid the system's own (system_keys), so Alt+Space
-/// then C still closes the window.
+/// the main menu's reach where the strip isn't (fullscreen, gtk-titlebar =
+/// false; roadmap 3.9). Their access keys avoid the system's own in English
+/// (system_keys), so Alt+Space then C still closes the window; in other
+/// languages SystemMenu.refresh drops any of them Windows' items use.
 const system_items = [_]Item{
     act("New &Window", .new_window),
     act("New &Tab", .new_tab),
@@ -143,9 +144,12 @@ const system_items = [_]Item{
     act("&Quit", .quit),
 };
 
-/// The access keys of the system menu's own items: Restore, Move, Size,
-/// Minimize, Maximize, Close.
+/// The access keys of the system menu's own items in English: Restore,
+/// Move, Size, Minimize, Maximize, Close.
 const system_keys = "rmsnxc";
+
+/// Access keys in use, by lowercase ASCII character.
+const Taken = [128]bool;
 
 /// Where the tab a tab menu is for sits in its window's strip.
 pub const TabPlace = struct { index: usize, count: usize };
@@ -239,36 +243,48 @@ const BuildError = error{ CreateMenuFailed, OutOfMemory, InvalidUtf8 };
 fn build(surface: *Surface, built: *Built, list: []const Item, place: ?TabPlace) BuildError!c.HMENU {
     const menu = c.CreatePopupMenu() orelse return error.CreateMenuFailed;
     errdefer _ = c.DestroyMenu(menu);
-    try fill(surface, built, menu, list, place);
+    try fill(surface, built, menu, list, place, null);
     return menu;
 }
 
-/// Append `list`'s items to `menu`.
-fn fill(surface: *Surface, built: *Built, menu: c.HMENU, list: []const Item, place: ?TabPlace) BuildError!void {
+/// Append `list`'s items to `menu`, without access keys in `taken`.
+fn fill(
+    surface: *Surface,
+    built: *Built,
+    menu: c.HMENU,
+    list: []const Item,
+    place: ?TabPlace,
+    taken: ?*const Taken,
+) BuildError!void {
     const alloc = surface.app.core_app.alloc;
     for (list) |item| switch (item) {
         .separator => _ = c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null),
         .unavailable => |label| {
-            const text = try addString(alloc, built, label);
+            var free: [64]u8 = undefined;
+            const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
             _ = c.AppendMenuW(menu, c.MF_STRING | c.MF_GRAYED, 0, text.ptr);
         },
         .action => |a| {
+            var free: [64]u8 = undefined;
             var buf: [96]u8 = undefined;
-            const label = labelWithBinding(surface.app, a.label, a.action, &buf);
+            const label = labelWithBinding(surface.app, freeAccessKey(a.label, taken, &free), a.action, &buf);
             const text = try addString(alloc, built, label);
             try built.choices.append(alloc, .{ .action = a.action });
             const flags: c.UINT = if (enabled(surface, a.action, place)) c.MF_STRING else c.MF_STRING | c.MF_GRAYED;
             _ = c.AppendMenuW(menu, flags, built.nextId(), text.ptr);
         },
         .about => |label| {
-            const text = try addString(alloc, built, label);
+            var free: [64]u8 = undefined;
+            const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
             try built.choices.append(alloc, .about);
             _ = c.AppendMenuW(menu, c.MF_STRING, built.nextId(), text.ptr);
         },
         .submenu => |s| {
+            // A submenu's access keys are its own.
             const sub = try build(surface, built, s.items, place);
             errdefer _ = c.DestroyMenu(sub);
-            const text = try addString(alloc, built, s.label);
+            var free: [64]u8 = undefined;
+            const text = try addString(alloc, built, freeAccessKey(s.label, taken, &free));
             // The parent menu owns the submenu from here.
             _ = c.AppendMenuW(menu, c.MF_POPUP, @intFromPtr(sub), text.ptr);
         },
@@ -300,10 +316,18 @@ pub const SystemMenu = struct {
         while (c.GetMenuItemCount(menu) > base) {
             if (c.DeleteMenu(menu, @intCast(base), c.MF_BYPOSITION) == 0) break;
         }
+        // Windows' items' access keys, in the system's language.
+        var taken: Taken = @splat(false);
+        for (0..@intCast(base)) |i| {
+            var text: [128]u16 = undefined;
+            const n = c.GetMenuStringW(menu, @intCast(i), &text, text.len, c.MF_BYPOSITION);
+            if (n <= 0) continue;
+            if (accessKey(u16, text[0..@intCast(n)])) |k| taken[k] = true;
+        }
         var built: Built = .{ .shift = 4 };
         defer built.deinit(alloc);
         _ = c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null);
-        fill(surface, &built, menu, &system_items, null) catch |err| {
+        fill(surface, &built, menu, &system_items, null, &taken) catch |err| {
             log.warn("system menu items not added err={}", .{err});
         };
         // Built.deinit frees the old list.
@@ -319,6 +343,41 @@ pub const SystemMenu = struct {
         return if (i < self.choices.items.len) self.choices.items[i] else null;
     }
 };
+
+/// Where `label`'s access key's `&` is ("&&" is a literal ampersand).
+fn accessKeyIndex(comptime T: type, label: []const T) ?usize {
+    var i: usize = 0;
+    while (i + 1 < label.len) : (i += 1) {
+        if (label[i] != '&') continue;
+        if (label[i + 1] == '&') {
+            i += 1;
+            continue;
+        }
+        return i;
+    }
+    return null;
+}
+
+/// `label`'s access key, lowercased, if it is ASCII (murrtty's all are).
+fn accessKey(comptime T: type, label: []const T) ?u7 {
+    const i = accessKeyIndex(T, label) orelse return null;
+    const k = label[i + 1];
+    if (k >= 128) return null;
+    return @intCast(std.ascii.toLower(@intCast(k)));
+}
+
+/// `label` without its access key's `&` (in `buf`) if `taken` has that key:
+/// two items with one access key would only move the highlight between
+/// them, so Windows' keep theirs.
+fn freeAccessKey(label: []const u8, taken: ?*const Taken, buf: []u8) []const u8 {
+    const t = taken orelse return label;
+    const k = accessKey(u8, label) orelse return label;
+    if (!t[k] or label.len - 1 > buf.len) return label;
+    const i = accessKeyIndex(u8, label).?;
+    @memcpy(buf[0..i], label[0..i]);
+    @memcpy(buf[i .. label.len - 1], label[i + 1 ..]);
+    return buf[0 .. label.len - 1];
+}
 
 /// A UTF-16 copy of `s` that lives as long as the menu (Built.strings).
 fn addString(alloc: Allocator, built: *Built, s: []const u8) BuildError![:0]u16 {
@@ -434,7 +493,7 @@ test "writeTrigger: Windows menu style" {
 }
 
 test "system menu items: access keys of their own, clear of the system's" {
-    var taken: [256]bool = @splat(false);
+    var taken: Taken = @splat(false);
     for (system_keys) |k| taken[k] = true;
     for (system_items) |item| {
         const label = switch (item) {
@@ -443,9 +502,28 @@ test "system menu items: access keys of their own, clear of the system's" {
             .about, .unavailable => |l| l,
             .separator => continue,
         };
-        const amp = std.mem.indexOfScalar(u8, label, '&') orelse return error.NoAccessKey;
-        const k = std.ascii.toLower(label[amp + 1]);
+        const k = accessKey(u8, label) orelse return error.NoAccessKey;
         try std.testing.expect(!taken[k]);
         taken[k] = true;
     }
+}
+
+test "system menu items: a key Windows' items use in another language goes" {
+    const testing = std.testing;
+    // French: &Restaurer, &Déplacer, &Taille, Réd&uire, Agrand&ir, &Fermer.
+    var taken: Taken = @splat(false);
+    for ([_][]const u16{
+        std.unicode.utf8ToUtf16LeStringLiteral("&Restaurer"),
+        std.unicode.utf8ToUtf16LeStringLiteral("&Déplacer"),
+        std.unicode.utf8ToUtf16LeStringLiteral("&Taille"),
+        std.unicode.utf8ToUtf16LeStringLiteral("Réd&uire"),
+        std.unicode.utf8ToUtf16LeStringLiteral("Agrand&ir"),
+        std.unicode.utf8ToUtf16LeStringLiteral("&Fermer\tAlt+F4"),
+    }) |text| taken[accessKey(u16, text).?] = true;
+    var buf: [64]u8 = undefined;
+    try testing.expectEqualStrings("New Tab", freeAccessKey("New &Tab", &taken, &buf));
+    try testing.expectEqualStrings("About murrtty", freeAccessKey("Abo&ut murrtty", &taken, &buf));
+    try testing.expectEqualStrings("New &Window", freeAccessKey("New &Window", &taken, &buf));
+    try testing.expectEqualStrings("Fish && &Chips", freeAccessKey("Fish && &Chips", &taken, &buf));
+    try testing.expectEqual(@as(?u7, 'c'), accessKey(u8, "Fish && &Chips"));
 }

@@ -1677,6 +1677,22 @@ Scenarios `clipboard-dialog`, `system-menu`; close wording checked in
 `quit`, from the dump's `dialog` (the last task dialog's heading and body,
 which a DirectUIHWND draws out of reach).
 
+*Phase 3 end-of-phase review (3.8 and 3.9), 2026-10-26:* seven findings,
+six fixed. A `window-title-font-family` over 31 characters overran a stack
+buffer (`std.unicode.utf8ToUtf16Le` assumes the output fits; now measured
+first); text cut by bytes before conversion could split a character and
+blank a tooltip, tab title or palette line (now cut between characters);
+a tab selected while minimized was scrolled for a strip of no width and
+sat outside the view once restored (now revealed at the next layout with
+width); sub-notch wheel turns (touchpads) never scrolled the strip (now
+accumulated); the system menu's access keys assumed English (Windows'
+items' keys are read and murrtty's drop a clashing one); a failed window
+creation leaked its icons. The finding that the caption's right-click
+menu ran without a modal scope didn't reproduce (`system-menu` checks the
+depth there), but the scope now also opens when the system menu itself
+does, for ways in that don't announce a menu loop. `tab-overflow` checks
+the wheel and the minimized selection, each shown to fail without its fix.
+
 ---
 
 ## Phase 4: Window chrome and visuals (about 5 to 8 weeks, or 7 to 10 if 4.1 needs Phase B)

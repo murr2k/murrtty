@@ -697,6 +697,7 @@ pub const MF_BYPOSITION = 0x0400;
 pub extern "user32" fn GetSystemMenu(HWND, BOOL) callconv(.winapi) ?HMENU;
 pub extern "user32" fn GetMenuItemCount(?HMENU) callconv(.winapi) c_int;
 pub extern "user32" fn DeleteMenu(HMENU, UINT, UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn GetMenuStringW(HMENU, UINT, ?[*]u16, c_int, UINT) callconv(.winapi) c_int;
 
 // The command palette's list
 pub const HWND_TOP: ?HWND = null;

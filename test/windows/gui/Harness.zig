@@ -1075,11 +1075,17 @@ pub fn release(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
 /// Turn the wheel `notches` (positive: away from the user, up) at client
 /// coordinates of `target`; the message carries screen coordinates.
 pub fn wheel(self: *Harness, target: w.HWND, x: c_int, y: c_int, notches: c_int) void {
+    self.wheelDelta(target, x, y, notches * 120);
+}
+
+/// A wheel turn of `delta` (120 a notch; touchpads and smooth wheels send
+/// less at a time).
+pub fn wheelDelta(self: *Harness, target: w.HWND, x: c_int, y: c_int, delta: c_int) void {
     _ = self;
     var pt: w.POINT = .{ .x = x, .y = y };
     _ = w.ClientToScreen(target, &pt);
-    const delta: u16 = @bitCast(@as(i16, @intCast(notches * 120)));
-    _ = w.PostMessageW(target, w.WM_MOUSEWHEEL, @as(w.WPARAM, delta) << 16, w.makeLParam(pt.x, pt.y));
+    const d: u16 = @bitCast(@as(i16, @intCast(delta)));
+    _ = w.PostMessageW(target, w.WM_MOUSEWHEEL, @as(w.WPARAM, d) << 16, w.makeLParam(pt.x, pt.y));
 }
 
 /// Press the right button at client coordinates of `target`, without the
