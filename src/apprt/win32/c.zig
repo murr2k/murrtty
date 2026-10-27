@@ -792,6 +792,9 @@ pub extern "user32" fn FillRect(HDC, *const RECT, HBRUSH) callconv(.winapi) c_in
 pub extern "user32" fn DrawTextW(HDC, [*]const u16, c_int, *RECT, UINT) callconv(.winapi) c_int;
 pub extern "user32" fn SystemParametersInfoForDpi(UINT, UINT, ?*anyopaque, UINT, UINT) callconv(.winapi) BOOL;
 pub extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(.winapi) ?HDC;
+pub extern "gdi32" fn AddFontMemResourceEx(*anyopaque, DWORD, ?*anyopaque, *DWORD) callconv(.winapi) ?HANDLE;
+pub extern "gdi32" fn RemoveFontMemResourceEx(HANDLE) callconv(.winapi) BOOL;
+pub extern "gdi32" fn GetTextFaceW(HDC, c_int, [*]u16) callconv(.winapi) c_int;
 pub extern "gdi32" fn CreateCompatibleBitmap(HDC, c_int, c_int) callconv(.winapi) ?HBITMAP;
 pub extern "gdi32" fn SelectObject(HDC, ?HGDIOBJ) callconv(.winapi) ?HGDIOBJ;
 pub extern "gdi32" fn DeleteObject(HGDIOBJ) callconv(.winapi) BOOL;

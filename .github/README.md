@@ -117,8 +117,9 @@ hosted Windows runner and then the unit tests.
   tabs get their own row beneath when there are tabs to show.
   `window-decoration = server`, `gtk-titlebar = false` and fullscreen give
   the system's title bar instead, with no header buttons, as GTK has none
-  then. `window-new-tab-position` and `window-title-font-family` (the
-  chrome's font) work.
+  then. The title bar and tabs are in Adwaita Sans, GNOME's interface font
+  (bundled, not installed). `window-new-tab-position` and
+  `window-title-font-family` (the chrome's font) work.
 - Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
   and down, a pane closes with its shell (the last one closes the tab), and
   the tab shows the focused pane's title. `Ctrl+Shift+W` closes the whole

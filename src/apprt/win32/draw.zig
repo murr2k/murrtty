@@ -218,14 +218,36 @@ pub fn triangleDown(hdc: c.HDC, x: c_int, y: c_int, half: c_int, tall: c_int, co
     _ = c.Polygon(hdc, &pts, pts.len);
 }
 
-/// The chrome's font at `dpi`: the system's message font, in `family` if
-/// set (window-title-font-family), bold if asked.
+/// GNOME's interface font, bundled (res/README.md) and registered for this
+/// process at startup (registerFonts).
+const adwaita_sans = @embedFile("res/AdwaitaSans-Regular.ttf");
+/// Its family as GDI names it: a variable font's named instances take the
+/// optical size's name too, and Pango's 11 pt is the "Text" size (opsz
+/// 14), regular and bold in this family, the other weights in their own
+/// ("Adwaita Sans Text SemiBold"). "Adwaita Sans" alone finds nothing.
+pub const chrome_family = "Adwaita Sans Text";
+/// GNOME's interface font size ("Adwaita Sans 11"), in points.
+const chrome_points = 11;
+
+/// Make the bundled font available to this process's GDI, never
+/// installed. The handle removes it again; null if Windows refused it.
+pub fn registerFonts() ?c.HANDLE {
+    var count: c.DWORD = 0;
+    const handle = c.AddFontMemResourceEx(@constCast(adwaita_sans.ptr), adwaita_sans.len, null, &count);
+    return if (count > 0) handle else null;
+}
+
+/// The chrome's font at `dpi`: GNOME's interface font at its size, Adwaita
+/// Sans 11, or `family` (window-title-font-family), bold if asked, with
+/// grayscale antialiasing as GTK draws text.
 pub fn chromeFont(dpi: c.UINT, family: ?[]const u8, bold: bool) ?c.HFONT {
-    var ncm: c.NONCLIENTMETRICSW = .{};
-    if (c.SystemParametersInfoForDpi(c.SPI_GETNONCLIENTMETRICS, @sizeOf(c.NONCLIENTMETRICSW), &ncm, 0, dpi) == 0) return null;
-    var lf = ncm.lfMessageFont;
+    var lf: c.LOGFONTW = std.mem.zeroes(c.LOGFONTW);
+    lf.lfHeight = -@as(c_long, @intCast((chrome_points * dpi + 36) / 72));
+    lf.lfWeight = if (bold) 700 else 400;
+    lf.lfCharSet = 1; // DEFAULT_CHARSET
+    lf.lfQuality = 4; // ANTIALIASED_QUALITY
+    setFace(&lf, chrome_family);
     if (family) |name| setFace(&lf, name);
-    if (bold) lf.lfWeight = 700;
     return c.CreateFontIndirectW(&lf);
 }
 
@@ -240,14 +262,20 @@ fn setFace(lf: *c.LOGFONTW, name: []const u8) void {
     @memcpy(lf.lfFaceName[0..n], wide[0..n]);
 }
 
-/// A font's face, for the GUI tests' dump.
+/// The face GDI chose for a font (a missing family comes out as its
+/// substitute), for the GUI tests' dump.
 pub fn faceName(font: ?c.HFONT, buf: []u8) []const u8 {
     const f = font orelse return "";
-    var lf: c.LOGFONTW = undefined;
-    if (c.GetObjectW(f, @sizeOf(c.LOGFONTW), &lf) == 0) return "";
-    const face = std.mem.sliceTo(&lf.lfFaceName, 0);
-    const n = std.unicode.utf16LeToUtf8(buf, face) catch return "";
-    return buf[0..n];
+    const dc = c.CreateCompatibleDC(null) orelse return "";
+    defer _ = c.DeleteDC(dc);
+    const old = c.SelectObject(dc, f);
+    defer _ = c.SelectObject(dc, old);
+    var face: [64]u16 = undefined;
+    const n = c.GetTextFaceW(dc, face.len, &face);
+    if (n <= 0) return "";
+    const len = std.mem.indexOfScalar(u16, face[0..@intCast(n)], 0) orelse @as(usize, @intCast(n));
+    const m = std.unicode.utf16LeToUtf8(buf, face[0..len]) catch return "";
+    return buf[0..m];
 }
 
 test "scaleLightness: the same color at 1, darker below" {
@@ -270,6 +298,18 @@ test "palette: libadwaita's mixes" {
     // Inactive: the window's background.
     try testing.expectEqual(c.rgb(0x22, 0x22, 0x26), palette(adwaita(true), true).bar);
     try testing.expect(isDark(.{ .r = 0x28, .g = 0x2c, .b = 0x34 }) and !isDark(.{ .r = 0xfa, .g = 0xfa, .b = 0xfa }));
+}
+
+test "chromeFont: the bundled Adwaita Sans, regular and bold" {
+    const testing = std.testing;
+    const handle = registerFonts() orelse return error.FontNotRegistered;
+    defer _ = c.RemoveFontMemResourceEx(handle);
+    for ([_]bool{ false, true }) |bold| {
+        const font = chromeFont(96, null, bold) orelse return error.NoFont;
+        defer _ = c.DeleteObject(font);
+        var buf: [64]u8 = undefined;
+        try testing.expectEqualStrings(chrome_family, faceName(font, &buf));
+    }
 }
 
 test "setFace: a family longer than LOGFONT holds leaves the face alone" {

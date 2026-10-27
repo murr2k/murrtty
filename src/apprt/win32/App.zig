@@ -15,6 +15,7 @@ const CoreSurface = @import("../../Surface.zig");
 const c = @import("c.zig");
 const Banner = @import("Banner.zig");
 const CommandPalette = @import("CommandPalette.zig");
+const draw = @import("draw.zig");
 const Overlay = @import("Overlay.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -162,6 +163,9 @@ quitting: bool = false,
 /// Whether OleInitialize succeeded, so terminate balances it.
 ole_initialized: bool = false,
 
+/// The chrome's bundled font, registered for this process (draw.zig).
+fonts: ?c.HANDLE = null,
+
 /// The config errors last shown (a hash of their text), so that a soft
 /// reload with the same errors doesn't show them again; whether the next
 /// config change shows them regardless (after a reload the user asked
@@ -256,8 +260,10 @@ pub fn init(
         .dark = systemDark(),
         .scrollbars_always = scrollbarsAlwaysShown(),
         .ole_initialized = ole >= 0,
+        .fonts = draw.registerFonts(),
         .test_state = test_hooks.init(alloc),
     };
+    if (self.fonts == null) log.warn("the chrome's font (Adwaita Sans) could not be registered", .{});
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
 
@@ -315,6 +321,7 @@ pub fn terminate(self: *App) void {
     test_hooks.deinit(&self.test_state, self.core_app.alloc);
     self.config.deinit();
     if (self.ole_initialized) c.OleUninitialize();
+    if (self.fonts) |h| _ = c.RemoveFontMemResourceEx(h);
 }
 
 /// Queue a request to run from the message loop. It takes ownership of

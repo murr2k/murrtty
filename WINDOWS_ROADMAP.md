@@ -234,6 +234,10 @@ roadmap item behind it.
   box (the command palette's), not GTK's overview of live thumbnails.
 - **Tab overflow** (3.8): tabs that don't fit scroll between chevrons and
   with the wheel; GTK's strip scrolls without chevrons.
+- **Chrome font** (4.3): the header bar and tabs are in Adwaita Sans 11,
+  GNOME's default interface font, bundled; GTK takes the desktop's
+  interface font setting, which on Windows would be Segoe UI.
+  `window-title-font-family` names another.
 - **Window buttons** (4.3): the header bar always has minimize, maximize
   and close, drawn as libadwaita's round window controls; GTK shows the
   ones its button layout names (GNOME's default: close alone). Its buttons
@@ -1810,6 +1814,19 @@ selected and hovered tabs, separators between the others. `theme` and
 `config-errors` expect Adwaita's colors; the opt-in `snapshot` also saves
 `chrome-*.bmp` from the window's device context (`Harness.captureClient`),
 current where DWM's captures lag a step behind.
+
+*Step 3 done 2026-10-26.* The chrome's font is GNOME's interface font,
+Adwaita Sans 11 (grayscale antialiased, as GTK draws text), from
+adwaita-fonts 51.0, checked against its published SHA-256 and embedded in
+the executable (`src/apprt/win32/res/`, with its OFL license and a
+provenance README); `draw.registerFonts` adds it for the process only
+(`AddFontMemResourceEx`, never installed). GDI names a variable font's
+instances with their optical size's name, so the family it finds is
+"Adwaita Sans Text" (regular and bold; other weights as their own
+families). `window-title-font-family` still names another. The dump's
+font faces are what GDI chose (`GetTextFace`), so a missing font shows
+as its substitute; `launch` expects Adwaita Sans and a unit test
+registers it and selects both weights.
 
 *With the Look rule* (decided 2026-10-26, which made 4.3 Phase 4's first
 item): the bar and tab row take libadwaita's colors and metrics (taken from

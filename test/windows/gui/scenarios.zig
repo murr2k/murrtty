@@ -119,6 +119,11 @@ fn launch(h: *Harness) anyerror!void {
         try h.expect((t[0].cols orelse 0) > 0 and (t[0].rows orelse 0) > 0, "grid {?d}x{?d}", .{ t[0].cols, t[0].rows });
         const dw = d.value.windows[0];
         try h.expect(dw.header.visible and !dw.tab_bar.visible, "one tab: the header bar, no tab row", .{});
+        try h.expect(
+            std.mem.eql(u8, dw.header.font, "Adwaita Sans Text") and std.mem.eql(u8, dw.tab_bar.font, "Adwaita Sans Text"),
+            "the chrome is in GNOME's font, the bundled Adwaita Sans ('{s}', '{s}')",
+            .{ dw.header.font, dw.tab_bar.font },
+        );
         bar = dw.header.height;
     }
 
