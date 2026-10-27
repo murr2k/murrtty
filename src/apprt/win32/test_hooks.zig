@@ -256,6 +256,8 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         const caption: i64 = if (w.chrome.caption) |ref| rgbOf(ref) else -1;
         try out.print(alloc, "\"chrome\":{{\"dark\":{},\"caption\":{d}}},", .{ w.chrome.dark, caption });
         try out.print(alloc, "\"translucent\":{},", .{w.translucent});
+        try out.print(alloc, "\"decoration\":\"{t}\",\"captionless\":{},", .{ w.decoration(), w.captionless() });
+        try out.print(alloc, "\"active_window\":{},", .{w.active_window});
         // The blur applied, and the system backdrop DWM reports (-1 when it
         // can't say, before Windows 11 22H2).
         var backdrop: c.DWORD = 0;

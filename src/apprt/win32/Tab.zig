@@ -639,6 +639,12 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             return 0;
         },
 
+        // The window's top resize band, without decorations (Window.inTopBand).
+        c.WM_NCHITTEST => {
+            if (self.window.inTopBand(.{ .x = c.xParam(lparam), .y = c.yParam(lparam) })) return c.HTTRANSPARENT;
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+
         // The container itself never keeps the focus: it gets it when a
         // focused pane is destroyed, say.
         c.WM_SETFOCUS => {

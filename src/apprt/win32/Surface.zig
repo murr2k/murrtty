@@ -1155,6 +1155,8 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         // container, which shows the resize cursor and drags the divider.
         c.WM_NCHITTEST => {
             var pt = [1]c.POINT{.{ .x = c.xParam(lparam), .y = c.yParam(lparam) }};
+            // The window's top resize band, without decorations (4.4).
+            if (self.window.inTopBand(pt[0])) return c.HTTRANSPARENT;
             _ = c.MapWindowPoints(null, self.hwnd, &pt, 1);
             // Except over the scrollbar's band, which lies in the right grip
             // band (the pane's margin) and the bottom one's corner.

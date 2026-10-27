@@ -121,6 +121,7 @@ pub const TDM_CLICK_BUTTON = WM_USER + 102;
 pub const MK_LBUTTON = 0x0001;
 pub const WM_LBUTTONDBLCLK = 0x0203;
 pub const WM_NCHITTEST = 0x0084;
+pub const WM_NCACTIVATE = 0x0086;
 pub const HTCLIENT = 1;
 pub const HTCAPTION = 2;
 pub const HTMINBUTTON = 8;

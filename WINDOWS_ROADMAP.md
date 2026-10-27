@@ -202,10 +202,17 @@ roadmap item behind it.
 - **`resize_split`** (1.5): each step is clamped, since upstream's resize
   asserts on large deltas; GTK doesn't clamp.
 - **Background blur** (4.2): Windows' own: Acrylic, its documented
-  backdrop (tinted for the light or dark theme, with its grain), from
-  Windows 11 22H2, and a plain blur through the undocumented accent
-  policy only before it. GTK's blur is the compositor's (KWin's, or
+  backdrop (tinted for the light or dark theme, with its grain), in an
+  active window from Windows 11 22H2, and otherwise a plain blur through
+  the undocumented accent policy (Windows draws Acrylic solid in an
+  inactive window). GTK's blur is the compositor's (KWin's, or
   `ext-background-effect-v1`); both ignore the intensity.
+- **No decorations** (4.4): `window-decoration = none` keeps Windows'
+  resize borders (and a resize band along the top), its shadow and
+  rounded corners; GTK's undecorated window loses its resize controls
+  with the title bar (`gtk_window_set_decorated`). Toggling decorations
+  keeps the terminal's grid, the window growing or shrinking by the
+  header bar, where GTK keeps the window's size.
 - **Background opacity toggle** (4.1): `toggle_background_opacity` works
   as on macOS: every window turns opaque, or translucent again, and new
   windows follow; with `background-opacity` at 1 it does nothing. GTK
@@ -1797,6 +1804,11 @@ off as planned. The `blur` scenario checks the state, DWM's reported
 backdrop type and the accent path (forced by a test hook) on the hidden
 desktop; `blur-display` (on screen, the owner's) checks that striped
 backdrop blurs. Left: that run, and Windows 10 (no machine here).
+After the review: Windows draws Acrylic solid in an inactive window, so
+an inactive one takes the accent policy's blur (`WM_NCACTIVATE`
+switches); that blur lags while dragging or resizing on 22H2, which only
+an active window does. `blur-display` repaints its stripes red to check
+the blur follows the backdrop rather than a solid fallback.
 
 **4.3 Tabs in the title bar, L.** Windows Terminal-style integrated caption:
 - Keep `WS_OVERLAPPEDWINDOW` (snap, animations, rounded corners and shadow
@@ -2099,6 +2111,19 @@ terminal's font, cell spacing and padding as well as the chrome.
 **4.4 Decorations, M.** `window-decoration = none` (borderless, resizable,
 keeps the shadow) and `toggle_window_decorations` without changing the grid
 size. Shares 4.3's non-client code.
+
+*Done 2026-10-27:* `Window.captionless` (the header bar's frame, or
+`none`) drops the caption in `WM_NCCALCSIZE`; with `none` no header bar
+draws, the tab row (when shown) is the top bar, and the top resize band
+stays: over the tab row the window's own hit test answers it, over a pane
+the pane and its tab pass it on (`Window.inTopBand`, HTTRANSPARENT).
+`toggle_window_decorations` is GTK's: a per-window override
+(`decoration_override`), `none` to `auto` and anything else to `none`,
+back to the config's on the next toggle; the window then resizes so the
+tab area, and so the grid, stays as it was (`resizeTabArea`), unless
+maximized or fullscreen. The `decorations` scenario checks the frame,
+the hit tests through pane, tab and window, and the grid across toggles
+from `none`, `auto` and `server`.
 
 **4.5 Tab drag and tear-off, L.**
 - Drag to reorder, with live feedback.
@@ -2449,7 +2474,6 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 | prompt_title, set_tab_title, set_window_title, copy_title_to_clipboard | 3.5 |
 | mouse_over_link, key_sequence, key_table, readonly, show_child_exited | 3.6 |
 | toggle_tab_overview | 3.8 |
-| toggle_window_decorations | 4.4 |
 | move_tab_to_new_window | 4.5 |
 | cell_size, reset_window_size, float_window | 4.6 |
 | desktop_notification | 5.2 |

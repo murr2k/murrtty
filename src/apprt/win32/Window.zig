@@ -75,8 +75,11 @@ chrome_zoomed: bool = false,
 /// Whether the window is the active one: inactive, the chrome takes
 /// libadwaita's backdrop colors.
 active_window: bool = true,
-/// Whether the frame was last computed for client-side decorations.
-csd_frame: bool = false,
+/// Whether the frame was last computed without the caption (captionless).
+captionless_frame: bool = false,
+/// toggle_window_decorations' choice for this window over the config's
+/// window-decoration, as GTK keeps it (null: the config's).
+decoration_override: ?configpkg.WindowDecoration = null,
 /// Whether the window is translucent (App.translucent), as last applied
 /// by syncTranslucent.
 translucent: bool = false,
@@ -173,8 +176,8 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
         log.err("failed to create window err={}", .{c.GetLastError()});
         return error.CreateWindowFailed;
     };
-    // WM_NCCALCSIZE gave the new window its frame by csd().
-    self.csd_frame = self.csd();
+    // WM_NCCALCSIZE gave the new window its frame by captionless().
+    self.captionless_frame = self.captionless();
     self.syncBars();
     errdefer {
         _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
@@ -713,12 +716,56 @@ fn titleBarHeight(self: *const Window) c_int {
 /// then has none.
 pub fn csd(self: *const Window) bool {
     const config = &self.app.config;
-    switch (config.@"window-decoration") {
+    switch (self.decoration()) {
         .auto, .client => {},
         .server, .none => return false,
     }
     if (!config.@"gtk-titlebar" or self.fullscreen != null) return false;
     return !(config.@"gtk-titlebar-hide-when-maximized" and c.IsZoomed(self.hwnd) != 0);
+}
+
+/// window-decoration, or what toggle_window_decorations chose instead.
+pub fn decoration(self: *const Window) configpkg.WindowDecoration {
+    return self.decoration_override orelse self.app.config.@"window-decoration";
+}
+
+/// Whether the frame has no caption: under the header bar (csd), or with
+/// window-decoration = none (roadmap 4.4), where GTK's window has no
+/// decorations at all; it keeps Windows' resize borders, shadow and
+/// rounded corners, and the tab row becomes the top bar. Fullscreen has
+/// no frame anyway.
+pub fn captionless(self: *const Window) bool {
+    return self.csd() or (self.decoration() == .none and self.fullscreen == null);
+}
+
+/// Whether `screen` lies in the resize band along the top of a captionless
+/// window with no bar there (window-decoration = none, no tab row): the
+/// panes and their tab pass it on (HTTRANSPARENT), so the window's own
+/// hit test answers HTTOP, as over a header bar.
+pub fn inTopBand(self: *const Window, screen: c.POINT) bool {
+    if (!self.captionless() or self.chromeHeight() != 0 or c.IsZoomed(self.hwnd) != 0) return false;
+    var pt = screen;
+    _ = c.ScreenToClient(self.hwnd, &pt);
+    return pt.y >= 0 and pt.y < self.frameY();
+}
+
+/// toggle_window_decorations, as GTK's: from window-decoration = none to
+/// auto, from anything else to none, and back to the config's on the next
+/// toggle. The terminal area keeps its size, so the grid doesn't change,
+/// unless the window is maximized or fullscreen.
+pub fn toggleDecorations(self: *Window) void {
+    const before = self.tabRect(self.tabs.items.len);
+    self.decoration_override = if (self.decoration_override != null) null else switch (self.app.config.@"window-decoration") {
+        .none => .auto,
+        .auto, .client, .server => .none,
+    };
+    // The caption's colors (server decorations), the bars, the frame.
+    self.applyChrome();
+    self.layout();
+    if (c.IsZoomed(self.hwnd) == 0 and self.fullscreen == null) {
+        self.resizeTabArea(before.right - before.left, before.bottom - before.top);
+    }
+    _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
 
 /// Whether the tab row shows (window-show-tab-bar).
@@ -814,7 +861,7 @@ fn adjustFrame(self: *const Window, rect: *c.RECT, dpi: c.UINT) void {
     const top = rect.top;
     const style: c.DWORD = @truncate(@as(usize, @bitCast(c.GetWindowLongPtrW(self.hwnd, c.GWL_STYLE))));
     _ = c.AdjustWindowRectExForDpi(rect, style, c.FALSE, c.WS_EX_APPWINDOW, dpi);
-    if (self.csd()) rect.top = top;
+    if (self.captionless()) rect.top = top;
 }
 
 /// Size every tab to the tab area, all in one step (so they never show at
@@ -832,11 +879,11 @@ fn layout(self: *Window) void {
         self.reveal_active = false;
         self.tab_bar.ensureVisible(self.active, self.tabs.items.len, strip_width);
     }
-    // A reload that changes the decorations: the frame again (maximizing
-    // and fullscreen recompute it as they happen).
-    const csd_now = self.csd();
-    if (csd_now != self.csd_frame) {
-        self.csd_frame = csd_now;
+    // A reload or toggle that changes the decorations: the frame again
+    // (maximizing and fullscreen recompute it as they happen).
+    const captionless_now = self.captionless();
+    if (captionless_now != self.captionless_frame) {
+        self.captionless_frame = captionless_now;
         _ = c.SetWindowPos(self.hwnd, null, 0, 0, 0, 0, c.SWP_FRAMECHANGED | c.SWP_NOMOVE |
             c.SWP_NOSIZE | c.SWP_NOZORDER | c.SWP_NOACTIVATE);
     }
@@ -917,6 +964,13 @@ pub fn setClientSize(self: *Window, width: u32, height: u32) void {
         current.bottom - current.top
     else
         @intCast((@as(u64, height) * dpi + 95) / 96);
+    self.resizeTabArea(w, h);
+}
+
+/// Size the window so its tab area is `w` x `h` device pixels, within the
+/// monitor's work area (setClientSize).
+fn resizeTabArea(self: *Window, w: c_int, h: c_int) void {
+    const dpi = c.GetDpiForWindow(self.hwnd);
     var rect: c.RECT = .{ .right = w, .bottom = h + self.chromeHeight() };
     self.adjustFrame(&rect, dpi);
     var win_w = rect.right - rect.left;
@@ -1153,26 +1207,42 @@ pub fn syncTranslucent(self: *Window) void {
 /// is on (roadmap 4.2), as App.blurMethod says: over the blur-behind that
 /// makes it translucent, as Tauri's window-vibrancy does. As GTK, the
 /// blur's intensity is ignored and fullscreen keeps it; an opaque window
-/// (toggled, or at an opacity of 1) has none.
+/// (toggled, or at an opacity of 1) has none. Windows draws Acrylic in its
+/// solid color while the window is inactive (documented for background
+/// acrylic; kitty's and PowerToys' Windows ports met it), where GTK's blur
+/// stays, so an inactive window takes the accent policy's plain blur
+/// instead. That one lags while a window is dragged or resized on 22H2
+/// and later, which only an active window is.
 pub fn syncBlur(self: *Window) void {
-    const want: Blur = if (self.translucent and self.app.config.@"background-blur".enabled())
-        self.app.blurMethod()
+    const method = self.app.blurMethod();
+    const want: Blur = if (!self.translucent or !self.app.config.@"background-blur".enabled())
+        .none
+    else if (method == .backdrop and !self.active_window and App.accentFn() != null)
+        .accent
     else
-        .none;
+        method;
     if (want == self.blur) return;
-    // Take the one in place off first (the test hooks switch methods).
-    switch (self.blur) {
-        .none => {},
-        .backdrop => _ = self.setBackdrop(c.DWMSBT_AUTO),
-        .accent => _ = self.setAccent(c.ACCENT_DISABLED),
-    }
-    self.blur = .none;
-    const done = switch (want) {
+    // Take the one in place off first. If that fails it stays as it is,
+    // and the next change tries again.
+    const removed = switch (self.blur) {
         .none => true,
-        .backdrop => self.setBackdrop(c.DWMSBT_TRANSIENTWINDOW),
-        .accent => self.setAccent(c.ACCENT_ENABLE_BLURBEHIND),
+        .backdrop => self.setBackdrop(c.DWMSBT_AUTO),
+        .accent => self.setAccent(c.ACCENT_DISABLED),
     };
-    if (done) self.blur = want;
+    if (!removed) return;
+    self.blur = .none;
+    switch (want) {
+        .none => {},
+        // Acrylic refused: the accent policy's blur, where there is one.
+        .backdrop => if (self.setBackdrop(c.DWMSBT_TRANSIENTWINDOW)) {
+            self.blur = .backdrop;
+        } else if (self.setAccent(c.ACCENT_ENABLE_BLURBEHIND)) {
+            self.blur = .accent;
+        },
+        .accent => if (self.setAccent(c.ACCENT_ENABLE_BLURBEHIND)) {
+            self.blur = .accent;
+        },
+    }
 }
 
 /// DWM's system backdrop: Acrylic, or the default (no backdrop under the
@@ -1759,10 +1829,11 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         // Client-side decorations (roadmap 4.3): no caption, the header
-        // bar drawn in its place. Maximized, the window reaches past the
-        // monitor by its frame, so the bar starts that far down.
+        // bar drawn in its place; or none at all (4.4). Maximized, the
+        // window reaches past the monitor by its frame, so the client
+        // starts that far down.
         c.WM_NCCALCSIZE => {
-            if (wparam == 0 or !self.csd()) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            if (wparam == 0 or !self.captionless()) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
             const params: *c.NCCALCSIZE_PARAMS = @ptrFromInt(@as(usize, @bitCast(lparam)));
             const top = params.rgrc[0].top;
             const ret = c.DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -1777,10 +1848,12 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         // Over the header bar: the caption between its buttons, the
         // caption's buttons over the window's (Windows 11 shows Snap
         // Layouts over HTMAXBUTTON), its own buttons as client clicks, and
-        // the resize band along the top that the caption had.
+        // the resize band along the top that the caption had, which a
+        // window without decorations keeps too (over the tab row, or
+        // passed on by the panes: inTopBand).
         c.WM_NCHITTEST => {
             const def = c.DefWindowProcW(hwnd, msg, wparam, lparam);
-            if (def != c.HTCLIENT or !self.csd()) return def;
+            if (def != c.HTCLIENT or !self.captionless()) return def;
             var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
             _ = c.ScreenToClient(hwnd, &pt);
             const width = self.clientWidth();
@@ -1838,12 +1911,14 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             return 0;
         },
 
-        // Active or not: the chrome's colors follow (libadwaita's backdrop).
+        // Active or not: the chrome's colors follow (libadwaita's backdrop),
+        // and the blur (Acrylic only while active, syncBlur).
         c.WM_NCACTIVATE => {
             const active = wparam != 0;
             if (active != self.active_window) {
                 self.active_window = active;
                 self.invalidateTabBar();
+                self.syncBlur();
             }
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },

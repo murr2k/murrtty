@@ -57,6 +57,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
     .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar; gtk-toolbar-style raised-border and flat", .run = shade },
     .{ .name = "translucent", .about = "background-opacity < 1: frames with its alpha (a split's too), the header bar and dividers opaque, toggle_background_opacity in every window and new ones, a reload to 1", .run = translucent },
+    .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
     .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
@@ -4568,17 +4569,28 @@ fn blurOnScreen(h: *Harness) !void {
     }
     const method = try h.alloc.dupe(u8, d.value.windows[0].blur);
     defer h.alloc.free(method);
+    const active = d.value.windows[0].active_window;
     d.deinit();
     h.pump(800);
     const soft = try greenSwing(h, &g, client, y, "blurred.bmp");
+    // The same stripes in red: what is blurred must follow the backdrop (a
+    // solid fallback, which Acrylic is when inactive, wouldn't).
+    if (!backdrop.fillStripes(0xff0000, 0x000000, 12)) return h.fail("the stripes didn't fill", .{});
+    h.pump(800);
+    const red = try rowStats(h, &g, client, y, "blurred-red.bmp");
 
-    std.debug.print("\n    green across the stripes: sharp {x:0>2}..{x:0>2} (mean {x:0>2}); blurred ({s}) {x:0>2}..{x:0>2} (mean {x:0>2})\n", .{
-        sharp.min, sharp.max, sharp.mean, method, soft.min, soft.max, soft.mean,
+    std.debug.print("\n    green across the stripes: sharp {x:0>2}..{x:0>2} (mean {x:0>2}); blurred ({s}, murrtty {s}) {x:0>2}..{x:0>2} (mean {x:0>2}); " ++
+        "red stripes behind: green mean {x:0>2}, red mean {x:0>2}\n", .{
+        sharp.min, sharp.max, sharp.mean, method,      if (active) "active" else "inactive",
+        soft.min,  soft.max,  soft.mean,  red[1].mean, red[0].mean,
     });
     try h.expect(!std.mem.eql(u8, method, "none"), "the reload turns the blur on ({s})", .{method});
     try h.expect(sharp.max - sharp.min > 0x60, "unblurred, the stripes show through (swing {x})", .{sharp.max - sharp.min});
     try h.expect((soft.max - soft.min) * 3 < sharp.max - sharp.min, "blurred, the swing shrinks to under a third ({x})", .{soft.max - soft.min});
     try h.expect(soft.mean > 0x1a, "and the backdrop still shows through (mean green {x}, the background alone #16)", .{soft.mean});
+    try h.expect(red[1].mean + 0x10 < soft.mean and red[0].mean > 0x14 + 0x10, "the blur follows the backdrop: red stripes take green away ({x} from {x}) and bring red ({x})", .{
+        red[1].mean, soft.mean, red[0].mean,
+    });
 }
 
 const Swing = struct { min: u32, max: u32, mean: u32 };
@@ -4586,21 +4598,30 @@ const Swing = struct { min: u32, max: u32, mean: u32 };
 /// The display's green channel along row `y` of `client`, over a run of
 /// stripes from x = 40; the capture is kept as `name`.
 fn greenSwing(h: *Harness, g: *Harness.Ghostty, client: w.RECT, y: usize, name: []const u8) !Swing {
+    return (try rowStats(h, g, client, y, name))[1];
+}
+
+/// The display's red, green and blue channels along row `y` of `client`,
+/// over a run of stripes from x = 40; the capture is kept as `name`.
+fn rowStats(h: *Harness, g: *Harness.Ghostty, client: w.RECT, y: usize, name: []const u8) ![3]Swing {
     var img = try h.captureDisplay(client);
     defer img.deinit();
     saveImage(h, g, &img, name);
     const end = @min(img.width - 40, 40 + 24 * 12);
     if (y >= img.height or end <= 40) return h.fail("row {d} is outside the capture", .{y});
-    var s: Swing = .{ .min = 0xff, .max = 0, .mean = 0 };
-    var sum: u32 = 0;
+    var stats: [3]Swing = @splat(.{ .min = 0xff, .max = 0, .mean = 0 });
+    var sums: [3]u32 = @splat(0);
     for (40..end) |x| {
-        const green = (img.rgb(x, y) >> 8) & 0xff;
-        s.min = @min(s.min, green);
-        s.max = @max(s.max, green);
-        sum += green;
+        const px = img.rgb(x, y);
+        for (&stats, &sums, [_]u5{ 16, 8, 0 }) |*s, *sum, shift| {
+            const v = (px >> shift) & 0xff;
+            s.min = @min(s.min, v);
+            s.max = @max(s.max, v);
+            sum.* += v;
+        }
     }
-    s.mean = sum / @as(u32, @intCast(end - 40));
-    return s;
+    for (&stats, sums) |*s, sum| s.mean = sum / @as(u32, @intCast(end - 40));
+    return stats;
 }
 
 /// Skip unless murrtty's `win` is on top at each of `points` (client
@@ -5158,6 +5179,97 @@ fn shade(h: *Harness) anyerror!void {
 }
 
 const toggle_opacity = "keybind = ctrl+shift+f3=toggle_background_opacity\n";
+const toggle_decorations = "keybind = ctrl+shift+f4=toggle_window_decorations\n";
+
+/// window-decoration = none (roadmap 4.4): no caption and no header bar,
+/// the client reaching the window's top; its top resize band still
+/// answers HTTOP, passed on by the pane and its tab, and the rest of the
+/// pane stays the pane's. toggle_window_decorations, per window as GTK's:
+/// none to auto (the header bar) and back, anything else to none and back,
+/// the grid unchanged each time.
+fn decorations(h: *Harness) anyerror!void {
+    {
+        var g = try start(h, "decorations-none", "window-decoration = none\n" ++ toggle_decorations, ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const surf = try h.surface(&g, win);
+        try expectDecoration(h, &g, "none", true, false);
+        var wr: w.RECT = .{};
+        _ = w.GetWindowRect(win, &wr);
+        var origin: w.POINT = .{};
+        _ = w.ClientToScreen(win, &origin);
+        try h.expect(origin.y == wr.top, "the client starts at the window's top ({d}, the window {d})", .{ origin.y, wr.top });
+        const tab = w.GetParent(surf) orelse return h.fail("the pane has no tab", .{});
+        // At (40, 2) of the window's client, then (40, 60).
+        try expectNcHit(h, surf, mapPoint(win, surf, .{ 40, 2 }), w.HTTRANSPARENT, "the pane passes the top band on");
+        try expectNcHit(h, tab, mapPoint(win, tab, .{ 40, 2 }), w.HTTRANSPARENT, "and its tab");
+        try expectNcHit(h, win, .{ 40, 2 }, w.HTTOP, "where the window resizes from the top");
+        try expectNcHit(h, surf, mapPoint(win, surf, .{ 40, 60 }), w.HTCLIENT, "below it the pane is the pane's");
+        const grid = try gridOf(h, &g);
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F4);
+        try expectDecoration(h, &g, "auto", true, true);
+        try expectGrid(h, &g, grid, "toggled to auto");
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F4);
+        try expectDecoration(h, &g, "none", true, false);
+        try expectGrid(h, &g, grid, "and back to none");
+        try quit(h, &g, surf);
+    }
+    inline for ([_]struct { []const u8, []const u8, bool, bool }{
+        .{ "decorations-auto", "", true, true },
+        .{ "decorations-server", "window-decoration = server\n", false, false },
+    }) |case| {
+        var g = try start(h, case[0], toggle_decorations ++ case[1], ">");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        const own = if (case[1].len == 0) "auto" else "server";
+        try expectDecoration(h, &g, own, case[2], case[3]);
+        const grid = try gridOf(h, &g);
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F4);
+        try expectDecoration(h, &g, "none", true, false);
+        try expectGrid(h, &g, grid, "toggled to none");
+        h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F4);
+        try expectDecoration(h, &g, own, case[2], case[3]);
+        try expectGrid(h, &g, grid, "and back");
+        try quit(h, &g, surf);
+    }
+}
+
+/// `pt` in `from`'s client coordinates, in `to`'s.
+fn mapPoint(from: w.HWND, to: w.HWND, pt: [2]i32) [2]i32 {
+    var p = [1]w.POINT{.{ .x = pt[0], .y = pt[1] }};
+    _ = w.MapWindowPoints(from, to, &p, 1);
+    return .{ p[0].x, p[0].y };
+}
+
+/// Wait until the first window's decoration, frame and header bar are as
+/// given.
+fn expectDecoration(h: *Harness, g: *Harness.Ghostty, decoration: []const u8, captionless: bool, header: bool) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const win = d.value.windows[0];
+        if (std.mem.eql(u8, win.decoration, decoration) and win.captionless == captionless and win.header.visible == header) {
+            return h.expect(true, "decoration {s}: captionless {}, header bar {}", .{ decoration, captionless, header });
+        }
+        if (waited >= 3000) return h.fail("decoration {s}, captionless {}, header bar {}; wanted {s}, {}, {}", .{
+            win.decoration, win.captionless, win.header.visible, decoration, captionless, header,
+        });
+        w.Sleep(100);
+    }
+}
+
+/// Wait until the first tab's grid is `want` again.
+fn expectGrid(h: *Harness, g: *Harness.Ghostty, want: [2]u32, comptime what: []const u8) !void {
+    var got: [2]u32 = .{ 0, 0 };
+    var waited: u32 = 0;
+    while (waited <= 3000) : (waited += 100) {
+        got = try gridOf(h, g);
+        if (got[0] == want[0] and got[1] == want[1]) return h.expect(true, what ++ ": the grid stays {d}x{d}", .{ want[0], want[1] });
+        w.Sleep(100);
+    }
+    return h.fail(what ++ ": the grid is {d}x{d}, not {d}x{d}", .{ got[0], got[1], want[0], want[1] });
+}
 
 /// background-opacity below 1 makes the windows translucent (roadmap 4.1,
 /// Phase A). Each pane presents its background at the opacity's alpha,
@@ -5243,13 +5355,24 @@ fn translucent(h: *Harness) anyerror!void {
 /// What it looks like is for the display (`transparency`'s owner).
 fn blurScenario(h: *Harness) anyerror!void {
     const build = Harness.windowsBuild();
-    const native: []const u8 = if (build >= 22621) "backdrop" else if (build >= 17763) "accent" else "none";
-    h.log("Windows build {d}: {s}", .{ build, native });
+    h.log("Windows build {d}: active {s}, inactive {s}", .{ build, nativeBlur(build, true), nativeBlur(build, false) });
+    const native = "native";
     const config = "background-opacity = 0.5\nbackground-blur = true\n" ++ toggle_opacity;
     var g = try start(h, "blur", config, ">");
     defer g.deinit();
-    const surf = try h.surface(&g, try h.mainWindow(&g));
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
     try expectBlur(h, &g, &.{native});
+
+    // Windows draws Acrylic solid in an inactive window: there the accent
+    // policy's blur, as WM_NCACTIVATE tells the window.
+    if (build >= 22621) {
+        for ([_]struct { usize, []const u8 }{ .{ 0, "accent" }, .{ 1, "backdrop" } }) |step| {
+            var result: usize = 0;
+            _ = w.SendMessageTimeoutW(win, w.WM_NCACTIVATE, step[0], 0, w.SMTO_ABORTIFHUNG, 2000, &result);
+            try expectBlur(h, &g, &.{step[1]});
+        }
+    }
 
     h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
     try expectBlur(h, &g, &.{"none"});
@@ -5274,15 +5397,25 @@ fn blurScenario(h: *Harness) anyerror!void {
     try expectBlur(h, &g, &.{ "none", "none" });
     try h.writeFileAt(cfg_path, base_config ++ "background-blur = true\n" ++ toggle_opacity);
     h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
-    w.Sleep(500);
+    // The reload has come once the windows turn opaque.
+    try expectTranslucent(h, &g, &.{ false, false });
     try expectBlur(h, &g, &.{ "none", "none" });
     try quit(h, &g, surf);
 }
 
-/// Wait until each window's blur is as in `want`; DWM's system backdrop
-/// (where it reports one) must be Acrylic (3) with "backdrop" and the
-/// default (0) otherwise.
+/// The blur a translucent window has on Windows build `build`, active or
+/// not (App.blurMethod, Window.syncBlur).
+fn nativeBlur(build: u32, active: bool) []const u8 {
+    if (build >= 22621) return if (active) "backdrop" else "accent";
+    return if (build >= 17763) "accent" else "none";
+}
+
+/// Wait until each window's blur is as in `want` ("native": as its build
+/// and activity give, nativeBlur); DWM's system backdrop must be Acrylic
+/// (3) with "backdrop" and the default (0) otherwise, and DWM must say
+/// which from Windows 11 22H2.
 fn expectBlur(h: *Harness, g: *Harness.Ghostty, want: []const []const u8) !void {
+    const build = Harness.windowsBuild();
     const names = try std.mem.join(h.alloc, ", ", want);
     defer h.alloc.free(names);
     var waited: u32 = 0;
@@ -5290,17 +5423,19 @@ fn expectBlur(h: *Harness, g: *Harness.Ghostty, want: []const []const u8) !void 
         var d = try h.dump(g);
         defer d.deinit();
         const wins = d.value.windows;
-        const same = wins.len == want.len and for (wins, want) |win, blur| {
+        const same = wins.len == want.len and for (wins, want) |win, wanted| {
+            const blur = if (std.mem.eql(u8, wanted, "native")) nativeBlur(build, win.active_window) else wanted;
             if (!std.mem.eql(u8, win.blur, blur)) break false;
             const backdrop: i64 = if (std.mem.eql(u8, blur, "backdrop")) 3 else 0;
+            if (build >= 22621 and win.backdrop_type < 0) break false;
             if (win.backdrop_type >= 0 and win.backdrop_type != backdrop) break false;
         } else true;
         if (same) {
-            for (wins, 0..) |win, i| h.log("window {d}: DWM's backdrop type {d}", .{ i, win.backdrop_type });
+            for (wins, 0..) |win, i| h.log("window {d}: {s}, active {}, DWM's backdrop type {d}", .{ i, win.blur, win.active_window, win.backdrop_type });
             return h.expect(true, "the windows' blur is {s}", .{names});
         }
         if (waited >= 3000) {
-            for (wins, 0..) |win, i| h.log("window {d}: blur {s}, backdrop type {d}", .{ i, win.blur, win.backdrop_type });
+            for (wins, 0..) |win, i| h.log("window {d}: blur {s}, active {}, backdrop type {d}", .{ i, win.blur, win.active_window, win.backdrop_type });
             return h.fail("the windows' blur isn't {s}", .{names});
         }
         w.Sleep(100);

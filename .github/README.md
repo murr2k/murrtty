@@ -221,12 +221,17 @@ hosted Windows runner and then the unit tests.
   window opaque and back, as on macOS. Tested by reading back what murrtty
   draws, alpha included; what the display shows was checked on NVIDIA
   (spike S2), not yet on AMD or Intel.
+- `window-decoration = none`: no title bar, still resizable from every
+  edge, with Windows' shadow and rounded corners; and
+  `toggle_window_decorations`, per window as in Ghostty's GTK app, which
+  keeps the terminal's grid.
 
 **Implemented but not yet tested**
 
 - Background blur (`background-blur`) behind a translucent background:
-  Acrylic on Windows 11 22H2 and later, a plain blur on Windows 10. The
-  tests check that it is applied, not yet how it looks.
+  Acrylic in the active window on Windows 11 22H2 and later, otherwise a
+  plain blur (Windows draws Acrylic solid in inactive windows). The tests
+  check that it is applied, not yet how it looks.
 - AltGr layouts, dead keys, IME composition (preedit and candidate window
   placement).
 - Moving tabs (`Ctrl+Shift+PgUp`/`PgDn`), jumping to a tab (`Alt+1` to `Alt+8`, and `Alt+9` for the last tab), closing
@@ -249,13 +254,12 @@ hosted Windows runner and then the unit tests.
 **Not implemented yet**
 
 - Terminal inspector, quick terminal, desktop notifications.
-- `window-decoration = none` and `toggle_window_decorations`.
 - Dragging tabs with the mouse, and moving a tab to a new window. Dragging
   panes to rearrange splits.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the rest of the window chrome (Phase 4: decorations, tab dragging).
+with the rest of the window chrome (Phase 4: tab dragging next).
 
 **Known issues**
 

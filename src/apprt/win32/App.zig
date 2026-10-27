@@ -1378,6 +1378,12 @@ pub fn performAction(
             window.toggleMaximize();
         },
 
+        // This window only, as GTK's (roadmap 4.4).
+        .toggle_window_decorations => {
+            const window = windowFromTarget(target) orelse return false;
+            window.toggleDecorations();
+        },
+
         // As macOS (GTK leaves it out): every window at once, and new ones
         // follow; nothing to toggle while background-opacity is 1.
         .toggle_background_opacity => {
@@ -1686,7 +1692,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         .inspector,
         .show_gtk_inspector,
         .show_on_screen_keyboard,
-        .toggle_window_decorations,
         .toggle_window_float_on_top,
         .toggle_secure_input,
         .toggle_quick_terminal,

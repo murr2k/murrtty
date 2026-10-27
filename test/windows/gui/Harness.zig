@@ -1206,6 +1206,12 @@ pub const Dump = struct {
         chrome: ?struct { dark: bool, caption: i64 } = null,
         /// Whether the desktop shows through the background (roadmap 4.1).
         translucent: bool = false,
+        /// window-decoration as the window has it (toggled or the
+        /// config's), and whether its frame has no caption (4.3, 4.4).
+        decoration: []const u8 = "",
+        captionless: bool = false,
+        /// Whether Windows last told it it is active (WM_NCACTIVATE).
+        active_window: bool = true,
         /// How what shows through is blurred (4.2: "none", "backdrop",
         /// "accent"), and the system backdrop DWM reports (-1 if it can't).
         blur: []const u8 = "none",
