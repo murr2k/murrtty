@@ -1,10 +1,14 @@
-//! The tab row: a custom-drawn strip of tabs below the header bar (GTK's
-//! tab bar; roadmap 3.8, 4.3).
+//! The tab row: a custom-drawn strip of tabs below the header bar, GTK's
+//! tab bar as libadwaita draws it (roadmap 3.8, 4.3).
 //!
-//! Drawn with GDI rather than the common tab control so it can follow
-//! the terminal's colors. The Window owns the tabs; this only lays them
-//! out, paints and hit-tests. Tabs share the row between 64 and 240 DIP
-//! each; when they don't fit at 64 they scroll (by `scroll`) between a "‹"
+//! Drawn with GDI rather than the common tab control so it can look like
+//! libadwaita's: in the header bar's color, 46 DIP tall (a 34 DIP tab
+//! box with 6 above and below), tabs as rounded buttons (radius 9) with
+//! the title centered, the selected one tinted, a round close button on
+//! the selected and hovered tabs, separators between the others. The
+//! Window owns the tabs; this only lays them out, paints and hit-tests.
+//! Tabs fill the row (`gtk-wide-tabs`, as GTK's do by default) or take up
+//! to 240 DIP each; below 64 DIP they scroll (by `scroll`) between a "‹"
 //! and a "›". The header bar's buttons are HeaderBar's.
 const TabBar = @This();
 
@@ -14,16 +18,23 @@ const draw = @import("draw.zig");
 const text_util = @import("text.zig");
 
 /// Unscaled metrics, in device-independent pixels.
-const bar_height = 34;
+const bar_height = 46;
+const tab_top = 6;
+const tab_height = 34;
+const pad_x = 6;
 const tab_max_width = 240;
 const tab_min_width = 64;
 /// The "‹" and "›" scrolling an overflowing row.
 const chevron_width = 22;
-const close_size = 18;
+const close_size = 24;
+const tab_radius = 9;
 const text_inset = 12;
 
 font: ?c.HFONT = null,
 dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
+/// Tabs share the whole row (gtk-wide-tabs), rather than stopping at 240
+/// DIP each.
+wide: bool = true,
 
 /// The item under the mouse, in this row or the header bar, for hover
 /// highlighting.
@@ -71,10 +82,14 @@ const Place = struct {
 
 fn place(self: *const TabBar, n: usize, width: c_int) Place {
     const count: c_int = @intCast(@max(n, 1));
-    const per = @divTrunc(@max(0, width), count);
+    const pad = self.scale(pad_x);
+    const per = @divTrunc(@max(0, width - 2 * pad), count);
     if (per >= self.scale(tab_min_width) or n <= 1) {
-        const w = std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
-        return .{ .tab_width = w, .overflow = false, .view_left = 0, .view_right = w * count };
+        const w = if (self.wide)
+            @max(per, self.scale(tab_min_width))
+        else
+            std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
+        return .{ .tab_width = w, .overflow = false, .view_left = pad, .view_right = pad + w * count };
     }
     const chevron = self.scale(chevron_width);
     return .{
@@ -153,10 +168,12 @@ pub fn tabRect(self: *const TabBar, i: usize, n: usize, width: c_int) c.RECT {
     const p = self.place(n, width);
     const offset = if (p.overflow) self.scroll else 0;
     const left = p.view_left + p.tab_width * @as(c_int, @intCast(i)) - offset;
-    return .{ .left = left, .top = 0, .right = left + p.tab_width, .bottom = self.height() };
+    const top = self.scale(tab_top);
+    return .{ .left = left, .top = top, .right = left + p.tab_width, .bottom = top + self.scale(tab_height) };
 }
 
-/// The span tabs show in (between the chevrons, when they overflow).
+/// The span tabs show in (between the chevrons, when they overflow), the
+/// row's whole height.
 pub fn viewRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
     const p = self.place(n, width);
     return .{ .left = p.view_left, .top = 0, .right = p.view_right, .bottom = self.height() };
@@ -178,14 +195,16 @@ pub fn scrollRightRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
     return .{ .left = p.view_right, .top = 0, .right = width, .bottom = self.height() };
 }
 
+/// A tab's close button: a circle at its right end.
 pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
     const s = self.scale(close_size);
-    const right = tab.right - self.scale(8);
+    const right = tab.right - self.scale(5);
     const top = tab.top + @divTrunc(tab.bottom - tab.top - s, 2);
     return .{ .left = right - s, .top = top, .right = right, .bottom = top + s };
 }
 
-/// The item at (`x`, `y`) in the row's coordinates.
+/// The item at (`x`, `y`) in the row's coordinates. A tab takes the row's
+/// whole height.
 pub fn hitTest(self: *const TabBar, x: c_int, y: c_int, n: usize, width: c_int) Hit {
     if (y < 0 or y >= self.height()) return .none;
     if (self.overflowing(n, width)) {
@@ -196,7 +215,7 @@ pub fn hitTest(self: *const TabBar, x: c_int, y: c_int, n: usize, width: c_int) 
     if (!draw.contains(self.viewRect(n, width), x, y)) return .none;
     for (0..n) |i| {
         const r = self.tabRect(i, n, width);
-        if (draw.contains(r, x, y)) {
+        if (x >= r.left and x < r.right) {
             return if (draw.contains(self.closeRect(r), x, y)) .{ .close = i } else .{ .tab = i };
         }
     }
@@ -234,6 +253,8 @@ pub fn paint(
 
     const n = titles.len;
     const pen_w = @max(1, self.scale(1));
+    const stroke = @max(1, self.scale(2));
+    const radius = self.scale(tab_radius);
     // Tabs only where they show; scrolled away, they are cut at the
     // chevrons.
     const view = self.viewRect(n, width);
@@ -241,50 +262,59 @@ pub fn paint(
     for (titles, 0..) |title, i| {
         const r = self.tabRect(i, n, width);
         if (r.right <= view.left or r.left >= view.right) continue;
-        const is_active = i == active;
+        const selected = i == active;
         const hovered = switch (self.hover) {
             .tab, .close => |hi| hi == i,
             else => false,
         };
 
-        if (is_active) {
-            draw.fill(mem, r, pal.active);
-        } else if (hovered) {
-            draw.fill(mem, r, pal.hover);
-        } else if (i + 1 != active and i + 1 < n) {
-            // Separators between inactive tabs.
-            const inset = self.scale(9);
-            draw.line(mem, r.right - 1, r.top + inset, r.right - 1, r.bottom - inset, pal.separator, pen_w);
+        // A lone tab has no background (libadwaita's single tab).
+        const back: ?c.COLORREF = if (selected and n > 1)
+            (if (hovered) pal.active_hover else pal.active)
+        else if (hovered) pal.hover else null;
+        if (back) |color| draw.roundRect(mem, r, radius, color, null, 0);
+
+        // Separators between tabs neither selected nor hovered.
+        if (i + 1 < n) {
+            const next_hovered = switch (self.hover) {
+                .tab, .close => |hi| hi == i + 1,
+                else => false,
+            };
+            if (!selected and !hovered and i + 1 != active and !next_hovered) {
+                const inset = self.scale(3) + self.scale(3);
+                draw.line(mem, r.right, r.top + inset, r.right, r.bottom - inset, pal.separator, pen_w);
+            }
         }
 
-        // Title
-        var text_rect: c.RECT = .{
-            .left = r.left + self.scale(text_inset),
-            .top = r.top,
-            .right = r.right - self.scale(close_size + 12),
-            .bottom = r.bottom,
-        };
+        // The title, centered, clear of the close button on either side.
+        const show_close = selected or hovered;
+        const side = self.scale(text_inset) + (if (r.right - r.left > self.scale(close_size * 4)) self.scale(close_size) else 0);
+        var text_rect: c.RECT = .{ .left = r.left + side, .top = r.top, .right = r.right - side, .bottom = r.bottom };
+        if (text_rect.right <= text_rect.left) text_rect = .{ .left = r.left + self.scale(text_inset), .top = r.top, .right = r.right - self.scale(close_size + 6), .bottom = r.bottom };
         var buf: [256]u16 = undefined;
         // Cut between characters: a cut inside one would fail the whole title.
         const len = std.unicode.utf8ToUtf16Le(&buf, text_util.truncate(title, 200)) catch 0;
-        _ = c.SetTextColor(mem, if (is_active) pal.text else pal.text_dim);
-        _ = c.DrawTextW(mem, &buf, @intCast(len), &text_rect, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_END_ELLIPSIS | c.DT_NOPREFIX);
+        _ = c.SetTextColor(mem, pal.text);
+        _ = c.DrawTextW(mem, &buf, @intCast(len), &text_rect, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_END_ELLIPSIS | c.DT_NOPREFIX);
 
         // The bell's mark: a line under the tab's title.
         if (i < attention.len and attention[i]) {
             const y = r.bottom - self.scale(4);
-            const w = @max(2, self.scale(2));
-            draw.line(mem, text_rect.left, y, text_rect.right, y, pal.text, w);
+            draw.line(mem, text_rect.left, y, text_rect.right, y, pal.text, @max(2, self.scale(2)));
         }
 
-        // Close button on the active and hovered tabs.
-        if (is_active or hovered) {
+        // The close button on the selected and hovered tabs: a round
+        // button, tinted when hovered.
+        if (show_close) {
             const cr = self.closeRect(r);
-            if (std.meta.eql(self.hover, Hit{ .close = i })) draw.fill(mem, cr, pal.hover);
-            const pad = self.scale(5);
-            const color = if (is_active) pal.text else pal.text_dim;
-            draw.line(mem, cr.left + pad, cr.top + pad, cr.right - pad, cr.bottom - pad, color, pen_w);
-            draw.line(mem, cr.right - pad - 1, cr.top + pad, cr.left + pad - 1, cr.bottom - pad, color, pen_w);
+            if (std.meta.eql(self.hover, Hit{ .close = i })) {
+                draw.roundRect(mem, cr, @divTrunc(cr.right - cr.left, 2), pal.pressed, null, 0);
+            }
+            const cx = @divTrunc(cr.left + cr.right, 2);
+            const cy = @divTrunc(cr.top + cr.bottom, 2);
+            const g = self.scale(4);
+            draw.line(mem, cx - g, cy - g, cx + g + 1, cy + g + 1, pal.text, stroke);
+            draw.line(mem, cx + g, cy - g, cx - g - 1, cy + g + 1, pal.text, stroke);
         }
     }
     _ = c.SelectClipRgn(mem, null);
@@ -297,30 +327,45 @@ pub fn paint(
             .{ .scroll_right, self.scrollRightRect(n, width), self.scroll < max, 1 },
         }) |chev| {
             const r = chev[1];
-            draw.fill(mem, r, if (std.meta.eql(self.hover, chev[0]) and chev[2]) pal.hover else pal.bar);
+            draw.fill(mem, r, pal.bar);
+            if (std.meta.eql(self.hover, chev[0]) and chev[2]) {
+                const t = self.scale(tab_top);
+                draw.roundRect(mem, .{ .left = r.left, .top = t, .right = r.right, .bottom = t + self.scale(tab_height) }, radius, pal.hover, null, 0);
+            }
             const x = @divTrunc(r.left + r.right, 2);
             const y = @divTrunc(r.top + r.bottom, 2);
             const arm = self.scale(4);
-            const color = if (chev[2]) pal.text_dim else pal.separator;
+            const color = if (chev[2]) pal.text else pal.text_dim;
             // "‹" points left (-1), "›" right (1).
-            draw.line(mem, x + arm * chev[3] * -1, y - arm, x + arm * chev[3], y + 1, color, pen_w);
-            draw.line(mem, x + arm * chev[3] * -1, y + arm, x + arm * chev[3], y - 1, color, pen_w);
+            draw.line(mem, x + arm * chev[3] * -1, y - arm, x + arm * chev[3], y + 1, color, stroke);
+            draw.line(mem, x + arm * chev[3] * -1, y + arm, x + arm * chev[3], y - 1, color, stroke);
         }
     }
 
     _ = c.BitBlt(hdc, 0, top, width, h, mem, 0, 0, c.SRCCOPY);
 }
 
-test "hitTest" {
+test "hitTest: wide tabs share the row" {
     const testing = std.testing;
     const bar: TabBar = .{};
-    // Two tabs in a wide row: each is tab_max_width wide, from the left.
-    try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(10, 10, 2, 2000));
-    try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(tab_max_width + 10, 10, 2, 2000));
-    try testing.expectEqual(Hit{ .close = 0 }, bar.hitTest(tab_max_width - 12, bar_height / 2, 2, 2000));
-    try testing.expectEqual(Hit.none, bar.hitTest(1500, 10, 2, 2000));
-    try testing.expectEqual(Hit.none, bar.hitTest(10, bar_height + 1, 2, 2000));
-    try testing.expect(!bar.overflowing(2, 2000));
+    const width = 2000;
+    // Two tabs: each takes half the row, less its padding.
+    const half = @divTrunc(width - 2 * pad_x, 2);
+    try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(pad_x + 10, 20, 2, width));
+    try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(pad_x + half + 10, 20, 2, width));
+    try testing.expectEqual(Hit{ .close = 0 }, bar.hitTest(pad_x + half - 5 - close_size / 2, bar_height / 2, 2, width));
+    // The row's top and bottom margins still hit the tab.
+    try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(pad_x + 10, 1, 2, width));
+    try testing.expectEqual(Hit.none, bar.hitTest(2, 20, 2, width));
+    try testing.expectEqual(Hit.none, bar.hitTest(10, bar_height + 1, 2, width));
+    try testing.expect(!bar.overflowing(2, width));
+}
+
+test "hitTest: without gtk-wide-tabs, tabs stop at 240" {
+    const testing = std.testing;
+    const bar: TabBar = .{ .wide = false };
+    try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(pad_x + tab_max_width + 10, 20, 2, 2000));
+    try testing.expectEqual(Hit.none, bar.hitTest(1500, 20, 2, 2000));
 }
 
 test "overflow: 40 tabs scroll between the chevrons, all reachable" {
@@ -330,14 +375,14 @@ test "overflow: 40 tabs scroll between the chevrons, all reachable" {
     const width = 500;
     try testing.expect(bar.overflowing(n, width));
     // [‹ 0..22][tabs 22..478][› 478..500]
-    try testing.expectEqual(Hit.scroll_left, bar.hitTest(5, 10, n, width));
-    try testing.expectEqual(Hit.scroll_right, bar.hitTest(width - 5, 10, n, width));
-    try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(30, 10, n, width));
+    try testing.expectEqual(Hit.scroll_left, bar.hitTest(5, 20, n, width));
+    try testing.expectEqual(Hit.scroll_right, bar.hitTest(width - 5, 20, n, width));
+    try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(30, 20, n, width));
 
     // Scrolling by a tab, never past either end.
     try testing.expect(!bar.scrollTabs(-1, n, width));
     try testing.expect(bar.scrollTabs(1, n, width));
-    try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(30, 10, n, width));
+    try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(30, 20, n, width));
     try testing.expect(bar.scrollTabs(1000, n, width));
     try testing.expectEqual(bar.maxScroll(n, width), bar.scroll);
 
@@ -347,7 +392,7 @@ test "overflow: 40 tabs scroll between the chevrons, all reachable" {
         const r = bar.tabRect(i, n, width);
         const view = bar.viewRect(n, width);
         try testing.expect(r.left >= view.left and r.right <= view.right);
-        try testing.expectEqual(Hit{ .tab = i }, bar.hitTest(r.left + 8, 10, n, width));
+        try testing.expectEqual(Hit{ .tab = i }, bar.hitTest(r.left + 8, 20, n, width));
     }
 
     // Fewer tabs fit again: no scroll left over.

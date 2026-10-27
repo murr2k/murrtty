@@ -220,12 +220,13 @@ hosted Windows runner and then the unit tests.
   Notepad. The GUI tests check the request, not the editor appearing.
 - Precision touchpad scrolling, mouse pointer shapes and hiding the pointer
   while typing, moving a window between monitors with different DPI.
-- Title bar colors (`window-theme`). By default the caption takes the
-  terminal's background and foreground, following programs that change them;
-  `ghostty` uses `window-titlebar-background`/`-foreground`; `system`,
-  `light` and `dark` use the system's caption. Caption colors need Windows
-  11; Windows 10 gets a light or dark caption. The GUI tests check what
-  murrtty asks Windows for, not yet what appears on screen.
+- Title bar and tab colors (`window-theme`), as in Ghostty's GTK app:
+  by default Adwaita's light or dark colors, by the configured background;
+  `ghostty` uses `window-titlebar-background`/`-foreground` (or the
+  terminal's colors); `system` follows Windows' light or dark setting;
+  `light` and `dark` are Adwaita's. An inactive window's title bar dims,
+  as libadwaita's does. The system's caption, where it shows, takes the
+  same color on Windows 11.
 - Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, the bell's
   `system` and `attention` features, and paste protection.
 

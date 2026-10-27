@@ -170,8 +170,9 @@ fn pixelsOffscreen(h: *Harness) !void {
 }
 
 /// Opt-in (GHOSTTY_GUI_SNAPSHOT = a folder): pictures of the whole window,
-/// for comparing with Ghostty's GTK app by eye: one tab, then split right
-/// (snapshot-tab.bmp, snapshot-split.bmp). Off-screen on the user's
+/// for comparing with Ghostty's GTK app by eye: one tab, split right, then
+/// a second tab (snapshot-tab.bmp, snapshot-split.bmp, snapshot-tabs.bmp).
+/// Off-screen on the user's
 /// desktop, like pixels; no menus, which Windows would pull on screen.
 fn snapshot(h: *Harness) anyerror!void {
     var dir_w: [260:0]u16 = undefined;
@@ -197,12 +198,18 @@ fn snapshotOffscreen(h: *Harness, dir: []const u8) !void {
     defer g.deinit();
     try h.waitText(&g, ">", 1, 20000);
     const win = try h.mainWindow(&g);
-    for ([_][]const u8{ "snapshot-tab.bmp", "snapshot-split.bmp" }, 0..) |name, i| {
+    for ([_][]const u8{ "snapshot-tab.bmp", "snapshot-split.bmp", "snapshot-tabs.bmp" }, 0..) |name, i| {
         if (i == 1) {
             h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'O');
             try waitPanes(h, &g, 2);
             try waitActivePaneText(h, &g, win, ">");
         }
+        if (i == 2) {
+            h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'T');
+            try waitWindowTabs(h, &g, win, 2);
+            try waitActivePaneText(h, &g, win, ">");
+        }
+        h.sync(win);
         w.Sleep(800);
         var img = h.capture(win) catch return h.fail("capture failed", .{});
         defer img.deinit();
@@ -210,6 +217,12 @@ fn snapshotOffscreen(h: *Harness, dir: []const u8) !void {
         defer h.alloc.free(path);
         try img.save(path);
         try h.expect(true, "wrote {s} ({d}x{d})", .{ path, img.width, img.height });
+        // The chrome as last painted, current even where DWM lags.
+        var chrome = h.captureClient(win) catch return h.fail("client capture failed", .{});
+        defer chrome.deinit();
+        const chrome_path = try std.fmt.allocPrint(h.alloc, "{s}\\chrome-{s}", .{ dir, name });
+        defer h.alloc.free(chrome_path);
+        try chrome.save(chrome_path);
     }
 }
 
@@ -1089,32 +1102,30 @@ fn expectChrome(h: *Harness, name: []const u8, extra: []const u8, dark: bool, ca
     try h.expect(got.dark == dark and got.caption == caption, "{s}: dark {} caption {x}, expected dark {} caption {x}", .{ name, got.dark, got.caption, dark, caption });
 }
 
-/// window-theme (roadmap 0.4). The caption colors themselves need Windows
-/// 11; the dump reports what Ghostty asked DWM for.
+/// window-theme (roadmap 0.4, 4.3): the chrome's colors as GTK's, the
+/// header bar's background reported as the caption's (what DWM is also
+/// asked for; caption colors need Windows 11).
 fn theme(h: *Harness) anyerror!void {
-    // auto (the default): the terminal's own colors.
-    try expectChrome(h, "theme-auto", "", true, 0x282c34);
-    try expectChrome(h, "theme-auto-light", "background = #fafafa\nforeground = #202020\n", false, 0xfafafa);
-    // Forced light or dark: the system's caption.
-    try expectChrome(h, "theme-light", "window-theme = light\n", false, -1);
-    try expectChrome(h, "theme-dark", "window-theme = dark\n", true, -1);
+    // auto (the default): Adwaita's, dark or light by the background.
+    try expectChrome(h, "theme-auto", "", true, 0x2e2e32);
+    try expectChrome(h, "theme-auto-light", "background = #fafafa\nforeground = #202020\n", false, 0xffffff);
+    // Forced light or dark: Adwaita's.
+    try expectChrome(h, "theme-light", "window-theme = light\n", false, 0xffffff);
+    try expectChrome(h, "theme-dark", "window-theme = dark\n", true, 0x2e2e32);
     // ghostty: the titlebar colors, else the configured background.
     try expectChrome(h, "theme-ghostty", "window-theme = ghostty\nwindow-titlebar-background = #112233\n", true, 0x112233);
 
-    // auto follows a program changing the background (OSC 11).
+    // A program changing the background (OSC 11) leaves the chrome alone:
+    // GTK's follows the configuration.
     {
         var g = try start(h, "theme-osc11", "command = powershell.exe -NoLogo -NoProfile\n", "PS ");
         defer g.deinit();
         const surf = try h.surface(&g, try h.mainWindow(&g));
         try h.typeText(surf, "Write-Host -NoNewline \"$([char]27)]11;#f0f0f0$([char]7)\"");
         h.enter(surf);
-        var waited: u32 = 0;
-        var got = try chromeOf(h, &g);
-        while (got.caption != 0xf0f0f0 and waited < 5000) : (waited += 200) {
-            w.Sleep(200);
-            got = try chromeOf(h, &g);
-        }
-        try h.expect(got.caption == 0xf0f0f0 and !got.dark, "OSC 11 sets the caption (got {x}, dark {})", .{ got.caption, got.dark });
+        w.Sleep(1500);
+        const got = try chromeOf(h, &g);
+        try h.expect(got.caption == 0x2e2e32 and got.dark, "OSC 11 leaves the chrome Adwaita's dark (got {x}, dark {})", .{ got.caption, got.dark });
         try quit(h, &g, surf);
     }
 
@@ -1220,7 +1231,7 @@ fn configErrors(h: *Harness) anyerror!void {
     w.Sleep(1500);
     try h.expect(try h.dialogCount(&g) == 0, "a config without errors shows no dialog", .{});
     const chrome = try chromeOf(h, &g);
-    try h.expect(!chrome.dark and chrome.caption == -1, "Reload applied the fixed config (window-theme = light)", .{});
+    try h.expect(!chrome.dark and chrome.caption == 0xffffff, "Reload applied the fixed config (window-theme = light)", .{});
 
     // Ctrl+, opens the config file.
     const surf = try h.surface(&g, try h.mainWindow(&g));

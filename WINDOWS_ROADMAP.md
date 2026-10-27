@@ -218,12 +218,6 @@ roadmap item behind it.
   nushell.
 
 *For now:*
-- **Caption colors** (0.4, until 4.3): `window-theme = auto` colors the
-  title bar and the strip with the terminal's background and foreground,
-  following OSC 11, as macOS's transparent title bar does. GTK's `auto`
-  draws Adwaita's light or dark window, chosen by the configured
-  background's perceived luminance, and keeps terminal colors for
-  `window-theme = ghostty`; 4.3 brings murrtty to GTK's (the Look rule).
 - **Last window** (decision 4): murrtty always opens a window at start and
   quits with its last window, whatever `initial-window` and
   `quit-after-last-window-closed` say, until the tray (5.6) exists.
@@ -1797,6 +1791,25 @@ the hit codes, maximize, restore, minimize and close through the bar,
 fullscreen, `gtk-titlebar = false`, `window-decoration = server` and
 `window-show-tab-bar = never`; the dump reports `header` (its buttons,
 title font, visibility) and the tab row's `top`.
+
+*Step 2 done 2026-10-26.* The chrome's colors are GTK's
+(`Window.chromeTheme`, `draw.Theme`): `auto` Adwaita's light or dark by the
+configured background's luminance (no longer following OSC 11, as GTK's
+doesn't), `ghostty` the titlebar options or the terminal's colors with
+GTK's backdrop (OKLab lightness × 0.9, `draw.scaleLightness`), `system`
+Adwaita's by Windows' setting, `light`/`dark` Adwaita's; values from
+libadwaita's stylesheet (header #2e2e32/#ffffff, window #222226/#fafafb,
+text white/rgb(0 0 6 / 80%)), mixed as it mixes them (`draw.palette`:
+hover 7%, pressed 16%, selected 10%/13%, controls 10/15/30%, separators
+15%, the shade under the bar). An inactive window (`WM_NCACTIVATE`) shows
+the backdrop with its contents at half opacity. The tab row is libadwaita's
+tab bar: 46 DIP in the bar's color, 34 DIP rounded tabs (radius 9) filling
+the row under `gtk-wide-tabs` (else up to 240 DIP), the title centered,
+the selected tab tinted (none for a lone tab), a round close button on the
+selected and hovered tabs, separators between the others. `theme` and
+`config-errors` expect Adwaita's colors; the opt-in `snapshot` also saves
+`chrome-*.bmp` from the window's device context (`Harness.captureClient`),
+current where DWM's captures lag a step behind.
 
 *With the Look rule* (decided 2026-10-26, which made 4.3 Phase 4's first
 item): the bar and tab row take libadwaita's colors and metrics (taken from

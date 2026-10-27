@@ -69,6 +69,9 @@ size_limit: ?apprt.action.SizeLimit = null,
 fullscreen: ?Saved = null,
 /// The chrome's height at the last layout.
 chrome_shown: c_int = -1,
+/// Whether the window is the active one: inactive, the chrome takes
+/// libadwaita's backdrop colors.
+active_window: bool = true,
 /// Whether the frame was last computed for client-side decorations.
 csd_frame: bool = false,
 /// GTK's header bar, the title bar with client-side decorations.
@@ -937,62 +940,54 @@ fn chromeColors(self: *const Window) Surface.Colors {
     return .fromConfig(&self.app.config);
 }
 
-/// Color the title bar for `window-theme`:
-/// - `auto` (the default): the caption takes the terminal's background
-///   and foreground, following programs that change them (OSC 10/11), as
-///   macOS's transparent title bar does; light or dark by the background.
+/// The chrome's colors for `window-theme`, GTK's (roadmap 4.3, the Look
+/// rule):
+/// - `auto` (the default): Adwaita's, light or dark by the configured
+///   background's luminance (not following programs that change it).
 /// - `ghostty`: `window-titlebar-background`/`-foreground`, or the
 ///   configured background and foreground.
-/// - `system`, `light`, `dark`: the system's caption, light or dark as
-///   named (`system` follows the system setting).
-/// Caption colors need Windows 11; Windows 10 ignores them and only gets
-/// the light or dark caption.
-pub fn applyChrome(self: *Window) void {
+/// - `system`: Adwaita's, following the system's light or dark setting.
+/// - `light`, `dark`: Adwaita's, as named.
+fn chromeTheme(self: *const Window) draw.Theme {
     const config = &self.app.config;
-    const colors = self.chromeColors();
-    var chrome: Chrome = .{};
-    var text: ?c.COLORREF = null;
-    switch (config.@"window-theme") {
-        .system => chrome.dark = self.app.dark,
-        .light => chrome.dark = false,
-        .dark => chrome.dark = true,
-        .auto => {
-            chrome.dark = isDark(colors.bg);
-            chrome.caption = rgbRef(colors.bg);
-            text = rgbRef(colors.fg);
-        },
-        .ghostty => {
-            const bg = config.@"window-titlebar-background" orelse config.background;
-            chrome.dark = isDark(bg);
-            chrome.caption = rgbRef(bg);
-            text = rgbRef(config.@"window-titlebar-foreground" orelse config.foreground);
-        },
-    }
+    return switch (config.@"window-theme") {
+        .auto => draw.adwaita(draw.isDark(config.background)),
+        .ghostty => draw.ghosttyTheme(
+            config.@"window-titlebar-background" orelse config.background,
+            config.@"window-titlebar-foreground" orelse config.foreground,
+        ),
+        .system => draw.adwaita(self.app.dark),
+        .light => draw.adwaita(false),
+        .dark => draw.adwaita(true),
+    };
+}
 
+/// Color the window for `window-theme` (chromeTheme): the header bar and
+/// tab row as they paint, and what DWM draws, the system caption (without
+/// client-side decorations), the border and the light or dark frame and
+/// menus. Caption colors need Windows 11; Windows 10 only gets light or
+/// dark.
+pub fn applyChrome(self: *Window) void {
+    const theme = self.chromeTheme();
+    const chrome: Chrome = .{ .dark = theme.dark, .caption = draw.ref(theme.bar) };
     const dark: c.BOOL = @intFromBool(chrome.dark);
     // Attribute 20 is honored from Windows 10 2004 (build 19041); earlier
     // supported builds only know the undocumented 19.
     if (c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, @sizeOf(c.BOOL)) < 0) {
         _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, &dark, @sizeOf(c.BOOL));
     }
-    const caption = chrome.caption orelse c.DWMWA_COLOR_DEFAULT;
-    const text_color = text orelse c.DWMWA_COLOR_DEFAULT;
+    const caption = chrome.caption.?;
+    const text_color = draw.ref(theme.fg);
     _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_CAPTION_COLOR, &caption, @sizeOf(c.COLORREF));
     _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_BORDER_COLOR, &caption, @sizeOf(c.COLORREF));
     _ = c.DwmSetWindowAttribute(self.hwnd, c.DWMWA_TEXT_COLOR, &text_color, @sizeOf(c.COLORREF));
     self.chrome = chrome;
-}
-
-fn rgbRef(color: configpkg.Config.Color) c.COLORREF {
-    return c.rgb(color.r, color.g, color.b);
+    self.tab_bar.wide = self.app.config.@"gtk-wide-tabs";
+    self.invalidateTabBar();
 }
 
 pub fn isDark(color: configpkg.Config.Color) bool {
-    const r: f64 = @floatFromInt(color.r);
-    const g: f64 = @floatFromInt(color.g);
-    const b: f64 = @floatFromInt(color.b);
-    // Perceived luminance (the core's RGB.perceivedLuminance).
-    return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0 < 0.5;
+    return draw.isDark(color);
 }
 
 /// A surface's colors changed (a program set them, or its config changed).
@@ -1040,7 +1035,7 @@ fn paint(self: *Window) void {
         defer _ = c.DeleteObject(brush);
         _ = c.FillRect(hdc, &below, brush);
     }
-    const pal = draw.palette(colors.bg, colors.fg);
+    const pal = draw.palette(self.chromeTheme(), !self.active_window);
     const width = self.clientWidth();
     if (self.csd()) {
         // The caption's text, which syncTitle keeps.
@@ -1591,6 +1586,16 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             self.invalidateTabBar();
             if (controlHit(wparam).eql(was)) self.runControl(was);
             return 0;
+        },
+
+        // Active or not: the chrome's colors follow (libadwaita's backdrop).
+        c.WM_NCACTIVATE => {
+            const active = wparam != 0;
+            if (active != self.active_window) {
+                self.active_window = active;
+                self.invalidateTabBar();
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
         // A right-click on the header bar's caption (WM_NCRBUTTONUP becomes

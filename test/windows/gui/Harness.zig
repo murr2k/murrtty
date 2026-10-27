@@ -1557,6 +1557,15 @@ pub fn capture(self: *Harness, hwnd: w.HWND) !Image {
     return self.grab(r.right - r.left, r.bottom - r.top, .{ .window = hwnd });
 }
 
+/// A window's client area as it last painted it with GDI, read from its
+/// device context: current even where DWM hasn't composed it again (an
+/// off-screen window on a still screen), but without what OpenGL drew.
+pub fn captureClient(self: *Harness, hwnd: w.HWND) !Image {
+    var r: w.RECT = .{};
+    _ = w.GetClientRect(hwnd, &r);
+    return self.grab(r.right, r.bottom, .{ .client = hwnd });
+}
+
 /// What the screen shows in `rect` (screen pixels): windows there as DWM
 /// composed them, over whatever is behind them. Only for `.onscreen`.
 pub fn captureScreen(self: *Harness, rect: w.RECT) !Image {
@@ -1591,7 +1600,7 @@ pub fn captureDisplay(self: *Harness, rect: w.RECT) !Image {
     return .{ .alloc = self.alloc, .width = @intCast(width), .height = @intCast(height), .pixels = pixels };
 }
 
-fn grab(self: *Harness, width: c_int, height: c_int, source: union(enum) { window: w.HWND, screen: w.POINT }) !Image {
+fn grab(self: *Harness, width: c_int, height: c_int, source: union(enum) { window: w.HWND, client: w.HWND, screen: w.POINT }) !Image {
     if (width <= 0 or height <= 0) return error.CaptureFailed;
 
     const screen = w.GetDC(null) orelse return error.CaptureFailed;
@@ -1608,6 +1617,11 @@ fn grab(self: *Harness, width: c_int, height: c_int, source: union(enum) { windo
     };
     const ok = switch (source) {
         .window => |hwnd| w.PrintWindow(hwnd, dc, w.PW_RENDERFULLCONTENT),
+        .client => |hwnd| client: {
+            const src = w.GetDC(hwnd) orelse return error.CaptureFailed;
+            defer _ = w.ReleaseDC(hwnd, src);
+            break :client w.BitBlt(dc, 0, 0, width, height, src, 0, 0, w.SRCCOPY);
+        },
         .screen => |at| w.BitBlt(dc, 0, 0, width, height, screen, at.x, at.y, w.SRCCOPY | w.CAPTUREBLT),
     };
     if (ok == 0) return error.CaptureFailed;

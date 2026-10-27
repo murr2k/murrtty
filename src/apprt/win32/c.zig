@@ -691,6 +691,7 @@ pub extern "user32" fn GetSysColorBrush(c_int) callconv(.winapi) ?HBRUSH;
 
 // Client-side decorations (the header bar as the title bar)
 pub const WM_NCCALCSIZE = 0x0083;
+pub const WM_NCACTIVATE = 0x0086;
 pub const WM_NCMOUSEMOVE = 0x00A0;
 pub const WM_NCLBUTTONDOWN = 0x00A1;
 pub const WM_NCLBUTTONUP = 0x00A2;
