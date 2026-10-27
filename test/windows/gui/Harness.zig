@@ -1228,6 +1228,9 @@ pub const Dump = struct {
     };
     pub const TabBar = struct {
         visible: bool,
+        /// The strip shows tabs, not only the header's buttons (zero rects
+        /// for its tabs then).
+        tabs_shown: bool = false,
         height: i32,
         /// The strip's font face.
         font: []const u8 = "",

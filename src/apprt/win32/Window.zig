@@ -64,6 +64,8 @@ size_limit: ?apprt.action.SizeLimit = null,
 
 /// Saved placement and style while fullscreen.
 fullscreen: ?Saved = null,
+/// Whether the strip showed at the last layout.
+strip_shown: bool = false,
 
 /// What applyChrome last set, for the GUI tests' state dump.
 chrome: Chrome = .{},
@@ -411,7 +413,7 @@ pub fn select(self: *Window, index: usize) void {
     if (index >= self.tabs.items.len) return;
     self.active = index;
     // In view on an overflowing strip.
-    self.tab_bar.ensureVisible(index, self.tabs.items.len, self.tabBarRect().right);
+    self.tab_bar.ensureVisible(index, self.stripTabs(), self.tabBarRect().right);
     // Seen: the bell's mark goes.
     self.tabs.items[index].attention = false;
     self.layout();
@@ -601,7 +603,8 @@ pub fn syncTitle(self: *Window) void {
 //---------------------------------------------------------------
 // Layout
 
-fn tabBarVisibleFor(self: *const Window, count: usize) bool {
+/// Whether GTK's tab bar would show `count` tabs (window-show-tab-bar).
+fn tabsShownFor(self: *const Window, count: usize) bool {
     return switch (self.app.config.@"window-show-tab-bar") {
         .always => true,
         .never => false,
@@ -609,8 +612,28 @@ fn tabBarVisibleFor(self: *const Window, count: usize) bool {
     };
 }
 
+/// Whether GTK's header bar, whose buttons the strip holds, would show:
+/// unless gtk-titlebar is off, the window is fullscreen, or it is
+/// maximized with gtk-titlebar-hide-when-maximized.
+fn headerShown(self: *const Window) bool {
+    const config = &self.app.config;
+    if (!config.@"gtk-titlebar" or self.fullscreen != null) return false;
+    return !(config.@"gtk-titlebar-hide-when-maximized" and c.IsZoomed(self.hwnd) != 0);
+}
+
+/// The strip shows for the header's buttons or for the tabs.
+fn tabBarVisibleFor(self: *const Window, count: usize) bool {
+    return self.headerShown() or self.tabsShownFor(count);
+}
+
 pub fn tabBarVisible(self: *const Window) bool {
     return self.tabBarVisibleFor(self.tabs.items.len);
+}
+
+/// The tabs the strip lays out: all of them, or none while it shows only
+/// the header's buttons (one tab, with window-show-tab-bar = auto).
+pub fn stripTabs(self: *const Window) usize {
+    return if (self.tabsShownFor(self.tabs.items.len)) self.tabs.items.len else 0;
 }
 
 fn tabBarRect(self: *const Window) c.RECT {
@@ -634,7 +657,14 @@ fn tabRect(self: *const Window, count: usize) c.RECT {
 fn layout(self: *Window) void {
     // A wider window may show more tabs: keep the scroll in range (not the
     // active tab in view, which would undo the chevrons; select does that).
-    self.tab_bar.clampScroll(self.tabs.items.len, self.tabBarRect().right);
+    self.tab_bar.clampScroll(self.stripTabs(), self.tabBarRect().right);
+    // The strip comes or goes on a maximize (gtk-titlebar-hide-when-
+    // maximized) or fullscreen: paint it, or the terminal where it was.
+    const strip = self.tabBarVisible();
+    if (strip != self.strip_shown) {
+        self.strip_shown = strip;
+        _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+    }
     const r = self.tabRect(self.tabs.items.len);
     const flags = c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOCOPYBITS;
     var hdwp = c.BeginDeferWindowPos(@intCast(self.tabs.items.len));
@@ -752,12 +782,15 @@ pub fn toggleMaximize(self: *Window) void {
 }
 
 pub fn toggleFullscreen(self: *Window) void {
+    // `fullscreen` changes first: the layouts the moves cause show or hide
+    // the strip by it (headerShown).
     if (self.fullscreen) |saved| {
+        self.fullscreen = null;
         _ = c.SetWindowLongPtrW(self.hwnd, c.GWL_STYLE, saved.style);
         _ = c.SetWindowPlacement(self.hwnd, &saved.placement);
         _ = c.SetWindowPos(self.hwnd, null, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE |
             c.SWP_NOZORDER | c.SWP_NOOWNERZORDER | c.SWP_FRAMECHANGED);
-        self.fullscreen = null;
+        self.layout();
         return;
     }
 
@@ -771,11 +804,12 @@ pub fn toggleFullscreen(self: *Window) void {
     const monitor = c.MonitorFromWindow(self.hwnd, c.MONITOR_DEFAULTTONEAREST) orelse return;
     if (c.GetMonitorInfoW(monitor, &mi) == 0) return;
 
+    self.fullscreen = saved;
     const style: usize = @bitCast(saved.style);
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWL_STYLE, @bitCast(style & ~@as(usize, c.WS_OVERLAPPEDWINDOW)));
     const r = mi.rcMonitor;
     _ = c.SetWindowPos(self.hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOOWNERZORDER | c.SWP_FRAMECHANGED);
-    self.fullscreen = saved;
+    self.layout();
 }
 
 pub fn present(self: *Window) void {
@@ -924,16 +958,18 @@ fn paint(self: *Window) void {
     }
     if (!self.tabBarVisible()) return;
 
-    // Every title: the bar is laid out (and hit-tested) for all the tabs.
+    // Every title the strip shows: it is laid out (and hit-tested) for all
+    // of them, or for none with only the header's buttons.
     const alloc = self.app.core_app.alloc;
-    const titles = alloc.alloc([]const u8, self.tabs.items.len) catch return;
+    const shown = self.stripTabs();
+    const titles = alloc.alloc([]const u8, shown) catch return;
     defer alloc.free(titles);
-    const attention = alloc.alloc(bool, self.tabs.items.len) catch return;
+    const attention = alloc.alloc(bool, shown) catch return;
     defer alloc.free(attention);
     @memset(titles, "");
     defer for (titles) |t| if (t.len > 0) alloc.free(t);
     // The labels: the bell and zoom marks before the title.
-    for (self.tabs.items, titles, attention) |tab, *t, *a| {
+    for (self.tabs.items[0..shown], titles, attention) |tab, *t, *a| {
         t.* = tab.label(alloc) catch "";
         a.* = tab.attention;
     }
@@ -962,7 +998,7 @@ fn tabMenu(self: *Window, index: usize, lparam: c.LPARAM) void {
 
 /// Scroll an overflowing strip by `tabs` tabs.
 fn scrollTabs(self: *Window, tabs: c_int) void {
-    if (self.tab_bar.scrollTabs(tabs, self.tabs.items.len, self.tabBarRect().right)) {
+    if (self.tab_bar.scrollTabs(tabs, self.stripTabs(), self.tabBarRect().right)) {
         self.invalidateTabBar();
     }
 }
@@ -978,7 +1014,7 @@ pub fn toggleTabList(self: *Window) void {
 /// The menu on the arrow beside "+": splits of the active tab's pane.
 fn splitMenu(self: *Window) void {
     const surface = self.activeSurface() orelse return;
-    const r = self.tab_bar.newTabMenuRect(self.tabs.items.len, self.tabBarRect().right);
+    const r = self.tab_bar.newTabMenuRect(self.stripTabs(), self.tabBarRect().right);
     var pt: c.POINT = .{ .x = r.left, .y = r.bottom };
     _ = c.ClientToScreen(self.hwnd, &pt);
     const chosen = ContextMenu.trackSplit(surface, pt) orelse return;
@@ -1013,7 +1049,7 @@ fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {
     return self.tab_bar.hitTest(
         c.xParam(lparam),
         c.yParam(lparam),
-        self.tabs.items.len,
+        self.stripTabs(),
         self.tabBarRect().right,
     );
 }

@@ -257,20 +257,23 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             w.tooltip != null,
         });
 
-        // Tab bar geometry in client coordinates, for clicks; each tab's
-        // tooltip; the strip's font.
+        // Tab bar geometry in client coordinates, for clicks (of the tabs
+        // the strip shows: none while it shows only the header's buttons);
+        // every tab's tooltip; the strip's font.
         const n = w.tabs.items.len;
+        const shown = w.stripTabs();
         var face_buf: [128]u8 = undefined;
-        try out.print(alloc, "\"tab_bar\":{{\"visible\":{},\"height\":{d},\"font\":", .{
+        try out.print(alloc, "\"tab_bar\":{{\"visible\":{},\"tabs_shown\":{},\"height\":{d},\"font\":", .{
             w.tabBarVisible(),
+            shown > 0,
             w.tab_bar.height(),
         });
         try writeString(alloc, out, w.tab_bar.faceName(&face_buf));
         try out.appendSlice(alloc, ",\"tabs\":[");
         for (0..n) |i| {
             if (i > 0) try out.append(alloc, ',');
-            const r = w.tab_bar.tabRect(i, n, client.right);
-            const x = w.tab_bar.closeRect(r);
+            const r: c.RECT = if (i < shown) w.tab_bar.tabRect(i, shown, client.right) else .{};
+            const x: c.RECT = if (i < shown) w.tab_bar.closeRect(r) else .{};
             try out.print(alloc, "{{\"rect\":[{d},{d},{d},{d}],\"close\":[{d},{d},{d},{d}],\"tooltip\":", .{
                 r.left, r.top, r.right, r.bottom, x.left, x.top, x.right, x.bottom,
             });
@@ -285,13 +288,13 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             try out.appendSlice(alloc, "],\"new_tab_tooltip\":");
             try writeString(alloc, out, tip);
         }
-        const nt = w.tab_bar.newTabRect(n, client.right);
-        const ntm = w.tab_bar.newTabMenuRect(n, client.right);
+        const nt = w.tab_bar.newTabRect(shown, client.right);
+        const ntm = w.tab_bar.newTabMenuRect(shown, client.right);
         const mr = w.tab_bar.menuRect(client.right);
         const lr = w.tab_bar.listRect(client.right);
-        const sl = w.tab_bar.scrollLeftRect(n, client.right);
-        const sr = w.tab_bar.scrollRightRect(n, client.right);
-        const view = w.tab_bar.viewRect(n, client.right);
+        const sl = w.tab_bar.scrollLeftRect(shown, client.right);
+        const sr = w.tab_bar.scrollRightRect(shown, client.right);
+        const view = w.tab_bar.viewRect(shown, client.right);
         try out.print(alloc, ",\"new_tab\":[{d},{d},{d},{d}],\"new_tab_menu\":[{d},{d},{d},{d}],\"menu\":[{d},{d},{d},{d}],\"list\":[{d},{d},{d},{d}]", .{
             nt.left,  nt.top,  nt.right,  nt.bottom,
             ntm.left, ntm.top, ntm.right, ntm.bottom,
@@ -300,7 +303,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         });
         // An overflowing strip's chevrons, the span tabs show in, the scroll.
         try out.print(alloc, ",\"overflow\":{},\"scroll_left\":[{d},{d},{d},{d}],\"scroll_right\":[{d},{d},{d},{d}],\"view\":[{d},{d}],\"scroll\":{d}}},\"tabs\":[", .{
-            w.tab_bar.overflowing(n, client.right),
+            w.tab_bar.overflowing(shown, client.right),
             sl.left,
             sl.top,
             sl.right,

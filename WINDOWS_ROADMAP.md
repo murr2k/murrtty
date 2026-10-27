@@ -230,7 +230,10 @@ roadmap item behind it.
   box (the command palette's), not GTK's overview of live thumbnails.
 - **Tab overflow** (3.8): tabs that don't fit scroll between chevrons and
   with the wheel; GTK's strip scrolls without chevrons.
-
+- **Header bar** (3.8): GTK's header bar buttons are on the tab strip, under
+  the system's caption until 4.3 draws the title bar, so the title isn't
+  repeated beside them. In fullscreen, where GTK hides its header bar, the
+  strip keeps them while it shows tabs.
 - **Tab tooltips** (3.8): a tab's tooltip shows its title and, beneath,
   its working directory (unless the title shows it); GTK's shows only the
   directory. The strip's buttons have tooltips with their bindings.
@@ -1590,6 +1593,19 @@ button, the chevrons, the span and the scroll.
   goes with 5.4's taskbar progress.
 Scenario `tab-details`; the dump reports the strip's font, each tab's and
 "+"'s tooltip, the icons' widths and the tooltip's presence.
+
+*3.8e (the header bar with one tab) done 2026-10-26, from the owner's
+report that the 3.8 build showed no top bar.* The strip held the header
+bar's buttons but hid with one tab (`window-show-tab-bar = auto`), taking
+them along; GTK hides only its tab bar then. Now the strip shows whenever
+GTK's header bar would (`gtk-titlebar`, not fullscreen, not maximized with
+`gtk-titlebar-hide-when-maximized`) or its tab bar would, and lays out
+tabs only for the latter: with none, "+" and its arrow sit at the left end
+and the list and menu buttons at the right. Fullscreen now hides the strip
+with one tab (the field changes before the window moves, so the layouts
+see it). Scenario `header-bar`; `launch` expects the 960x600 DIP terminal
+below the strip; the dump reports `tabs_shown`, with zero rectangles for
+tabs not shown.
 
 **3.9 Dialog polish, S.**
 - Replace `MessageBox` confirmations with TaskDialogs, worded as GTK's

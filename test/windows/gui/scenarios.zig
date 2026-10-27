@@ -32,6 +32,7 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
+    .{ .name = "header-bar", .about = "GTK's header bar: with one tab the strip shows its buttons (\"+\" opens a tab); fullscreen and gtk-titlebar = false hide it; window-show-tab-bar = never keeps the buttons without tabs", .run = headerBar },
     .{ .name = "tab-details", .about = "the strip's font (window-title-font-family), icons at the DPI, tooltips (title and directory, a button's binding), window-new-tab-position = end", .run = tabDetails },
     .{ .name = "tab-overflow", .about = "twelve tabs in a narrow window scroll between chevrons and with the wheel; the list button and toggle_tab_overview list them", .run = tabOverflow },
     .{ .name = "tab-buttons", .about = "the arrow beside + opens the split menu; the menu button opens GTK's main menu (New Tab, Command Palette, About murrtty)", .run = tabButtons },
@@ -104,6 +105,7 @@ fn launch(h: *Harness) anyerror!void {
     const win = try h.mainWindow(&g);
     const surf = try h.surface(&g, win);
 
+    var bar: i32 = 0;
     {
         var d = try h.dump(&g);
         defer d.deinit();
@@ -111,15 +113,18 @@ fn launch(h: *Harness) anyerror!void {
         const t = d.value.windows[0].tabs;
         try h.expect(t.len == 1, "one tab", .{});
         try h.expect((t[0].cols orelse 0) > 0 and (t[0].rows orelse 0) > 0, "grid {?d}x{?d}", .{ t[0].cols, t[0].rows });
-        try h.expect(!d.value.windows[0].tab_bar.visible, "tab bar hidden with one tab", .{});
+        const tb = d.value.windows[0].tab_bar;
+        try h.expect(tb.visible and !tb.tabs_shown, "one tab: the strip shows the header's buttons but no tabs", .{});
+        bar = tb.height;
     }
 
-    // The default client size is 960x600 DIPs at the window's DPI.
+    // The default terminal area is 960x600 DIPs at the window's DPI, below
+    // the strip.
     const dpi = w.GetDpiForWindow(win);
     var r: w.RECT = .{};
     _ = w.GetClientRect(win, &r);
     const ew = (960 * dpi + 95) / 96;
-    const eh = (600 * dpi + 95) / 96;
+    const eh = (600 * dpi + 95) / 96 + @as(u32, @intCast(bar));
     try h.expect(r.right == ew and r.bottom == eh, "client {d}x{d} at dpi {d}, expected {d}x{d}", .{ r.right, r.bottom, dpi, ew, eh });
 
     try quit(h, &g, surf);
@@ -216,7 +221,7 @@ fn tabs(h: *Harness) anyerror!void {
         const dw = d.value.windows[0];
         try h.expect(dw.tabs.len == 3, "three tabs (got {d})", .{dw.tabs.len});
         try h.expect(dw.active == 2, "the new tab is active (got {d})", .{dw.active});
-        try h.expect(dw.tab_bar.visible, "tab bar shown with three tabs", .{});
+        try h.expect(dw.tab_bar.visible and dw.tab_bar.tabs_shown, "the strip shows three tabs", .{});
     }
 
     surf = try h.surface(&g, win);
@@ -266,7 +271,8 @@ fn tabs(h: *Harness) anyerror!void {
         var d = try h.dump(&g);
         defer d.deinit();
         try h.expect(d.value.windows[0].tabs.len == 1, "middle-click closes the tab", .{});
-        try h.expect(!d.value.windows[0].tab_bar.visible, "tab bar hides again with one tab", .{});
+        const tb = d.value.windows[0].tab_bar;
+        try h.expect(tb.visible and !tb.tabs_shown, "with one tab again, the strip shows only the header's buttons", .{});
     }
     try quit(h, &g, try h.surface(&g, win));
 }
@@ -1822,6 +1828,71 @@ fn tabOverflow(h: *Harness) anyerror!void {
 /// its title and, beneath, its directory (GTK's shows only the
 /// directory), a button's its name and binding; window-new-tab-position =
 /// end puts a new tab last.
+/// GTK's header bar (roadmap 3.8e): with one tab the strip shows its
+/// buttons ("+" at the left end) and no tabs, and "+" there opens a tab;
+/// fullscreen hides the header (with one tab, the whole strip), as
+/// gtk-titlebar = false does; window-show-tab-bar = never keeps the
+/// buttons with no tabs.
+fn headerBar(h: *Harness) anyerror!void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    {
+        var g = try start(h, "header-bar", "keybind = ctrl+shift+f8=toggle_fullscreen\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        try waitStrip(h, &g, true, false, "one tab: the strip shows the header's buttons, no tabs");
+        const plus = try stripButton(h, &g, .new_tab);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const nt = d.value.windows[0].tab_bar.new_tab;
+            try h.expect(nt[0] == 0, "\"+\" at the strip's left end (got {d})", .{nt[0]});
+        }
+        h.key(try h.surface(&g, win), cs, w.VK_F8);
+        try waitStrip(h, &g, false, false, "fullscreen with one tab: no strip");
+        h.key(try h.surface(&g, win), cs, w.VK_F8);
+        try waitStrip(h, &g, true, false, "out of fullscreen: the header's buttons again");
+        h.click(win, plus.x, plus.y, .left);
+        try waitWindowTabs(h, &g, win, 2);
+        try waitStrip(h, &g, true, true, "\"+\" opened a second tab, and the strip shows both");
+        try quit(h, &g, try h.surface(&g, win));
+    }
+    {
+        var g = try start(h, "header-bar-off", "gtk-titlebar = false\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        try waitStrip(h, &g, false, false, "gtk-titlebar = false, one tab: no strip");
+        h.key(try h.surface(&g, win), cs, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        try waitStrip(h, &g, true, true, "and with two tabs, the strip and its tabs");
+        try quit(h, &g, try h.surface(&g, win));
+    }
+    {
+        var g = try start(h, "header-bar-never", "window-show-tab-bar = never\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        h.key(try h.surface(&g, win), cs, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        try waitStrip(h, &g, true, false, "window-show-tab-bar = never, two tabs: the header's buttons, no tabs");
+        try quit(h, &g, try h.surface(&g, win));
+    }
+}
+
+/// Wait until the first window's strip shows or not (`visible`), with tabs
+/// or only the header's buttons (`tabs_shown`).
+fn waitStrip(h: *Harness, g: *Harness.Ghostty, visible: bool, tabs_shown: bool, what: []const u8) !void {
+    var waited: u32 = 0;
+    var last: [2]bool = .{ false, false };
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const tb = d.value.windows[0].tab_bar;
+        last = .{ tb.visible, tb.tabs_shown };
+        if (tb.visible == visible and tb.tabs_shown == tabs_shown) return h.expect(true, "{s}", .{what});
+        w.Sleep(100);
+    }
+    return h.fail("{s}: the strip shows {}, its tabs {}", .{ what, last[0], last[1] });
+}
+
 fn tabDetails(h: *Harness) anyerror!void {
     // Shell integration reports the directory the tooltip shows.
     var g = try start(h, "tab-details",

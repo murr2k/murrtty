@@ -8,7 +8,8 @@
 //! then at the right end the tab list's button and the main menu's. Tabs
 //! share the room between 64 and 240 DIP each; when they don't fit at 64
 //! they scroll (by `scroll`) between a "‹" and a "›", and "+" moves to
-//! just left of the list button (roadmap 3.8).
+//! just left of the list button (roadmap 3.8). Laid out for no tabs, it is
+//! GTK's header bar alone: the buttons, "+" at the left end.
 const TabBar = @This();
 
 const std = @import("std");
@@ -81,7 +82,8 @@ fn place(self: *const TabBar, n: usize, width: c_int) Place {
     const per = @divTrunc(avail, count);
     if (per >= self.scale(tab_min_width) or n <= 1) {
         const w = std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
-        const tabs_right = w * count;
+        // No tabs (only the header's buttons): "+" at the left end.
+        const tabs_right = if (n == 0) 0 else w * count;
         return .{
             .tab_width = w,
             .overflow = false,
@@ -490,6 +492,17 @@ test "hitTest" {
     try testing.expectEqual(Hit.none, bar.hitTest(1500, 10, 2, 2000));
     try testing.expectEqual(Hit.none, bar.hitTest(10, bar_height + 1, 2, 2000));
     try testing.expect(!bar.overflowing(2, 2000));
+}
+
+test "no tabs: the header's buttons, + at the left end" {
+    const testing = std.testing;
+    const bar: TabBar = .{};
+    try testing.expectEqual(Hit.new_tab, bar.hitTest(5, 10, 0, 2000));
+    try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(button_width + 5, 10, 0, 2000));
+    try testing.expectEqual(Hit.menu, bar.hitTest(2000 - 5, 10, 0, 2000));
+    try testing.expectEqual(Hit.list, bar.hitTest(2000 - button_width - 5, 10, 0, 2000));
+    try testing.expectEqual(Hit.none, bar.hitTest(500, 10, 0, 2000));
+    try testing.expect(!bar.overflowing(0, 2000));
 }
 
 test "overflow: 40 tabs scroll between the chevrons, all reachable" {
