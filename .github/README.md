@@ -242,6 +242,11 @@ hosted Windows runner and then the unit tests.
   `--class=` keeps separate instances apart.
 - `open_config:new_window`: the config file in a new window, in `$VISUAL`
   or `$EDITOR`.
+- Desktop notifications from programs (OSC 9, OSC 777;notify), as
+  Windows toasts, with an icon in the notification area while one waits;
+  a click brings the terminal forward, and a notification goes once its
+  terminal has the keyboard (`desktop-notifications = false` turns them
+  off). One at a time stands for them all, for now.
 
 **Implemented but not yet tested**
 
@@ -270,15 +275,17 @@ hosted Windows runner and then the unit tests.
 - New Window in the taskbar's Jump List (right-click murrtty's taskbar
   button), set up by release builds. The tests check the list Windows
   takes, not the taskbar showing it.
+- Clicking a notification's toast or icon: the tests click through the
+  icon's message, and check that Windows takes a real one.
 
 **Not implemented yet**
 
-- Terminal inspector, quick terminal, desktop notifications.
+- Terminal inspector, quick terminal.
 - Dragging panes to rearrange splits.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with desktop integration (Phase 5: notifications, taskbar
-progress, global keys, the tray and the quick terminal).
+continuing with desktop integration (Phase 5: command-finished notices,
+taskbar progress, global keys, the tray and the quick terminal).
 
 **Known issues**
 

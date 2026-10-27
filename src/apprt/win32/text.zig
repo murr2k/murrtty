@@ -38,6 +38,55 @@ pub fn utf16Lossy(alloc: Allocator, s: []const u8) Allocator.Error![:0]u16 {
     return out.toOwnedSliceSentinel(alloc, 0);
 }
 
+/// `s` as UTF-16 in `dst` (invalid bytes as U+FFFD, as utf16Lossy), cut to
+/// leave room for the NUL written after it, never between the halves of a
+/// surrogate pair: for Win32's fixed-size text fields. The text written.
+pub fn utf16Into(dst: []u16, s: []const u8) []u16 {
+    if (dst.len == 0) return dst;
+    const room = dst.len - 1;
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) {
+        var cp: u21 = 0xFFFD;
+        var len: usize = 1;
+        if (std.unicode.utf8ByteSequenceLength(s[i])) |want| {
+            if (i + want <= s.len) {
+                if (std.unicode.utf8Decode(s[i..][0..want])) |decoded| {
+                    cp = decoded;
+                    len = want;
+                } else |_| {}
+            }
+        } else |_| {}
+        if (cp < 0x10000) {
+            if (n + 1 > room) break;
+            dst[n] = @intCast(cp);
+            n += 1;
+        } else {
+            if (n + 2 > room) break;
+            const v = cp - 0x10000;
+            dst[n] = @intCast(0xD800 + (v >> 10));
+            dst[n + 1] = @intCast(0xDC00 + (v & 0x3FF));
+            n += 2;
+        }
+        i += len;
+    }
+    dst[n] = 0;
+    return dst[0..n];
+}
+
+test utf16Into {
+    const testing = std.testing;
+    const L = std.unicode.utf8ToUtf16LeStringLiteral;
+    var buf: [6]u16 = undefined;
+    try testing.expectEqualSlices(u16, L("hello"), utf16Into(&buf, "hello world"));
+    try testing.expectEqual(@as(u16, 0), buf[5]);
+    // A pair that doesn't fit is left out whole.
+    try testing.expectEqualSlices(u16, L("abcd"), utf16Into(&buf, "abcd\u{1F514}"));
+    try testing.expectEqualSlices(u16, L("ab\u{1F514}c"), utf16Into(&buf, "ab\u{1F514}cd"));
+    try testing.expectEqualSlices(u16, L("a\u{FFFD}b"), utf16Into(&buf, "a\xffb"));
+    try testing.expectEqual(@as(usize, 0), utf16Into(buf[0..1], "x").len);
+}
+
 /// At most the first `max` bytes of `s`, cut back to a character boundary
 /// so a multibyte character is never split.
 pub fn truncate(s: []const u8, max: usize) []const u8 {

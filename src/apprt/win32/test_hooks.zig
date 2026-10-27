@@ -21,6 +21,7 @@ const c = @import("c.zig");
 const draw = @import("draw.zig");
 const global = @import("../../global.zig");
 const App = @import("App.zig");
+const Notifications = @import("Notifications.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 const Window = @import("Window.zig");
@@ -58,7 +59,19 @@ pub const State = if (enabled) struct {
     /// the build, so that path runs here too; or with Acrylic even while
     /// inactive, to see what Windows draws then (dump wparam 13).
     force_blur: enum { none, accent, acrylic } = .none,
+    /// Desktop notifications, as they would show (roadmap 5.2), recorded
+    /// instead of shown unless GHOSTTY_WIN32_TEST_NOTIFY is set.
+    notifications: std.ArrayList(Notified) = .empty,
+    record_notifications: bool = true,
 } else struct {};
+
+pub const Notified = struct {
+    /// The pane's core id, 0 for murrtty's own.
+    surface: u64,
+    /// As the balloon shows them, cut to its fields.
+    title: []u8,
+    body: []u8,
+};
 
 /// Whether the hooks are on, for code with no App at hand.
 var on = false;
@@ -85,6 +98,28 @@ pub fn init(alloc: Allocator) State {
         .msg = c.RegisterWindowMessageW(c.L("GhosttyWin32TestDump")),
         .path = path,
         .record_launches = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_LAUNCH"), null, 0) == 0,
+        .record_notifications = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_NOTIFY"), null, 0) == 0,
+    };
+}
+
+/// Whether notifications are recorded instead of shown.
+pub fn recordsNotifications(state: *const State) bool {
+    if (comptime !enabled) return false;
+    return state.msg != 0 and state.record_notifications;
+}
+
+/// Record a notification as it shows (its title and body as UTF-16, cut).
+pub fn recordNotification(state: *State, alloc: Allocator, surface: ?u64, title: []const u16, body: []const u16) void {
+    if (comptime !enabled) return;
+    if (state.msg == 0) return;
+    const t = std.unicode.utf16LeToUtf8Alloc(alloc, title) catch return;
+    const b = std.unicode.utf16LeToUtf8Alloc(alloc, body) catch {
+        alloc.free(t);
+        return;
+    };
+    state.notifications.append(alloc, .{ .surface = surface orelse 0, .title = t, .body = b }) catch {
+        alloc.free(t);
+        alloc.free(b);
     };
 }
 
@@ -94,6 +129,11 @@ pub fn deinit(state: *State, alloc: Allocator) void {
     state.path = null;
     for (state.launches.items) |l| alloc.free(l);
     state.launches.deinit(alloc);
+    for (state.notifications.items) |n| {
+        alloc.free(n.title);
+        alloc.free(n.body);
+    }
+    state.notifications.deinit(alloc);
     state.overlays.deinit(alloc);
 }
 
@@ -152,6 +192,9 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   with Acrylic even while inactive (2), or as the build says (0).
 /// - 14: resize each window by its bottom right corner as a drag would,
 ///   WM_SIZING first: `lparam` holds dx (low word) and dy (high), signed.
+/// - 15: click the latest desktop notification, as its toast's click
+///   does (NIN_BALLOONUSERCLICK; `lparam` 0), or take it back without
+///   presenting its pane (1), which would take the foreground.
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -208,6 +251,11 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         for (app.windows.items) |w| w.syncBlur();
     }
     if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));
+    if (wparam == 15) if (app.notifications.hwnd) |hwnd| {
+        if (lparam == 0) {
+            _ = c.SendMessageW(hwnd, Notifications.WM_ICON, 0, c.NIN_BALLOONUSERCLICK);
+        } else app.notifications.withdraw();
+    };
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
         for (app.windows.items) |w| {
@@ -498,6 +546,21 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             app.ipc_launch,
         });
     } else try out.print(alloc, "\"\",\"listening\":false,\"received\":0,\"launch\":{}}}", .{app.ipc_launch});
+    // Desktop notifications (roadmap 5.2): those sent, and whether the
+    // icon standing for the latest is there.
+    try out.appendSlice(alloc, ",\"notifications\":[");
+    for (app.test_state.notifications.items, 0..) |n, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.print(alloc, "{{\"surface\":{d},\"title\":", .{n.surface});
+        try writeString(alloc, out, n.title);
+        try out.appendSlice(alloc, ",\"body\":");
+        try writeString(alloc, out, n.body);
+        try out.append(alloc, '}');
+    }
+    try out.print(alloc, "],\"notify_icon\":{},\"notify_surface\":{d}", .{
+        app.notifications.shown,
+        app.notifications.surface orelse 0,
+    });
     try out.append(alloc, '}');
 }
 

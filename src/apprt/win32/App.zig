@@ -20,6 +20,7 @@ const AlertDialog = @import("AlertDialog.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const draw = @import("draw.zig");
 const ipc = @import("ipc.zig");
+const Notifications = @import("Notifications.zig");
 const Overlay = @import("Overlay.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -72,6 +73,8 @@ pub const Request = union(enum) {
     prompt_title: struct { id: u64, which: apprt.action.PromptTitle },
     /// +new-window, +new-tab or a launch handing off (runIpc).
     ipc: *ipc.Received,
+    /// A notification's pane, by core id, once its toast was clicked.
+    present_surface: u64,
 
     fn deinit(self: Request, alloc: Allocator) void {
         switch (self) {
@@ -210,6 +213,9 @@ ipc_overrides: ?*const ipc.Overrides = null,
 /// request opens the first window, and without one it quits.
 ipc_launch: bool = false,
 
+/// Desktop notifications (roadmap 5.2), set up in init.
+notifications: Notifications = undefined,
+
 /// The GUI test harness's state dump (Debug builds only; see test_hooks).
 test_state: test_hooks.State = .{},
 
@@ -264,6 +270,7 @@ pub fn init(
     try SearchBox.registerClass(instance);
     try CommandPalette.registerClass(instance);
     try Banner.registerClass(instance);
+    try Notifications.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wakeupWndProc,
@@ -305,6 +312,7 @@ pub fn init(
     if (self.fonts == null) log.warn("the chrome's font (Adwaita Sans) could not be registered", .{});
     // Before any menu shows.
     self.syncMenuTheme();
+    self.notifications.init(self);
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
 
@@ -375,6 +383,8 @@ pub fn terminate(self: *App) void {
         _ = c.DestroyWindow(self.windows.items[self.windows.items.len - 1].hwnd);
     }
     self.windows.deinit(self.core_app.alloc);
+    // Its icon goes with murrtty.
+    self.notifications.deinit();
     for (self.requests.items) |req| req.deinit(self.core_app.alloc);
     self.requests.deinit(self.core_app.alloc);
     _ = c.DestroyWindow(self.wakeup_hwnd);
@@ -644,6 +654,7 @@ fn runRequests(self: *App) void {
                 defer req.deinit(self.core_app.alloc);
                 self.runIpc(v.message);
             },
+            .present_surface => |id| if (self.findSurface(id)) |s| s.window.presentSurface(s),
         }
     }
 }
@@ -1669,6 +1680,18 @@ pub fn performAction(
             window.ringBell();
             // bell-features title (roadmap 3.7a).
             if (surfaceFromTarget(target)) |s| s.ringBell();
+        },
+
+        // OSC 9 and OSC 777 (roadmap 5.2); the core has checked
+        // desktop-notifications and limited the rate.
+        .desktop_notification => {
+            const surface = surfaceFromTarget(target);
+            self.notifications.send(
+                if (surface) |s| s.core_surface.id else null,
+                if (surface) |s| s.has_focus else false,
+                value.title,
+                value.body,
+            );
         },
 
         // Every link is taken, even one that will be blocked: if this

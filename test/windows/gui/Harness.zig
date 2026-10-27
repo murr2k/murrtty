@@ -1330,6 +1330,13 @@ pub const Dump = struct {
     overlays: []const Overlay = &.{},
     /// The single instance's pipe (roadmap 5.1).
     ipc: Ipc = .{},
+    /// Desktop notifications as they would have shown (roadmap 5.2): the
+    /// pane's core id (0 for murrtty's own), the title and body cut to the
+    /// balloon's fields; whether the icon for the latest is there, and
+    /// whose it is.
+    notifications: []const struct { surface: u64, title: []const u8, body: []const u8 } = &.{},
+    notify_icon: bool = false,
+    notify_surface: u64 = 0,
 
     pub const Ipc = struct {
         /// Its name, "" with no server.
@@ -1695,6 +1702,21 @@ pub fn forceAccentBlur(self: *Harness, g: *const Ghostty, on: bool) !void {
 pub fn dragResize(self: *Harness, g: *const Ghostty, dx: i16, dy: i16) !void {
     const lp: u32 = @as(u32, @as(u16, @bitCast(dx))) | @as(u32, @as(u16, @bitCast(dy))) << 16;
     var d = try self.dumpWith(g, 14, @intCast(lp));
+    d.deinit();
+}
+
+/// Click the latest desktop notification, as a click on its toast does
+/// (dump wparam 15). Its pane comes forward from murrtty's message loop,
+/// after this returns.
+pub fn clickNotification(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 15, 0);
+    d.deinit();
+}
+
+/// Take the latest desktop notification back without presenting its pane,
+/// which could take the user's foreground (dump wparam 15, lparam 1).
+pub fn withdrawNotification(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 15, 1);
     d.deinit();
 }
 

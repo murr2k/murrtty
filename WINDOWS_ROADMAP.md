@@ -265,6 +265,18 @@ roadmap item behind it.
   neither set the file opens as `open_config` opens it, where GTK runs vi.
 
 *For now:*
+- **Notifications** (5.2): balloons of a notification-area icon, which
+  Windows shows as toasts, with the icon in the notification area while
+  one is pending (GTK's have none). The icon stands for them all: a click
+  presents the latest's pane, and they all go when that pane gets the
+  keyboard or closes, or 3 s after the latest if its pane had the
+  keyboard; an earlier one's pane taking the keyboard takes nothing back.
+  GTK's go each with its own pane, and one the same as a pane's earlier
+  one replaces it, where murrtty adds another toast. Titles are cut to 63
+  UTF-16 units (an emoji counts two) and bodies to 255, with no ellipsis.
+  One with no body shows its title under "murrtty", since Windows shows
+  no balloon without text; GTK's shows the title alone. WinRT toasts,
+  5.2's second step, are to lift this.
 - **Dragging a tab** (4.5): once out of the strip, nothing follows the
   mouse until the release (libadwaita drags an image of the tab), and
   Escape doesn't cancel the drag.
@@ -2300,6 +2312,29 @@ developer's.
 
 *Done when:* an OSC 9 or OSC 777 notification appears, and clicking it brings
 the pane forward.
+
+*First step built 2026-10-27 (`win32/Notifications.zig`):* the
+`desktop_notification` action (the core has checked
+`desktop-notifications` and limits the rate) shows a balloon of a
+notification-area icon on a hidden top-level window of its own, as a
+toast (`NIIF_USER` with the large app icon, `NIIF_RESPECT_QUIET_TIME`). A
+notification with no title is murrtty's, as GTK's is Ghostty's. The icon
+stands for the latest notification and lives as GTK's notifications do:
+it comes with one and goes when that one's pane gets the keyboard or
+closes, 3 s after it came if that pane had the keyboard, or when the toast
+or the icon is clicked, which presents the pane from the message loop once
+no dialog is open (an `App.Request`); a toast that times out stays in the
+notification center with the icon. Adding falls back to changing and the
+reverse, so murrtty's idea of the icon can't drift from Explorer's for
+good; `TaskbarCreated` (Explorer restarting, the taskbar rebuilt) puts a
+pending icon back at the current DPI, and murrtty's message filter lets
+it and the icon's messages reach an elevated murrtty. A click that comes
+during a call to Explorer waits for it to return. The `notifications` scenario
+checks it all through the test hooks, which record notifications instead
+of showing them (the hidden desktop has no notification area, and the
+user's would show them); the opt-in `notify-shown` shows one for real and
+checks Windows took it. Not tested: a person's click on a real toast. The
+second step, WinRT toasts, is still to come.
 
 **5.3 Command-finished notifications, S.** Port GTK's
 `notify-on-command-finish` logic (never, unfocused or always; minimum

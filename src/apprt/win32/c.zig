@@ -1193,6 +1193,47 @@ pub const SEE_MASK_NOASYNC = 0x00000100;
 pub const SEE_MASK_FLAG_NO_UI = 0x00000400;
 pub extern "shell32" fn ShellExecuteExW(*SHELLEXECUTEINFOW) callconv(.winapi) BOOL;
 pub extern "shell32" fn SetCurrentProcessExplicitAppUserModelID(LPCWSTR) callconv(.winapi) HRESULT;
+
+// Desktop notifications as a notification-area icon's balloons (roadmap
+// 5.2, Notifications.zig).
+pub const NOTIFYICONDATAW = extern struct {
+    cbSize: DWORD = @sizeOf(NOTIFYICONDATAW),
+    hWnd: ?HWND = null,
+    uID: UINT = 0,
+    uFlags: UINT = 0,
+    uCallbackMessage: UINT = 0,
+    hIcon: ?HICON = null,
+    szTip: [128]u16 = @splat(0),
+    dwState: DWORD = 0,
+    dwStateMask: DWORD = 0,
+    szInfo: [256]u16 = @splat(0),
+    /// uTimeout before NOTIFYICON_VERSION_4.
+    uVersion: UINT = 0,
+    szInfoTitle: [64]u16 = @splat(0),
+    dwInfoFlags: DWORD = 0,
+    guidItem: GUID = std.mem.zeroes(GUID),
+    hBalloonIcon: ?HICON = null,
+};
+pub const NIM_ADD = 0;
+pub const NIM_MODIFY = 1;
+pub const NIM_DELETE = 2;
+pub const NIM_SETVERSION = 4;
+pub const NIF_MESSAGE = 0x01;
+pub const NIF_ICON = 0x02;
+pub const NIF_TIP = 0x04;
+pub const NIF_INFO = 0x10;
+pub const NIF_SHOWTIP = 0x80;
+pub const NIIF_USER = 0x04;
+pub const NIIF_LARGE_ICON = 0x20;
+pub const NIIF_RESPECT_QUIET_TIME = 0x80;
+pub const NOTIFYICON_VERSION_4 = 4;
+pub const NIN_SELECT = WM_USER + 0;
+pub const NIN_KEYSELECT = WM_USER + 1;
+pub const NIN_BALLOONTIMEOUT = WM_USER + 4;
+pub const NIN_BALLOONUSERCLICK = WM_USER + 5;
+pub extern "shell32" fn Shell_NotifyIconW(DWORD, *NOTIFYICONDATAW) callconv(.winapi) BOOL;
+pub const MSGFLT_ALLOW = 1;
+pub extern "user32" fn ChangeWindowMessageFilterEx(HWND, UINT, DWORD, ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "shell32" fn ILCreateFromPathW(LPCWSTR) callconv(.winapi) ?*anyopaque;
 pub extern "shell32" fn ILFree(?*anyopaque) callconv(.winapi) void;
 pub extern "shell32" fn SHGetPathFromIDListEx(*const anyopaque, [*]u16, DWORD, c_int) callconv(.winapi) BOOL;

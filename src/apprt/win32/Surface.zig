@@ -466,6 +466,8 @@ pub fn deinit(self: *Surface) void {
 
     if (self.core_initialized) {
         self.core_initialized = false;
+        // Nothing left to bring forward.
+        self.app.notifications.surfaceDone(self.core_surface.id);
         self.app.core_app.deleteSurface(self);
         self.core_surface.deinit();
     }
@@ -1137,6 +1139,8 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             // The pane, not its search field, now has the keyboard last.
             if (self.has_focus) self.search.field_focused = false;
             if (self.has_focus) self.clearBell();
+            // Its notification has been seen (GTK's take them back then).
+            if (self.has_focus and self.core_initialized) self.app.notifications.surfaceDone(self.core_surface.id);
             // Which surface the app counts as focused (what a new tab or
             // split inherits from) is only a pointer, so it changes at
             // once: a click on "+" in an inactive window is handled before
