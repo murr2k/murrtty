@@ -161,7 +161,7 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     };
     // WM_NCCALCSIZE gave the new window its frame by csd().
     self.csd_frame = self.csd();
-    self.tab_bar.top_bar = !self.csd_frame;
+    self.syncBars();
     errdefer {
         _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
         _ = c.DestroyWindow(self.hwnd);
@@ -646,11 +646,43 @@ pub fn syncTitle(self: *Window) void {
 
 /// Whether GTK's tab bar would show `count` tabs (window-show-tab-bar).
 fn tabsShownFor(self: *const Window, count: usize) bool {
-    return switch (self.app.config.@"window-show-tab-bar") {
+    const config = &self.app.config;
+    // The tab row as the title bar always shows, as GTK's, unless a
+    // maximized window hides its title bar.
+    if (self.tabsTitlebar()) return !(config.@"gtk-titlebar-hide-when-maximized" and c.IsZoomed(self.hwnd) != 0);
+    return switch (config.@"window-show-tab-bar") {
         .always => true,
         .never => false,
         .auto => count > 1,
     };
+}
+
+/// gtk-titlebar-style = tabs: the tab row is the title bar, with the
+/// header bar's buttons in it (HeaderBar.tabs_style), and no header bar.
+fn tabsTitlebar(self: *const Window) bool {
+    return self.app.config.@"gtk-titlebar-style" == .tabs;
+}
+
+/// Lay the bars out for the window's style: the tab row is the top bar
+/// without a header above it, and with gtk-titlebar-style = tabs holds the
+/// header's buttons (the window's only with client-side decorations)
+/// around its tabs.
+fn syncBars(self: *Window) void {
+    const tabs_style = self.tabsTitlebar();
+    self.header.tabs_style = tabs_style;
+    self.header.controls = self.csd();
+    self.tab_bar.top_bar = self.headerHeight() == 0;
+    self.tab_bar.inset = if (tabs_style) self.header.tabsInset() else null;
+    self.tab_bar.inverted = self.app.config.@"gtk-tabs-inverted";
+}
+
+/// The title bar's height: the header bar's, or the tab row's when it is
+/// the title bar (gtk-titlebar-style = tabs); 0 without client-side
+/// decorations.
+fn titleBarHeight(self: *const Window) c_int {
+    if (!self.csd()) return 0;
+    if (self.tabsTitlebar()) return if (self.tabBarVisible()) self.tab_bar.height() else 0;
+    return self.header.height();
 }
 
 /// Whether the window draws GTK's header bar as its title bar (client-side
@@ -675,7 +707,7 @@ pub fn tabBarVisible(self: *const Window) bool {
 }
 
 pub fn headerHeight(self: *const Window) c_int {
-    return if (self.csd()) self.header.height() else 0;
+    return if (self.csd() and !self.tabsTitlebar()) self.header.height() else 0;
 }
 
 /// The header bar's and the tab row's height with `count` tabs.
@@ -724,9 +756,9 @@ fn frameY(self: *const Window) c_int {
 /// buttons, or the resize band along the top. An overlay over the bar
 /// leaves those to the window (the command palette's dimming).
 pub fn isFrameAt(self: *const Window, x: c_int, y: c_int) bool {
-    if (!self.csd() or y < 0 or y >= self.headerHeight()) return false;
+    if (!self.csd() or y < 0 or y >= self.titleBarHeight()) return false;
     if (c.IsZoomed(self.hwnd) == 0 and y < self.frameY()) return true;
-    return switch (self.header.hitTest(x, y, self.clientWidth())) {
+    return switch (self.chromeHit(x, y)) {
         .none, .minimize, .maximize, .window_close => true,
         else => false,
     };
@@ -771,7 +803,7 @@ fn layout(self: *Window) void {
     // A wider window may show more tabs: keep the scroll in range (not the
     // active tab in view, which would undo the chevrons; select does that).
     // Below the header bar, or the top bar itself (its height differs).
-    self.tab_bar.top_bar = !self.csd();
+    self.syncBars();
     const strip_width = self.clientWidth();
     self.tab_bar.clampScroll(self.tabs.items.len, strip_width);
     if (self.reveal_active and strip_width > 0) {
@@ -1089,7 +1121,12 @@ fn paint(self: *Window) void {
     var ps: c.PAINTSTRUCT = undefined;
     const hdc = c.BeginPaint(self.hwnd, &ps) orelse return;
     defer _ = c.EndPaint(self.hwnd, &ps);
+    self.paintChrome(hdc);
+}
 
+/// What `paint` draws, into `hdc` (also the test hooks' read-back of the
+/// chrome).
+pub fn paintChrome(self: *Window, hdc: c.HDC) void {
     const colors = self.chromeColors();
     var below = self.tabRect(self.tabs.items.len);
     if (c.CreateSolidBrush(c.rgb(colors.bg.r, colors.bg.g, colors.bg.b))) |brush| {
@@ -1098,13 +1135,16 @@ fn paint(self: *Window) void {
     }
     const pal = draw.palette(self.chromeTheme(), !self.active_window);
     const width = self.clientWidth();
-    if (self.csd()) {
+    const maximized = c.IsZoomed(self.hwnd) != 0;
+    if (self.headerHeight() > 0) {
         // The caption's text, which syncTitle keeps.
         var title: [512]u16 = undefined;
         const n = c.GetWindowTextW(self.hwnd, &title, title.len);
-        self.header.paint(hdc, width, title[0..@intCast(@max(n, 0))], self.tab_bar.hover, self.pressed, c.IsZoomed(self.hwnd) != 0, pal);
+        self.header.paint(hdc, width, self.header.height(), title[0..@intCast(@max(n, 0))], self.tab_bar.hover, self.pressed, maximized, pal);
     }
     if (!self.tabBarVisible()) return;
+    // The tab row as the title bar: the header's buttons around the tabs.
+    if (self.tabsTitlebar()) self.header.paint(hdc, width, self.tab_bar.height(), &.{}, self.tab_bar.hover, self.pressed, maximized, pal);
 
     // Every title: the row is laid out (and hit-tested) for all the tabs.
     const alloc = self.app.core_app.alloc;
@@ -1262,13 +1302,24 @@ fn performOnPane(self: *Window, surface: *Surface, action: input.Binding.Action)
 /// (its buttons; the window's come as non-client messages) or the tab
 /// row's.
 fn tabBarHit(self: *const Window, lparam: c.LPARAM) TabBar.Hit {
-    const x = c.xParam(lparam);
-    const y = c.yParam(lparam);
+    return self.chromeHit(c.xParam(lparam), c.yParam(lparam));
+}
+
+/// The chrome's item at (`x`, `y`) in client coordinates: a header bar
+/// button (in the tab row when it is the title bar) or a tab's.
+fn chromeHit(self: *const Window, x: c_int, y: c_int) TabBar.Hit {
     const width = self.clientWidth();
+    const n = self.tabs.items.len;
+    if (self.tabsTitlebar()) {
+        if (!self.tabBarVisible()) return .none;
+        const hit = self.header.hitTest(x, y, width);
+        if (hit != .none) return hit;
+        return self.tab_bar.hitTest(x, y, n, width);
+    }
     const header = self.headerHeight();
     if (y < header) return self.header.hitTest(x, y, width);
     if (!self.tabBarVisible()) return .none;
-    return self.tab_bar.hitTest(x, y - header, self.tabs.items.len, width);
+    return self.tab_bar.hitTest(x, y - header, n, width);
 }
 
 fn setHover(self: *Window, hit: TabBar.Hit) void {
@@ -1576,7 +1627,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             const info: *c.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
             // The header bar's buttons side by side, as GTK's minimum
             // width holds them: narrower, they would overlap.
-            const width = if (self.csd()) @max(min.width, self.header.minWidth()) else min.width;
+            const width = if (self.csd() or self.tabsTitlebar()) @max(min.width, self.header.minWidth()) else min.width;
             var rect: c.RECT = .{ .right = width, .bottom = min.height + self.chromeHeight() };
             self.adjustFrame(&rect, c.GetDpiForWindow(hwnd));
             info.ptMinTrackSize = .{ .x = rect.right - rect.left, .y = rect.bottom - rect.top };
@@ -1615,8 +1666,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 if (pt.x >= width - band) return c.HTTOPRIGHT;
                 return c.HTTOP;
             }
-            if (pt.y >= self.headerHeight()) return def;
-            return switch (self.header.hitTest(pt.x, pt.y, width)) {
+            if (pt.y >= self.titleBarHeight()) return def;
+            return switch (self.chromeHit(pt.x, pt.y)) {
                 .none => c.HTCAPTION,
                 .minimize => c.HTMINBUTTON,
                 .maximize => c.HTMAXBUTTON,
@@ -1680,8 +1731,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             if (self.csd() and lparam != -1) {
                 var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
                 _ = c.ScreenToClient(hwnd, &pt);
-                if (pt.y >= 0 and pt.y < self.headerHeight() and
-                    self.header.hitTest(pt.x, pt.y, self.clientWidth()) == .none)
+                if (pt.y >= 0 and pt.y < self.titleBarHeight() and
+                    self.chromeHit(pt.x, pt.y) == .none)
                 {
                     self.systemMenuAt(c.xParam(lparam), c.yParam(lparam));
                     return 0;

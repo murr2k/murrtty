@@ -4,7 +4,7 @@
 # (GNOME's font, Adwaita Sans 11, and a fixed Ghostty config), the screen
 # taken from Xvfb's framebuffer file. Nothing in the user's own config
 # changes and no window opens on their screen.
-#   gtkref.sh <font.ttf> <out.xwd> [extra ghostty config line]
+#   gtkref.sh <font.ttf> <out.xwd> [file of extra ghostty config lines]
 set -e
 font="$1"
 out="$2"
@@ -14,7 +14,8 @@ rm -rf "$base"
 mkdir -p "$base/config/gtk-4.0" "$base/config/ghostty" "$base/data/fonts" "$base/fb"
 cp "$font" "$base/data/fonts/"
 printf '[Settings]\ngtk-font-name=Adwaita Sans 11\n' > "$base/config/gtk-4.0/settings.ini"
-printf 'window-width = 80\nwindow-height = 24\n%s\n' "$extra" > "$base/config/ghostty/config.ghostty"
+printf 'window-width = 80\nwindow-height = 24\n' > "$base/config/ghostty/config.ghostty"
+if [ -n "$extra" ]; then cat "$extra" >> "$base/config/ghostty/config.ghostty"; fi
 cat > "$base/run.sh" <<EOF
 #!/bin/sh
 export XDG_CONFIG_HOME=$base/config XDG_DATA_HOME=$base/data

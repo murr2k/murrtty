@@ -34,7 +34,7 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
-    .{ .name = "header-bar", .about = "GTK's header bar: with one tab the strip shows its buttons (\"+\" opens a tab); fullscreen and gtk-titlebar = false hide it; window-show-tab-bar = never keeps the buttons without tabs", .run = headerBar },
+    .{ .name = "header-bar", .about = "GTK's header bar: with one tab the strip shows its buttons (\"+\" opens a tab); fullscreen and gtk-titlebar = false hide it; window-show-tab-bar = never keeps the buttons without tabs; gtk-titlebar-style = tabs puts them in the tab row; gtk-tabs-inverted", .run = headerBar },
     .{ .name = "tab-details", .about = "the strip's font (window-title-font-family), icons at the DPI, tooltips (title and directory, a button's binding), window-new-tab-position = end", .run = tabDetails },
     .{ .name = "tab-overflow", .about = "twelve tabs in a narrow window scroll between chevrons and with the wheel; the list button and toggle_tab_overview list them", .run = tabOverflow },
     .{ .name = "tab-buttons", .about = "the arrow beside + opens the split menu; the menu button opens GTK's main menu (New Tab, Command Palette, About murrtty)", .run = tabButtons },
@@ -230,14 +230,29 @@ fn snapshotFrame(h: *Harness, dir: []const u8) !void {
     try h.waitText(&g, look_text, 1, 20000);
     w.Sleep(500);
     try h.saveFrames(&g);
-    const from = try std.fmt.allocPrint(h.alloc, "{s}\\frame-0.bmp", .{std.fs.path.dirname(g.dump_path).?});
+    try copyOut(h, &g, "frame-0.bmp", dir, "frame-tab.bmp");
+    // The chrome as WM_PAINT draws it, at the window's DPI: the header bar,
+    // then with gtk-titlebar-style = tabs the tab row holding its buttons.
+    try h.saveChrome(&g);
+    try copyOut(h, &g, "chrome-0.bmp", dir, "paint-header.bmp");
+    var styled = try h.launch("snapshot-tabs-style", base_config ++ "gtk-titlebar-style = tabs\nwindow-width = 80\n");
+    defer styled.deinit();
+    try h.waitText(&styled, ">", 1, 20000);
+    w.Sleep(500);
+    try h.saveChrome(&styled);
+    try copyOut(h, &styled, "chrome-0.bmp", dir, "paint-tabs-style.bmp");
+    try h.expect(true, "wrote frame-tab.bmp, paint-header.bmp and paint-tabs-style.bmp to {s} at {d} DPI", .{ dir, dpi });
+}
+
+/// Copy `name` from beside `g`'s dump file to `dir` as `as`.
+fn copyOut(h: *Harness, g: *const Harness.Ghostty, name: []const u8, dir: []const u8, as: []const u8) !void {
+    const from = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ std.fs.path.dirname(g.dump_path).?, name });
     defer h.alloc.free(from);
-    const to = try std.fmt.allocPrint(h.alloc, "{s}\\frame-tab.bmp", .{dir});
+    const to = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ dir, as });
     defer h.alloc.free(to);
     const bytes = h.readFileOrNull(from) orelse return h.fail("no {s}", .{from});
     defer h.alloc.free(bytes);
     try h.writeFileAt(to, bytes);
-    try h.expect(true, "wrote {s} at {d} DPI", .{ to, dpi });
 }
 
 fn snapshotOffscreen(h: *Harness, dir: []const u8) !void {
@@ -2287,6 +2302,76 @@ fn headerBar(h: *Harness) anyerror!void {
         try waitChrome(h, &g, true, false, "window-show-tab-bar = never, two tabs: the header bar, no row");
         try quit(h, &g, try h.surface(&g, win));
     }
+    {
+        // gtk-titlebar-style = tabs: the tab row is the title bar, with one
+        // tab too, holding the header's buttons around its tabs as GTK's.
+        var g = try start(h, "header-bar-tabs", "gtk-titlebar-style = tabs\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        try waitChrome(h, &g, false, true, "tabs style, one tab: no header bar, the tab row");
+        var hb: Harness.Dump.Header = undefined;
+        var row_top: i32 = 0;
+        var row_height: i32 = 0;
+        var tab: [4]i32 = undefined;
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const dw = d.value.windows[0];
+            hb = dw.header;
+            row_top = dw.tab_bar.top;
+            row_height = dw.tab_bar.height;
+            tab = dw.tab_bar.tabs[0].rect;
+        }
+        try h.expect(row_top == 0, "the row at the top (at {d})", .{row_top});
+        try h.expect(hb.menu[2] == hb.minimize[0], "the menu button beside minimize, as GTK's ({d}, {d})", .{ hb.menu[2], hb.minimize[0] });
+        try h.expect(tab[0] == hb.new_tab_menu[2] and tab[2] == hb.list[0], "the tab between the split arrow and the tab list's button ({d} to {d})", .{ tab[0], tab[2] });
+        const mid_y = @divTrunc(row_height, 2);
+        try expectNcHit(h, win, rectMid(hb.minimize), w.HTMINBUTTON, "over minimize: the caption's minimize button");
+        try expectNcHit(h, win, rectMid(hb.window_close), w.HTCLOSE, "over close: the caption's close");
+        try expectNcHit(h, win, rectMid(hb.new_tab), w.HTCLIENT, "over \"+\": the window's own button");
+        try expectNcHit(h, win, .{ @divTrunc(tab[0] + tab[2], 2), mid_y }, w.HTCLIENT, "over the tab: the tab's");
+        try expectNcHit(h, win, .{ 2, mid_y }, w.HTCAPTION, "beside the split button: the caption");
+        const plus = try stripButton(h, &g, .new_tab);
+        h.click(win, plus.x, plus.y, .left);
+        try waitWindowTabs(h, &g, win, 2);
+        try quit(h, &g, try h.surface(&g, win));
+    }
+    {
+        // Without client-side decorations the row keeps its buttons, but
+        // not the window's.
+        var g = try start(h, "header-bar-tabs-server", "gtk-titlebar-style = tabs\nwindow-decoration = server\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        try waitChrome(h, &g, false, true, "tabs style, server decorations: the tab row");
+        try expectSystemCaption(h, win, "below the system's caption");
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const hb = d.value.windows[0].header;
+        try h.expect(hb.minimize[0] == hb.minimize[2] and hb.window_close[0] == hb.window_close[2], "and no window buttons in it", .{});
+        try quit(h, &g, try h.surface(&g, win));
+    }
+    {
+        // gtk-tabs-inverted: a tab's close button at its start.
+        var g = try start(h, "tabs-inverted", "window-show-tab-bar = always\ngtk-tabs-inverted = true\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        h.key(try h.surface(&g, win), cs, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        try waitActivePaneText(h, &g, win, ">");
+        var close: [4]i32 = undefined;
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const t = d.value.windows[0].tab_bar.tabs[1];
+            close = t.close;
+            try h.expect(close[0] - t.rect[0] < @divTrunc(t.rect[2] - t.rect[0], 2), "inverted, the close button is at the tab's start ({d} in a tab from {d})", .{ close[0], t.rect[0] });
+        }
+        const at = rectMid(close);
+        h.click(win, at[0], at[1], .left);
+        h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
+        try waitWindowTabs(h, &g, win, 1);
+        try quit(h, &g, try h.surface(&g, win));
+    }
 }
 
 /// Wait until the first window shows the header bar or not, and the tab
@@ -2436,7 +2521,10 @@ fn stripButton(h: *Harness, g: *Harness.Ghostty, which: enum { new_tab, new_tab_
     var d = try h.dump(g);
     defer d.deinit();
     const bar = d.value.windows[0].header;
-    if (!bar.visible) return h.fail("the header bar isn't showing", .{});
+    // Its buttons show in the header bar, or in the tab row at the top
+    // (gtk-titlebar-style = tabs).
+    const row = d.value.windows[0].tab_bar;
+    if (!bar.visible and !(row.visible and row.top == 0)) return h.fail("the header bar isn't showing", .{});
     const r = switch (which) {
         .new_tab => bar.new_tab,
         .new_tab_menu => bar.new_tab_menu,

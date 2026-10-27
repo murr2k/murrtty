@@ -141,6 +141,9 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   (each pane's `frame_ready` reports it read).
 /// - 11: write the frames read as `frame-<n>.bmp` beside the dump file, n
 ///   counting the panes window by window, tab by tab.
+/// - 12: paint each window's chrome (header bar and tab row) into a bitmap
+///   and write it as `chrome-<n>.bmp` beside the dump file: what WM_PAINT
+///   draws, where captures can't see it (the hidden desktop).
 /// (9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
@@ -201,6 +204,7 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         }
     };
     if (wparam == 11) saveFrames(app);
+    if (wparam == 12) saveChrome(app);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
     write(app, alloc, &out) catch |err| {
@@ -304,7 +308,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         var face_buf: [128]u8 = undefined;
         {
             const p = w.header.place(client.right);
-            try out.print(alloc, "\"header\":{{\"visible\":{},\"height\":{d},\"font\":", .{ w.csd(), w.headerHeight() });
+            try out.print(alloc, "\"header\":{{\"visible\":{},\"height\":{d},\"font\":", .{ w.headerHeight() > 0, w.headerHeight() });
             try writeString(alloc, out, draw.faceName(w.header.title_font, &face_buf));
             const tip = try w.tooltipText(alloc, .new_tab);
             defer alloc.free(tip);
@@ -630,6 +634,41 @@ fn saveFrames(app: *App) void {
             path[sep + 1 + name.len] = 0;
             writeBmp(&path, state.frame, state.frame_width, state.frame_height);
         }
+    }
+}
+
+/// Paint each window's chrome into a 32-bit bitmap and write it as
+/// `chrome-<n>.bmp` beside the dump file.
+fn saveChrome(app: *App) void {
+    const dump_path = app.test_state.path orelse return;
+    const sep = std.mem.lastIndexOfScalar(u16, dump_path, '\\') orelse return;
+    for (app.windows.items, 0..) |w, n| {
+        var client: c.RECT = .{};
+        _ = c.GetClientRect(w.hwnd, &client);
+        const width = client.right;
+        const height = w.chromeHeight();
+        if (width <= 0 or height <= 0) continue;
+        const info: c.BITMAPINFOHEADER = .{ .biWidth = width, .biHeight = -height };
+        var bits: ?[*]u8 = null;
+        const screen = c.GetDC(null) orelse continue;
+        defer _ = c.ReleaseDC(null, screen);
+        const bmp = c.CreateDIBSection(screen, &info, c.DIB_RGB_COLORS, &bits, null, 0) orelse continue;
+        defer _ = c.DeleteObject(bmp);
+        const mem = c.CreateCompatibleDC(screen) orelse continue;
+        defer _ = c.DeleteDC(mem);
+        const old = c.SelectObject(mem, bmp);
+        defer _ = c.SelectObject(mem, old);
+        w.paintChrome(mem);
+        _ = c.GdiFlush();
+        var name_buf: [32]u8 = undefined;
+        const name = std.fmt.bufPrint(&name_buf, "chrome-{d}.bmp", .{n}) catch continue;
+        var path: [1024:0]u16 = undefined;
+        if (sep + 1 + name.len >= path.len) continue;
+        @memcpy(path[0 .. sep + 1], dump_path[0 .. sep + 1]);
+        for (name, 0..) |ch, i| path[sep + 1 + i] = ch;
+        path[sep + 1 + name.len] = 0;
+        const size: usize = @intCast(width * height * 4);
+        writeBmp(&path, (bits orelse continue)[0..size], @intCast(width), @intCast(height));
     }
 }
 

@@ -38,6 +38,12 @@ wide: bool = true,
 /// The row is the top bar (no header bar above it): libadwaita pads its
 /// tab box above as well as below.
 top_bar: bool = false,
+/// The row is the title bar (gtk-titlebar-style = tabs): the tabs go only
+/// in this span, its distance in pixels from the row's left and right
+/// edges, unpadded, between the header bar's buttons (HeaderBar.tabsInset).
+inset: ?[2]c_int = null,
+/// gtk-tabs-inverted: a tab's close button at its start.
+inverted: bool = false,
 
 /// The item under the mouse, in this row or the header bar, for hover
 /// highlighting.
@@ -83,23 +89,33 @@ const Place = struct {
     view_right: c_int,
 };
 
+/// The span the tabs and chevrons share in a row `width` pixels wide.
+fn span(self: *const TabBar, width: c_int) [2]c_int {
+    if (self.inset) |in| return .{ in[0], @max(in[0], width - in[1]) };
+    const pad = self.scale(pad_x);
+    return .{ pad, @max(pad, width - pad) };
+}
+
 fn place(self: *const TabBar, n: usize, width: c_int) Place {
     const count: c_int = @intCast(@max(n, 1));
-    const pad = self.scale(pad_x);
-    const per = @divTrunc(@max(0, width - 2 * pad), count);
+    const lo, const hi = self.span(width);
+    const per = @divTrunc(hi - lo, count);
     if (per >= self.scale(tab_min_width) or n <= 1) {
         const w = if (self.wide)
             @max(per, self.scale(tab_min_width))
         else
             std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
-        return .{ .tab_width = w, .overflow = false, .view_left = pad, .view_right = pad + w * count };
+        return .{ .tab_width = w, .overflow = false, .view_left = lo, .view_right = lo + w * count };
     }
     const chevron = self.scale(chevron_width);
+    // Unpadded, the chevrons start at the row's edge.
+    const outer_lo = if (self.inset) |in| in[0] else 0;
+    const outer_hi = if (self.inset != null) hi else width;
     return .{
         .tab_width = self.scale(tab_min_width),
         .overflow = true,
-        .view_left = chevron,
-        .view_right = @max(chevron, width - chevron),
+        .view_left = outer_lo + chevron,
+        .view_right = @max(outer_lo + chevron, outer_hi - chevron),
     };
 }
 
@@ -195,21 +211,23 @@ pub fn overflowing(self: *const TabBar, n: usize, width: c_int) bool {
 /// The chevrons, when the tabs overflow.
 pub fn scrollLeftRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
     const p = self.place(n, width);
-    return .{ .left = 0, .top = 0, .right = p.view_left, .bottom = self.height() };
+    const left = if (self.inset) |in| in[0] else 0;
+    return .{ .left = left, .top = 0, .right = p.view_left, .bottom = self.height() };
 }
 
 pub fn scrollRightRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
     const p = self.place(n, width);
-    return .{ .left = p.view_right, .top = 0, .right = width, .bottom = self.height() };
+    const right = if (self.inset != null) self.span(width)[1] else width;
+    return .{ .left = p.view_right, .top = 0, .right = right, .bottom = self.height() };
 }
 
 /// A tab's close button: a circle at its right end (its glyph 31 DIP from
-/// the row's right edge, as GTK's).
+/// the row's right edge, as GTK's), or its left with gtk-tabs-inverted.
 pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
     const s = self.scale(close_size);
-    const right = tab.right - self.scale(9);
+    const left = if (self.inverted) tab.left + self.scale(9) else tab.right - self.scale(9) - s;
     const top = tab.top + @divTrunc(tab.bottom - tab.top - s, 2);
-    return .{ .left = right - s, .top = top, .right = right, .bottom = top + s };
+    return .{ .left = left, .top = top, .right = left + s, .bottom = top + s };
 }
 
 /// The item at (`x`, `y`) in the row's coordinates. A tab takes the row's
@@ -349,7 +367,14 @@ pub fn paint(
         }
     }
 
-    _ = c.BitBlt(hdc, 0, top, width, h, mem, 0, 0, c.SRCCOPY);
+    // In the title bar, only the span: the header bar's buttons are
+    // around it.
+    if (self.inset != null) {
+        const lo, const hi = self.span(width);
+        _ = c.BitBlt(hdc, lo, top, hi - lo, h, mem, lo, 0, c.SRCCOPY);
+    } else {
+        _ = c.BitBlt(hdc, 0, top, width, h, mem, 0, 0, c.SRCCOPY);
+    }
 }
 
 test "hitTest: wide tabs share the row" {
@@ -366,6 +391,34 @@ test "hitTest: wide tabs share the row" {
     try testing.expectEqual(Hit.none, bar.hitTest(2, 20, 2, width));
     try testing.expectEqual(Hit.none, bar.hitTest(10, bar.height() + 1, 2, width));
     try testing.expect(!bar.overflowing(2, width));
+}
+
+test "inset: the tabs fill the title bar's span (gtk-titlebar-style = tabs)" {
+    const testing = std.testing;
+    // GTK's 794 px row: the tab runs from the split arrow (61) to the tab
+    // list's button (612), its close glyph at 588 to 593.
+    const bar: TabBar = .{ .top_bar = true, .inset = .{ 61, 794 - 612 } };
+    const r = bar.tabRect(0, 1, 794);
+    try testing.expectEqual(@as(c_int, 61), r.left);
+    try testing.expectEqual(@as(c_int, 612), r.right);
+    const cr = bar.closeRect(r);
+    try testing.expectEqual(@as(c_int, 579), cr.left);
+    try testing.expectEqual(Hit.none, bar.hitTest(40, 20, 1, 794));
+    try testing.expectEqual(Hit.none, bar.hitTest(700, 20, 1, 794));
+    // Overflowing, the chevrons stay inside the span too.
+    try testing.expect(bar.overflowing(20, 794));
+    try testing.expectEqual(@as(c_int, 61), bar.scrollLeftRect(20, 794).left);
+    try testing.expectEqual(@as(c_int, 612), bar.scrollRightRect(20, 794).right);
+}
+
+test "inverted: the close button at the tab's start (gtk-tabs-inverted)" {
+    const testing = std.testing;
+    // GTK's lone tab, 6 to 788: its close glyph at 24 to 29.
+    const bar: TabBar = .{ .inverted = true };
+    const r = bar.tabRect(0, 1, 794);
+    try testing.expectEqual(@as(c_int, 15), bar.closeRect(r).left);
+    try testing.expectEqual(Hit{ .close = 0 }, bar.hitTest(27, 17, 1, 794));
+    try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(770, 17, 1, 794));
 }
 
 test "height: 40 below a header bar, 46 as the top bar (GTK's)" {

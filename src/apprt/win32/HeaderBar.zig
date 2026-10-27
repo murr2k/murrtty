@@ -39,6 +39,13 @@ const icon_inset = 9;
 
 dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 title_font: ?c.HFONT = null,
+/// gtk-titlebar-style = tabs: the buttons go in the tab row, which is the
+/// title bar (GTK's tab bar then holds the split button at its start and
+/// the tab list's and menu's buttons and the window's at its end, those
+/// side by side), and the tabs take the title's place.
+tabs_style: bool = false,
+/// Whether the window's buttons show (client-side decorations).
+controls: bool = true,
 
 pub fn deinit(self: *HeaderBar) void {
     if (self.title_font) |f| _ = c.DeleteObject(f);
@@ -77,30 +84,49 @@ pub fn place(self: *const HeaderBar, width: c_int) Place {
     const top = self.scale(pad_top);
     const bottom = top + b;
     const new_tab: c.RECT = .{ .left = self.scale(pad_x), .top = top, .right = self.scale(pad_x) + b, .bottom = bottom };
-    const close_right = width - self.scale(pad_x);
-    const window_close: c.RECT = .{ .left = close_right - b, .top = top, .right = close_right, .bottom = bottom };
+    const end = width - self.scale(pad_x);
+    // Without the window's buttons, theirs are empty at the end.
+    const none: c.RECT = .{ .left = width, .top = top, .right = width, .bottom = bottom };
+    const window_close: c.RECT = if (self.controls) .{ .left = end - b, .top = top, .right = end, .bottom = bottom } else none;
     const maximize_right = window_close.left - self.scale(control_spacing);
     const minimize_right = maximize_right - b - self.scale(control_spacing);
-    const menu_right = minimize_right - b - self.scale(spacing);
+    const menu_right = if (!self.controls)
+        end
+    else if (self.tabs_style)
+        minimize_right - b
+    else
+        minimize_right - b - self.scale(spacing);
     const list_right = menu_right - b;
     return .{
         .new_tab = new_tab,
         .new_tab_menu = .{ .left = new_tab.right, .top = top, .right = new_tab.right + self.scale(arrow_width), .bottom = bottom },
         .list = .{ .left = list_right - b, .top = top, .right = list_right, .bottom = bottom },
         .menu = .{ .left = menu_right - b, .top = top, .right = menu_right, .bottom = bottom },
-        .minimize = .{ .left = minimize_right - b, .top = top, .right = minimize_right, .bottom = bottom },
-        .maximize = .{ .left = maximize_right - b, .top = top, .right = maximize_right, .bottom = bottom },
+        .minimize = if (self.controls) .{ .left = minimize_right - b, .top = top, .right = minimize_right, .bottom = bottom } else none,
+        .maximize = if (self.controls) .{ .left = maximize_right - b, .top = top, .right = maximize_right, .bottom = bottom } else none,
         .window_close = window_close,
     };
 }
 
-/// The narrowest bar that holds its buttons apart: the split button, then
-/// GTK's spacing, then the buttons at the right (their place doesn't
-/// depend on the width). The title ellipsizes to nothing between.
-pub fn minWidth(self: *const HeaderBar) c_int {
+/// With tabs_style, where the tabs go: their span's distance from the
+/// row's left and right edges (between the split button and the tab
+/// list's button, unpadded, as GTK's).
+pub fn tabsInset(self: *const HeaderBar) [2]c_int {
     const p = self.place(0);
-    return p.new_tab_menu.right + self.scale(spacing) - p.list.left;
+    return .{ p.new_tab_menu.right, -p.list.left };
 }
+
+/// The narrowest bar that holds its buttons apart: the split button, then
+/// GTK's spacing (or, in the tab row, room for a tab at its narrowest),
+/// then the buttons at the right (their place doesn't depend on the
+/// width). The title ellipsizes to nothing between.
+pub fn minWidth(self: *const HeaderBar) c_int {
+    const inset = self.tabsInset();
+    return inset[0] + inset[1] + self.scale(if (self.tabs_style) min_tab else spacing);
+}
+
+/// The narrowest tab (TabBar's).
+const min_tab = 64;
 
 /// The item at (`x`, `y`), or `.none` for the caption. A button takes the
 /// bar's whole height (a click at the top edge of a maximized window hits
@@ -157,19 +183,21 @@ const Glyph = struct {
     }
 };
 
-/// Paint the bar into `hdc` at the top, double buffered. `title` is
-/// UTF-16, as the window's caption holds it.
+/// Paint the bar into `hdc` at the top, `h` pixels tall (its own height,
+/// or the tab row's with tabs_style, whose tabs are then painted over the
+/// span between the buttons), double buffered. `title` is UTF-16, as the
+/// window's caption holds it; with tabs_style the tabs take its place.
 pub fn paint(
     self: *const HeaderBar,
     hdc: c.HDC,
     width: c_int,
+    h: c_int,
     title: []const u16,
     hover: Hit,
     pressed: Hit,
     maximized: bool,
     pal: draw.Palette,
 ) void {
-    const h = self.height();
     const mem = c.CreateCompatibleDC(hdc) orelse return;
     defer _ = c.DeleteDC(mem);
     const bmp = c.CreateCompatibleBitmap(hdc, width, h) orelse return;
@@ -221,7 +249,7 @@ pub fn paint(
 
     // The window's buttons: libadwaita's round controls, their 8 px
     // glyphs 13 px into the button.
-    for ([_]struct { Hit, c.RECT }{
+    if (self.controls) for ([_]struct { Hit, c.RECT }{
         .{ .minimize, p.minimize },
         .{ .maximize, p.maximize },
         .{ .window_close, p.window_close },
@@ -253,10 +281,10 @@ pub fn paint(
             // window-close: an X.
             else => draw.cross(mem, g.rect(13, 13, 21, 21), self.dpi, pal.text),
         }
-    }
+    };
 
     // The title, bold, centered on the bar, between the buttons.
-    if (title.len > 0) {
+    if (title.len > 0 and !self.tabs_style) {
         const old_font = if (self.title_font) |f| c.SelectObject(mem, f) else null;
         defer if (old_font) |f| {
             _ = c.SelectObject(mem, f);
@@ -332,6 +360,26 @@ test "place: GTK's geometry at 96 DPI" {
     try testing.expectEqual(@as(c_int, 680), p.minimize.left);
     try testing.expectEqual(@as(c_int, 754), p.window_close.left);
     try testing.expectEqual(@as(c_int, 788), p.window_close.right);
+}
+
+test "place: GTK's tab row as the title bar (gtk-titlebar-style = tabs)" {
+    const testing = std.testing;
+    const bar: HeaderBar = .{ .tabs_style = true };
+    // The reference's 794 px row: the menu button touches minimize, and
+    // the tabs fill 61 to 612.
+    const p = bar.place(794);
+    try testing.expectEqual(@as(c_int, 612), p.list.left);
+    try testing.expectEqual(@as(c_int, 680), p.menu.right);
+    try testing.expectEqual(@as(c_int, 680), p.minimize.left);
+    try testing.expectEqual([2]c_int{ 61, 794 - 612 }, bar.tabsInset());
+    // Without the window's buttons (no client-side decorations) the menu
+    // ends the row, and no column hits a window button.
+    const plain: HeaderBar = .{ .tabs_style = true, .controls = false };
+    const q = plain.place(794);
+    try testing.expectEqual(@as(c_int, 788), q.menu.right);
+    try testing.expectEqual(Hit.menu, plain.hitTest(787, 20, 794));
+    try testing.expectEqual(Hit.none, plain.hitTest(793, 20, 794));
+    try testing.expectEqual(@as(c_int, 61 + 6 + 68 + 64), plain.minWidth());
 }
 
 test "minWidth: the buttons stay apart at the narrowest bar" {

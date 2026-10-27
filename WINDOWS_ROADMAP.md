@@ -1890,6 +1890,27 @@ with the `ghostty` theme), so they no longer follow macOS's rule (the
 pane's background darkened) nor OSC 11. `shade` and `split-dim` check
 them.
 
+*Step 6 done 2026-10-27:* `gtk-titlebar-style = tabs`, Windows
+Terminal's tabs in the title bar the GTK way (measured with `gtkref.ps1
+-Extra 'gtk-titlebar-style = tabs'`, which now takes several lines): no
+header bar; the tab row is the title bar and always shows (unless a
+maximized window hides its title bar), 46 DIP like the header, holding the
+split button at its start and the tab list's and menu's buttons and the
+window's at its end, the menu button against minimize (GTK's end box has no
+spacing); the tabs fill the span between the split arrow and the tab list's
+button, unpadded. Between the buttons and outside the tabs it is the
+caption; a tab is not (GTK's tabs can't drag the window either). Without
+client-side decorations the row keeps its buttons, not the window's.
+`HeaderBar.tabs_style`/`controls` and `TabBar.inset` carry it;
+`Window.chromeHit` and `titleBarHeight` answer for either style. And
+`gtk-tabs-inverted`: a tab's close button at its start (`TabBar.inverted`,
+9 DIP in, as GTK's). `header-bar` checks the layout, the hit codes, the
+row without decorations and an inverted close; unit tests pin both to the
+reference's pixels. The test hooks also paint the chrome into a bitmap
+(dump wparam 12, `Harness.saveChrome`), which `snapshot` writes as
+`paint-*.bmp` from the hidden desktop: the `tabs` row compared with GTK's
+picture button for button.
+
 *Mid-phase review (2026-10-27, steps 1 to 4b), fixed:* the window's
 minimum width now holds the header bar's buttons side by side
 (`HeaderBar.minWidth`, 255 DIP; narrower, they overlapped and clicks
@@ -2296,9 +2317,8 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 - the `macos-*` options except those folded into items above;
 - `linux-cgroup*`, and the `gtk-*` options the Look rule doesn't take
   (4.3 takes `gtk-titlebar`, `gtk-titlebar-hide-when-maximized`,
-  `gtk-wide-tabs` and `gtk-toolbar-style`, with `gtk-titlebar-style` and
-  `gtk-tabs-inverted` to come; `gtk-single-instance`'s Windows analog is
-  5.1);
+  `gtk-titlebar-style`, `gtk-wide-tabs`, `gtk-tabs-inverted` and
+  `gtk-toolbar-style`; `gtk-single-instance`'s Windows analog is 5.1);
 - the Wayland quick-terminal layer options;
 - `async-backend`, `x11-instance-name`, `window-colorspace`.
 

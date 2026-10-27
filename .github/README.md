@@ -117,7 +117,11 @@ hosted Windows runner and then the unit tests.
   tabs get their own row beneath when there are tabs to show.
   `window-decoration = server`, `gtk-titlebar = false` and fullscreen give
   the system's title bar instead, with no header buttons, as GTK has none
-  then. The title bar and tabs are in Adwaita Sans, GNOME's interface font
+  then. `gtk-titlebar-style = tabs` puts the tabs in the title bar instead,
+  with the buttons around them, and `gtk-tabs-inverted` puts a tab's close
+  button at its start. The title bar casts libadwaita's shade onto the
+  terminal (`gtk-toolbar-style` `raised`, or `raised-border` and `flat`).
+  The title bar and tabs are in Adwaita Sans, GNOME's interface font
   (bundled, not installed). `window-new-tab-position` and
   `window-title-font-family` (the chrome's font) work.
 - Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
@@ -242,8 +246,8 @@ hosted Windows runner and then the unit tests.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with window chrome (Phase 4: transparency, blur, and GTK's header bar as
-the title bar).
+with window chrome (Phase 4: GTK's look for the menus and dialogs, then
+transparency and blur).
 
 **Known issues**
 

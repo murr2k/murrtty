@@ -1469,6 +1469,14 @@ pub fn saveFrames(self: *Harness, g: *const Ghostty) !void {
     return self.fail("a visible pane presented no frame to read back", .{});
 }
 
+/// Have each window paint its chrome (header bar and tab row) into a bitmap
+/// and write it as `chrome-<n>.bmp` beside the dump file: what WM_PAINT
+/// draws, which works on the hidden desktop.
+pub fn saveChrome(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 12, 0);
+    d.deinit();
+}
+
 /// Make panes ignore WM_MOUSELEAVE (`pinned`), which Windows sends for a
 /// posted move at once on the hidden desktop, or act on it again: to see
 /// hover state (a link's preview).

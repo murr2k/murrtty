@@ -796,6 +796,23 @@ pub extern "gdi32" fn AddFontMemResourceEx(*anyopaque, DWORD, ?*anyopaque, *DWOR
 pub extern "gdi32" fn RemoveFontMemResourceEx(HANDLE) callconv(.winapi) BOOL;
 pub extern "gdi32" fn GetTextFaceW(HDC, c_int, [*]u16) callconv(.winapi) c_int;
 pub extern "gdi32" fn CreateCompatibleBitmap(HDC, c_int, c_int) callconv(.winapi) ?HBITMAP;
+pub const BITMAPINFOHEADER = extern struct {
+    biSize: DWORD = @sizeOf(BITMAPINFOHEADER),
+    biWidth: i32,
+    /// Negative: rows top first.
+    biHeight: i32,
+    biPlanes: WORD = 1,
+    biBitCount: WORD = 32,
+    biCompression: DWORD = 0,
+    biSizeImage: DWORD = 0,
+    biXPelsPerMeter: i32 = 0,
+    biYPelsPerMeter: i32 = 0,
+    biClrUsed: DWORD = 0,
+    biClrImportant: DWORD = 0,
+};
+pub const DIB_RGB_COLORS = 0;
+pub extern "gdi32" fn GdiFlush() callconv(.winapi) BOOL;
+pub extern "gdi32" fn CreateDIBSection(?HDC, *const BITMAPINFOHEADER, UINT, *?[*]u8, ?HANDLE, DWORD) callconv(.winapi) ?HBITMAP;
 pub extern "gdi32" fn SelectObject(HDC, ?HGDIOBJ) callconv(.winapi) ?HGDIOBJ;
 pub extern "gdi32" fn DeleteObject(HGDIOBJ) callconv(.winapi) BOOL;
 pub extern "gdi32" fn GetObjectW(HGDIOBJ, c_int, ?*anyopaque) callconv(.winapi) c_int;

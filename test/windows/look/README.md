@@ -16,7 +16,10 @@ These tools measure that rather than judging it by eye.
    it works on the hidden desktop), with the font size scaled by 96/DPI
    so its cells are GTK's at 96 DPI, showing the line that
    `.\gtkref.ps1 -Out gtk-text.png -Extra "command = printf '<line>\n'; exec sleep 60"`
-   shows (`look_text` in `scenarios.zig`). With
+   shows (`look_text` in `scenarios.zig`), and `paint-header.bmp` and
+   `paint-tabs-style.bmp`, the chrome as WM_PAINT draws it (also read back
+   on the hidden desktop), at the window's DPI. `-Extra` takes several
+   config lines (`-Extra 'a = 1', 'b = 2'`). With
    `GHOSTTY_GUI_ONSCREEN=1` on a still screen it then writes
    `chrome-*.bmp`, the header bar and tab row as last painted, at the
    window's DPI. The window is inactive there, so its chrome shows
