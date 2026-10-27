@@ -2998,6 +2998,10 @@ pub fn keyCallback(
         // move this behavior to the apprt probably.
         if (self.child_exited) {
             write_req.deinit();
+            // murrtty: win32-input-mode encodes releases and modifiers too;
+            // neither closes (a release may be of the key that ended the
+            // program).
+            if (event.action == .release or event.key.modifier()) return .consumed;
             self.close();
             return .closed;
         }
@@ -3015,7 +3019,8 @@ pub fn keyCallback(
     // If our event is any keypress that isn't a modifier and we generated
     // some data to send to the pty, then we move the viewport down to the
     // bottom. We also clear the selection for any key other then modifiers.
-    if (!event.key.modifier()) {
+    // murrtty: not for a release, which win32-input-mode also sends.
+    if (!event.key.modifier() and event.action != .release) {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
 

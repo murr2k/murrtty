@@ -322,6 +322,7 @@ pub const StreamHandler = struct {
             .protected_mode_iso => self.terminal.setProtectedMode(.iso),
             .protected_mode_dec => self.terminal.setProtectedMode(.dec),
             .mouse_shift_capture => self.terminal.flags.mouse_shift_capture = if (value) .true else .false,
+            .win32_input_mode => self.terminal.flags.win32_input_mode = value,
             .xt_checksum_extension => if (self.xt_checksum_report) {
                 self.terminal.flags.xt_checksum = value.flags;
             },

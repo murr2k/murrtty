@@ -1404,6 +1404,18 @@ fn handleKey(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c
     var utf8_buf: [64]u8 = undefined;
     const utf8_len = std.unicode.utf16LeToUtf8(&utf8_buf, text_slice) catch 0;
 
+    // The key as a Windows key event, for win32-input-mode (ConPTY asks
+    // for it): the character Windows made of it, as its WM_CHAR. Not for a
+    // dead key, nor for a key that made more than one code unit (a dead
+    // key's leftovers, a surrogate pair), which the core sends as text.
+    const win32_event: ?input.KeyEvent.Win32 = if (dead or text16_len > 1) null else .{
+        .vk = @truncate(vk),
+        .scan_code = @intCast(scancode),
+        .char = if (is_down and text16_len == 1) text16[0] else 0,
+        .control_state = key.controlKeyState(flags),
+        .repeat = @max(1, @as(u16, @truncate(@as(usize, @bitCast(lparam))))),
+    };
+
     // Input answers the bell (GTK's).
     if (action == .press) self.clearBell();
     self.keys_sent +%= 1;
@@ -1415,6 +1427,7 @@ fn handleKey(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c
         .composing = dead,
         .utf8 = utf8_buf[0..utf8_len],
         .unshifted_codepoint = unshifted,
+        .win32 = win32_event,
     }) catch |err| {
         log.warn("error in key callback err={}", .{err});
         return 0;

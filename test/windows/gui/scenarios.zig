@@ -52,6 +52,8 @@ pub const all = [_]Scenario{
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
     .{ .name = "pwd", .about = "OSC 9;9 and OSC 7 set the working directory; new tabs start there; relative links resolve against it", .run = pwdReports },
+    .{ .name = "console-keys", .about = "a console program reads Shift+Left, Ctrl+C, Ctrl+Shift+C and Shift+Enter whole (win32-input-mode)", .run = consoleKeys },
+    .{ .name = "pwsh-keys", .about = "win32-input-mode: Shift+arrows highlight PowerShell's text, Ctrl+C and Ctrl+Shift+C copy it, Shift+Enter adds a line", .run = pwshKeys },
     .{ .name = "pwsh-integration", .about = "PowerShell 7 and 5.1: the folder carries to new tabs, idle tabs close without asking, jump_to_prompt", .run = pwshIntegration },
     .{ .name = "cmd-integration", .about = "cmd (and Clink with GHOSTTY_GUI_CLINK): the folder carries to new tabs, idle tabs close without asking", .run = cmdIntegration },
     .{ .name = "cwd-fallback", .about = "without shell integration, cmd's cd still carries to new tabs and relative links", .run = cwdFallback },
@@ -4003,6 +4005,114 @@ fn pwdReports(h: *Harness) anyerror!void {
 
 /// PowerShell integration (roadmap 2.2), for PowerShell 7 and Windows
 /// PowerShell 5.1.
+/// What a console program reads for each key ([Console]::ReadKey through
+/// ConPTY): keys VT input can't carry arrive whole as Windows key events
+/// (win32-input-mode, roadmap 0.12). The program prints what it reads.
+fn consoleKeys(h: *Harness) anyerror!void {
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\console-keys", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    const script = try std.fmt.allocPrint(h.alloc, "{s}\\keys.ps1", .{dir});
+    defer h.alloc.free(script);
+    try h.writeFileAt(script,
+        \\[Console]::TreatControlCAsInput = $true
+        \\Write-Host 'keys-ready'
+        \\while ($true) {
+        \\  $k = [Console]::ReadKey($true)
+        \\  Write-Host ('key {0} {1} {2}' -f $k.Key, ($k.Modifiers -replace ', ', '+'), [int]$k.KeyChar)
+        \\}
+        \\
+    );
+    const config = try std.fmt.allocPrint(h.alloc, "command = pwsh -NoLogo -NoProfile -File {s}\n", .{script});
+    defer h.alloc.free(config);
+    var g = try start(h, "console-keys", config, "keys-ready");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+
+    const cases = [_]struct { mods: Harness.Mods, vk: u8, want: []const u8, what: []const u8 }{
+        .{ .mods = .{}, .vk = 'A', .want = "key A None 97", .what = "a" },
+        .{ .mods = .{ .shift = true }, .vk = w.VK_LEFT, .want = "key LeftArrow Shift 0", .what = "Shift+Left" },
+        .{ .mods = .{ .ctrl = true }, .vk = 'C', .want = "key C Control 3", .what = "Ctrl+C" },
+        .{ .mods = .{ .ctrl = true, .shift = true }, .vk = 'C', .want = "key C Shift+Control 3", .what = "Ctrl+Shift+C" },
+        .{ .mods = .{ .shift = true }, .vk = w.VK_RETURN, .want = "key Enter Shift 13", .what = "Shift+Enter" },
+    };
+    for (cases) |k| {
+        h.key(surf, k.mods, k.vk);
+        h.waitText(&g, k.want, 1, 5000) catch {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const text = d.value.windows[0].tabs[0].text orelse "";
+            return h.fail("{s} didn't arrive as '{s}'; the program read:\n{s}", .{ k.what, k.want, text });
+        };
+        try h.expect(true, "{s} arrives as '{s}'", .{ k.what, k.want });
+    }
+}
+
+/// PowerShell's own keys, which reach it through ConPTY only as Windows
+/// key events (win32-input-mode, roadmap 0.12). Shift+arrows highlight
+/// text in its command line (PSReadLine), which isn't murrtty's selection,
+/// and PSReadLine copies it with Ctrl+Shift+C (Copy) or Ctrl+C
+/// (CopyOrCancelLine): with no selection of murrtty's, Ctrl+Shift+C must
+/// reach PowerShell, as in Windows Terminal. Shift+Enter adds a line.
+fn pwshKeys(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    var g = try start(h, "pwsh-keys", "command = pwsh -NoLogo -NoProfile\n", "PS ");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+
+    // Each copy key gets a fresh line with its own word highlighted (Copy
+    // ends the highlight; CopyOrCancelLine without one cancels the line).
+    const keys = [_]struct { mods: Harness.Mods, word: []const u8, what: []const u8 }{
+        .{ .mods = .{ .ctrl = true, .shift = true }, .word = "word1", .what = "Ctrl+Shift+C (PSReadLine's Copy)" },
+        .{ .mods = .{ .ctrl = true }, .word = "word2", .what = "Ctrl+C (PSReadLine's CopyOrCancelLine)" },
+    };
+    var copied: [keys.len]bool = @splat(false);
+    for (keys, 0..) |k, n| {
+        h.key(surf, .{}, w.VK_ESCAPE);
+        try h.typeText(surf, "Write-Output hello ");
+        try h.typeText(surf, k.word);
+        try h.waitText(&g, k.word, 1, 10000);
+        var i: usize = 0;
+        while (i < k.word.len) : (i += 1) h.key(surf, .{ .shift = true }, w.VK_LEFT);
+        h.sync(surf);
+        if (n == 0) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{});
+            try h.expect(panes[0].selection != true, "Shift+Left highlights PowerShell's text, not murrtty's selection", .{});
+        }
+        try h.setClipboard("stale");
+        h.key(surf, k.mods, 'C');
+        // PowerShell writes the clipboard from its own process.
+        var waited: u32 = 0;
+        while (waited < 3000) : (waited += 100) {
+            const got = (try h.getClipboard()) orelse "";
+            defer if (got.len > 0) h.alloc.free(got);
+            if (std.mem.eql(u8, got, k.word)) {
+                copied[n] = true;
+                break;
+            }
+            w.Sleep(100);
+        }
+        h.log("{s}: {s}", .{ k.what, if (copied[n]) "copied the highlighted word" else "copied nothing" });
+    }
+    try h.expect(copied[1], "Ctrl+C copies PowerShell's highlighted text", .{});
+    try h.expect(copied[0], "Ctrl+Shift+C copies PowerShell's highlighted text", .{});
+
+    // Shift+Enter adds a line (PSReadLine's AddLine): two commands, one
+    // run, two lines of output. Escape clears what was typed (RevertLine).
+    h.key(surf, .{}, w.VK_ESCAPE);
+    try h.typeText(surf, "Write-Output first-line");
+    h.key(surf, .{ .shift = true }, w.VK_RETURN);
+    try h.typeText(surf, "Write-Output second-line");
+    h.enter(surf);
+    try waitTabLine(h, &g, 0, "first-line");
+    try waitTabLine(h, &g, 0, "second-line");
+    try h.expect(true, "Shift+Enter adds a line to the command", .{});
+    try quit(h, &g, surf);
+}
+
 fn pwshIntegration(h: *Harness) anyerror!void {
     try powershellIntegration(h, "pwsh-integration-7", "pwsh -NoLogo");
     try powershellIntegration(h, "pwsh-integration-5", "powershell -NoLogo");

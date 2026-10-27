@@ -151,6 +151,14 @@ flags: packed struct {
     /// preserved across a full reset.
     defer_prompt_mark: bool = false,
 
+    /// Whether keys go to the pty as Windows key events (win32-input-mode,
+    /// DEC private mode 9001), which Windows ConPTY asks for at startup: it
+    /// replays each as the exact console input record, so keys its VT input
+    /// can't carry (Ctrl+Shift+letter, Shift+Enter) reach console programs.
+    /// It describes the pty, so like defer_prompt_mark it is preserved
+    /// across a full reset.
+    win32_input_mode: bool = false,
+
     /// True if the terminal is in a password entry mode. This is set
     /// to true based on termios state. This is set
     /// to true based on termios state.
@@ -5117,6 +5125,7 @@ pub fn fullReset(self: *Terminal) void {
         // state, so a terminal reset must not change it.
         .resize_pull_scrollback = self.flags.resize_pull_scrollback,
         .defer_prompt_mark = self.flags.defer_prompt_mark,
+        .win32_input_mode = self.flags.win32_input_mode,
 
         .xt_checksum = self.default_xt_checksum,
     };

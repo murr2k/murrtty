@@ -37,6 +37,10 @@ pub const Options = struct {
     /// Kitty keyboard protocol flags.
     kitty_flags: KittyFlags = .disabled,
 
+    /// win32-input-mode (DEC private mode 9001, Windows ConPTY): events
+    /// that carry their Windows key message go as that.
+    win32_input: bool = false,
+
     /// Determines whether the "option" key on macOS is treated
     /// as "alt" or not. See the Ghostty `macos_option-as-alt` config
     /// docs for a more detailed description of why this is needed.
@@ -65,6 +69,7 @@ pub const Options = struct {
             .ignore_keypad_with_numlock = t.modes.get(.ignore_keypad_with_numlock),
             .modify_other_keys_state_2 = t.flags.modify_other_keys_2,
             .kitty_flags = t.screens.active.kitty_keyboard.current(),
+            .win32_input = t.flags.win32_input_mode,
 
             // These can't be known from the terminal state.
             .macos_option_as_alt = .false,
@@ -85,6 +90,7 @@ pub fn encode(
     opts: Options,
 ) std.Io.Writer.Error!void {
     //std.log.warn("KEYENCODER event={} opts={}", .{ event, opts });
+    if (opts.win32_input) if (event.win32) |w| return try win32(writer, event.action, w);
     return if (opts.kitty_flags.int() != 0) try kitty(
         writer,
         event,
@@ -94,6 +100,24 @@ pub fn encode(
         event,
         opts,
     );
+}
+
+/// win32-input-mode (Windows ConPTY): CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _,
+/// a key down (Kd 1) or up (0) that the pty replays as the console input
+/// record it describes. Releases go too.
+fn win32(
+    writer: *std.Io.Writer,
+    action: key.Action,
+    w: key.KeyEvent.Win32,
+) std.Io.Writer.Error!void {
+    try writer.print("\x1b[{d};{d};{d};{d};{d};{d}_", .{
+        w.vk,
+        w.scan_code,
+        w.char,
+        @intFromBool(action != .release),
+        w.control_state,
+        w.repeat,
+    });
 }
 
 /// Perform Kitty keyboard protocol encoding of the key event.
@@ -1985,6 +2009,49 @@ test "kitty: backspace with utf8 (dead key state)" {
         },
     });
     try testing.expectEqualStrings("", writer.buffered());
+}
+
+test "win32-input-mode: a key down and up as Windows key events" {
+    var buf: [128]u8 = undefined;
+    // Ctrl+Shift+C: VK 'C', scan code 0x2E, WM_CHAR 0x03, LEFT_CTRL|SHIFT.
+    const event: key.KeyEvent = .{
+        .key = .key_c,
+        .mods = .{ .ctrl = true, .shift = true },
+        .utf8 = "C",
+        .win32 = .{ .vk = 'C', .scan_code = 0x2E, .char = 0x03, .control_state = 0x18 },
+    };
+    {
+        var writer: std.Io.Writer = .fixed(&buf);
+        try encode(&writer, event, .{ .win32_input = true });
+        try testing.expectEqualStrings("\x1b[67;46;3;1;24;1_", writer.buffered());
+    }
+    {
+        var release = event;
+        release.action = .release;
+        release.win32.?.char = 0;
+        var writer: std.Io.Writer = .fixed(&buf);
+        try encode(&writer, release, .{ .win32_input = true });
+        try testing.expectEqualStrings("\x1b[67;46;0;0;24;1_", writer.buffered());
+    }
+    // It wins over the Kitty protocol, which ConPTY can't read.
+    {
+        var writer: std.Io.Writer = .fixed(&buf);
+        try encode(&writer, event, .{ .win32_input = true, .kitty_flags = .{ .disambiguate = true } });
+        try testing.expectEqualStrings("\x1b[67;46;3;1;24;1_", writer.buffered());
+    }
+    // Without the mode, or without the message, the usual encoding.
+    {
+        var writer: std.Io.Writer = .fixed(&buf);
+        try encode(&writer, event, .{});
+        try testing.expect(!std.mem.startsWith(u8, writer.buffered(), "\x1b[67;"));
+    }
+    {
+        var plain = event;
+        plain.win32 = null;
+        var writer: std.Io.Writer = .fixed(&buf);
+        try encode(&writer, plain, .{ .win32_input = true });
+        try testing.expect(!std.mem.startsWith(u8, writer.buffered(), "\x1b[67;"));
+    }
 }
 
 test "legacy: backspace with utf8 (dead key state)" {

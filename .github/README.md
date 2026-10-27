@@ -91,9 +91,16 @@ hosted Windows runner and then the unit tests.
 - Ctrl and Alt shortcuts: `Ctrl+C` interrupting a running program,
   `Ctrl+Shift+A`/`C`/`V` to select all, copy and paste, `Ctrl+Insert` to
   copy and `Shift+Insert` to paste (also on the numpad's Ins with NumLock
-  off, whose other keys then move as the dedicated ones), `Ctrl+Shift+T`, `Ctrl+Shift+W`, `Ctrl+Tab` and `Ctrl+PgUp` for tabs,
-  `Ctrl+Shift+N` for a new window, `Alt+F4` to close the window,
-  `Ctrl+Shift+Q` to quit.
+  off, whose other keys then move as the dedicated ones), `Ctrl+Shift+T`,
+  `Ctrl+Shift+W`, `Ctrl+Tab` and `Ctrl+PgUp` for tabs, `Ctrl+Shift+N` for a
+  new window, `Alt+F4` to close the window, `Ctrl+Shift+Q` to quit.
+- Keys reach console programs whole, as Windows key events, the way
+  Windows Terminal sends them (win32-input-mode, which Windows' ConPTY asks
+  for): `Shift+Enter` (a new line in PowerShell), `Ctrl+Shift+<letter>`
+  and other modified keys arrive with their modifiers. In PowerShell, text
+  highlighted with `Shift+arrows` is PowerShell's own selection: copy it
+  with `Ctrl+Shift+C` or `Ctrl+C`. (A mouse selection is murrtty's, and
+  `Ctrl+Shift+C` copies that.)
 - Tabs: a tab strip themed from your terminal colors, new tab (the `+`
   button or a keybinding), switching tabs (clicking or a keybinding), and
   closing a tab (its close button, a middle-click or a keybinding).
@@ -232,10 +239,6 @@ overflow, dialog polish).
   relative links are blocked. Inside cmd, a program that changes its own
   directory (a nested PowerShell, say) still has relative links resolved
   against cmd's.
-- Some modified keys never reach programs: `Shift+Enter`,
-  `Ctrl+Shift+<letter>` and others that murrtty sends as escape sequences
-  Windows' ConPTY layer can't translate. Plain keys and `Ctrl+<letter>`
-  work. The fix is win32-input-mode (roadmap 0.12).
 
 ## Requirements
 

@@ -138,6 +138,7 @@ pub const Action = union(Key) {
     xt_checksum_extension: XtChecksumExtension,
     program_status: ProgramStatus,
     soft_reset,
+    win32_input_mode: bool,
 
     pub const Key = lib.Enum(
         lib.target,
@@ -246,6 +247,7 @@ pub const Action = union(Key) {
             "xt_checksum_extension",
             "program_status",
             "soft_reset",
+            "win32_input_mode",
         },
     );
 
@@ -2179,6 +2181,9 @@ pub fn Stream(comptime H: type) type {
                     for (input.params) |mode_int| {
                         if (modes.modeFromInt(mode_int, ansi_mode)) |mode| {
                             self.handler.vt(.set_mode, .{ .mode = mode });
+                        } else if (!ansi_mode and mode_int == 9001) {
+                            // win32-input-mode, which Windows ConPTY asks for.
+                            self.handler.vt(.win32_input_mode, true);
                         } else {
                             logUnsupportedOnce("unimplemented mode: {}", .{mode_int}, mode_int);
                         }
@@ -2200,6 +2205,8 @@ pub fn Stream(comptime H: type) type {
                     for (input.params) |mode_int| {
                         if (modes.modeFromInt(mode_int, ansi_mode)) |mode| {
                             self.handler.vt(.reset_mode, .{ .mode = mode });
+                        } else if (!ansi_mode and mode_int == 9001) {
+                            self.handler.vt(.win32_input_mode, false);
                         } else {
                             logUnsupportedOnce("unimplemented mode: {}", .{mode_int}, mode_int);
                         }
@@ -4488,6 +4495,37 @@ test "stream: XTSHIFTESCAPE" {
     // Invalid and ignored by the handler
     s.nextSlice("\x1B[1 s");
     try testing.expect(s.handler.escape.? == true);
+}
+
+test "stream: win32-input-mode (DEC private mode 9001)" {
+    const H = struct {
+        on: ?bool = null,
+        modes: usize = 0,
+
+        pub fn vt(
+            self: *@This(),
+            comptime action: streampkg.Action.Tag,
+            value: streampkg.Action.Value(action),
+        ) void {
+            switch (action) {
+                .win32_input_mode => self.on = value,
+                .set_mode, .reset_mode => self.modes += 1,
+                else => {},
+            }
+        }
+    };
+
+    var s: Stream(H) = .init(.{ .handler = .{} });
+    // ConPTY's request, alongside a mode Ghostty knows.
+    s.nextSlice("\x1B[?9001;1004h");
+    try testing.expect(s.handler.on.? == true);
+    try testing.expectEqual(@as(usize, 1), s.handler.modes);
+    s.nextSlice("\x1B[?9001l");
+    try testing.expect(s.handler.on.? == false);
+    // The ANSI mode 9001 isn't it.
+    s.handler.on = null;
+    s.nextSlice("\x1B[9001h");
+    try testing.expect(s.handler.on == null);
 }
 
 test "stream: change window title with invalid utf-8" {

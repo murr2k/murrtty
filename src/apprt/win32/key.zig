@@ -74,6 +74,26 @@ pub fn currentMods() input.Mods {
     return mods;
 }
 
+/// The console's dwControlKeyState for a key message (`flags` is its
+/// lparam's high word): Ctrl and Alt by side, Shift, the lock keys, and
+/// ENHANCED_KEY for an extended key. A Ctrl or Alt down on neither side
+/// (injected input) counts as the left one.
+pub fn controlKeyState(flags: u16) u32 {
+    var state: u32 = 0;
+    const right_alt = down(c.VK_RMENU);
+    const right_ctrl = down(c.VK_RCONTROL);
+    if (right_alt) state |= 0x0001; // RIGHT_ALT_PRESSED
+    if (down(c.VK_LMENU) or (down(c.VK_MENU) and !right_alt)) state |= 0x0002; // LEFT_ALT_PRESSED
+    if (right_ctrl) state |= 0x0004; // RIGHT_CTRL_PRESSED
+    if (down(c.VK_LCONTROL) or (down(c.VK_CONTROL) and !right_ctrl)) state |= 0x0008; // LEFT_CTRL_PRESSED
+    if (down(c.VK_SHIFT)) state |= 0x0010; // SHIFT_PRESSED
+    if (toggled(c.VK_NUMLOCK)) state |= 0x0020; // NUMLOCK_ON
+    if (toggled(c.VK_SCROLL)) state |= 0x0040; // SCROLLLOCK_ON
+    if (toggled(c.VK_CAPITAL)) state |= 0x0080; // CAPSLOCK_ON
+    if (flags & c.KF_EXTENDED != 0) state |= 0x0100; // ENHANCED_KEY
+    return state;
+}
+
 /// True if Right Alt is down together with Left Ctrl. Windows reports
 /// AltGr as this combination, which we treat as a character modifier
 /// rather than Ctrl+Alt when it produces text.

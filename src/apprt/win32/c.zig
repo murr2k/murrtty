@@ -289,6 +289,7 @@ pub const VK_SPACE = 0x20;
 pub const VK_F4 = 0x73;
 pub const VK_F10 = 0x79;
 pub const VK_NUMLOCK = 0x90;
+pub const VK_SCROLL = 0x91;
 pub const VK_LSHIFT = 0xA0;
 pub const VK_RSHIFT = 0xA1;
 pub const VK_LCONTROL = 0xA2;

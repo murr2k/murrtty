@@ -47,6 +47,26 @@ pub const KeyEvent = struct {
     /// shift+a is "A" in UTF-8 but unshifted would provide 'a'.
     unshifted_codepoint: u21 = 0,
 
+    /// The Windows key message behind this event, for win32-input-mode
+    /// (Terminal.flags.win32_input_mode): the Win32 runtime sets it, and
+    /// the encoder then sends the key as a Windows key event. Null from
+    /// other runtimes, and for keys it can't describe as one event.
+    win32: ?Win32 = null,
+
+    pub const Win32 = struct {
+        /// The virtual-key code.
+        vk: u16,
+        /// The scan code, without the extended prefix (see control_state).
+        scan_code: u16,
+        /// The UTF-16 code unit the key produced (its WM_CHAR), or 0.
+        char: u16 = 0,
+        /// The console's dwControlKeyState: modifiers by side, the lock
+        /// keys and ENHANCED_KEY.
+        control_state: u32 = 0,
+        /// The repeat count.
+        repeat: u16 = 1,
+    };
+
     /// Returns the effective modifiers for this event. The effective
     /// modifiers are the mods that should be considered for keybindings.
     pub fn effectiveMods(self: KeyEvent) Mods {

@@ -912,6 +912,15 @@ const Held = struct {
         // machine): ask it to signal once it gets to a message posted after
         // them. Posted messages are handled in order, and the wakeup window
         // is on the same thread as the terminal windows.
+        self.wait();
+        if (self.synced) |event| _ = w.CloseHandle(event);
+        _ = w.SetKeyboardState(&self.saved);
+        if (self.attached) _ = w.AttachThreadInput(self.me, self.tid, w.FALSE);
+    }
+
+    /// Wait until Ghostty has handled what was posted so far (the event
+    /// resets itself, so this can be done more than once).
+    fn wait(self: *Held) void {
         const waited = sync: {
             const wakeup = self.wakeup orelse break :sync false;
             const event = self.synced orelse break :sync false;
@@ -919,9 +928,6 @@ const Held = struct {
             break :sync w.WaitForSingleObject(event, 5000) == 0;
         };
         if (!waited) w.Sleep(300);
-        if (self.synced) |event| _ = w.CloseHandle(event);
-        _ = w.SetKeyboardState(&self.saved);
-        if (self.attached) _ = w.AttachThreadInput(self.me, self.tid, w.FALSE);
     }
 };
 
@@ -976,6 +982,10 @@ fn postKey(self: *Harness, target: w.HWND, mods: Mods, vk: u8, extended: bool) v
     if (mods.alt) flags |= 1 << 29;
     const sys = mods.alt and !mods.ctrl;
     _ = w.PostMessageW(target, if (sys) w.WM_SYSKEYDOWN else w.WM_KEYDOWN, vk, @bitCast(flags));
+    // As with a keyboard: the key down's WM_CHAR, which Windows posts as
+    // Ghostty translates it, comes before the key up (posted together, the
+    // key up went first, and the key down was handled without its text).
+    held.wait();
     _ = w.PostMessageW(target, if (sys) w.WM_SYSKEYUP else w.WM_KEYUP, vk, @bitCast(flags | 0xC0000000));
 }
 

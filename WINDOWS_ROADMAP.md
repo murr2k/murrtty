@@ -598,6 +598,35 @@ console input record.
 *Done when:* `Shift+Enter`, `Ctrl+Shift+P` and `Ctrl+Shift+Enter` reach
 `[Console]::ReadKey` with their modifiers, and a GUI scenario checks it.
 
+*Done 2026-10-26, brought forward by the owner's report:* PowerShell text
+highlighted with Shift+arrows (PSReadLine's own selection, not murrtty's)
+couldn't be copied with Ctrl+Shift+C, PSReadLine's Copy. With no selection
+of murrtty's the performable copy binding passes the key on, and ConPTY
+dropped its `CSI u`. As built, keeping the core's binding and selection
+logic and changing only the bytes a key becomes:
+- The mode lives in `Terminal.flags.win32_input_mode`, set by a new stream
+  action from `CSI ? 9001 h`/`l`, rather than in the mode table, whose
+  packed layout is a snapshot format; like `defer_prompt_mark` it describes
+  the pty and survives a full reset.
+- `KeyEvent.win32` (optional) carries the Windows message: virtual key,
+  scan code, the WM_CHAR code unit, dwControlKeyState and the repeat count.
+  The Win32 runtime fills it (`key.controlKeyState`), except for dead keys
+  and keys that made more than one code unit, which go as text.
+- With the mode on, `key_encode` writes the event as `CSI Vk;Sc;Uc;Kd;Cs;Rc
+  _`, ahead of the Kitty protocol (which ConPTY can't read), releases and
+  modifiers included. The core no longer clears the selection, scrolls or
+  closes an exited pane on a release, nor closes it on a modifier.
+Bindings still come first: `Ctrl+Shift+P` (the palette) and
+`Ctrl+Shift+Enter` (split zoom) are murrtty's own by default, so the
+scenarios use `Ctrl+Shift+C`, which reaches the program when nothing is
+selected. Scenario `console-keys` runs a script printing what
+`[Console]::ReadKey` reads (a, Shift+Left, Ctrl+C, Ctrl+Shift+C,
+Shift+Enter, all with their modifiers and characters); `pwsh-keys` copies
+PSReadLine's highlight with Ctrl+Shift+C and Ctrl+C and adds a line with
+Shift+Enter. The harness now posts a key's release only after murrtty has
+handled its press, as a keyboard delivers them: posted together, the press
+was handled before Windows queued its WM_CHAR.
+
 **0.13 Self-hosted runner on the development desktop, M.** *Planned
 2026-10-24 (decision 6), at the break before Phase 1.* A GitHub Actions runner
 on the owner's desktop runs a Debug build, the unit tests and the GUI suite on
