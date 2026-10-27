@@ -32,6 +32,7 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
+    .{ .name = "tab-overflow", .about = "twelve tabs in a narrow window scroll between chevrons and with the wheel; the list button and toggle_tab_overview list them", .run = tabOverflow },
     .{ .name = "tab-buttons", .about = "the arrow beside + opens the split menu; the menu button opens GTK's main menu (New Tab, Command Palette, About murrtty)", .run = tabButtons },
     .{ .name = "tab-menu", .about = "a tab's right-click menu: Change Tab Title, Close Tab, Close Other Tabs, Close Tabs to the Right, on the tab clicked; graying", .run = tabMenu },
     .{ .name = "bell", .about = "bell-features title: a bell before the tab's title and caption until input; a background tab's mark until selected", .run = bell },
@@ -1709,8 +1710,114 @@ fn tabButtons(h: *Harness) anyerror!void {
     try quit(h, &g, try h.surface(&g, win));
 }
 
+/// Many tabs (roadmap 3.8): in a narrow window twelve don't fit, so they
+/// scroll between chevrons; a new tab shows; the chevrons reach the first
+/// tab, the wheel the last; the list button lists them all, in order, the
+/// active one selected, and filtering by a tab's line picks it. With no
+/// strip, toggle_tab_overview opens the same list.
+fn tabOverflow(h: *Harness) anyerror!void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    {
+        // window-width counts only with window-height.
+        var g = try start(h, "tab-overflow", "window-width = 50\nwindow-height = 20\nwindow-show-tab-bar = always\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        var count: usize = 1;
+        while (count < 12) : (count += 1) {
+            h.key(try h.surface(&g, win), cs, 'T');
+            try waitWindowTabs(h, &g, win, count + 1);
+        }
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const dw = d.value.windows[0];
+            const bar = dw.tab_bar;
+            try h.expect(bar.overflow, "twelve tabs overflow the narrow strip", .{});
+            const r = bar.tabs[dw.active].rect;
+            try h.expect(dw.active == 11 and r[0] >= bar.view[0] and r[2] <= bar.view[1], "the newest tab, active, is in view", .{});
+        }
+
+        // The left chevron, until the first tab shows; then click it.
+        var clicks: usize = 0;
+        while (clicks < 20) : (clicks += 1) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const bar = d.value.windows[0].tab_bar;
+            if (bar.scroll == 0) break;
+            const r = bar.scroll_left;
+            h.click(win, @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2), .left);
+            h.sync(win);
+        }
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const bar = d.value.windows[0].tab_bar;
+            const r = bar.tabs[0].rect;
+            try h.expect(bar.scroll == 0 and r[0] >= bar.view[0], "the left chevron scrolls back to the first tab ({d} clicks)", .{clicks});
+            h.click(win, @divTrunc(r[0] + r[2], 2) - 8, @divTrunc(r[1] + r[3], 2), .left);
+        }
+        try waitActiveTab(h, &g, win, 0);
+        try h.expect(true, "and the first tab can be clicked", .{});
+
+        // The wheel (towards the user) to the end: the last tab shows.
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const bar = d.value.windows[0].tab_bar;
+            const mid = @divTrunc(bar.view[0] + bar.view[1], 2);
+            h.wheel(win, mid, @divTrunc(bar.height, 2), -20);
+        }
+        h.sync(win);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const bar = d.value.windows[0].tab_bar;
+            const r = bar.tabs[11].rect;
+            try h.expect(r[2] <= bar.view[1] and r[0] >= bar.view[0], "the wheel scrolls to the last tab (scroll {d})", .{bar.scroll});
+        }
+
+        // The tab list.
+        const at = try stripButton(h, &g, .list);
+        h.press(win, at.x, at.y);
+        const palette = hwndOf((try waitPalette(h, &g, win, true)).edit);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const p = d.value.windows[0].palette orelse return h.fail("no palette in the dump", .{});
+            const tabs_dump = d.value.windows[0].tabs;
+            var same = p.items.len == 12;
+            if (same) for (p.items, tabs_dump) |item, t| {
+                same = same and std.mem.eql(u8, item, t.label);
+            };
+            try h.expect(same, "the list button lists the twelve tabs in order (got {d})", .{p.items.len});
+            try h.expect(p.selected == 0 and std.mem.startsWith(u8, p.details[0], "Tab 1"), "the active tab selected, 'Tab N' beneath", .{});
+        }
+        try h.typeText(palette, "Tab 3");
+        _ = try waitPaletteText(h, &g, win, "Tab 3");
+        h.key(palette, .{}, w.VK_RETURN);
+        try waitActiveTab(h, &g, win, 2);
+        try h.expect(true, "filtering by 'Tab 3' and Enter selects the third tab", .{});
+        try quit(h, &g, try h.surface(&g, win));
+    }
+    {
+        // No strip: toggle_tab_overview.
+        var g = try start(h, "tab-overview", "window-show-tab-bar = never\nkeybind = ctrl+shift+f5=toggle_tab_overview\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        h.key(try h.surface(&g, win), cs, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        h.key(try h.surface(&g, win), cs, w.VK_F5);
+        const palette = hwndOf((try waitPalette(h, &g, win, true)).edit);
+        h.key(palette, .{}, w.VK_UP);
+        h.key(palette, .{}, w.VK_RETURN);
+        try waitActiveTab(h, &g, win, 0);
+        try h.expect(true, "with no strip, toggle_tab_overview lists the tabs and Up, Enter picks the first", .{});
+        try quit(h, &g, try h.surface(&g, win));
+    }
+}
+
 /// The middle of one of the strip's buttons, in the window's client area.
-fn stripButton(h: *Harness, g: *Harness.Ghostty, which: enum { new_tab, new_tab_menu, menu }) !struct { x: c_int, y: c_int } {
+fn stripButton(h: *Harness, g: *Harness.Ghostty, which: enum { new_tab, new_tab_menu, menu, list }) !struct { x: c_int, y: c_int } {
     var d = try h.dump(g);
     defer d.deinit();
     const bar = d.value.windows[0].tab_bar;
@@ -1718,6 +1825,7 @@ fn stripButton(h: *Harness, g: *Harness.Ghostty, which: enum { new_tab, new_tab_
         .new_tab => bar.new_tab,
         .new_tab_menu => bar.new_tab_menu,
         .menu => bar.menu,
+        .list => bar.list,
     };
     if (r[2] <= r[0]) return h.fail("the strip reports no such button", .{});
     return .{ .x = @divTrunc(r[0] + r[2], 2), .y = @divTrunc(r[1] + r[3], 2) };

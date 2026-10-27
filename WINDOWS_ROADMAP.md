@@ -225,10 +225,13 @@ roadmap item behind it.
   Tab, Close Other Tabs and Close Tabs to the Right, acting on the tab
   clicked (Move Tab to New Window, grayed, comes with 4.5); GTK's offers
   only Change Tab Title.
+- **Tab overview** (3.8): the strip's list button and
+  `toggle_tab_overview` open a list of the window's tabs with a filter
+  box (the command palette's), not GTK's overview of live thumbnails.
+- **Tab overflow** (3.8): tabs that don't fit scroll between chevrons and
+  with the wheel; GTK's strip scrolls without chevrons.
 
 *Decided, not built yet:*
-- **Tab overview** (3.8): a list with a filter box, not GTK's live
-  thumbnails.
 - **Tab tooltips** (3.8): the title and the working directory; GTK's shows
   only the directory.
 - **Config editor** (F1): a GUI for every configuration option; Ghostty is
@@ -1546,6 +1549,25 @@ Quit. Both open on the press under their button and act on the active
 tab's focused pane, as the core's actions. Tabs that don't fit run under
 the buttons until 3.8c. Scenario `tab-buttons`; the dump reports both
 buttons' rectangles. The system menu's items are 3.9's.
+
+*3.8c (overflow and the tab list) done 2026-10-26.* `TabBar.place` lays
+the strip out once for everything that draws or hit-tests it: tabs share
+the room between 64 and 240 DIP; when they don't fit at 64 they scroll
+(`TabBar.scroll`) between a "‹" and a "›", "+" and its arrow move to just
+left of the list button, and tabs are painted clipped to their span. A
+chevron scrolls a tab per click, the wheel (or a tilt) a tab per notch;
+selecting a tab (a click, a key, a new tab) scrolls it into view, and a
+resize only clamps the scroll, so scrolling by hand isn't undone. The
+list button, always shown left of the main menu's, and
+`toggle_tab_overview` (also with `window-show-tab-bar = never`) open the
+command palette in a tabs mode: the window's tabs in order as the strip
+labels them, "Tab N" and the directory beneath, the active one selected;
+the filter matches both lines, and choosing one jumps to its pane. Move
+Tab to New Window in the tab menu is now the core's
+`move_tab_to_new_window`, grayed until 4.5 implements it. Scenario
+`tab-overflow` (twelve tabs in a 50-column window); TabBar's unit tests
+bring each of 40 tabs into view and click it. The dump reports the list
+button, the chevrons, the span and the scroll.
 
 **3.9 Dialog polish, S.**
 - Replace `MessageBox` confirmations with TaskDialogs, worded as GTK's

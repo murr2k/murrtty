@@ -661,6 +661,7 @@ pub extern "user32" fn AppendMenuW(HMENU, UINT, usize, ?LPCWSTR) callconv(.winap
 pub extern "user32" fn TrackPopupMenuEx(HMENU, UINT, c_int, c_int, HWND, ?*anyopaque) callconv(.winapi) c_int;
 pub extern "user32" fn DestroyMenu(HMENU) callconv(.winapi) BOOL;
 pub extern "user32" fn ClientToScreen(HWND, *POINT) callconv(.winapi) BOOL;
+pub extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.winapi) BOOL;
 pub extern "user32" fn IsClipboardFormatAvailable(UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn SetTimer(?HWND, usize, UINT, ?*const anyopaque) callconv(.winapi) usize;
 pub extern "user32" fn KillTimer(?HWND, usize) callconv(.winapi) BOOL;
@@ -687,6 +688,8 @@ pub extern "gdi32" fn CreatePen(c_int, c_int, COLORREF) callconv(.winapi) ?HGDIO
 pub extern "gdi32" fn MoveToEx(HDC, c_int, c_int, ?*POINT) callconv(.winapi) BOOL;
 pub extern "gdi32" fn LineTo(HDC, c_int, c_int) callconv(.winapi) BOOL;
 pub extern "gdi32" fn SetBkMode(HDC, c_int) callconv(.winapi) c_int;
+pub extern "gdi32" fn IntersectClipRect(HDC, c_int, c_int, c_int, c_int) callconv(.winapi) c_int;
+pub extern "gdi32" fn SelectClipRgn(HDC, ?HRGN) callconv(.winapi) c_int;
 pub extern "gdi32" fn SetTextColor(HDC, COLORREF) callconv(.winapi) COLORREF;
 pub extern "gdi32" fn CreateFontIndirectW(*const LOGFONTW) callconv(.winapi) ?HFONT;
 

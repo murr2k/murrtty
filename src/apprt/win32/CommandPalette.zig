@@ -16,6 +16,10 @@
 //! Its windows (the box and the dimming) are layered children of the
 //! window (spike S1), so DWM composes them over the panes. The Window owns
 //! it; the windows are created the first time it opens.
+//!
+//! It also serves as the tab list (roadmap 3.8: the strip's list button and
+//! toggle_tab_overview): the same box listing the window's tabs in order,
+//! the active one selected; choosing one selects it.
 const CommandPalette = @This();
 
 const std = @import("std");
@@ -74,6 +78,10 @@ const Choice = union(enum) {
     jump: u64,
 };
 
+/// What it lists: commands and terminals, or the window's tabs.
+pub const Mode = enum { commands, tabs };
+
+mode: Mode = .commands,
 window: ?*Window = null,
 hwnd: ?c.HWND = null,
 dim: ?c.HWND = null,
@@ -155,18 +163,29 @@ pub fn focusTarget(self: *const CommandPalette) ?c.HWND {
     return if (self.isOpen()) self.edit else null;
 }
 
-/// toggle_command_palette from `surface`, a pane of `window`.
+/// toggle_command_palette from `surface`, a pane of `window`. Open as the
+/// tab list, it turns into the palette.
 pub fn toggle(self: *CommandPalette, window: *Window, surface: *Surface) void {
-    if (self.isOpen()) return self.close();
-    self.open(window, surface) catch |err| log.warn("command palette not opened err={}", .{err});
+    if (self.isOpen() and self.mode == .commands) return self.close();
+    self.open(window, surface, .commands) catch |err| log.warn("command palette not opened err={}", .{err});
 }
 
-fn open(self: *CommandPalette, window: *Window, surface: *Surface) !void {
+/// The tab list: the strip's list button and toggle_tab_overview.
+pub fn toggleTabs(self: *CommandPalette, window: *Window, surface: *Surface) void {
+    if (self.isOpen() and self.mode == .tabs) return self.close();
+    self.open(window, surface, .tabs) catch |err| log.warn("tab list not opened err={}", .{err});
+}
+
+fn open(self: *CommandPalette, window: *Window, surface: *Surface, mode: Mode) !void {
     self.window = window;
+    self.mode = mode;
     self.surface_id = if (surface.core_initialized) surface.core_surface.id else 0;
     if (self.hwnd == null) try self.create(window);
     self.setColors(surface);
-    try self.build(window.app);
+    switch (mode) {
+        .commands => try self.build(window.app),
+        .tabs => try self.buildTabs(window),
+    }
     _ = c.SetWindowTextW(self.edit.?, c.L(""));
     try self.refilter();
     _ = c.ShowWindow(self.dim.?, c.SW_SHOWNA);
@@ -327,6 +346,44 @@ fn build(self: *CommandPalette, app: *App) !void {
     self.entries = list.items;
 }
 
+/// The window's tabs in order, each as its strip shows it, with "Tab N"
+/// and its directory beneath; choosing one jumps to its focused pane.
+fn buildTabs(self: *CommandPalette, window: *Window) !void {
+    self.freeEntries();
+    self.arena = .init(window.app.core_app.alloc);
+    const alloc = self.arena.?.allocator();
+    var list: std.ArrayList(Entry) = .empty;
+    for (window.tabs.items, 1..) |tab, ti| {
+        const s = tab.focused;
+        // One still starting can't be focused yet.
+        if (!s.core_initialized) continue;
+        const label = try tab.label(alloc);
+        const pwd: []const u8 = try s.core_surface.pwd(alloc) orelse "";
+        var detail: std.Io.Writer.Allocating = .init(alloc);
+        try detail.writer.print("Tab {d}", .{ti});
+        if (pwd.len > 0 and std.mem.indexOf(u8, label, pwd) == null) try detail.writer.print(": {s}", .{pwd});
+        try list.append(alloc, .{
+            .title = label,
+            .detail = detail.written(),
+            .binding = "",
+            .action = null,
+            .jump = s.core_surface.id,
+        });
+    }
+    self.entries = list.items;
+}
+
+/// The row of the window's active tab, in the tab list.
+fn activeTabRow(self: *const CommandPalette) ?usize {
+    const window = self.window orelse return null;
+    const active = window.activeSurface() orelse return null;
+    if (!active.core_initialized) return null;
+    for (self.shown.items, 0..) |entry, row| {
+        if (self.entries[entry].jump == active.core_surface.id) return row;
+    }
+    return null;
+}
+
 /// By title, ignoring case, with a colon sorting before any letter so
 /// "Foo:" comes before "Foo Bar"; the shorter first when one is the
 /// other's start (GTK's order). The sort is stable.
@@ -397,7 +454,11 @@ fn refilter(self: *CommandPalette) !void {
 
     _ = c.SendMessageW(list, c.LB_RESETCONTENT, 0, 0);
     for (0..self.shown.items.len) |i| _ = c.SendMessageW(list, c.LB_ADDSTRING, 0, @intCast(i));
-    if (self.shown.items.len > 0) _ = c.SendMessageW(list, c.LB_SETCURSEL, 0, 0);
+    if (self.shown.items.len > 0) {
+        // The tab list, unfiltered, starts at the active tab.
+        const row: usize = if (self.mode == .tabs and query.len == 0) self.activeTabRow() orelse 0 else 0;
+        _ = c.SendMessageW(list, c.LB_SETCURSEL, row, 0);
+    }
     self.layout();
 }
 

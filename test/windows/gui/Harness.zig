@@ -1072,6 +1072,16 @@ pub fn release(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
     _ = w.PostMessageW(target, w.WM_LBUTTONUP, 0, w.makeLParam(x, y));
 }
 
+/// Turn the wheel `notches` (positive: away from the user, up) at client
+/// coordinates of `target`; the message carries screen coordinates.
+pub fn wheel(self: *Harness, target: w.HWND, x: c_int, y: c_int, notches: c_int) void {
+    _ = self;
+    var pt: w.POINT = .{ .x = x, .y = y };
+    _ = w.ClientToScreen(target, &pt);
+    const delta: u16 = @bitCast(@as(i16, @intCast(notches * 120)));
+    _ = w.PostMessageW(target, w.WM_MOUSEWHEEL, @as(w.WPARAM, delta) << 16, w.makeLParam(pt.x, pt.y));
+}
+
 /// Press the right button at client coordinates of `target`, without the
 /// release: a context menu opens on the press and takes the release.
 pub fn rightPress(self: *Harness, target: w.HWND, x: c_int, y: c_int) void {
@@ -1220,6 +1230,15 @@ pub const Dump = struct {
         /// The arrow beside "+" (the split menu) and the main menu's button.
         new_tab_menu: [4]i32 = .{ 0, 0, 0, 0 },
         menu: [4]i32 = .{ 0, 0, 0, 0 },
+        /// The tab list's button.
+        list: [4]i32 = .{ 0, 0, 0, 0 },
+        /// Whether tabs overflow; then the chevrons, the span tabs show in
+        /// (left, right) and how far they are scrolled.
+        overflow: bool = false,
+        scroll_left: [4]i32 = .{ 0, 0, 0, 0 },
+        scroll_right: [4]i32 = .{ 0, 0, 0, 0 },
+        view: [2]i32 = .{ 0, 0 },
+        scroll: i32 = 0,
     };
     pub const Tab = struct {
         hwnd: u64,

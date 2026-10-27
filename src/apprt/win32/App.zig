@@ -1413,6 +1413,12 @@ pub fn performAction(
             surface.window.palette.toggle(surface.window, surface);
         },
 
+        // The tab list (roadmap 3.8), also without a tab strip.
+        .toggle_tab_overview => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.window.toggleTabList();
+        },
+
         else => {
             log.debug("unimplemented action={}", .{action});
             return false;
@@ -1448,7 +1454,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
     return switch (action) {
         // Runtime actions not implemented yet.
         .move_tab_to_new_window,
-        .toggle_tab_overview,
         .reset_window_size,
         .inspector,
         .show_gtk_inspector,

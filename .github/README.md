@@ -108,7 +108,10 @@ hosted Windows runner and then the unit tests.
   tabs to its right. As in Ghostty's GTK app, the arrow beside `+` splits
   the terminal, and the menu button at the right end opens the main menu
   (copy and paste, windows, tabs, splits, the command palette, the
-  configuration, About murrtty, Quit).
+  configuration, About murrtty, Quit). Tabs that don't fit scroll (the
+  chevrons at either end, or the mouse wheel), and the list button beside
+  the menu button (or `toggle_tab_overview`) lists the window's tabs with
+  a filter box.
 - Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
   and down, a pane closes with its shell (the last one closes the tab), and
   the tab shows the focused pane's title. `Ctrl+Shift+W` closes the whole

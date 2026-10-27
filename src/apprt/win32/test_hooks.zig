@@ -266,10 +266,30 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         const nt = w.tab_bar.newTabRect(n, client.right);
         const ntm = w.tab_bar.newTabMenuRect(n, client.right);
         const mr = w.tab_bar.menuRect(client.right);
-        try out.print(alloc, "],\"new_tab\":[{d},{d},{d},{d}],\"new_tab_menu\":[{d},{d},{d},{d}],\"menu\":[{d},{d},{d},{d}]}},\"tabs\":[", .{
+        const lr = w.tab_bar.listRect(client.right);
+        const sl = w.tab_bar.scrollLeftRect(n, client.right);
+        const sr = w.tab_bar.scrollRightRect(n, client.right);
+        const view = w.tab_bar.viewRect(n, client.right);
+        try out.print(alloc, "],\"new_tab\":[{d},{d},{d},{d}],\"new_tab_menu\":[{d},{d},{d},{d}],\"menu\":[{d},{d},{d},{d}],\"list\":[{d},{d},{d},{d}]", .{
             nt.left,  nt.top,  nt.right,  nt.bottom,
             ntm.left, ntm.top, ntm.right, ntm.bottom,
             mr.left,  mr.top,  mr.right,  mr.bottom,
+            lr.left,  lr.top,  lr.right,  lr.bottom,
+        });
+        // An overflowing strip's chevrons, the span tabs show in, the scroll.
+        try out.print(alloc, ",\"overflow\":{},\"scroll_left\":[{d},{d},{d},{d}],\"scroll_right\":[{d},{d},{d},{d}],\"view\":[{d},{d}],\"scroll\":{d}}},\"tabs\":[", .{
+            w.tab_bar.overflowing(n, client.right),
+            sl.left,
+            sl.top,
+            sl.right,
+            sl.bottom,
+            sr.left,
+            sr.top,
+            sr.right,
+            sr.bottom,
+            view.left,
+            view.right,
+            w.tab_bar.scroll,
         });
 
         // Each tab as its focused pane.

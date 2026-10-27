@@ -122,8 +122,8 @@ const tab_items = [_]Item{
     act("Close &Other Tabs", .{ .close_tab = .other }),
     act("Close Tabs to the &Right", .{ .close_tab = .right }),
     .separator,
-    // Roadmap 4.5: moving terminals between windows.
-    .{ .unavailable = "&Move Tab to New Window" },
+    // Grayed until roadmap 4.5 implements the action.
+    act("&Move Tab to New Window", .move_tab_to_new_window),
 };
 
 /// Where the tab a tab menu is for sits in its window's strip.

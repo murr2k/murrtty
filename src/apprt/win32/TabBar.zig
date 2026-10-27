@@ -3,6 +3,12 @@
 //! Drawn with GDI rather than the common tab control so it can follow
 //! the terminal's colors and the dark title bar. The Window owns the
 //! tabs; this only lays them out, paints and hit-tests.
+//!
+//! Left to right: the tabs, "+" and the arrow beside it (the split menu),
+//! then at the right end the tab list's button and the main menu's. Tabs
+//! share the room between 64 and 240 DIP each; when they don't fit at 64
+//! they scroll (by `scroll`) between a "‹" and a "›", and "+" moves to
+//! just left of the list button (roadmap 3.8).
 const TabBar = @This();
 
 const std = @import("std");
@@ -16,6 +22,8 @@ const tab_min_width = 64;
 const button_width = 34;
 /// The arrow beside "+" opening the split menu (GTK's split button).
 const dropdown_width = 18;
+/// The "‹" and "›" scrolling an overflowing strip.
+const chevron_width = 22;
 const close_size = 18;
 const text_inset = 12;
 
@@ -26,6 +34,9 @@ dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 hover: Hit = .none,
 tracking: bool = false,
 
+/// How far the tabs are scrolled, in pixels, while they overflow.
+scroll: c_int = 0,
+
 pub const Hit = union(enum) {
     none,
     tab: usize,
@@ -33,13 +44,101 @@ pub const Hit = union(enum) {
     new_tab,
     /// The arrow beside "+": the split menu.
     new_tab_menu,
+    /// The tab list's button.
+    list,
     /// The main menu's button at the right end.
     menu,
+    /// The chevrons of an overflowing strip.
+    scroll_left,
+    scroll_right,
 
     pub fn eql(a: Hit, b: Hit) bool {
         return std.meta.eql(a, b);
     }
 };
+
+/// Where everything goes for `n` tabs in a bar `width` pixels wide.
+const Place = struct {
+    tab_width: c_int,
+    /// The tabs don't fit at their narrowest: they scroll between the
+    /// chevrons.
+    overflow: bool,
+    /// The span the tabs show in.
+    view_left: c_int,
+    view_right: c_int,
+    new_tab_left: c_int,
+    list_left: c_int,
+    menu_left: c_int,
+};
+
+fn place(self: *const TabBar, n: usize, width: c_int) Place {
+    const button = self.scale(button_width);
+    const plus = button + self.scale(dropdown_width);
+    const menu_left = width - button;
+    const list_left = menu_left - button;
+    const count: c_int = @intCast(@max(n, 1));
+    const avail = @max(0, list_left - plus);
+    const per = @divTrunc(avail, count);
+    if (per >= self.scale(tab_min_width) or n <= 1) {
+        const w = std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
+        const tabs_right = w * count;
+        return .{
+            .tab_width = w,
+            .overflow = false,
+            .view_left = 0,
+            .view_right = tabs_right,
+            .new_tab_left = tabs_right,
+            .list_left = list_left,
+            .menu_left = menu_left,
+        };
+    }
+    const chevron = self.scale(chevron_width);
+    const new_tab_left = @max(0, list_left - plus);
+    return .{
+        .tab_width = self.scale(tab_min_width),
+        .overflow = true,
+        .view_left = chevron,
+        .view_right = @max(chevron, new_tab_left - chevron),
+        .new_tab_left = new_tab_left,
+        .list_left = list_left,
+        .menu_left = menu_left,
+    };
+}
+
+/// The furthest the tabs scroll.
+fn maxScroll(self: *const TabBar, n: usize, width: c_int) c_int {
+    const p = self.place(n, width);
+    if (!p.overflow) return 0;
+    return @max(0, p.tab_width * @as(c_int, @intCast(n)) - (p.view_right - p.view_left));
+}
+
+/// Keep the scroll in range (after the bar or the tabs change).
+pub fn clampScroll(self: *TabBar, n: usize, width: c_int) void {
+    self.scroll = std.math.clamp(self.scroll, 0, self.maxScroll(n, width));
+}
+
+/// Scroll by `tabs` tabs (negative: towards the first). Returns whether
+/// anything moved.
+pub fn scrollTabs(self: *TabBar, tabs: c_int, n: usize, width: c_int) bool {
+    const before = self.scroll;
+    self.scroll += tabs * self.place(n, width).tab_width;
+    self.clampScroll(n, width);
+    return self.scroll != before;
+}
+
+/// Scroll so tab `i` shows whole.
+pub fn ensureVisible(self: *TabBar, i: usize, n: usize, width: c_int) void {
+    const p = self.place(n, width);
+    if (!p.overflow) {
+        self.scroll = 0;
+        return;
+    }
+    const left = p.tab_width * @as(c_int, @intCast(i));
+    const view = p.view_right - p.view_left;
+    if (left < self.scroll) self.scroll = left;
+    if (left + p.tab_width > self.scroll + view) self.scroll = left + p.tab_width - view;
+    self.clampScroll(n, width);
+}
 
 pub fn deinit(self: *TabBar) void {
     if (self.font) |f| _ = c.DeleteObject(f);
@@ -66,18 +165,46 @@ pub fn height(self: *const TabBar) c_int {
     return self.scale(bar_height);
 }
 
-/// The rectangle of tab `i` of `n` in a bar `width` pixels wide.
+/// The rectangle of tab `i` of `n` in a bar `width` pixels wide; scrolled,
+/// it may lie partly or wholly outside the span tabs show in.
 pub fn tabRect(self: *const TabBar, i: usize, n: usize, width: c_int) c.RECT {
-    const avail = @max(0, width - self.scale(button_width + dropdown_width) - self.scale(button_width));
-    const per: c_int = @intCast(@divTrunc(avail, @as(c_int, @intCast(@max(n, 1)))));
-    const w = std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
-    const left: c_int = w * @as(c_int, @intCast(i));
-    return .{ .left = left, .top = 0, .right = left + w, .bottom = self.height() };
+    const p = self.place(n, width);
+    const offset = if (p.overflow) self.scroll else 0;
+    const left = p.view_left + p.tab_width * @as(c_int, @intCast(i)) - offset;
+    return .{ .left = left, .top = 0, .right = left + p.tab_width, .bottom = self.height() };
+}
+
+/// The span tabs show in (between the chevrons, when they overflow).
+pub fn viewRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
+    const p = self.place(n, width);
+    return .{ .left = p.view_left, .top = 0, .right = p.view_right, .bottom = self.height() };
+}
+
+/// Whether the tabs overflow (and the chevrons show).
+pub fn overflowing(self: *const TabBar, n: usize, width: c_int) bool {
+    return self.place(n, width).overflow;
+}
+
+/// The chevrons, when the tabs overflow.
+pub fn scrollLeftRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
+    const p = self.place(n, width);
+    return .{ .left = 0, .top = 0, .right = p.view_left, .bottom = self.height() };
+}
+
+pub fn scrollRightRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
+    const p = self.place(n, width);
+    return .{ .left = p.view_right, .top = 0, .right = p.new_tab_left, .bottom = self.height() };
 }
 
 /// The main menu's button, at the right end of the bar.
 pub fn menuRect(self: *const TabBar, width: c_int) c.RECT {
     return .{ .left = width - self.scale(button_width), .top = 0, .right = width, .bottom = self.height() };
+}
+
+/// The tab list's button, left of the main menu's.
+pub fn listRect(self: *const TabBar, width: c_int) c.RECT {
+    const m = self.menuRect(width);
+    return .{ .left = m.left - self.scale(button_width), .top = 0, .right = m.left, .bottom = self.height() };
 }
 
 pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
@@ -87,12 +214,9 @@ pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
     return .{ .left = right - s, .top = top, .right = right, .bottom = top + s };
 }
 
-/// "+", after the last tab, but never under the menu button (tabs that
-/// don't fit run under it until 3.8c's overflow).
+/// "+", after the last tab, or left of the list button when they overflow.
 pub fn newTabRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
-    const last = self.tabRect(n -| 1, n, width);
-    const max_left = self.menuRect(width).left - self.scale(button_width + dropdown_width);
-    const left = @max(0, @min(if (n == 0) 0 else last.right, max_left));
+    const left = self.place(n, width).new_tab_left;
     return .{ .left = left, .top = 0, .right = left + self.scale(button_width), .bottom = self.height() };
 }
 
@@ -108,10 +232,16 @@ fn contains(r: c.RECT, x: c_int, y: c_int) bool {
 
 pub fn hitTest(self: *const TabBar, x: c_int, y: c_int, n: usize, width: c_int) Hit {
     if (y < 0 or y >= self.height()) return .none;
-    // The buttons first: tabs that don't fit run under them.
     if (contains(self.menuRect(width), x, y)) return .menu;
+    if (contains(self.listRect(width), x, y)) return .list;
     if (contains(self.newTabRect(n, width), x, y)) return .new_tab;
     if (contains(self.newTabMenuRect(n, width), x, y)) return .new_tab_menu;
+    if (self.overflowing(n, width)) {
+        if (contains(self.scrollLeftRect(n, width), x, y)) return .scroll_left;
+        if (contains(self.scrollRightRect(n, width), x, y)) return .scroll_right;
+    }
+    // Only where tabs show: scrolled away, they are under the chevrons.
+    if (!contains(self.viewRect(n, width), x, y)) return .none;
     for (0..n) |i| {
         const r = self.tabRect(i, n, width);
         if (contains(r, x, y)) {
@@ -208,8 +338,13 @@ pub fn paint(
 
     const n = titles.len;
     const pen_w = @max(1, self.scale(1));
+    // Tabs only where they show; scrolled away, they are cut at the
+    // chevrons.
+    const view = self.viewRect(n, width);
+    _ = c.IntersectClipRect(mem, view.left, view.top, view.right, view.bottom);
     for (titles, 0..) |title, i| {
         const r = self.tabRect(i, n, width);
+        if (r.right <= view.left or r.left >= view.right) continue;
         const is_active = i == active;
         const hovered = switch (self.hover) {
             .tab, .close => |hi| hi == i,
@@ -255,6 +390,26 @@ pub fn paint(
             line(mem, cr.right - pad - 1, cr.top + pad, cr.left + pad - 1, cr.bottom - pad, color, pen_w);
         }
     }
+    _ = c.SelectClipRgn(mem, null);
+
+    // The chevrons, dimmed at either end of the scroll.
+    if (self.overflowing(n, width)) {
+        const max = self.maxScroll(n, width);
+        for ([_]struct { Hit, c.RECT, bool, c_int }{
+            .{ .scroll_left, self.scrollLeftRect(n, width), self.scroll > 0, -1 },
+            .{ .scroll_right, self.scrollRightRect(n, width), self.scroll < max, 1 },
+        }) |chev| {
+            const r = chev[1];
+            fill(mem, r, if (std.meta.eql(self.hover, chev[0]) and chev[2]) pal.hover else pal.bar);
+            const x = @divTrunc(r.left + r.right, 2);
+            const y = @divTrunc(r.top + r.bottom, 2);
+            const arm = self.scale(4);
+            const color = if (chev[2]) pal.text_dim else pal.separator;
+            // "‹" points left (-1), "›" right (1).
+            line(mem, x + arm * chev[3] * -1, y - arm, x + arm * chev[3], y + 1, color, pen_w);
+            line(mem, x + arm * chev[3] * -1, y + arm, x + arm * chev[3], y - 1, color, pen_w);
+        }
+    }
 
     // New tab button
     const nr = self.newTabRect(n, width);
@@ -285,6 +440,17 @@ pub fn paint(
         line(mem, mx - half, ly, mx + half + 1, ly, pal.text_dim, pen_w);
     }
 
+    // The tab list's button: three rows, each a dot and a line.
+    const lr = self.listRect(width);
+    fill(mem, lr, if (std.meta.eql(self.hover, Hit.list)) pal.hover else pal.bar);
+    const lx = @divTrunc(lr.left + lr.right, 2);
+    const ly0 = @divTrunc(lr.top + lr.bottom, 2);
+    const dot = @max(2, self.scale(2));
+    for ([_]c_int{ ly0 - gap, ly0, ly0 + gap }) |ly| {
+        fill(mem, .{ .left = lx - half, .top = ly - @divTrunc(dot, 2), .right = lx - half + dot, .bottom = ly - @divTrunc(dot, 2) + dot }, pal.text_dim);
+        line(mem, lx - half + dot + self.scale(3), ly, lx + half + 1, ly, pal.text_dim, pen_w);
+    }
+
     _ = c.BitBlt(hdc, 0, 0, width, h, mem, 0, 0, c.SRCCOPY);
 }
 
@@ -298,9 +464,44 @@ test "hitTest" {
     try testing.expectEqual(Hit.new_tab, bar.hitTest(2 * tab_max_width + 5, 10, 2, 2000));
     try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(2 * tab_max_width + button_width + 5, 10, 2, 2000));
     try testing.expectEqual(Hit.menu, bar.hitTest(2000 - 5, 10, 2, 2000));
+    try testing.expectEqual(Hit.list, bar.hitTest(2000 - button_width - 5, 10, 2, 2000));
     try testing.expectEqual(Hit.none, bar.hitTest(1500, 10, 2, 2000));
     try testing.expectEqual(Hit.none, bar.hitTest(10, bar_height + 1, 2, 2000));
-    // Many tabs: "+" and its arrow stay clear of the menu button.
-    try testing.expectEqual(Hit.menu, bar.hitTest(500 - 5, 10, 40, 500));
-    try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(500 - button_width - 5, 10, 40, 500));
+    try testing.expect(!bar.overflowing(2, 2000));
+}
+
+test "overflow: 40 tabs scroll between the chevrons, all reachable" {
+    const testing = std.testing;
+    var bar: TabBar = .{};
+    const n = 40;
+    const width = 500;
+    try testing.expect(bar.overflowing(n, width));
+    // [‹ 0..22][tabs 22..358][› 358..380][+ 380..414][▾ 414..432][list 432..466][≡ 466..500]
+    try testing.expectEqual(Hit.menu, bar.hitTest(width - 5, 10, n, width));
+    try testing.expectEqual(Hit.list, bar.hitTest(width - button_width - 5, 10, n, width));
+    try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(420, 10, n, width));
+    try testing.expectEqual(Hit.new_tab, bar.hitTest(390, 10, n, width));
+    try testing.expectEqual(Hit.scroll_left, bar.hitTest(5, 10, n, width));
+    try testing.expectEqual(Hit.scroll_right, bar.hitTest(365, 10, n, width));
+    try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(30, 10, n, width));
+
+    // Scrolling by a tab, never past either end.
+    try testing.expect(!bar.scrollTabs(-1, n, width));
+    try testing.expect(bar.scrollTabs(1, n, width));
+    try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(30, 10, n, width));
+    try testing.expect(bar.scrollTabs(1000, n, width));
+    try testing.expectEqual(bar.maxScroll(n, width), bar.scroll);
+
+    // Every tab can be brought into view and clicked.
+    for (0..n) |i| {
+        bar.ensureVisible(i, n, width);
+        const r = bar.tabRect(i, n, width);
+        const view = bar.viewRect(n, width);
+        try testing.expect(r.left >= view.left and r.right <= view.right);
+        try testing.expectEqual(Hit{ .tab = i }, bar.hitTest(r.left + 8, 10, n, width));
+    }
+
+    // Fewer tabs fit again: no scroll left over.
+    bar.ensureVisible(0, 2, width);
+    try testing.expectEqual(@as(c_int, 0), bar.scroll);
 }

@@ -392,6 +392,8 @@ fn needsConfirm(self: *Window, surface: *Surface) bool {
 pub fn select(self: *Window, index: usize) void {
     if (index >= self.tabs.items.len) return;
     self.active = index;
+    // In view on an overflowing strip.
+    self.tab_bar.ensureVisible(index, self.tabs.items.len, self.tabBarRect().right);
     // Seen: the bell's mark goes.
     self.tabs.items[index].attention = false;
     self.layout();
@@ -608,6 +610,9 @@ fn tabRect(self: *const Window, count: usize) c.RECT {
 /// them, which left trails while resizing; the renderers redraw. Each tab
 /// sizes its panes as it is resized.
 fn layout(self: *Window) void {
+    // A wider window may show more tabs: keep the scroll in range (not the
+    // active tab in view, which would undo the chevrons; select does that).
+    self.tab_bar.clampScroll(self.tabs.items.len, self.tabBarRect().right);
     const r = self.tabRect(self.tabs.items.len);
     const flags = c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOCOPYBITS;
     var hdwp = c.BeginDeferWindowPos(@intCast(self.tabs.items.len));
@@ -930,6 +935,21 @@ fn tabMenu(self: *Window, index: usize, lparam: c.LPARAM) void {
     self.performOnPane(surface, chosen);
 }
 
+/// Scroll an overflowing strip by `tabs` tabs.
+fn scrollTabs(self: *Window, tabs: c_int) void {
+    if (self.tab_bar.scrollTabs(tabs, self.tabs.items.len, self.tabBarRect().right)) {
+        self.invalidateTabBar();
+    }
+}
+
+/// The list button and toggle_tab_overview: the command palette listing
+/// this window's tabs (roadmap 3.8; decided 2026-10-25, a list rather
+/// than GTK's overview of live thumbnails).
+pub fn toggleTabList(self: *Window) void {
+    const surface = self.activeSurface() orelse return;
+    self.palette.toggleTabs(self, surface);
+}
+
 /// The menu on the arrow beside "+": splits of the active tab's pane.
 fn splitMenu(self: *Window) void {
     const surface = self.activeSurface() orelse return;
@@ -1045,6 +1065,9 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 .new_tab => self.newTabFromActive(),
                 .new_tab_menu => self.splitMenu(),
                 .menu => self.mainMenu(),
+                .list => self.toggleTabList(),
+                .scroll_left => self.scrollTabs(-1),
+                .scroll_right => self.scrollTabs(1),
             }
             return 0;
         },
@@ -1070,7 +1093,25 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 .new_tab => self.newTabFromActive(),
                 .new_tab_menu => self.splitMenu(),
                 .menu => self.mainMenu(),
+                .list => self.toggleTabList(),
+                .scroll_left => self.scrollTabs(-1),
+                .scroll_right => self.scrollTabs(1),
             }
+            return 0;
+        },
+
+        // The wheel over the strip scrolls an overflowing one, a tab a notch
+        // (towards the end for the wheel's down and right).
+        c.WM_MOUSEWHEEL, c.WM_MOUSEHWHEEL => {
+            var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
+            _ = c.ScreenToClient(self.hwnd, &pt);
+            if (!self.tabBarVisible() or pt.y < 0 or pt.y >= self.tab_bar.height()) {
+                return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            const delta: i16 = @bitCast(c.hiword(wparam));
+            const notches: c_int = @divTrunc(@as(c_int, delta), c.WHEEL_DELTA);
+            const toward_end = if (msg == c.WM_MOUSEWHEEL) -notches else notches;
+            if (toward_end != 0) self.scrollTabs(toward_end);
             return 0;
         },
 
