@@ -221,6 +221,10 @@ hosted Windows runner and then the unit tests.
   window opaque and back, as on macOS. Tested by reading back what murrtty
   draws, alpha included; what the display shows was checked on NVIDIA
   (spike S2), not yet on AMD or Intel.
+- Dragging tabs: along the strip to reorder them (they make way as you
+  drag), out of the window into a new one, or onto another window's tab
+  row or title bar; `move_tab_to_new_window` and the tab menu's Move Tab
+  to New Window. The terminals keep running as they move.
 - `window-decoration = none`: no title bar, still resizable from every
   edge, with Windows' shadow and rounded corners; and
   `toggle_window_decorations`, per window as in Ghostty's GTK app, which
@@ -254,12 +258,11 @@ hosted Windows runner and then the unit tests.
 **Not implemented yet**
 
 - Terminal inspector, quick terminal, desktop notifications.
-- Dragging tabs with the mouse, and moving a tab to a new window. Dragging
-  panes to rearrange splits.
+- Dragging panes to rearrange splits.
 - Sending commands to an already running instance (`murrtty +new-window`).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with the rest of the window chrome (Phase 4: tab dragging next).
+with the rest of the window chrome (Phase 4: window options next).
 
 **Known issues**
 

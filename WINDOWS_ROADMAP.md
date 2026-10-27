@@ -240,6 +240,9 @@ roadmap item behind it.
   nushell.
 
 *For now:*
+- **Dragging a tab** (4.5): once out of the strip, nothing follows the
+  mouse until the release (libadwaita drags an image of the tab), and
+  Escape doesn't cancel the drag.
 - **Last window** (decision 4): murrtty always opens a window at start and
   quits with its last window, whatever `initial-window` and
   `quit-after-last-window-closed` say, until the tray (5.6) exists.
@@ -251,9 +254,9 @@ roadmap item behind it.
   window instead (a window handle). 4.3b takes this with the dialogs.
 
 - **Tab menu** (3.8): a tab's right-click menu has Change Tab Title, Close
-  Tab, Close Other Tabs and Close Tabs to the Right, acting on the tab
-  clicked (Move Tab to New Window, grayed, comes with 4.5); GTK's offers
-  only Change Tab Title.
+  Tab, Close Other Tabs, Close Tabs to the Right and Move Tab to New
+  Window (4.5), acting on the tab clicked; GTK's offers only Change Tab
+  Title.
 - **Tab overview** (3.8): the strip's list button and
   `toggle_tab_overview` open a list of the window's tabs with a filter
   box (the command palette's), not GTK's overview of live thumbnails.
@@ -338,7 +341,7 @@ apply to all new code:
 | **S2** transparency, 1 to 2 days, run before 3.0 | Does DWM honor per-pixel alpha from child GL windows when the top level uses `DwmEnableBlurBehindWindow` with an empty region? | Transparency path: cheap (4.1 A) or DirectComposition with `WGL_NV_DX_interop2` (4.1 B, XL). Also whether text overlays (3.0) and the tab strip (3.8, 4.3) can stay GDI, or must become composition visuals, since GDI output does not show on a Phase B window. *Prepared 2026-10-26, not yet run:* a Debug test hook turns on blur-behind with an empty region and a present mode that writes the frame's alpha as premultiplied sRGB; the opt-in scenario `transparency` (`GHOSTTY_GUI_ONSCREEN=1`; it shows windows on the screen) puts Ghostty at `background-opacity = 0.5` over a green backdrop and reads the display through DXGI desktop duplication (`test/windows/gui/dda.zig`), checking the background blends to `#14951a`, a layered child (S1's host) stays opaque over it, and what a GDI-painted divider shows. It needs a monitor DWM drives: with the monitor off, DWM idles at one vblank a second, duplication gets no frames and GL presents never reach the window (every capture reads white), so the capture scenarios now skip themselves then. *Run 2026-10-26 on NVIDIA (RTX 2070), the owner at the screen:* Phase A works. Opaque, the background read `#282c34`; at 0.5 over the green backdrop, `#14951a`, exactly half (DWM blends with the frame's alpha; ignoring it would read `#14161a`); a layered child (S1's host) stayed opaque over the see-through pane, as did sibling and child windows; GDI's own view (BitBlt) agreed. A GDI-painted divider read `#18ff1f`, its color plus the whole backdrop: GDI writes alpha 0, which DWM takes as fully transparent. So 4.1 takes Phase A, and the tab strip (3.8, 4.3) and dividers stay GDI but paint with alpha 255 (a 32-bit DIB or `BufferedPaintSetAlpha`) while the window is translucent. AMD and Intel not yet run. The scenario's "monitor off" check (DWM's vblank count) also fires on a static screen with the monitor on, where DWM composes only a few times a second, so with `GHOSTTY_GUI_ONSCREEN=1` (the owner at the screen) the capture scenarios skip that check and keep only the screen saver and lock screen one. |
 | **S3** ConPTY, 1 day | Does the inbox ConPTY forward OSC 133, OSC 7, OSC 9;9 and DECSCUSR, in order, on Windows 10 22H2 and Windows 11 23H2 to 25H2? | Whether to bundle `conpty.dll` and `OpenConsole.exe` (2.2). *Run 2026-10-25 on Windows 11 25H2 (build 26200), inbox ConPTY, flags 0 as Ghostty uses:* a child writing text markers with each sequence between them (via cmd `type`, pwsh 7 and Windows PowerShell 5.1) got all of them through: OSC 133 A, B (ST-terminated), C and D;0, OSC 7, OSC 9;9 and DECSCUSR. The OSC 133 marks keep their place in the text; OSC 7, OSC 9;9 and DECSCUSR can arrive ahead of text written before them, which doesn't matter for them. OSC 2 is absorbed and re-sent as OSC 0. Flag 0x8 (passthrough) changed nothing. So no bundling for Windows 11; Windows 10 22H2 and 23H2/24H2 not yet run (the probe needs `STARTF_USESTDHANDLES` with null handles, as `Command.zig` passes, or the child writes to the parent's handles). *Found in 2.2:* ConPTY repaints rows as it renders, line feeds included, and after 133;B (input until 133;C) those line feeds marked output rows as prompt continuation, so `jump_to_prompt` stopped on output. Not reordering: one write arrived in place, and a pause before the prompt changed nothing. The integrations end the prompt with 133;I (input ends with the line) instead. Clearing the screen (`cls`, `Clear-Host`) arrives as a repaint, not an erase, so rows that held a prompt keep their prompt mark. *Found in the mid-phase review:* 133;A's fresh-line moves Ghostty's cursor when it isn't at column 0, which ConPTY never learns of, so its later absolute moves land a row off; the integrations start prompts with 133;P;k=i, which marks the same without moving. *Found with Clink (raw pty captures, `GHOSTTY_PTY_LOG`):* ConPTY forwards OSC 133 ahead of text written before it, so a prompt mark arrived before the line feed ahead of the prompt (marking the row above), and during the repaint after a resize, when Clink redraws its prompt, with ConPTY's cursor at the bottom right (marking a blank row that later output scrolled onto). Behind ConPTY a prompt start now marks the row of the next cell written (`Terminal.flags.defer_prompt_mark`, set in `Exec.initTerminal`). |
 | **S4** many contexts, part of 1.4 | 16 panes, each flooding output: steady frames, no stale-frame recurrence, linear memory, on two vendors | Whether per-pane contexts scale. *Run 2026-10-24 on NVIDIA (RTX 2070), scenario `stress-panes`:* every pane kept presenting (1,030 to 1,210 frames each in 13 s, Debug build); memory flat while flooding; per added pane 4 threads, 31 MB resident, 90 MB committed, 64 MB of it Zig's thread stacks (0.15). They scale. AMD and Intel not yet run. *Re-run 2026-10-25 at the end of Phase 1 (15 panes dimmed by 1.7's overlay):* the slowest pane presented 994 frames in 13 s; memory per pane unchanged, and 49 MB of growth in 15 s of flooding (scrollback). |
-| **S5** reparenting, part of 4.5 | Does a GL child window keep rendering after `SetParent` to another top-level window, on NVIDIA, AMD and Intel? | Tab tear-off design |
+| **S5** reparenting, part of 4.5 | Does a GL child window keep rendering after `SetParent` to another top-level window, on NVIDIA, AMD and Intel? | Tab tear-off design. *Run 2026-10-27 on NVIDIA (RTX 2070), on the hidden desktop (`tab-drag`):* after its tab's container moved to another window the pane kept presenting frames (the renderer's count and read-back) and taking input. What the display shows wasn't checked (no monitor on); AMD and Intel not yet run. |
 | **S6** OpenGL elsewhere, 1 day | What does Microsoft's OpenGL compatibility pack expose on Snapdragon X and in VMs: 4.3 core with fragment SSBOs and sRGB framebuffers? | ARM64 (7.7) and software fallback (6.3) |
 
 ---
@@ -2136,6 +2139,27 @@ from `none`, `auto` and `server`.
 A tab moves as a whole split tree by reparenting its container (spike S5).
 Emptied windows close through the request queue.
 
+*Done 2026-10-27:* a press on a tab arms a drag (`Window.tab_drag`, the
+mouse captured); past the system's drag distance the tab takes the place
+of each tab it passes along the strip, live. Released more than a row's
+height from the strip, it moves onto the title bar or tab row of the
+murrtty window under the mouse (at the place its position gives), or,
+outside its own window, into a new window as large as this one with its
+first tab under the mouse (`tearOff`; nothing for a window's only tab, as
+GTK's `move_tab_to_new_window`); dropped on its own terminal, nothing.
+`moveTabTo` takes the tab out, reparents its container (`adoptTab`: the
+panes' window pointers, DPI and translucency follow), and a window it
+leaves empty hides and closes through the request queue.
+`move_tab_to_new_window` is the same move from a binding, and the tab
+menu's item (grayed for a lone tab). Window.create is now `createEmpty`
+plus a tab plus `show`. The `tab-drag` scenario drags by posted mouse
+messages: the live reorder before the release, a tear-off (the new window
+under the mouse, the container its child, the pane typing and presenting
+frames), a drop onto another window's bar, the emptied window closing,
+and the binding. Not built: an image of the tab following the mouse
+while it is out of the strip (libadwaita drags the tab itself), and
+Escape cancelling a drag.
+
 **4.6 Window options, S each.**
 - `window-position-x`/`-y`, with cascading for later windows.
 - `window-step-resize` (`cell_size`, snapping in `WM_SIZING`).
@@ -2476,7 +2500,6 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 | prompt_title, set_tab_title, set_window_title, copy_title_to_clipboard | 3.5 |
 | mouse_over_link, key_sequence, key_table, readonly, show_child_exited | 3.6 |
 | toggle_tab_overview | 3.8 |
-| move_tab_to_new_window | 4.5 |
 | cell_size, reset_window_size, float_window | 4.6 |
 | desktop_notification | 5.2 |
 | command_finished | 5.3 |

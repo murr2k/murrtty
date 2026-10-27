@@ -57,6 +57,10 @@ toast: Overlay = .{ .position = .@"bottom-center", .margin = 24, .pad_x = 16, .p
 /// only if both its presses were on it.
 last_press: TabBar.Hit = .none,
 
+/// A tab pressed, and dragged once the mouse moves past the system's drag
+/// distance (roadmap 4.5).
+tab_drag: ?TabDrag = null,
+
 /// The tabs (by index, the first 64) whose label the tab bar last painted
 /// with the bell, and with the bell's mark, for the GUI tests' dump.
 painted_bell: u64 = 0,
@@ -122,6 +126,15 @@ system_menu: ContextMenu.SystemMenu = .{},
 /// for every other nested loop.
 menu_modal: ?App.Modal = null,
 
+const TabDrag = struct {
+    /// The tab, as it moves along the strip.
+    index: usize,
+    /// Where the press was, in client coordinates.
+    start: c.POINT,
+    /// Past the drag distance.
+    dragging: bool = false,
+};
+
 /// background-blur's ways (App.blurMethod).
 pub const Blur = enum {
     none,
@@ -157,6 +170,16 @@ pub fn registerClass(instance: c.HINSTANCE) !void {
 
 /// Create and show a new window with a single tab.
 pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
+    const self = try createEmpty(app);
+    errdefer self.discard();
+    _ = try self.addTab(parent, .window);
+    self.show();
+    return self;
+}
+
+/// A new window, not yet shown, with no tab: for create to add one to, or
+/// for a tab moved out of another window (tearOff).
+fn createEmpty(app: *App) !*Window {
     const alloc = app.core_app.alloc;
     const self = try alloc.create(Window);
     errdefer alloc.destroy(self);
@@ -211,17 +234,33 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     self.syncTranslucent();
 
     try app.windows.append(alloc, self);
-    errdefer _ = app.windows.pop();
+    return self;
+}
 
-    _ = try self.addTab(parent, .window);
+/// Undo createEmpty for a window that got no tab (its first failed).
+fn discard(self: *Window) void {
+    const app = self.app;
+    const alloc = app.core_app.alloc;
+    _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+    _ = c.DestroyWindow(self.hwnd);
+    self.tabs.deinit(alloc);
+    self.tab_bar.deinit();
+    self.header.deinit();
+    for ([_]?c.HICON{ self.small_icon, self.big_icon }) |icon| if (icon) |i| {
+        _ = c.DestroyIcon(i);
+    };
+    if (std.mem.indexOfScalar(*Window, app.windows.items, self)) |i| _ = app.windows.orderedRemove(i);
+    alloc.destroy(self);
+}
 
-    const config = &app.config;
+/// Show a new window as the config has it (maximized, fullscreen), in
+/// front, with the keyboard in its pane.
+fn show(self: *Window) void {
+    const config = &self.app.config;
     _ = c.ShowWindow(self.hwnd, if (config.maximize) c.SW_SHOWMAXIMIZED else c.SW_SHOWNORMAL);
     if (config.fullscreen != .false) self.toggleFullscreen();
     _ = c.SetForegroundWindow(self.hwnd);
     self.focusActive();
-
-    return self;
 }
 
 /// Add a tab after the active one and select it. Returns its pane.
@@ -524,6 +563,168 @@ pub fn moveTab(self: *Window, surface: *Surface, amount: isize) bool {
     self.tabs.insertAssumeCapacity(to, tab);
     self.select(to);
     return true;
+}
+
+/// move_tab_to_new_window: the pane's tab into a new window, as GTK's;
+/// nothing for a window's only tab.
+pub fn moveTabToNewWindow(self: *Window, surface: *Surface) bool {
+    const index = self.tabIndexOf(surface) orelse return false;
+    self.tearOff(index, null) catch |err| {
+        log.warn("error moving a tab to a new window err={}", .{err});
+        return false;
+    };
+    return true;
+}
+
+/// Move tab `index` into a new window as large as this one, its top left
+/// at `at` (screen) or where Windows places new windows; nothing (an
+/// error) for the only tab, which would leave this window empty.
+fn tearOff(self: *Window, index: usize, at: ?c.POINT) !void {
+    if (self.tabs.items.len < 2) return error.OnlyTab;
+    const target = try createEmpty(self.app);
+    var r: c.RECT = .{};
+    _ = c.GetWindowRect(self.hwnd, &r);
+    const pos = at orelse c.POINT{ .x = 0, .y = 0 };
+    _ = c.SetWindowPos(target.hwnd, null, pos.x, pos.y, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE |
+        @as(c.UINT, if (at == null) c.SWP_NOMOVE else 0));
+    self.moveTabTo(index, target, 0) catch |err| {
+        target.discard();
+        return err;
+    };
+    target.show();
+}
+
+/// Move tab `index` to `target` at `at` (or its end), panes and all, still
+/// running: its container moves to the other window (SetParent; spike S5,
+/// a GL child keeps presenting). A window left without tabs closes
+/// through the request queue, hidden meanwhile.
+fn moveTabTo(self: *Window, index: usize, target: *Window, at: usize) !void {
+    try target.tabs.ensureUnusedCapacity(self.app.core_app.alloc, 1);
+    const tab = self.tabs.orderedRemove(index);
+    self.setHover(.none);
+    if (self.tabs.items.len == 0) {
+        _ = c.ShowWindow(self.hwnd, c.SW_HIDE);
+        self.app.request(.{ .close_window = self.id });
+    } else {
+        if (self.active > index or self.active >= self.tabs.items.len) self.active -|= 1;
+        self.select(self.active);
+    }
+    target.adoptTab(tab, at);
+}
+
+/// Take in `tab` from another window at `at` (or the end) and select it;
+/// room for it is the caller's to make.
+fn adoptTab(self: *Window, tab: *Tab, at: usize) void {
+    tab.window = self;
+    var it = tab.panes();
+    while (it.next()) |entry| entry.view.window = self;
+    _ = c.SetParent(tab.hwnd, self.hwnd);
+    const index = @min(at, self.tabs.items.len);
+    const had_bar = self.tabBarVisible();
+    self.tabs.insertAssumeCapacity(index, tab);
+    if (had_bar != self.tabBarVisible()) _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+    // This window's DPI and translucency; select lays the tab out, and the
+    // panes take the bars' shade from it.
+    it = tab.panes();
+    while (it.next()) |entry| {
+        entry.view.dpiChanged();
+        entry.view.setTranslucent(self.translucent);
+    }
+    self.select(index);
+    tab.layoutPanes();
+}
+
+/// The other murrtty window whose title bar or tab row is at `screen`, and
+/// the place a tab dropped there takes.
+fn dropTargetAt(self: *Window, screen: c.POINT) ?struct { window: *Window, index: usize } {
+    const hit = c.WindowFromPoint(screen) orelse return null;
+    const root = c.GetAncestor(hit, c.GA_ROOT) orelse hit;
+    for (self.app.windows.items) |w| {
+        if (w == self or w.hwnd != root or c.IsWindowEnabled(w.hwnd) == 0) continue;
+        var pt = screen;
+        _ = c.ScreenToClient(w.hwnd, &pt);
+        // The caption (server decorations) above the client counts too.
+        if (pt.y >= w.chromeHeight()) return null;
+        return .{ .window = w, .index = w.dropIndex(pt.x) };
+    }
+    return null;
+}
+
+/// Where a tab dropped at `x` (client) goes: before the first tab whose
+/// middle is right of it, or at the end.
+fn dropIndex(self: *const Window, x: c_int) usize {
+    const n = self.tabs.items.len;
+    if (!self.tabBarVisible()) return n;
+    const width = self.clientWidth();
+    for (0..n) |i| {
+        const r = self.tab_bar.tabRect(i, n, width);
+        if (x < @divTrunc(r.left + r.right, 2)) return i;
+    }
+    return n;
+}
+
+/// The mouse moved with a tab pressed: past the drag distance the tab
+/// follows it along the strip, taking the place of the tab it is over.
+fn dragTab(self: *Window, x: c_int, y: c_int) void {
+    const d = if (self.tab_drag) |*v| v else return;
+    if (!d.dragging) {
+        const dpi = c.GetDpiForWindow(self.hwnd);
+        if (@abs(x - d.start.x) < c.GetSystemMetricsForDpi(c.SM_CXDRAG, dpi) and
+            @abs(y - d.start.y) < c.GetSystemMetricsForDpi(c.SM_CYDRAG, dpi)) return;
+        d.dragging = true;
+    }
+    if (!self.nearStrip(y)) return;
+    const row = self.tabBarRect();
+    const over = switch (self.chromeHit(x, @divTrunc(row.top + row.bottom, 2))) {
+        .tab, .close => |i| i,
+        else => return,
+    };
+    if (over == d.index or over >= self.tabs.items.len) return;
+    const tab = self.tabs.orderedRemove(d.index);
+    self.tabs.insertAssumeCapacity(over, tab);
+    d.index = over;
+    self.select(over);
+}
+
+/// Released: a tab dragged away from the strip moves onto another window's
+/// bar, or out into a new window under the mouse; dropped on its own
+/// window's terminal, nothing.
+fn dropTab(self: *Window, x: c_int, y: c_int) void {
+    const d = self.tab_drag orelse return;
+    self.endTabDrag();
+    if (!d.dragging or self.nearStrip(y) or d.index >= self.tabs.items.len) return;
+    var screen: c.POINT = .{ .x = x, .y = y };
+    _ = c.ClientToScreen(self.hwnd, &screen);
+    if (self.dropTargetAt(screen)) |t| {
+        self.moveTabTo(d.index, t.window, t.index) catch |err| log.warn("error moving a tab err={}", .{err});
+        _ = c.SetForegroundWindow(t.window.hwnd);
+        return;
+    }
+    var r: c.RECT = .{};
+    _ = c.GetWindowRect(self.hwnd, &r);
+    if (screen.x >= r.left and screen.x < r.right and screen.y >= r.top and screen.y < r.bottom) return;
+    // The new window's first tab under the mouse, about.
+    const dpi = c.GetDpiForWindow(self.hwnd);
+    const at: c.POINT = .{ .x = screen.x - draw.scale(dpi, 60), .y = screen.y - draw.scale(dpi, 16) };
+    self.tearOff(d.index, at) catch |err| switch (err) {
+        error.OnlyTab => {},
+        else => log.warn("error tearing a tab off err={}", .{err}),
+    };
+}
+
+/// Whether `y` (client) is within a tab row's height of the strip, where a
+/// dragged tab reorders rather than leaving the window.
+fn nearStrip(self: *const Window, y: c_int) bool {
+    if (!self.tabBarVisible()) return false;
+    const row = self.tabBarRect();
+    const h = row.bottom - row.top;
+    return y >= row.top - h and y < row.bottom + h;
+}
+
+fn endTabDrag(self: *Window) void {
+    if (self.tab_drag == null) return;
+    self.tab_drag = null;
+    if (c.GetCapture() == self.hwnd) _ = c.ReleaseCapture();
 }
 
 pub fn activeTab(self: *const Window) ?*Tab {
@@ -1694,6 +1895,19 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 if (c.TrackMouseEvent(&tme) != 0) self.tab_bar.tracking = true;
             }
             self.setHover(self.tabBarHit(lparam));
+            if (self.tab_drag != null) self.dragTab(c.xParam(lparam), c.yParam(lparam));
+            return 0;
+        },
+
+        // A tab dragged (roadmap 4.5) is dropped.
+        c.WM_LBUTTONUP => {
+            self.dropTab(c.xParam(lparam), c.yParam(lparam));
+            return 0;
+        },
+
+        // Another window took the mouse: the tab stays where it got to.
+        c.WM_CAPTURECHANGED => {
+            if (lparam != @as(c.LPARAM, @bitCast(@intFromPtr(hwnd)))) self.tab_drag = null;
             return 0;
         },
 
@@ -1711,7 +1925,12 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             switch (hit) {
                 // The window's buttons come as non-client messages.
                 .none, .minimize, .maximize, .window_close => {},
-                .tab => |i| self.select(i),
+                // Selected, and maybe dragged (dragTab).
+                .tab => |i| {
+                    self.select(i);
+                    self.tab_drag = .{ .index = i, .start = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) } };
+                    _ = c.SetCapture(hwnd);
+                },
                 .close => |i| self.requestCloseTab(i),
                 .new_tab => self.newTabFromActive(),
                 .new_tab_menu => self.splitMenu(),

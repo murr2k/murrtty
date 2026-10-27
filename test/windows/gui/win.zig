@@ -93,6 +93,7 @@ pub const WM_COMMAND = 0x0111;
 pub const WM_MOUSEMOVE = 0x0200;
 pub const WM_MOUSEWHEEL = 0x020A;
 pub extern "user32" fn ClientToScreen(HWND, *POINT) callconv(.winapi) BOOL;
+pub extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.winapi) BOOL;
 pub const WM_LBUTTONDOWN = 0x0201;
 pub const WM_LBUTTONUP = 0x0202;
 pub const WM_RBUTTONDOWN = 0x0204;

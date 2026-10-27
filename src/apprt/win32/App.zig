@@ -1353,6 +1353,13 @@ pub fn performAction(
             return surface.window.moveTab(surface, value.amount);
         },
 
+        // Its panes keep running in the new window (roadmap 4.5); nothing
+        // is freed, so this runs inside the core's callback.
+        .move_tab_to_new_window => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            return surface.window.moveTabToNewWindow(surface);
+        },
+
         .close_all_windows => self.request(.close_all_windows),
 
         .set_title => {
@@ -1689,7 +1696,6 @@ fn syncMenuTheme(self: *const App) void {
 pub fn supportsAction(action: input.Binding.Action) bool {
     return switch (action) {
         // Runtime actions not implemented yet.
-        .move_tab_to_new_window,
         .reset_window_size,
         .inspector,
         .show_gtk_inspector,

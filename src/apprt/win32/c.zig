@@ -552,6 +552,13 @@ pub extern "user32" fn GetActiveWindow() callconv(.winapi) ?HWND;
 pub extern "user32" fn SetCapture(HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn ReleaseCapture() callconv(.winapi) BOOL;
 pub extern "user32" fn GetCapture() callconv(.winapi) ?HWND;
+// Dragging tabs between windows (roadmap 4.5).
+pub extern "user32" fn WindowFromPoint(POINT) callconv(.winapi) ?HWND;
+pub extern "user32" fn GetAncestor(HWND, UINT) callconv(.winapi) ?HWND;
+pub const GA_ROOT = 2;
+pub extern "user32" fn SetParent(HWND, ?HWND) callconv(.winapi) ?HWND;
+pub const SM_CXDRAG = 68;
+pub const SM_CYDRAG = 69;
 pub extern "user32" fn GetCursorPos(*POINT) callconv(.winapi) BOOL;
 pub const CS_DBLCLKS = 0x0008;
 pub const HTTRANSPARENT: LRESULT = -1;

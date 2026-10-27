@@ -57,6 +57,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
     .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar; gtk-toolbar-style raised-border and flat", .run = shade },
     .{ .name = "translucent", .about = "background-opacity < 1: frames with its alpha (a split's too), the header bar and dividers opaque, toggle_background_opacity in every window and new ones, a reload to 1", .run = translucent },
+    .{ .name = "tab-drag", .about = "tabs reorder live as they are dragged, tear off into a new window, move onto another window's bar (an emptied window closes); move_tab_to_new_window", .run = tabDrag },
     .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
     .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
@@ -1764,7 +1765,8 @@ fn commandPalette(h: *Harness) anyerror!void {
     try h.expect(p.count > 20, "it lists the commands ({d})", .{p.count});
     try h.expect(p.has("New Tab"), "New Tab is there", .{});
     try h.expect(p.hasPrefix("Focus: "), "and a jump to the terminal", .{});
-    try h.expect(!p.has("Toggle Inspector") and !p.has("Move Tab to New Window"), "commands this runtime lacks are not", .{});
+    try h.expect(!p.has("Toggle Inspector"), "commands this runtime lacks are not", .{});
+    try h.expect(p.has("Move Tab to New Window"), "Move Tab to New Window is, since 4.5", .{});
     try h.expect(p.has("Change Tab Title\u{2026}"), "the title prompts are (roadmap 3.5)", .{});
     try h.expect(!p.has("Copy Selection as HTML to Clipboard") and !p.has("Paste from Selection"), "nor ones whose argument it can't honor", .{});
 
@@ -1977,9 +1979,9 @@ fn bell(h: *Harness) anyerror!void {
 
 /// The tab strip's right-click menu (roadmap 3.8): Change Tab Title, Close
 /// Tab, Close Other Tabs and Close Tabs to the Right, each with its
-/// binding, and Move Tab to New Window grayed (roadmap 4.5); Close Others
-/// is grayed with one tab, Close to the Right on the last. It acts on the
-/// tab clicked, which stays in the background.
+/// binding, and Move Tab to New Window (roadmap 4.5); Close Others and
+/// Move are grayed with one tab, Close to the Right on the last. It acts
+/// on the tab clicked, which stays in the background.
 fn tabMenu(h: *Harness) anyerror!void {
     var g = try start(h, "tab-menu", "window-show-tab-bar = always\nkeybind = ctrl+shift+f6=close_tab:other\n", ">");
     defer g.deinit();
@@ -2004,7 +2006,7 @@ fn tabMenu(h: *Harness) anyerror!void {
             .{ .text = "Close &Other Tabs\tCtrl+Shift+F6", .grayed = false },
             .{ .text = "Close Tabs to the &Right", .grayed = false },
             .{ .text = "", .grayed = false },
-            .{ .text = "&Move Tab to New Window", .grayed = true },
+            .{ .text = "&Move Tab to New Window", .grayed = false },
         };
         try h.expect(items.len == want.len, "seven entries (got {d})", .{items.len});
         for (items, want) |got, exp| {
@@ -2031,7 +2033,7 @@ fn tabMenu(h: *Harness) anyerror!void {
     {
         const items = try h.menuItems(menu);
         defer h.freeMenuItems(items);
-        try h.expect(items.len == 7 and items[3].grayed and items[4].grayed and !items[2].grayed, "with one tab, Close Other Tabs and Close Tabs to the Right are grayed", .{});
+        try h.expect(items.len == 7 and items[3].grayed and items[4].grayed and items[6].grayed and !items[2].grayed, "with one tab, Close Other Tabs, Close Tabs to the Right and Move Tab to New Window are grayed", .{});
     }
     _ = w.PostMessageW(menu, w.WM_KEYDOWN, w.VK_ESCAPE, 1);
     try waitNoMenu(h, &g);
@@ -5230,6 +5232,179 @@ fn shade(h: *Harness) anyerror!void {
 }
 
 const toggle_opacity = "keybind = ctrl+shift+f3=toggle_background_opacity\n";
+
+/// Dragging tabs (roadmap 4.5): along the strip a tab takes the place of
+/// each tab it passes, live, before the release; dropped away from the
+/// window it moves, panes running, into a new window under the mouse,
+/// where its pane takes typing and keeps presenting frames; dropped on
+/// another window's bar it moves there, and a window it leaves empty
+/// closes. move_tab_to_new_window does the same from a binding, and
+/// nothing for a window's only tab. With the tab bar always shown, so a
+/// lone tab can be dragged too.
+fn tabDrag(h: *Harness) anyerror!void {
+    const config = "window-show-tab-bar = always\nkeybind = ctrl+shift+f5=move_tab_to_new_window\n";
+    var g = try start(h, "tab-drag", config, ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, win, 3);
+    const o = try tabPanes(h, &g, 0);
+
+    // Along the strip: the first tab over the second, then the third.
+    const start0 = try tabMid(h, &g, 0, 0);
+    h.press(win, start0[0], start0[1]);
+    h.move(win, start0[0] + 12, start0[1], true);
+    const over1 = try tabMid(h, &g, 0, 1);
+    h.move(win, over1[0] + 4, over1[1], true);
+    h.sync(win);
+    try expectTabPanes(h, &g, 0, &.{ o.at(1), o.at(0), o.at(2) }, "dragged over the second tab, before the release, it has taken its place");
+    const over2 = try tabMid(h, &g, 0, 2);
+    h.move(win, over2[0] + 4, over2[1], true);
+    h.release(win, over2[0] + 4, over2[1]);
+    h.sync(win);
+    try expectTabPanes(h, &g, 0, &.{ o.at(1), o.at(2), o.at(0) }, "and over the third, the last place, where it stays");
+
+    // Away from the window: a new window with that tab, under the mouse.
+    var client: w.RECT = .{};
+    _ = w.GetClientRect(win, &client);
+    const last = try tabMid(h, &g, 0, 2);
+    h.press(win, last[0], last[1]);
+    h.move(win, last[0], last[1] + 12, true);
+    h.move(win, last[0], client.bottom + 240, true);
+    h.release(win, last[0], client.bottom + 240);
+    try waitWindowCount(h, &g, 2);
+    try expectTabPanes(h, &g, 0, &.{ o.at(1), o.at(2) }, "dropped below the window, the tab leaves it");
+    try expectTabPanes(h, &g, 1, &.{o.at(0)}, "for a new window of its own");
+    const torn = hwndOf(o.at(0));
+    var drop: w.POINT = .{ .x = last[0], .y = client.bottom + 240 };
+    _ = w.ClientToScreen(win, &drop);
+    const new_win = try windowOf(h, &g, 1);
+    var nr: w.RECT = .{};
+    _ = w.GetWindowRect(new_win, &nr);
+    try h.expect(drop.x >= nr.left and drop.x < nr.right and drop.y >= nr.top and drop.y < nr.bottom, "the new window is under the mouse ({d},{d} in {d},{d}-{d},{d})", .{ drop.x, drop.y, nr.left, nr.top, nr.right, nr.bottom });
+    const container = w.GetParent(torn) orelse return h.fail("the pane has no tab", .{});
+    try h.expect(w.GetParent(container) == new_win, "the tab's container, the same window, is the new window's child now", .{});
+    // Its pane runs on: it takes typing and presents frames.
+    const frames = try paneFrames(h, &g, torn);
+    try h.typeText(torn, "echo moved-tab");
+    h.enter(torn);
+    try h.waitText(&g, "moved-tab", 2, 10000);
+    try h.expect(try paneFrames(h, &g, torn) > frames, "the moved pane keeps presenting frames", .{});
+
+    // Onto the new window's bar: the first window's first tab moves there.
+    var bar: w.POINT = .{ .x = 200, .y = 8 };
+    _ = w.ClientToScreen(new_win, &bar);
+    _ = w.ScreenToClient(win, &bar);
+    const first = try tabMid(h, &g, 0, 0);
+    h.press(win, first[0], first[1]);
+    h.move(win, first[0], first[1] + 12, true);
+    h.move(win, bar.x, bar.y, true);
+    h.release(win, bar.x, bar.y);
+    try waitTabCount(h, &g, 1, 2);
+    try expectTabPanes(h, &g, 0, &.{o.at(2)}, "dropped on the other window's bar, the tab leaves this one");
+    try h.expect(try windowHasPane(h, &g, 1, o.at(1)), "and joins that one", .{});
+
+    // The first window's last tab: dropped there too, it closes the window.
+    const lone = try tabMid(h, &g, 0, 0);
+    h.press(win, lone[0], lone[1]);
+    h.move(win, lone[0], lone[1] + 12, true);
+    h.move(win, bar.x, bar.y, true);
+    h.release(win, bar.x, bar.y);
+    try waitWindowCount(h, &g, 1);
+    try waitTabCount(h, &g, 0, 3);
+    try h.expect(true, "a window its last tab leaves closes", .{});
+
+    // move_tab_to_new_window, then on the new window's only tab, nothing.
+    h.key(torn, .{ .ctrl = true, .shift = true }, w.VK_F5);
+    try waitWindowCount(h, &g, 2);
+    try expectTabPanes(h, &g, 1, &.{o.at(0)}, "move_tab_to_new_window moves the tab to a new window");
+    h.key(torn, .{ .ctrl = true, .shift = true }, w.VK_F5);
+    h.sync(torn);
+    w.Sleep(300);
+    const wins = try h.windows(&g, "MurrttyWindow");
+    defer h.alloc.free(wins);
+    try h.expect(wins.len == 2, "and does nothing for a window's only tab", .{});
+    try quit(h, &g, torn);
+}
+
+const TabPanes = struct {
+    items: [8]u64 = @splat(0),
+    len: usize = 0,
+    fn at(self: TabPanes, i: usize) u64 {
+        return self.items[i];
+    }
+};
+
+/// Window `wi`'s tabs, as their first panes' window handles.
+fn tabPanes(h: *Harness, g: *Harness.Ghostty, wi: usize) !TabPanes {
+    var d = try h.dump(g);
+    defer d.deinit();
+    if (wi >= d.value.windows.len) return h.fail("no window {d}", .{wi});
+    var out: TabPanes = .{};
+    for (d.value.windows[wi].tabs) |t| {
+        if (out.len == out.items.len) break;
+        out.items[out.len] = (t.panes orelse return h.fail("a tab without panes", .{}))[0].hwnd;
+        out.len += 1;
+    }
+    return out;
+}
+
+/// Wait until window `wi`'s tabs are `want` (first panes, in order).
+fn expectTabPanes(h: *Harness, g: *Harness.Ghostty, wi: usize, want: []const u64, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 3000) : (waited += 100) {
+        const got = tabPanes(h, g, wi) catch null;
+        if (got) |t| if (t.len == want.len and std.mem.eql(u64, t.items[0..t.len], want)) return h.expect(true, what, .{});
+        w.Sleep(100);
+    }
+    const got = try tabPanes(h, g, wi);
+    return h.fail(what ++ ": the tabs' panes are {any}, not {any}", .{ got.items[0..got.len], want });
+}
+
+/// Wait until window `wi` has `count` tabs.
+fn waitTabCount(h: *Harness, g: *Harness.Ghostty, wi: usize, count: usize) !void {
+    var waited: u32 = 0;
+    while (waited <= 3000) : (waited += 100) {
+        const t = tabPanes(h, g, wi) catch null;
+        if (t) |v| if (v.len == count) return;
+        w.Sleep(100);
+    }
+    return h.fail("window {d} doesn't have {d} tabs", .{ wi, count });
+}
+
+fn windowHasPane(h: *Harness, g: *Harness.Ghostty, wi: usize, pane: u64) !bool {
+    const t = try tabPanes(h, g, wi);
+    return std.mem.indexOfScalar(u64, t.items[0..t.len], pane) != null;
+}
+
+/// The middle of tab `ti` of window `wi`, in its client coordinates.
+fn tabMid(h: *Harness, g: *Harness.Ghostty, wi: usize, ti: usize) ![2]i32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const strip = d.value.windows[wi].tab_bar.tabs;
+    if (ti >= strip.len) return h.fail("no tab {d} in the strip", .{ti});
+    return rectMid(strip[ti].rect);
+}
+
+fn windowOf(h: *Harness, g: *Harness.Ghostty, wi: usize) !w.HWND {
+    var d = try h.dump(g);
+    defer d.deinit();
+    if (wi >= d.value.windows.len) return h.fail("no window {d}", .{wi});
+    return hwndOf(d.value.windows[wi].hwnd);
+}
+
+/// The frames pane `pane` has presented.
+fn paneFrames(h: *Harness, g: *Harness.Ghostty, pane: w.HWND) !u32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    for (d.value.windows) |win| for (win.tabs) |t| if (t.panes) |ps| for (ps) |p| {
+        if (hwndOf(p.hwnd) == pane) return p.frames orelse 0;
+    };
+    return h.fail("no such pane", .{});
+}
 const toggle_decorations = "keybind = ctrl+shift+f4=toggle_window_decorations\n";
 
 /// window-decoration = none (roadmap 4.4): no caption and no header bar,

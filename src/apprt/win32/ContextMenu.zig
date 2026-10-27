@@ -134,7 +134,6 @@ const tab_items = [_]Item{
     act("Close &Other Tabs", .{ .close_tab = .other }),
     act("Close Tabs to the &Right", .{ .close_tab = .right }),
     .separator,
-    // Grayed until roadmap 4.5 implements the action.
     act("&Move Tab to New Window", .move_tab_to_new_window),
 };
 
@@ -651,6 +650,8 @@ fn enabled(surface: *Surface, action: Action, place: ?TabPlace) bool {
             .other => p.count > 1,
             .right => p.index + 1 < p.count,
         } else true,
+        // As GTK's, nothing for a window's only tab.
+        .move_tab_to_new_window => if (place) |p| p.count > 1 else true,
         else => true,
     };
 }
