@@ -201,6 +201,36 @@ pub fn roundRect(hdc: c.HDC, r: c.RECT, radius: c_int, fill_color: ?c.COLORREF, 
     _ = c.RoundRect(hdc, r.left, r.top, r.right + extra, r.bottom + extra, radius * 2, radius * 2);
 }
 
+/// A filled polygon in `color`, without an outline.
+pub fn polygon(hdc: c.HDC, pts: []const c.POINT, color: c.COLORREF) void {
+    const brush = c.CreateSolidBrush(color) orelse return;
+    defer _ = c.DeleteObject(brush);
+    const old_pen = c.SelectObject(hdc, c.GetStockObject(c.NULL_PEN));
+    defer _ = c.SelectObject(hdc, old_pen);
+    const old_brush = c.SelectObject(hdc, @ptrCast(brush));
+    defer _ = c.SelectObject(hdc, old_brush);
+    _ = c.Polygon(hdc, pts.ptr, @intCast(pts.len));
+}
+
+/// GTK's window-close glyph: an X of two 2-DIP strokes from corner to
+/// corner of `box`, each a filled parallelogram.
+pub fn cross(hdc: c.HDC, box: c.RECT, dpi: c.UINT, color: c.COLORREF) void {
+    // A band ±t about the box's diagonal is √2·t across: 2 DIP.
+    const t: c_int = @intFromFloat(@round(1.414 * @as(f32, @floatFromInt(dpi)) / 96.0));
+    polygon(hdc, &.{
+        .{ .x = box.left, .y = box.top + t },
+        .{ .x = box.left + t, .y = box.top },
+        .{ .x = box.right, .y = box.bottom - t },
+        .{ .x = box.right - t, .y = box.bottom },
+    }, color);
+    polygon(hdc, &.{
+        .{ .x = box.right - t, .y = box.top },
+        .{ .x = box.right, .y = box.top + t },
+        .{ .x = box.left + t, .y = box.bottom },
+        .{ .x = box.left, .y = box.bottom - t },
+    }, color);
+}
+
 /// A filled triangle pointing down, `half` pixels either side of x and
 /// `tall` pixels tall, centered on (x, y).
 pub fn triangleDown(hdc: c.HDC, x: c_int, y: c_int, half: c_int, tall: c_int, color: c.COLORREF) void {

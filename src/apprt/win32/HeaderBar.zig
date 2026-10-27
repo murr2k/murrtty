@@ -148,38 +148,7 @@ const Glyph = struct {
         }
     }
 
-    /// A 2-unit-thick diagonal across the box from (x0, y0) to (x1, y1)
-    /// (either direction), as a filled parallelogram.
-    fn diagonal(g: Glyph, x0: c_int, y0: c_int, x1: c_int, y1: c_int) void {
-        const r = g.rect(@min(x0, x1), @min(y0, y1), @max(x0, x1), @max(y0, y1));
-        // A band ±t from the box's diagonal is √2·t wide across: 2 units.
-        const t: c_int = @intFromFloat(@round(1.414 * @as(f32, @floatFromInt(g.bar.dpi)) / 96.0));
-        const down = (y1 > y0) == (x1 > x0);
-        const pts = if (down) [_]c.POINT{
-            .{ .x = r.left, .y = r.top + t },
-            .{ .x = r.left + t, .y = r.top },
-            .{ .x = r.right, .y = r.bottom - t },
-            .{ .x = r.right - t, .y = r.bottom },
-        } else [_]c.POINT{
-            .{ .x = r.right - t, .y = r.top },
-            .{ .x = r.right, .y = r.top + t },
-            .{ .x = r.left + t, .y = r.bottom },
-            .{ .x = r.left, .y = r.bottom - t },
-        };
-        polygon(g.hdc, &pts, g.color);
-    }
 };
-
-/// A filled polygon in `color`, without an outline.
-fn polygon(hdc: c.HDC, pts: []const c.POINT, color: c.COLORREF) void {
-    const brush = c.CreateSolidBrush(color) orelse return;
-    defer _ = c.DeleteObject(brush);
-    const old_pen = c.SelectObject(hdc, c.GetStockObject(c.NULL_PEN));
-    defer _ = c.SelectObject(hdc, old_pen);
-    const old_brush = c.SelectObject(hdc, @ptrCast(brush));
-    defer _ = c.SelectObject(hdc, old_brush);
-    _ = c.Polygon(hdc, pts.ptr, @intCast(pts.len));
-}
 
 /// Paint the bar into `hdc` at the top, double buffered. `title` is
 /// UTF-16, as the window's caption holds it.
@@ -191,6 +160,9 @@ pub fn paint(
     hover: Hit,
     pressed: Hit,
     maximized: bool,
+    /// The bar is the chrome's lowest (no tab row below it): it has the
+    /// shade.
+    shade: bool,
     pal: draw.Palette,
 ) void {
     const h = self.height();
@@ -203,8 +175,8 @@ pub fn paint(
     _ = c.SetBkMode(mem, c.TRANSPARENT);
 
     draw.fill(mem, .{ .right = width, .bottom = h }, pal.bar);
-    // libadwaita's shade under the bar.
-    draw.fill(mem, .{ .top = h - 1, .right = width, .bottom = h }, pal.shade);
+    // libadwaita's shade, under the top bars (a tab row's, if one follows).
+    if (shade) draw.fill(mem, .{ .top = h - 1, .right = width, .bottom = h }, pal.shade);
 
     const p = self.place(width);
     const inset = self.scale(icon_inset);
@@ -228,7 +200,7 @@ pub fn paint(
     }, pal.divider);
     g = .{ .bar = self, .hdc = mem, .x = p.new_tab_menu.left, .y = p.new_tab_menu.top, .color = pal.text };
     const tri = g.rect(5, 14, 17, 20);
-    polygon(mem, &.{
+    draw.polygon(mem, &.{
         .{ .x = tri.left, .y = tri.top },
         .{ .x = tri.right, .y = tri.top },
         .{ .x = @divTrunc(tri.left + tri.right, 2), .y = tri.bottom },
@@ -276,10 +248,7 @@ pub fn paint(
                 g.outline(13, 13, 21, 21, 2, 0, disc);
             },
             // window-close: an X.
-            else => {
-                g.diagonal(13, 13, 21, 21);
-                g.diagonal(21, 13, 13, 21);
-            },
+            else => draw.cross(mem, g.rect(13, 13, 21, 21), self.dpi, pal.text),
         }
     }
 

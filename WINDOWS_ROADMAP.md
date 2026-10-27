@@ -1841,8 +1841,14 @@ rounded square with an 8 px plus, pan-down 12 x 6, view-grid two 6 px
 squares 2 apart, open-menu three 14 x 2 bars, the controls' 8 px glyphs
 13 px into the button). `HeaderBar` now lays out and draws exactly that,
 glyphs as filled shapes on the 16 px grid; a unit test pins the geometry
-to the reference's. Still to compare: the tab row against GTK's tab bar,
-the terminal's font, cells and padding (which needs a read-back of a
+to the reference's. The tab row then (step 4b, with
+`window-show-tab-bar = always` in the reference): GTK's tab bar under the
+header is 40 px (its tab box isn't padded above there; 46 as the top bar),
+with no line between it and the header: the shade comes under the lowest
+top bar. Its close glyph is window-close's 8 px X, 31 px from the row's
+right edge. `TabBar` takes those (`top_bar`), the header draws the shade
+only without a tab row, and both draw the X the same way (`draw.cross`).
+Still to compare: the terminal's font, cells and padding (which needs a read-back of a
 frame, since window captures read white while DWM idles), and GTK's
 shade, which falls 5 px onto the content below the bar where murrtty
 draws a 1 px line inside it.

@@ -158,6 +158,7 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
     };
     // WM_NCCALCSIZE gave the new window its frame by csd().
     self.csd_frame = self.csd();
+    self.tab_bar.top_bar = !self.csd_frame;
     errdefer {
         _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
         _ = c.DestroyWindow(self.hwnd);
@@ -732,6 +733,8 @@ fn adjustFrame(self: *const Window, rect: *c.RECT, dpi: c.UINT) void {
 fn layout(self: *Window) void {
     // A wider window may show more tabs: keep the scroll in range (not the
     // active tab in view, which would undo the chevrons; select does that).
+    // Below the header bar, or the top bar itself (its height differs).
+    self.tab_bar.top_bar = !self.csd();
     const strip_width = self.clientWidth();
     self.tab_bar.clampScroll(self.tabs.items.len, strip_width);
     if (self.reveal_active and strip_width > 0) {
@@ -1041,7 +1044,7 @@ fn paint(self: *Window) void {
         // The caption's text, which syncTitle keeps.
         var title: [512]u16 = undefined;
         const n = c.GetWindowTextW(self.hwnd, &title, title.len);
-        self.header.paint(hdc, width, title[0..@intCast(@max(n, 0))], self.tab_bar.hover, self.pressed, c.IsZoomed(self.hwnd) != 0, pal);
+        self.header.paint(hdc, width, title[0..@intCast(@max(n, 0))], self.tab_bar.hover, self.pressed, c.IsZoomed(self.hwnd) != 0, !self.tabBarVisible(), pal);
     }
     if (!self.tabBarVisible()) return;
 

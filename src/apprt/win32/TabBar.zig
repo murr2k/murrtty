@@ -2,11 +2,13 @@
 //! tab bar as libadwaita draws it (roadmap 3.8, 4.3).
 //!
 //! Drawn with GDI rather than the common tab control so it can look like
-//! libadwaita's: in the header bar's color, 46 DIP tall (a 34 DIP tab
-//! box with 6 above and below), tabs as rounded buttons (radius 9) with
-//! the title centered, the selected one tinted, a round close button on
-//! the selected and hovered tabs, separators between the others. The
-//! Window owns the tabs; this only lays them out, paints and hit-tests.
+//! libadwaita's: in the header bar's color, a 34 DIP tab box with 6 below
+//! and, as the top bar (no header bar above), 6 above (40 or 46 DIP, as
+//! measured on GTK's), tabs as rounded buttons (radius 9) with the title
+//! centered, the selected one tinted, a round close button on the
+//! selected and hovered tabs, separators between the others, and the
+//! shade under it, the chrome's lowest bar. The Window owns the tabs; this
+//! only lays them out, paints and hit-tests.
 //! Tabs fill the row (`gtk-wide-tabs`, as GTK's do by default) or take up
 //! to 240 DIP each; below 64 DIP they scroll (by `scroll`) between a "‹"
 //! and a "›". The header bar's buttons are HeaderBar's.
@@ -18,8 +20,7 @@ const draw = @import("draw.zig");
 const text_util = @import("text.zig");
 
 /// Unscaled metrics, in device-independent pixels.
-const bar_height = 46;
-const tab_top = 6;
+const tab_pad = 6;
 const tab_height = 34;
 const pad_x = 6;
 const tab_max_width = 240;
@@ -35,6 +36,9 @@ dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 /// Tabs share the whole row (gtk-wide-tabs), rather than stopping at 240
 /// DIP each.
 wide: bool = true,
+/// The row is the top bar (no header bar above it): libadwaita pads its
+/// tab box above as well as below.
+top_bar: bool = false,
 
 /// The item under the mouse, in this row or the header bar, for hover
 /// highlighting.
@@ -157,8 +161,13 @@ fn scale(self: *const TabBar, v: c_int) c_int {
     return draw.scale(self.dpi, v);
 }
 
+/// The tab box's top: padded only as the top bar.
+fn tabTop(self: *const TabBar) c_int {
+    return if (self.top_bar) self.scale(tab_pad) else 0;
+}
+
 pub fn height(self: *const TabBar) c_int {
-    return self.scale(bar_height);
+    return self.tabTop() + self.scale(tab_height + tab_pad);
 }
 
 /// The rectangle of tab `i` of `n` in a row `width` pixels wide, in the
@@ -168,7 +177,7 @@ pub fn tabRect(self: *const TabBar, i: usize, n: usize, width: c_int) c.RECT {
     const p = self.place(n, width);
     const offset = if (p.overflow) self.scroll else 0;
     const left = p.view_left + p.tab_width * @as(c_int, @intCast(i)) - offset;
-    const top = self.scale(tab_top);
+    const top = self.tabTop();
     return .{ .left = left, .top = top, .right = left + p.tab_width, .bottom = top + self.scale(tab_height) };
 }
 
@@ -195,10 +204,11 @@ pub fn scrollRightRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
     return .{ .left = p.view_right, .top = 0, .right = width, .bottom = self.height() };
 }
 
-/// A tab's close button: a circle at its right end.
+/// A tab's close button: a circle at its right end (its glyph 31 DIP from
+/// the row's right edge, as GTK's).
 pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
     const s = self.scale(close_size);
-    const right = tab.right - self.scale(5);
+    const right = tab.right - self.scale(9);
     const top = tab.top + @divTrunc(tab.bottom - tab.top - s, 2);
     return .{ .left = right - s, .top = top, .right = right, .bottom = top + s };
 }
@@ -250,6 +260,8 @@ pub fn paint(
     _ = c.SetBkMode(mem, c.TRANSPARENT);
 
     draw.fill(mem, .{ .right = width, .bottom = h }, pal.bar);
+    // libadwaita's shade under the top bars: the row is the lowest.
+    draw.fill(mem, .{ .top = h - 1, .right = width, .bottom = h }, pal.shade);
 
     const n = titles.len;
     const pen_w = @max(1, self.scale(1));
@@ -310,11 +322,9 @@ pub fn paint(
             if (std.meta.eql(self.hover, Hit{ .close = i })) {
                 draw.roundRect(mem, cr, @divTrunc(cr.right - cr.left, 2), pal.pressed, null, 0);
             }
-            const cx = @divTrunc(cr.left + cr.right, 2);
-            const cy = @divTrunc(cr.top + cr.bottom, 2);
-            const g = self.scale(4);
-            draw.line(mem, cx - g, cy - g, cx + g + 1, cy + g + 1, pal.text, stroke);
-            draw.line(mem, cx + g, cy - g, cx - g - 1, cy + g + 1, pal.text, stroke);
+            // window-close's 8 DIP X in the middle of the circle.
+            const off = self.scale(8);
+            draw.cross(mem, .{ .left = cr.left + off, .top = cr.top + off, .right = cr.left + off + self.scale(8), .bottom = cr.top + off + self.scale(8) }, self.dpi, pal.text);
         }
     }
     _ = c.SelectClipRgn(mem, null);
@@ -329,7 +339,7 @@ pub fn paint(
             const r = chev[1];
             draw.fill(mem, r, pal.bar);
             if (std.meta.eql(self.hover, chev[0]) and chev[2]) {
-                const t = self.scale(tab_top);
+                const t = self.tabTop();
                 draw.roundRect(mem, .{ .left = r.left, .top = t, .right = r.right, .bottom = t + self.scale(tab_height) }, radius, pal.hover, null, 0);
             }
             const x = @divTrunc(r.left + r.right, 2);
@@ -353,12 +363,19 @@ test "hitTest: wide tabs share the row" {
     const half = @divTrunc(width - 2 * pad_x, 2);
     try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(pad_x + 10, 20, 2, width));
     try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(pad_x + half + 10, 20, 2, width));
-    try testing.expectEqual(Hit{ .close = 0 }, bar.hitTest(pad_x + half - 5 - close_size / 2, bar_height / 2, 2, width));
+    try testing.expectEqual(Hit{ .close = 0 }, bar.hitTest(pad_x + half - 9 - close_size / 2, tab_height / 2, 2, width));
     // The row's top and bottom margins still hit the tab.
     try testing.expectEqual(Hit{ .tab = 0 }, bar.hitTest(pad_x + 10, 1, 2, width));
     try testing.expectEqual(Hit.none, bar.hitTest(2, 20, 2, width));
-    try testing.expectEqual(Hit.none, bar.hitTest(10, bar_height + 1, 2, width));
+    try testing.expectEqual(Hit.none, bar.hitTest(10, bar.height() + 1, 2, width));
     try testing.expect(!bar.overflowing(2, width));
+}
+
+test "height: 40 below a header bar, 46 as the top bar (GTK's)" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(c_int, 40), (TabBar{}).height());
+    try testing.expectEqual(@as(c_int, 46), (TabBar{ .top_bar = true }).height());
+    try testing.expectEqual(@as(c_int, 6), (TabBar{ .top_bar = true }).tabRect(0, 1, 500).top);
 }
 
 test "hitTest: without gtk-wide-tabs, tabs stop at 240" {
