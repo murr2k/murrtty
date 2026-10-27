@@ -747,7 +747,7 @@ test "system menu items: access keys of their own, clear of the system's" {
         const label = switch (item) {
             .action => |a| a.label,
             .submenu => |s| s.label,
-            .about, .unavailable => |l| l,
+            .about, .unavailable, .unavailable_toggle => |l| l,
             .separator => continue,
         };
         const k = accessKey(u8, label) orelse return error.NoAccessKey;
