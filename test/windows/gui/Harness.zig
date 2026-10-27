@@ -1217,6 +1217,9 @@ pub const Dump = struct {
         height: i32,
         tabs: []const struct { rect: [4]i32, close: [4]i32 },
         new_tab: [4]i32,
+        /// The arrow beside "+" (the split menu) and the main menu's button.
+        new_tab_menu: [4]i32 = .{ 0, 0, 0, 0 },
+        menu: [4]i32 = .{ 0, 0, 0, 0 },
     };
     pub const Tab = struct {
         hwnd: u64,

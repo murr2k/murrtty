@@ -5,6 +5,7 @@ const App = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const apprt = @import("../../apprt.zig");
+const build_config = @import("../../build_config.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 const input = @import("../../input.zig");
@@ -477,6 +478,31 @@ fn linkBlocked(self: *App, owner: ?c.HWND, denial: url.Denial) void {
             log.warn("error copying a blocked link err={}", .{err});
         };
     }
+}
+
+/// murrtty's About box, from the main menu (GTK's About dialog, which no
+/// core action shows).
+pub fn showAbout(self: *App, owner: ?c.HWND) void {
+    const alloc = self.core_app.alloc;
+    const content = std.fmt.allocPrint(alloc,
+        \\Version {s}
+        \\
+        \\A native Windows terminal forked from Ghostty, open source under the MIT license. Ghostty is by Mitchell Hashimoto and its contributors; murrtty is not affiliated with the Ghostty project.
+    , .{build_config.version_string}) catch return;
+    defer alloc.free(content);
+    _ = self.taskDialog(.{
+        .owner = owner,
+        .title = "About murrtty",
+        .instruction = "murrtty",
+        .content = content,
+        .icon = .information,
+        .common_buttons = c.TDCBF_OK_BUTTON,
+        .default_button = c.IDOK,
+    }) orelse {
+        var modal = self.beginModal(owner, .{});
+        defer modal.end();
+        _ = Surface.messageBox(alloc, owner, content, "About murrtty", c.MB_OK | c.MB_ICONINFORMATION);
+    };
 }
 
 /// A nested modal loop in progress: a dialog, a popup menu or a file

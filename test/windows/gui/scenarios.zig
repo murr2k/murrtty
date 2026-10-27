@@ -32,6 +32,7 @@ pub const all = [_]Scenario{
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
     .{ .name = "command-palette", .about = "Ctrl+Shift+P palette: supported commands only, filter, Enter runs New Tab, Focus: jumps (also to another window), row click, Escape and outside click close", .run = commandPalette },
+    .{ .name = "tab-buttons", .about = "the arrow beside + opens the split menu; the menu button opens GTK's main menu (New Tab, Command Palette, About murrtty)", .run = tabButtons },
     .{ .name = "tab-menu", .about = "a tab's right-click menu: Change Tab Title, Close Tab, Close Other Tabs, Close Tabs to the Right, on the tab clicked; graying", .run = tabMenu },
     .{ .name = "bell", .about = "bell-features title: a bell before the tab's title and caption until input; a background tab's mark until selected", .run = bell },
     .{ .name = "status-overlays", .about = "link preview, read-only badge, key sequence and table, renderer panel, toasts (copy, reload), child-exited banner (Close, any key)", .run = statusOverlays },
@@ -1632,6 +1633,94 @@ fn tabMenu(h: *Harness) anyerror!void {
         try h.expect(std.mem.eql(u8, d.value.windows[0].tabs[0].tab_name, "renamed-bg"), "Close Other Tabs keeps the tab clicked", .{});
     }
     try quit(h, &g, try h.surface(&g, win));
+}
+
+/// The strip's buttons (roadmap 3.8, GTK's header bar): the arrow beside
+/// "+" opens Split Up, Down, Left and Right for the active pane; the
+/// button at the right end opens GTK's main menu for it (Terminal
+/// Inspector grayed), whose New Tab and Command Palette work, and whose
+/// About murrtty shows the About box.
+fn tabButtons(h: *Harness) anyerror!void {
+    var g = try start(h, "tab-buttons", "window-show-tab-bar = always\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+
+    // The split menu: the press opens it (the menu takes the release).
+    var at = try stripButton(h, &g, .new_tab_menu);
+    h.press(win, at.x, at.y);
+    var menu = try h.waitMenu(&g, 1, 5000);
+    {
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        const want = [_][]const u8{ "Split &Up", "Split &Down", "Split &Left", "Split &Right" };
+        try h.expect(items.len == want.len, "the split menu has four entries (got {d})", .{items.len});
+        for (items, want) |got, exp| try h.expect(std.mem.startsWith(u8, got.text, exp) and !got.grayed, "'{s}'", .{got.text});
+    }
+    h.menuKey(menu, 'r');
+    try waitPanes(h, &g, 2);
+    try h.expect(true, "Split Right from it splits the active pane", .{});
+
+    // The main menu.
+    at = try stripButton(h, &g, .menu);
+    h.press(win, at.x, at.y);
+    menu = try h.waitMenu(&g, 1, 5000);
+    {
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        try h.expect(items.len == 21, "GTK's main menu: 21 entries with separators (got {d})", .{items.len});
+        if (items.len == 21) {
+            try h.expect(std.mem.startsWith(u8, items[0].text, "&Copy") and std.mem.startsWith(u8, items[8].text, "&New Tab"), "Copy first, New Tab with the tab's items", .{});
+            try h.expect(items[10].submenu and std.mem.eql(u8, items[10].text, "&Split"), "a Split submenu", .{});
+            try h.expect(std.mem.startsWith(u8, items[16].text, "Terminal &Inspector") and items[16].grayed, "Terminal Inspector, grayed (roadmap 5.12)", .{});
+            try h.expect(std.mem.eql(u8, items[19].text, "Abo&ut murrtty") and std.mem.startsWith(u8, items[20].text, "&Quit"), "About murrtty, then Quit", .{});
+        }
+    }
+    h.menuKey(menu, 'n');
+    try waitWindowTabs(h, &g, win, 2);
+    try h.expect(true, "its New Tab opens a tab", .{});
+
+    at = try stripButton(h, &g, .menu);
+    h.press(win, at.x, at.y);
+    menu = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu, 'u');
+    const dlg = try h.waitDialog(&g, 5000);
+    {
+        const t = try h.title(dlg);
+        defer h.alloc.free(t);
+        try h.expect(std.mem.eql(u8, t, "About murrtty"), "About murrtty shows the About box ('{s}')", .{t});
+    }
+    h.answer(&g, dlg, w.IDOK);
+    try waitNoDialog(h, &g);
+
+    at = try stripButton(h, &g, .menu);
+    h.press(win, at.x, at.y);
+    menu = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu, 'e');
+    {
+        var waited: u32 = 0;
+        const open = while (waited <= 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (d.value.windows[0].palette) |p| if (p.open) break true;
+            w.Sleep(100);
+        } else false;
+        try h.expect(open, "its Command Palette opens the palette", .{});
+    }
+    try quit(h, &g, try h.surface(&g, win));
+}
+
+/// The middle of one of the strip's buttons, in the window's client area.
+fn stripButton(h: *Harness, g: *Harness.Ghostty, which: enum { new_tab, new_tab_menu, menu }) !struct { x: c_int, y: c_int } {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const bar = d.value.windows[0].tab_bar;
+    const r = switch (which) {
+        .new_tab => bar.new_tab,
+        .new_tab_menu => bar.new_tab_menu,
+        .menu => bar.menu,
+    };
+    if (r[2] <= r[0]) return h.fail("the strip reports no such button", .{});
+    return .{ .x = @divTrunc(r[0] + r[2], 2), .y = @divTrunc(r[1] + r[3], 2) };
 }
 
 /// The middle of tab `i` of the first window's strip, in its client area.

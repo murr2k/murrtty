@@ -5,6 +5,7 @@ const Window = @This();
 const std = @import("std");
 const apprt = @import("../../apprt.zig");
 const configpkg = @import("../../config.zig");
+const input = @import("../../input.zig");
 const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
@@ -920,16 +921,45 @@ fn paint(self: *Window) void {
 }
 
 /// The tab strip's menu for tab `index`, at the press in `lparam`. What
-/// was chosen runs on the tab's focused pane after the menu's loop, during
-/// which closes wait (App.request), so that pane is still there.
+/// was chosen runs on the tab's focused pane.
 fn tabMenu(self: *Window, index: usize, lparam: c.LPARAM) void {
     const surface = self.tabs.items[index].focused;
     var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
     _ = c.ClientToScreen(self.hwnd, &pt);
     const chosen = ContextMenu.trackTab(surface, .{ .index = index, .count = self.tabs.items.len }, pt) orelse return;
+    self.performOnPane(surface, chosen);
+}
+
+/// The menu on the arrow beside "+": splits of the active tab's pane.
+fn splitMenu(self: *Window) void {
+    const surface = self.activeSurface() orelse return;
+    const r = self.tab_bar.newTabMenuRect(self.tabs.items.len, self.tabBarRect().right);
+    var pt: c.POINT = .{ .x = r.left, .y = r.bottom };
+    _ = c.ClientToScreen(self.hwnd, &pt);
+    const chosen = ContextMenu.trackSplit(surface, pt) orelse return;
+    self.performOnPane(surface, chosen);
+}
+
+/// The main menu, under its button at the strip's right end, for the
+/// active tab's focused pane.
+fn mainMenu(self: *Window) void {
+    const surface = self.activeSurface() orelse return;
+    const r = self.tab_bar.menuRect(self.tabBarRect().right);
+    var pt: c.POINT = .{ .x = r.right, .y = r.bottom };
+    _ = c.ClientToScreen(self.hwnd, &pt);
+    switch (ContextMenu.trackMain(surface, pt) orelse return) {
+        .action => |a| self.performOnPane(surface, a),
+        .about => self.app.showAbout(self.hwnd),
+    }
+}
+
+/// Run a menu's choice on `surface` after the menu's loop, during which
+/// closes wait (App.request), so the pane is still there.
+fn performOnPane(self: *Window, surface: *Surface, action: input.Binding.Action) void {
+    _ = self;
     if (!surface.core_initialized) return;
-    _ = surface.core_surface.performBindingAction(chosen) catch |err| {
-        log.warn("error performing a tab menu action err={}", .{err});
+    _ = surface.core_surface.performBindingAction(action) catch |err| {
+        log.warn("error performing a menu action err={}", .{err});
     };
 }
 
@@ -1013,6 +1043,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 .tab => |i| self.select(i),
                 .close => |i| self.requestCloseTab(i),
                 .new_tab => self.newTabFromActive(),
+                .new_tab_menu => self.splitMenu(),
+                .menu => self.mainMenu(),
             }
             return 0;
         },
@@ -1036,6 +1068,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 },
                 .close => |i| self.requestCloseTab(i),
                 .new_tab => self.newTabFromActive(),
+                .new_tab_menu => self.splitMenu(),
+                .menu => self.mainMenu(),
             }
             return 0;
         },

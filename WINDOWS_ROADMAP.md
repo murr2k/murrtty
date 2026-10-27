@@ -1535,6 +1535,18 @@ choice runs as the core's action (`prompt_tab_title`, `close_tab:this`,
 loop, so it confirms and closes as those bindings do, and the clicked tab
 stays in the background. Scenario `tab-menu`.
 
+*3.8b (GTK's header bar buttons) done 2026-10-26.* "+" gained an arrow
+beside it (GTK's split button) opening Split Up, Down, Left and Right, and
+a button with three lines at the strip's right end opens GTK's main menu
+(*observed*): Copy, Paste; Change Window Title..., New Window, Close
+Window; Change Tab Title..., New Tab, Close Tab, the Split submenu; Clear,
+Reset; Command Palette, Terminal Inspector (grayed until 5.12), the Config
+submenu; About murrtty (a task dialog with the version, `App.showAbout`),
+Quit. Both open on the press under their button and act on the active
+tab's focused pane, as the core's actions. Tabs that don't fit run under
+the buttons until 3.8c. Scenario `tab-buttons`; the dump reports both
+buttons' rectangles. The system menu's items are 3.9's.
+
 **3.9 Dialog polish, S.**
 - Replace `MessageBox` confirmations with TaskDialogs, worded as GTK's
   (*observed*): "Close Tab?" / "All terminal sessions in this tab will be

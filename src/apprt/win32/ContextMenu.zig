@@ -21,11 +21,37 @@ const Item = union(enum) {
     unavailable: []const u8,
     separator,
     submenu: struct { label: []const u8, items: []const Item },
+    /// murrtty's About box, which no core action shows.
+    about: []const u8,
+};
+
+/// What was chosen from a menu.
+pub const Choice = union(enum) {
+    action: Action,
+    about,
 };
 
 fn act(label: []const u8, action: Action) Item {
     return .{ .action = .{ .label = label, .action = action } };
 }
+
+/// The Split submenu, in the terminal's menu and the main menu.
+const split_submenu = [_]Item{
+    act("Change &Title...", .prompt_surface_title),
+    act("Split &Up", .{ .new_split = .up }),
+    act("Split &Down", .{ .new_split = .down }),
+    act("Split &Left", .{ .new_split = .left }),
+    act("Split &Right", .{ .new_split = .right }),
+    act("&Close Split", .close_surface),
+};
+
+/// The Config submenu, likewise. Opening the editor in a new terminal
+/// window is GTK's only, for now.
+const config_submenu = [_]Item{
+    act("&Open Configuration in OS Editor", .{ .open_config = .os_open }),
+    .{ .unavailable = "Open Configuration in New &Window" },
+    act("&Reload Configuration", .reload_config),
+};
 
 /// GTK's menu (*observed* in its app); the `&` marks each item's access key.
 const items = [_]Item{
@@ -37,14 +63,7 @@ const items = [_]Item{
     act("C&lear", .clear_screen),
     act("&Reset", .reset),
     .separator,
-    .{ .submenu = .{ .label = "&Split", .items = &.{
-        act("Change &Title...", .prompt_surface_title),
-        act("Split &Up", .{ .new_split = .up }),
-        act("Split &Down", .{ .new_split = .down }),
-        act("Split &Left", .{ .new_split = .left }),
-        act("Split &Right", .{ .new_split = .right }),
-        act("&Close Split", .close_surface),
-    } } },
+    .{ .submenu = .{ .label = "&Split", .items = &split_submenu } },
     .{ .submenu = .{ .label = "&Tab", .items = &.{
         act("Change Tab &Title...", .prompt_tab_title),
         act("&New Tab", .new_tab),
@@ -56,12 +75,41 @@ const items = [_]Item{
         act("&Close Window", .close_window),
     } } },
     .separator,
-    // Opening the editor in a new terminal window is GTK's only, for now.
-    .{ .submenu = .{ .label = "C&onfig", .items = &.{
-        act("&Open Configuration in OS Editor", .{ .open_config = .os_open }),
-        .{ .unavailable = "Open Configuration in New &Window" },
-        act("&Reload Configuration", .reload_config),
-    } } },
+    .{ .submenu = .{ .label = "C&onfig", .items = &config_submenu } },
+};
+
+/// GTK's main menu, its header bar's menu button (*observed*): for the
+/// active tab's focused pane.
+const main_items = [_]Item{
+    act("&Copy", .{ .copy_to_clipboard = .mixed }),
+    act("&Paste", .paste_from_clipboard),
+    .separator,
+    act("Change Window &Title...", .prompt_window_title),
+    act("New &Window", .new_window),
+    act("Close Win&dow", .close_window),
+    .separator,
+    act("Change Ta&b Title...", .prompt_tab_title),
+    act("&New Tab", .new_tab),
+    act("Close T&ab", .{ .close_tab = .this }),
+    .{ .submenu = .{ .label = "&Split", .items = &split_submenu } },
+    .separator,
+    act("C&lear", .clear_screen),
+    act("&Reset", .reset),
+    .separator,
+    act("Command Pal&ette", .toggle_command_palette),
+    act("Terminal &Inspector", .{ .inspector = .toggle }),
+    .{ .submenu = .{ .label = "C&onfig", .items = &config_submenu } },
+    .separator,
+    .{ .about = "Abo&ut murrtty" },
+    act("&Quit", .quit),
+};
+
+/// The menu on the arrow beside "+" (GTK's split button's).
+const split_items = [_]Item{
+    act("Split &Up", .{ .new_split = .up }),
+    act("Split &Down", .{ .new_split = .down }),
+    act("Split &Left", .{ .new_split = .left }),
+    act("Split &Right", .{ .new_split = .right }),
 };
 
 /// The tab strip's menu: the fuller one Windows users expect (decided
@@ -81,14 +129,14 @@ const tab_items = [_]Item{
 /// Where the tab a tab menu is for sits in its window's strip.
 pub const TabPlace = struct { index: usize, count: usize };
 
-/// The actions of the menu being shown, by item id (index + 1).
+/// The choices of the menu being shown, by item id (index + 1).
 const Built = struct {
-    actions: std.ArrayList(Action) = .empty,
+    choices: std.ArrayList(Choice) = .empty,
     /// The menu's strings, alive while it shows.
     strings: std.ArrayList([:0]u16) = .empty,
 
     fn deinit(self: *Built, alloc: Allocator) void {
-        self.actions.deinit(alloc);
+        self.choices.deinit(alloc);
         for (self.strings.items) |s| alloc.free(s);
         self.strings.deinit(alloc);
     }
@@ -97,17 +145,42 @@ const Built = struct {
 /// Show the menu at `screen` (screen pixels) over `surface` and return the
 /// action chosen, if any. The caller performs it, after the menu is gone.
 pub fn track(surface: *Surface, screen: c.POINT) ?Action {
-    return show(surface, &items, null, surface.hwnd, screen);
+    return actionOf(show(surface, &items, null, surface.hwnd, screen, .left));
 }
 
 /// Show the tab strip's menu for the tab at `place`, whose focused pane is
 /// `surface`, and return the action chosen for that pane, if any. The
 /// window owns the menu: a background tab's pane is hidden.
 pub fn trackTab(surface: *Surface, place: TabPlace, screen: c.POINT) ?Action {
-    return show(surface, &tab_items, place, surface.window.hwnd, screen);
+    return actionOf(show(surface, &tab_items, place, surface.window.hwnd, screen, .left));
 }
 
-fn show(surface: *Surface, list: []const Item, place: ?TabPlace, owner: c.HWND, screen: c.POINT) ?Action {
+/// The menu on the arrow beside "+", its top left at `screen`.
+pub fn trackSplit(surface: *Surface, screen: c.POINT) ?Action {
+    return actionOf(show(surface, &split_items, null, surface.window.hwnd, screen, .left));
+}
+
+/// The main menu, its top right at `screen` (under the button at the
+/// strip's right end).
+pub fn trackMain(surface: *Surface, screen: c.POINT) ?Choice {
+    return show(surface, &main_items, null, surface.window.hwnd, screen, .right);
+}
+
+fn actionOf(choice: ?Choice) ?Action {
+    return switch (choice orelse return null) {
+        .action => |a| a,
+        .about => null,
+    };
+}
+
+fn show(
+    surface: *Surface,
+    list: []const Item,
+    place: ?TabPlace,
+    owner: c.HWND,
+    screen: c.POINT,
+    edge: enum { left, right },
+) ?Choice {
     const app = surface.app;
     const alloc = app.core_app.alloc;
     var built: Built = .{};
@@ -123,11 +196,13 @@ fn show(surface: *Surface, list: []const Item, place: ?TabPlace, owner: c.HWND, 
     var modal = app.beginModal(surface.window.hwnd, .{ .disable_others = false });
     defer modal.end();
     if (comptime @import("test_hooks.zig").enabled) app.test_state.menus_shown += 1;
-    const id = c.TrackPopupMenuEx(menu, c.TPM_RETURNCMD | c.TPM_RIGHTBUTTON | c.TPM_NONOTIFY, screen.x, screen.y, owner, null);
+    const flags: c.UINT = c.TPM_RETURNCMD | c.TPM_RIGHTBUTTON | c.TPM_NONOTIFY |
+        @as(c.UINT, if (edge == .right) c.TPM_RIGHTALIGN else 0);
+    const id = c.TrackPopupMenuEx(menu, flags, screen.x, screen.y, owner, null);
     // So the menu closes properly the next time (KB135788).
     _ = c.PostMessageW(owner, c.WM_NULL, 0, 0);
-    if (id <= 0 or id > built.actions.items.len) return null;
-    return built.actions.items[@intCast(id - 1)];
+    if (id <= 0 or id > built.choices.items.len) return null;
+    return built.choices.items[@intCast(id - 1)];
 }
 
 const BuildError = error{ CreateMenuFailed, OutOfMemory, InvalidUtf8 };
@@ -146,9 +221,14 @@ fn build(surface: *Surface, built: *Built, list: []const Item, place: ?TabPlace)
             var buf: [96]u8 = undefined;
             const label = labelWithBinding(surface.app, a.label, a.action, &buf);
             const text = try addString(alloc, built, label);
-            try built.actions.append(alloc, a.action);
+            try built.choices.append(alloc, .{ .action = a.action });
             const flags: c.UINT = if (enabled(surface, a.action, place)) c.MF_STRING else c.MF_STRING | c.MF_GRAYED;
-            _ = c.AppendMenuW(menu, flags, built.actions.items.len, text.ptr);
+            _ = c.AppendMenuW(menu, flags, built.choices.items.len, text.ptr);
+        },
+        .about => |label| {
+            const text = try addString(alloc, built, label);
+            try built.choices.append(alloc, .about);
+            _ = c.AppendMenuW(menu, c.MF_STRING, built.choices.items.len, text.ptr);
         },
         .submenu => |s| {
             const sub = try build(surface, built, s.items, place);

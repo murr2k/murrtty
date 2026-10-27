@@ -264,8 +264,12 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             });
         }
         const nt = w.tab_bar.newTabRect(n, client.right);
-        try out.print(alloc, "],\"new_tab\":[{d},{d},{d},{d}]}},\"tabs\":[", .{
-            nt.left, nt.top, nt.right, nt.bottom,
+        const ntm = w.tab_bar.newTabMenuRect(n, client.right);
+        const mr = w.tab_bar.menuRect(client.right);
+        try out.print(alloc, "],\"new_tab\":[{d},{d},{d},{d}],\"new_tab_menu\":[{d},{d},{d},{d}],\"menu\":[{d},{d},{d},{d}]}},\"tabs\":[", .{
+            nt.left,  nt.top,  nt.right,  nt.bottom,
+            ntm.left, ntm.top, ntm.right, ntm.bottom,
+            mr.left,  mr.top,  mr.right,  mr.bottom,
         });
 
         // Each tab as its focused pane.

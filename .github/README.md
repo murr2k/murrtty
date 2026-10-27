@@ -105,7 +105,10 @@ hosted Windows runner and then the unit tests.
   button or a keybinding), switching tabs (clicking or a keybinding), and
   closing a tab (its close button, a middle-click or a keybinding). A
   tab's right-click menu renames it or closes it, the other tabs, or the
-  tabs to its right.
+  tabs to its right. As in Ghostty's GTK app, the arrow beside `+` splits
+  the terminal, and the menu button at the right end opens the main menu
+  (copy and paste, windows, tabs, splits, the command palette, the
+  configuration, About murrtty, Quit).
 - Splits: `Ctrl+Shift+O` and `Ctrl+Shift+E` split the focused pane right
   and down, a pane closes with its shell (the last one closes the tab), and
   the tab shows the focused pane's title. `Ctrl+Shift+W` closes the whole

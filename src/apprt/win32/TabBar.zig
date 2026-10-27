@@ -14,6 +14,8 @@ const bar_height = 34;
 const tab_max_width = 240;
 const tab_min_width = 64;
 const button_width = 34;
+/// The arrow beside "+" opening the split menu (GTK's split button).
+const dropdown_width = 18;
 const close_size = 18;
 const text_inset = 12;
 
@@ -29,6 +31,10 @@ pub const Hit = union(enum) {
     tab: usize,
     close: usize,
     new_tab,
+    /// The arrow beside "+": the split menu.
+    new_tab_menu,
+    /// The main menu's button at the right end.
+    menu,
 
     pub fn eql(a: Hit, b: Hit) bool {
         return std.meta.eql(a, b);
@@ -62,11 +68,16 @@ pub fn height(self: *const TabBar) c_int {
 
 /// The rectangle of tab `i` of `n` in a bar `width` pixels wide.
 pub fn tabRect(self: *const TabBar, i: usize, n: usize, width: c_int) c.RECT {
-    const avail = @max(0, width - self.scale(button_width));
+    const avail = @max(0, width - self.scale(button_width + dropdown_width) - self.scale(button_width));
     const per: c_int = @intCast(@divTrunc(avail, @as(c_int, @intCast(@max(n, 1)))));
     const w = std.math.clamp(per, self.scale(tab_min_width), self.scale(tab_max_width));
     const left: c_int = w * @as(c_int, @intCast(i));
     return .{ .left = left, .top = 0, .right = left + w, .bottom = self.height() };
+}
+
+/// The main menu's button, at the right end of the bar.
+pub fn menuRect(self: *const TabBar, width: c_int) c.RECT {
+    return .{ .left = width - self.scale(button_width), .top = 0, .right = width, .bottom = self.height() };
 }
 
 pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
@@ -76,10 +87,19 @@ pub fn closeRect(self: *const TabBar, tab: c.RECT) c.RECT {
     return .{ .left = right - s, .top = top, .right = right, .bottom = top + s };
 }
 
+/// "+", after the last tab, but never under the menu button (tabs that
+/// don't fit run under it until 3.8c's overflow).
 pub fn newTabRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
     const last = self.tabRect(n -| 1, n, width);
-    const left = if (n == 0) 0 else last.right;
+    const max_left = self.menuRect(width).left - self.scale(button_width + dropdown_width);
+    const left = @max(0, @min(if (n == 0) 0 else last.right, max_left));
     return .{ .left = left, .top = 0, .right = left + self.scale(button_width), .bottom = self.height() };
+}
+
+/// The arrow beside "+".
+pub fn newTabMenuRect(self: *const TabBar, n: usize, width: c_int) c.RECT {
+    const nt = self.newTabRect(n, width);
+    return .{ .left = nt.right, .top = 0, .right = nt.right + self.scale(dropdown_width), .bottom = self.height() };
 }
 
 fn contains(r: c.RECT, x: c_int, y: c_int) bool {
@@ -88,13 +108,16 @@ fn contains(r: c.RECT, x: c_int, y: c_int) bool {
 
 pub fn hitTest(self: *const TabBar, x: c_int, y: c_int, n: usize, width: c_int) Hit {
     if (y < 0 or y >= self.height()) return .none;
+    // The buttons first: tabs that don't fit run under them.
+    if (contains(self.menuRect(width), x, y)) return .menu;
+    if (contains(self.newTabRect(n, width), x, y)) return .new_tab;
+    if (contains(self.newTabMenuRect(n, width), x, y)) return .new_tab_menu;
     for (0..n) |i| {
         const r = self.tabRect(i, n, width);
         if (contains(r, x, y)) {
             return if (contains(self.closeRect(r), x, y)) .{ .close = i } else .{ .tab = i };
         }
     }
-    if (contains(self.newTabRect(n, width), x, y)) return .new_tab;
     return .none;
 }
 
@@ -235,12 +258,32 @@ pub fn paint(
 
     // New tab button
     const nr = self.newTabRect(n, width);
-    if (std.meta.eql(self.hover, Hit.new_tab)) fill(mem, nr, pal.hover);
+    fill(mem, nr, if (std.meta.eql(self.hover, Hit.new_tab)) pal.hover else pal.bar);
     const cx = @divTrunc(nr.left + nr.right, 2);
     const cy = @divTrunc(nr.top + nr.bottom, 2);
     const arm = self.scale(6);
     line(mem, cx - arm, cy, cx + arm + 1, cy, pal.text_dim, pen_w);
     line(mem, cx, cy - arm, cx, cy + arm + 1, pal.text_dim, pen_w);
+
+    // Its arrow, a small chevron.
+    const dr = self.newTabMenuRect(n, width);
+    fill(mem, dr, if (std.meta.eql(self.hover, Hit.new_tab_menu)) pal.hover else pal.bar);
+    const dx = @divTrunc(dr.left + dr.right, 2);
+    const dy = @divTrunc(dr.top + dr.bottom, 2);
+    const v = self.scale(3);
+    line(mem, dx - v, dy - @divTrunc(v, 2), dx, dy + @divTrunc(v, 2) + 1, pal.text_dim, pen_w);
+    line(mem, dx + v, dy - @divTrunc(v, 2), dx - 1, dy + @divTrunc(v, 2) + 1, pal.text_dim, pen_w);
+
+    // The main menu's button: three lines.
+    const mr = self.menuRect(width);
+    fill(mem, mr, if (std.meta.eql(self.hover, Hit.menu)) pal.hover else pal.bar);
+    const mx = @divTrunc(mr.left + mr.right, 2);
+    const my = @divTrunc(mr.top + mr.bottom, 2);
+    const half = self.scale(7);
+    const gap = self.scale(5);
+    for ([_]c_int{ my - gap, my, my + gap }) |ly| {
+        line(mem, mx - half, ly, mx + half + 1, ly, pal.text_dim, pen_w);
+    }
 
     _ = c.BitBlt(hdc, 0, 0, width, h, mem, 0, 0, c.SRCCOPY);
 }
@@ -253,6 +296,11 @@ test "hitTest" {
     try testing.expectEqual(Hit{ .tab = 1 }, bar.hitTest(tab_max_width + 10, 10, 2, 2000));
     try testing.expectEqual(Hit{ .close = 0 }, bar.hitTest(tab_max_width - 12, bar_height / 2, 2, 2000));
     try testing.expectEqual(Hit.new_tab, bar.hitTest(2 * tab_max_width + 5, 10, 2, 2000));
+    try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(2 * tab_max_width + button_width + 5, 10, 2, 2000));
+    try testing.expectEqual(Hit.menu, bar.hitTest(2000 - 5, 10, 2, 2000));
     try testing.expectEqual(Hit.none, bar.hitTest(1500, 10, 2, 2000));
     try testing.expectEqual(Hit.none, bar.hitTest(10, bar_height + 1, 2, 2000));
+    // Many tabs: "+" and its arrow stay clear of the menu button.
+    try testing.expectEqual(Hit.menu, bar.hitTest(500 - 5, 10, 40, 500));
+    try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(500 - button_width - 5, 10, 40, 500));
 }
