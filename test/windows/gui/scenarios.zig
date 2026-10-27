@@ -5212,6 +5212,19 @@ fn decorations(h: *Harness) anyerror!void {
         h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F4);
         try expectDecoration(h, &g, "none", true, false);
         try expectGrid(h, &g, grid, "and back to none");
+
+        // A second tab brings the tab row as the top bar: the band is the
+        // window's own there, the rest of the row the row's; the palette's
+        // dimming leaves the band to the window.
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        try expectNcHit(h, win, .{ 40, 2 }, w.HTTOP, "with a tab row the window still resizes from its top");
+        try expectNcHit(h, win, .{ 40, 20 }, w.HTCLIENT, "below the band the tab row is the row's");
+        h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'P');
+        const p = try waitPalette(h, &g, win, true);
+        try h.expect(hitTestAt(hwndOf(p.dim), win, .{ 40, 2 }) == w.HTTRANSPARENT, "the palette's dimming leaves the band to the window", .{});
+        h.key(hwndOf(p.edit), .{}, w.VK_ESCAPE);
+        _ = try waitPalette(h, &g, win, false);
         try quit(h, &g, surf);
     }
     inline for ([_]struct { []const u8, []const u8, bool, bool }{

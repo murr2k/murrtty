@@ -208,11 +208,13 @@ roadmap item behind it.
   inactive window). GTK's blur is the compositor's (KWin's, or
   `ext-background-effect-v1`); both ignore the intensity.
 - **No decorations** (4.4): `window-decoration = none` keeps Windows'
-  resize borders (and a resize band along the top), its shadow and
-  rounded corners; GTK's undecorated window loses its resize controls
-  with the title bar (`gtk_window_set_decorated`). Toggling decorations
-  keeps the terminal's grid, the window growing or shrinking by the
-  header bar, where GTK keeps the window's size.
+  resize borders, its shadow and rounded corners, and a resize band along
+  the top (with no tab row above them, it takes the top few pixels of the
+  panes, 8 at 100%, from the terminal's clicks); GTK's undecorated window
+  loses its resize controls with the title bar
+  (`gtk_window_set_decorated`). Toggling decorations keeps the terminal's
+  grid, the window growing or shrinking by the header bar where it is,
+  where GTK keeps the window's size.
 - **Background opacity toggle** (4.1): `toggle_background_opacity` works
   as on macOS: every window turns opaque, or translucent again, and new
   windows follow; with `background-opacity` at 1 it does nothing. GTK

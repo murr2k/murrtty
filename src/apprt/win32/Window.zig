@@ -85,6 +85,9 @@ decoration_override: ?configpkg.WindowDecoration = null,
 translucent: bool = false,
 /// How it blurs what shows through, as last applied by syncBlur.
 blur: Blur = .none,
+/// DWM refused Acrylic once: the accent policy's blur from then on, rather
+/// than asking again on every activation.
+acrylic_refused: bool = false,
 /// GTK's header bar, the title bar with client-side decorations.
 header: HeaderBar = .{},
 /// The window's button pressed (a press on the header bar's minimize,
@@ -763,7 +766,7 @@ pub fn toggleDecorations(self: *Window) void {
     self.applyChrome();
     self.layout();
     if (c.IsZoomed(self.hwnd) == 0 and self.fullscreen == null) {
-        self.resizeTabArea(before.right - before.left, before.bottom - before.top);
+        self.resizeTabArea(before.right - before.left, before.bottom - before.top, false);
     }
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
@@ -823,8 +826,10 @@ fn frameY(self: *const Window) c_int {
 /// buttons, or the resize band along the top. An overlay over the bar
 /// leaves those to the window (the command palette's dimming).
 pub fn isFrameAt(self: *const Window, x: c_int, y: c_int) bool {
-    if (!self.csd() or y < 0 or y >= self.titleBarHeight()) return false;
+    // The resize band, also without decorations (4.4).
+    if (!self.captionless() or y < 0) return false;
     if (c.IsZoomed(self.hwnd) == 0 and y < self.frameY()) return true;
+    if (!self.csd() or y >= self.titleBarHeight()) return false;
     return switch (self.chromeHit(x, y)) {
         .none, .minimize, .maximize, .window_close => true,
         else => false,
@@ -964,12 +969,14 @@ pub fn setClientSize(self: *Window, width: u32, height: u32) void {
         current.bottom - current.top
     else
         @intCast((@as(u64, height) * dpi + 95) / 96);
-    self.resizeTabArea(w, h);
+    self.resizeTabArea(w, h, true);
 }
 
-/// Size the window so its tab area is `w` x `h` device pixels, within the
-/// monitor's work area (setClientSize).
-fn resizeTabArea(self: *Window, w: c_int, h: c_int) void {
+/// Size the window so its tab area is `w` x `h` device pixels: within the
+/// monitor's work area as setClientSize asks (`fit`), or exactly, where it
+/// is (toggleDecorations, which must keep the grid of a window spanning
+/// monitors or partly off screen).
+fn resizeTabArea(self: *Window, w: c_int, h: c_int, fit: bool) void {
     const dpi = c.GetDpiForWindow(self.hwnd);
     var rect: c.RECT = .{ .right = w, .bottom = h + self.chromeHeight() };
     self.adjustFrame(&rect, dpi);
@@ -983,7 +990,7 @@ fn resizeTabArea(self: *Window, w: c_int, h: c_int) void {
     var x = pos.left;
     var y = pos.top;
     var mi: c.MONITORINFO = .{};
-    if (c.MonitorFromWindow(self.hwnd, c.MONITOR_DEFAULTTONEAREST)) |monitor| {
+    if (fit) if (c.MonitorFromWindow(self.hwnd, c.MONITOR_DEFAULTTONEAREST)) |monitor| {
         if (c.GetMonitorInfoW(monitor, &mi) != 0) {
             const work = mi.rcWork;
             win_w = @min(win_w, work.right - work.left);
@@ -995,7 +1002,7 @@ fn resizeTabArea(self: *Window, w: c_int, h: c_int) void {
                 y = @max(work.top, @min(y, work.bottom - win_h));
             }
         }
-    }
+    };
     const moved = x != pos.left or y != pos.top;
     _ = c.SetWindowPos(
         self.hwnd,
@@ -1217,7 +1224,7 @@ pub fn syncBlur(self: *Window) void {
     const method = self.app.blurMethod();
     const want: Blur = if (!self.translucent or !self.app.config.@"background-blur".enabled())
         .none
-    else if (method == .backdrop and !self.active_window and App.accentFn() != null)
+    else if (method == .backdrop and (!self.active_window or self.acrylic_refused) and App.accentFn() != null)
         .accent
     else
         method;
@@ -1236,8 +1243,9 @@ pub fn syncBlur(self: *Window) void {
         // Acrylic refused: the accent policy's blur, where there is one.
         .backdrop => if (self.setBackdrop(c.DWMSBT_TRANSIENTWINDOW)) {
             self.blur = .backdrop;
-        } else if (self.setAccent(c.ACCENT_ENABLE_BLURBEHIND)) {
-            self.blur = .accent;
+        } else {
+            self.acrylic_refused = true;
+            if (self.setAccent(c.ACCENT_ENABLE_BLURBEHIND)) self.blur = .accent;
         },
         .accent => if (self.setAccent(c.ACCENT_ENABLE_BLURBEHIND)) {
             self.blur = .accent;
