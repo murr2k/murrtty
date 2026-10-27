@@ -2340,6 +2340,19 @@ second step, WinRT toasts, is still to come.
 `notify-on-command-finish` logic (never, unfocused or always; minimum
 duration; bell or notify). Needs 2.2 and 5.2.
 
+*Built 2026-10-27 (`App.commandFinished`), as GTK's:* the core's
+`command_finished` (shell integration's OSC 133;D after its 133;C, so
+PowerShell's, not cmd's, which sends no C) notifies or rings the bell
+(`notify-on-command-finish-action`; the bell as `ring_bell` rings it) for
+a command that took longer than `notify-on-command-finish-after`, when
+`notify-on-command-finish` is `always`, or `unfocused` and the pane lacks
+the keyboard, or the pane's Notify on Next Command Finish is set: the
+terminal menu's check item (no longer grayed), which the next command
+clears. The notification is "Command Succeeded", "Command Failed" or
+"Command Finished" with GTK's "Command took 2s 47ms and exited with code
+0.". The Config submenu's Open Configuration in New Window works too
+(5.1 built it). The `command-finished` scenario checks it.
+
 **5.4 Taskbar progress, M.** OSC 9;4 drives `ITaskbarList3` (normal, error,
 paused, indeterminate) for the window's active tab, plus a thin in-pane bar
 through 3.0. A stale report clears after 15 s, and `progress-style = false`

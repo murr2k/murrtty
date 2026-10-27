@@ -1268,6 +1268,7 @@ pub const MenuItem = struct {
     grayed: bool,
     separator: bool,
     submenu: bool,
+    checked: bool = false,
 };
 
 /// The items of the popup menu window `menu`. Menus belong to the desktop,
@@ -1293,6 +1294,8 @@ pub fn menuItems(self: *Harness, menu: w.HWND) ![]MenuItem {
             .grayed = state & (w.MF_GRAYED | w.MF_DISABLED) != 0,
             .separator = state & w.MF_SEPARATOR != 0,
             .submenu = submenu,
+            // MF_CHECKED.
+            .checked = state & 0x0008 != 0,
         };
     }
     return list;

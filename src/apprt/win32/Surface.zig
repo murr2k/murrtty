@@ -139,6 +139,11 @@ last_exit: ?u8 = null,
 /// callback that moves the focus (goto_split) would otherwise re-enter the
 /// surface it is running on.
 has_focus: bool = false,
+
+/// The menu's Notify on Next Command Finish (roadmap 5.3): the next
+/// command to finish notifies whatever notify-on-command-finish says, then
+/// this clears.
+notify_next_command: bool = false,
 core_focus: bool = true,
 focus_posted: bool = false,
 /// A WM_FORCE_FRAME is queued.
@@ -1409,7 +1414,7 @@ fn contextMenu(self: *Surface, x: c_int, y: c_int) void {
 
     var pt: c.POINT = .{ .x = x, .y = y };
     _ = c.ClientToScreen(self.hwnd, &pt);
-    const chosen = ContextMenu.track(self, pt);
+    const choice = ContextMenu.track(self, pt);
 
     // The core saw the press; it hears the release now.
     if (self.core_initialized) {
@@ -1419,11 +1424,15 @@ fn contextMenu(self: *Surface, x: c_int, y: c_int) void {
     }
     // Performed here, after the menu's loop: closing actions queue their
     // close (App.request), so this surface outlives the call.
-    if (chosen) |a| if (self.core_initialized) {
-        _ = self.core_surface.performBindingAction(a) catch |err| {
-            log.warn("error performing a context menu action err={}", .{err});
-        };
-    };
+    switch (choice orelse return) {
+        .action => |a| if (self.core_initialized) {
+            _ = self.core_surface.performBindingAction(a) catch |err| {
+                log.warn("error performing a context menu action err={}", .{err});
+            };
+        },
+        .notify_next => self.notify_next_command = !self.notify_next_command,
+        .about => {},
+    }
 }
 
 /// Handle a key down/up message. Text for a key down is collected from

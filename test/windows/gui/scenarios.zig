@@ -75,6 +75,7 @@ pub const all = [_]Scenario{
     .{ .name = "ipc-launch", .about = "+new-window with no murrtty running starts one for it, which serves the next; one started for a request that never comes quits", .run = ipcLaunch },
     .{ .name = "single-instance", .about = "gtk-single-instance hands a launch's window to the running murrtty; a separate one takes the pipe over when the first quits", .run = singleInstance },
     .{ .name = "open-config-window", .about = "open_config:new_window runs $EDITOR on the config in a new window; without one it opens the file as open_config does", .run = openConfigWindow },
+    .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
@@ -1495,7 +1496,7 @@ fn contextMenu(h: *Harness) anyerror!void {
         // map keeps the binding added last, as GTK's menu shows too.
         try h.expect(std.mem.startsWith(u8, items[0].text, "&Copy\tCtrl+") and !items[0].grayed, "Copy, with its binding, enabled over a selection ('{s}')", .{items[0].text});
         try h.expect(std.mem.startsWith(u8, items[1].text, "&Paste\t") and !items[1].grayed, "Paste, enabled with text on the clipboard ('{s}')", .{items[1].text});
-        try h.expect(items[2].grayed, "Notify on Next Command Finish is grayed", .{});
+        try h.expect(std.mem.eql(u8, items[2].text, "&Notify on Next Command Finish") and !items[2].grayed and !items[2].checked, "Notify on Next Command Finish, enabled and unchecked ('{s}')", .{items[2].text});
         try h.expect(items[3].separator and items[6].separator and items[10].separator, "separators where GTK has them", .{});
         try h.expect(items[7].submenu and items[8].submenu and items[9].submenu and items[11].submenu, "Split, Tab, Window and Config submenus", .{});
     }
@@ -7476,4 +7477,68 @@ fn notifyShownOffscreen(h: *Harness) !void {
     try h.expect(s.icon, "Windows took the icon and its balloon", .{});
     try h.withdrawNotification(&g);
     try waitIconGone(h, &g, 2000, "and it is taken back");
+}
+
+/// Whether the terminal menu's Notify on Next Command Finish is checked,
+/// the menu closed again with Escape.
+fn notifyNextChecked(h: *Harness, g: *Harness.Ghostty, surf: w.HWND) !bool {
+    h.rightPress(surf, 40, 20);
+    const menu = try h.waitMenu(g, 1, 5000);
+    const checked = checked: {
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        if (items.len < 3 or !std.mem.eql(u8, items[2].text, "&Notify on Next Command Finish")) {
+            return h.fail("the menu's third item isn't Notify on Next Command Finish", .{});
+        }
+        break :checked items[2].checked;
+    };
+    h.menuKey(menu, 0x1B);
+    try waitNoMenu(h, g);
+    return checked;
+}
+
+/// notify-on-command-finish (roadmap 5.3), GTK's: with `always`, a command
+/// that took longer than notify-on-command-finish-after notifies "Command
+/// Succeeded" or "Command Failed" with its time and code, and a short one
+/// doesn't; with `never`, the menu's Notify on Next Command Finish
+/// (checked while set) notifies for the next one only.
+fn commandFinishedScenario(h: *Harness) anyerror!void {
+    const shell = "command = powershell.exe -NoLogo -NoProfile\nshell-integration = detect\n" ++
+        "notify-on-command-finish-after = 1s\nnotify-on-command-finish-action = no-bell,notify\n";
+    {
+        var g = try start(h, "command-finished", shell ++ "notify-on-command-finish = always\n", "PS ");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try runForStatus(h, &g, surf, "Start-Sleep 2", 0);
+        var s = try waitNotifications(h, &g, 1);
+        try h.expect(std.mem.eql(u8, s.titleText(), "Command Succeeded") and std.mem.startsWith(u8, s.bodyText(), "Command took ") and std.mem.endsWith(u8, s.bodyText(), " and exited with code 0."), "a 2 s command notifies as GTK's: '{s}' / '{s}'", .{ s.titleText(), s.bodyText() });
+        try runForStatus(h, &g, surf, "echo quick", 0);
+        w.Sleep(500);
+        try h.expect((try notifyState(h, &g)).count == 1, "one shorter than notify-on-command-finish-after doesn't", .{});
+        try runForStatus(h, &g, surf, "Start-Sleep 2; cmd /c exit 3", 3);
+        s = try waitNotifications(h, &g, 2);
+        try h.expect(std.mem.eql(u8, s.titleText(), "Command Failed") and std.mem.endsWith(u8, s.bodyText(), " and exited with code 3."), "a failing one: '{s}' / '{s}'", .{ s.titleText(), s.bodyText() });
+    }
+    {
+        // notify-on-command-finish = never, the default.
+        var g = try start(h, "command-finished-next", shell, "PS ");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try runForStatus(h, &g, surf, "Start-Sleep 2", 0);
+        w.Sleep(500);
+        try h.expect((try notifyState(h, &g)).count == 0, "never: a long command doesn't notify", .{});
+        try h.expect(!try notifyNextChecked(h, &g, surf), "Notify on Next Command Finish starts unchecked", .{});
+        h.rightPress(surf, 40, 20);
+        const menu = try h.waitMenu(&g, 1, 5000);
+        h.menuKey(menu, 'n');
+        try waitNoMenu(h, &g);
+        try h.expect(try notifyNextChecked(h, &g, surf), "choosing it checks it", .{});
+        try runForStatus(h, &g, surf, "Start-Sleep 2", 0);
+        const s = try waitNotifications(h, &g, 1);
+        try h.expect(std.mem.eql(u8, s.titleText(), "Command Succeeded"), "the next command notifies ('{s}')", .{s.titleText()});
+        try h.expect(!try notifyNextChecked(h, &g, surf), "and it is unchecked again", .{});
+        try runForStatus(h, &g, surf, "Start-Sleep 2", 0);
+        w.Sleep(500);
+        try h.expect((try notifyState(h, &g)).count == 1, "only the next one", .{});
+    }
 }

@@ -28,9 +28,10 @@ const Item = union(enum) {
     action: struct { label: []const u8, action: Action },
     /// Not available yet: always grayed.
     unavailable: []const u8,
-    /// A check item, not available yet: grayed. GTK's menus leave room
-    /// for the check before every item of a menu that has one.
-    unavailable_toggle: []const u8,
+    /// The pane's Notify on Next Command Finish (roadmap 5.3), a check
+    /// item. GTK's menus leave room for the check before every item of a
+    /// menu that has one.
+    notify_next: []const u8,
     separator,
     submenu: struct { label: []const u8, items: []const Item },
     /// murrtty's About box, which no core action shows.
@@ -41,6 +42,8 @@ const Item = union(enum) {
 pub const Choice = union(enum) {
     action: Action,
     about,
+    /// Toggle the pane's Notify on Next Command Finish.
+    notify_next,
 };
 
 fn act(label: []const u8, action: Action) Item {
@@ -57,11 +60,10 @@ const split_submenu = [_]Item{
     act("&Close Split", .close_surface),
 };
 
-/// The Config submenu, likewise. Opening the editor in a new terminal
-/// window is GTK's only, for now.
+/// The Config submenu, likewise.
 const config_submenu = [_]Item{
     act("&Open Configuration in OS Editor", .{ .open_config = .os_open }),
-    .{ .unavailable = "Open Configuration in New &Window" },
+    act("Open Configuration in New &Window", .{ .open_config = .new_window }),
     act("&Reload Configuration", .reload_config),
 };
 
@@ -69,8 +71,7 @@ const config_submenu = [_]Item{
 const items = [_]Item{
     act("&Copy", .{ .copy_to_clipboard = .mixed }),
     act("&Paste", .paste_from_clipboard),
-    // Roadmap 5.3.
-    .{ .unavailable_toggle = "&Notify on Next Command Finish" },
+    .{ .notify_next = "&Notify on Next Command Finish" },
     .separator,
     act("C&lear", .clear_screen),
     act("&Reset", .reset),
@@ -328,6 +329,15 @@ pub fn drawItem(lparam: c.LPARAM) bool {
         _ = c.SetTextColor(dc, if (grayed) pal.disabled else pal.dim);
         _ = c.DrawTextW(dc, d.binding.ptr, @intCast(d.binding.len), &text, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_RIGHT | c.DT_NOPREFIX);
     }
+    // object-select: a check in the room before the label.
+    if (item.itemState & c.ODS_CHECKED != 0) {
+        const x = r.left + look.scale(text_pad);
+        const y = r.top + @divTrunc(r.bottom - r.top, 2);
+        const stroke = @max(1, look.scale(2));
+        const color = if (grayed) pal.disabled else pal.text;
+        draw.line(dc, x + look.scale(2), y, x + look.scale(6), y + look.scale(4), color, stroke);
+        draw.line(dc, x + look.scale(6), y + look.scale(4), x + look.scale(14), y - look.scale(4), color, stroke);
+    }
     if (d.kind == .submenu) {
         // pan-end: a chevron pointing right, in the last 16 DIP.
         const x = r.right - look.scale(text_pad) - @divTrunc(look.scale(chevron_room), 2);
@@ -368,8 +378,8 @@ pub fn menuChar(wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
 
 /// Show the menu at `screen` (screen pixels) over `surface` and return the
 /// action chosen, if any. The caller performs it, after the menu is gone.
-pub fn track(surface: *Surface, screen: c.POINT) ?Action {
-    return actionOf(show(surface, &items, null, surface.hwnd, screen, .left));
+pub fn track(surface: *Surface, screen: c.POINT) ?Choice {
+    return show(surface, &items, null, surface.hwnd, screen, .left);
 }
 
 /// Show the tab strip's menu for the tab at `place`, whose focused pane is
@@ -393,7 +403,7 @@ pub fn trackMain(surface: *Surface, screen: c.POINT) ?Choice {
 fn actionOf(choice: ?Choice) ?Action {
     return switch (choice orelse return null) {
         .action => |a| a,
-        .about => null,
+        .about, .notify_next => null,
     };
 }
 
@@ -458,11 +468,19 @@ fn fill(
     var toggles = false;
     for (list) |item| switch (item) {
         .separator => try append(alloc, built, menu, .separator, null, 0, false, null),
-        .unavailable, .unavailable_toggle => |label| {
-            if (item == .unavailable_toggle) toggles = true;
+        .unavailable => |label| {
             var free: [64]u8 = undefined;
             const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
             try append(alloc, built, menu, .item, text, 0, true, null);
+        },
+        .notify_next => |label| {
+            toggles = true;
+            var free: [64]u8 = undefined;
+            const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
+            try built.choices.append(alloc, .notify_next);
+            const id = built.nextId();
+            try append(alloc, built, menu, .item, text, id, !surface.core_initialized, null);
+            if (surface.notify_next_command) _ = c.CheckMenuItem(menu, @intCast(id), c.MF_BYCOMMAND | c.MF_CHECKED);
         },
         .action => |a| {
             var free: [64]u8 = undefined;
@@ -753,7 +771,7 @@ test "system menu items: access keys of their own, clear of the system's" {
         const label = switch (item) {
             .action => |a| a.label,
             .submenu => |s| s.label,
-            .about, .unavailable, .unavailable_toggle => |l| l,
+            .about, .unavailable, .notify_next => |l| l,
             .separator => continue,
         };
         const k = accessKey(u8, label) orelse return error.NoAccessKey;

@@ -247,6 +247,12 @@ hosted Windows runner and then the unit tests.
   a click brings the terminal forward, and a notification goes once its
   terminal has the keyboard (`desktop-notifications = false` turns them
   off). One at a time stands for them all, for now.
+- Command-finished notices, as in Ghostty's GTK app: with shell
+  integration (PowerShell), a command that ran longer than
+  `notify-on-command-finish-after` notifies "Command Succeeded" or
+  "Command Failed" and/or rings the bell (`notify-on-command-finish`,
+  `notify-on-command-finish-action`); the terminal menu's Notify on Next
+  Command Finish does it for the next command.
 
 **Implemented but not yet tested**
 

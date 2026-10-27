@@ -1792,13 +1792,13 @@ pub fn performAction(
             return surface.childExited(value);
         },
 
-        // Not shown yet (notify-on-command-finish); kept for the GUI
-        // tests' dump.
+        // notify-on-command-finish (roadmap 5.3); counted for the GUI
+        // tests' dump too.
         .command_finished => {
             const surface = surfaceFromTarget(target) orelse return false;
             surface.commands_finished +%= 1;
             surface.last_exit = value.exit_code;
-            return false;
+            self.commandFinished(surface, value);
         },
 
         // The renderer draws on its own thread; nothing to schedule.
@@ -1868,6 +1868,41 @@ pub fn performAction(
     }
 
     return true;
+}
+
+/// A command finished in `surface` (shell integration's OSC 133;D after
+/// its 133;C): GTK's commandFinished. The pane's Notify on Next Command
+/// Finish, or notify-on-command-finish (`always`, or `unfocused` while the
+/// pane lacks the keyboard), for one that took longer than
+/// notify-on-command-finish-after, rings the bell and notifies as
+/// notify-on-command-finish-action says.
+fn commandFinished(self: *App, surface: *Surface, value: apprt.action.CommandFinished) void {
+    const next = surface.notify_next_command;
+    surface.notify_next_command = false;
+    const config = &self.config;
+    if (!next) switch (config.@"notify-on-command-finish") {
+        .never => return,
+        .unfocused => if (surface.has_focus) return,
+        .always => {},
+    };
+    if (value.duration.lte(config.@"notify-on-command-finish-after")) return;
+    const action = config.@"notify-on-command-finish-action";
+    if (action.bell) {
+        surface.window.ringBell();
+        surface.ringBell();
+    }
+    if (!action.notify) return;
+    const title: [:0]const u8 = if (value.exit_code) |code|
+        if (code == 0) "Command Succeeded" else "Command Failed"
+    else
+        "Command Finished";
+    var buf: [128]u8 = undefined;
+    const rounded = value.duration.round(std.time.ns_per_ms);
+    const body = (if (value.exit_code) |code|
+        std.fmt.bufPrintSentinel(&buf, "Command took {f} and exited with code {d}.", .{ rounded, code }, 0)
+    else
+        std.fmt.bufPrintSentinel(&buf, "Command took {f}.", .{rounded}, 0)) catch return;
+    self.notifications.send(surface.core_surface.id, surface.has_focus, title, body);
 }
 
 /// The chrome's colors for `window-theme`, GTK's (roadmap 4.3, the Look

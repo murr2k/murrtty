@@ -895,7 +895,11 @@ pub const EN_SETFOCUS = 0x0100;
 pub const EN_KILLFOCUS = 0x0200;
 pub const SM_CXMENUCHECK = 71;
 pub const ODS_GRAYED = 0x0002;
+pub const ODS_CHECKED = 0x0008;
 pub const ODS_NOACCEL = 0x0100;
+pub const MF_BYCOMMAND = 0x0000;
+pub const MF_CHECKED = 0x0008;
+pub extern "user32" fn CheckMenuItem(HMENU, UINT, UINT) callconv(.winapi) DWORD;
 pub const MNC_EXECUTE = 2;
 pub extern "gdi32" fn ExcludeClipRect(HDC, c_int, c_int, c_int, c_int) callconv(.winapi) c_int;
 /// With TPM_RETURNCMD it returns the chosen item's id, 0 for none.
