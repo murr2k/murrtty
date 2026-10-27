@@ -57,6 +57,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
     .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar; gtk-toolbar-style raised-border and flat", .run = shade },
     .{ .name = "translucent", .about = "background-opacity < 1: frames with its alpha (a split's too), the header bar and dividers opaque, toggle_background_opacity in every window and new ones, a reload to 1", .run = translucent },
+    .{ .name = "tab-drag-close", .about = "a tab closing while another is dragged: the drag goes on with the tab pressed", .run = tabDragClose },
     .{ .name = "tab-drag", .about = "tabs reorder live as they are dragged, tear off into a new window, move onto another window's bar (an emptied window closes); move_tab_to_new_window", .run = tabDrag },
     .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
     .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
@@ -5284,7 +5285,17 @@ fn tabDrag(h: *Harness) anyerror!void {
     const new_win = try windowOf(h, &g, 1);
     var nr: w.RECT = .{};
     _ = w.GetWindowRect(new_win, &nr);
-    try h.expect(drop.x >= nr.left and drop.x < nr.right and drop.y >= nr.top and drop.y < nr.bottom, "the new window is under the mouse ({d},{d} in {d},{d}-{d},{d})", .{ drop.x, drop.y, nr.left, nr.top, nr.right, nr.bottom });
+    // Under the mouse, inside its monitor's work area (where the drop is
+    // off it, as below a window near the bottom, inside it all the same).
+    var mi: w.MONITORINFO = .{};
+    if (w.MonitorFromWindow(new_win, w.MONITOR_DEFAULTTONEAREST)) |m| _ = w.GetMonitorInfoW(m, &mi);
+    const work = mi.rcWork;
+    const on_work = drop.x >= work.left and drop.x < work.right and drop.y >= work.top and drop.y < work.bottom;
+    const under = drop.x >= nr.left and drop.x < nr.right and drop.y >= nr.top and drop.y < nr.bottom;
+    const inside = nr.left >= work.left and nr.top >= work.top and nr.right <= work.right and nr.bottom <= work.bottom;
+    try h.expect(inside and (under or !on_work), "the new window is under the mouse ({d},{d} in {d},{d}-{d},{d}) within the work area {d},{d}-{d},{d}", .{
+        drop.x, drop.y, nr.left, nr.top, nr.right, nr.bottom, work.left, work.top, work.right, work.bottom,
+    });
     const container = w.GetParent(torn) orelse return h.fail("the pane has no tab", .{});
     try h.expect(w.GetParent(container) == new_win, "the tab's container, the same window, is the new window's child now", .{});
     // Its pane runs on: it takes typing and presents frames.
@@ -5307,15 +5318,15 @@ fn tabDrag(h: *Harness) anyerror!void {
     try expectTabPanes(h, &g, 0, &.{o.at(2)}, "dropped on the other window's bar, the tab leaves this one");
     try h.expect(try windowHasPane(h, &g, 1, o.at(1)), "and joins that one", .{});
 
-    // The first window's last tab: dropped there too, it closes the window.
+    // The first window's last tab: dropped there too, it closes the window
+    // (gone from Ghostty's list, not just hidden).
     const lone = try tabMid(h, &g, 0, 0);
     h.press(win, lone[0], lone[1]);
     h.move(win, lone[0], lone[1] + 12, true);
     h.move(win, bar.x, bar.y, true);
     h.release(win, bar.x, bar.y);
-    try waitWindowCount(h, &g, 1);
+    try waitWindowGone(h, &g, win);
     try waitTabCount(h, &g, 0, 3);
-    try h.expect(true, "a window its last tab leaves closes", .{});
 
     // move_tab_to_new_window, then on the new window's only tab, nothing.
     h.key(torn, .{ .ctrl = true, .shift = true }, w.VK_F5);
@@ -5328,6 +5339,56 @@ fn tabDrag(h: *Harness) anyerror!void {
     defer h.alloc.free(wins);
     try h.expect(wins.len == 2, "and does nothing for a window's only tab", .{});
     try quit(h, &g, torn);
+}
+
+/// Wait until window `gone` is no longer among Ghostty's windows.
+fn waitWindowGone(h: *Harness, g: *Harness.Ghostty, gone: w.HWND) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const there = for (d.value.windows) |win| {
+            if (hwndOf(win.hwnd) == gone) break true;
+        } else false;
+        if (!there) return h.expect(true, "a window its last tab leaves closes", .{});
+        w.Sleep(100);
+    }
+    return h.fail("the window its last tab left is still there", .{});
+}
+
+/// A tab closing during a drag (roadmap 4.5 review): the drag goes on with
+/// the tab pressed, found where it is now, rather than by its old place
+/// (which, past the end, crashed the release build). Closes without
+/// asking here (confirm-close-surface = false), by a middle click on
+/// another tab while the left button is held.
+fn tabDragClose(h: *Harness) anyerror!void {
+    var g = try start(h, "tab-drag-close", "window-show-tab-bar = always\nconfirm-close-surface = false\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, win, 3);
+    const o = try tabPanes(h, &g, 0);
+
+    // The third tab pressed and moved a little, the first closed under it.
+    const third = try tabMid(h, &g, 0, 2);
+    h.press(win, third[0], third[1]);
+    h.move(win, third[0] - 12, third[1], true);
+    const first = try tabMid(h, &g, 0, 0);
+    _ = w.PostMessageW(win, w.WM_MBUTTONUP, w.MK_LBUTTON, w.makeLParam(first[0], first[1]));
+    try expectTabPanes(h, &g, 0, &.{ o.at(1), o.at(2) }, "a middle click closes a tab while another is dragged");
+    // On over the one left before it: the dragged tab takes its place.
+    const over = try tabMid(h, &g, 0, 0);
+    h.move(win, over[0] - 4, over[1], true);
+    h.release(win, over[0] - 4, over[1]);
+    h.sync(win);
+    try expectTabPanes(h, &g, 0, &.{ o.at(2), o.at(1) }, "the drag goes on with the tab pressed, now second, and moves it first");
+    // Nothing to confirm here; the first tab's pane is gone.
+    h.key(hwndOf(o.at(2)), .{ .ctrl = true, .shift = true }, 'Q');
+    const code = g.waitExit(10000);
+    try h.expect(code != null and code.? == 0, "exits with code 0 after quit (got {?d})", .{code});
 }
 
 const TabPanes = struct {

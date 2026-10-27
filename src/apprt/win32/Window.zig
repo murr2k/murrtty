@@ -127,8 +127,10 @@ system_menu: ContextMenu.SystemMenu = .{},
 menu_modal: ?App.Modal = null,
 
 const TabDrag = struct {
-    /// The tab, as it moves along the strip.
-    index: usize,
+    /// The tab pressed, found again on each move: tabs can close or move
+    /// meanwhile (a middle click, a process ending, a binding), which
+    /// would leave a position naming another tab, or none.
+    tab: *Tab,
     /// Where the press was, in client coordinates.
     start: c.POINT,
     /// Past the drag distance.
@@ -576,17 +578,30 @@ pub fn moveTabToNewWindow(self: *Window, surface: *Surface) bool {
     return true;
 }
 
-/// Move tab `index` into a new window as large as this one, its top left
-/// at `at` (screen) or where Windows places new windows; nothing (an
-/// error) for the only tab, which would leave this window empty.
+/// Move tab `index` into a new window of the default size, as GTK's new
+/// window has (not this one's, which may be maximized or fullscreen), its
+/// top left at `at` (screen) within that monitor's work area, or where
+/// Windows places new windows; nothing (an error) for the only tab, which
+/// would leave this window empty.
 fn tearOff(self: *Window, index: usize, at: ?c.POINT) !void {
     if (self.tabs.items.len < 2) return error.OnlyTab;
     const target = try createEmpty(self.app);
-    var r: c.RECT = .{};
-    _ = c.GetWindowRect(self.hwnd, &r);
-    const pos = at orelse c.POINT{ .x = 0, .y = 0 };
-    _ = c.SetWindowPos(target.hwnd, null, pos.x, pos.y, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE |
-        @as(c.UINT, if (at == null) c.SWP_NOMOVE else 0));
+    if (at) |p| {
+        var r: c.RECT = .{};
+        _ = c.GetWindowRect(target.hwnd, &r);
+        const w = r.right - r.left;
+        const h = r.bottom - r.top;
+        var x = p.x;
+        var y = p.y;
+        const spot: c.RECT = .{ .left = p.x, .top = p.y, .right = p.x + 1, .bottom = p.y + 1 };
+        var mi: c.MONITORINFO = .{};
+        if (c.MonitorFromRect(&spot, c.MONITOR_DEFAULTTONEAREST)) |monitor| if (c.GetMonitorInfoW(monitor, &mi) != 0) {
+            const work = mi.rcWork;
+            x = @max(work.left, @min(x, work.right - w));
+            y = @max(work.top, @min(y, work.bottom - h));
+        };
+        _ = c.SetWindowPos(target.hwnd, null, x, y, 0, 0, c.SWP_NOSIZE | c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+    }
     self.moveTabTo(index, target, 0) catch |err| {
         target.discard();
         return err;
@@ -667,6 +682,7 @@ fn dropIndex(self: *const Window, x: c_int) usize {
 /// follows it along the strip, taking the place of the tab it is over.
 fn dragTab(self: *Window, x: c_int, y: c_int) void {
     const d = if (self.tab_drag) |*v| v else return;
+    const index = std.mem.indexOfScalar(*Tab, self.tabs.items, d.tab) orelse return self.endTabDrag();
     if (!d.dragging) {
         const dpi = c.GetDpiForWindow(self.hwnd);
         if (@abs(x - d.start.x) < c.GetSystemMetricsForDpi(c.SM_CXDRAG, dpi) and
@@ -679,10 +695,9 @@ fn dragTab(self: *Window, x: c_int, y: c_int) void {
         .tab, .close => |i| i,
         else => return,
     };
-    if (over == d.index or over >= self.tabs.items.len) return;
-    const tab = self.tabs.orderedRemove(d.index);
+    if (over == index or over >= self.tabs.items.len) return;
+    const tab = self.tabs.orderedRemove(index);
     self.tabs.insertAssumeCapacity(over, tab);
-    d.index = over;
     self.select(over);
 }
 
@@ -692,11 +707,12 @@ fn dragTab(self: *Window, x: c_int, y: c_int) void {
 fn dropTab(self: *Window, x: c_int, y: c_int) void {
     const d = self.tab_drag orelse return;
     self.endTabDrag();
-    if (!d.dragging or self.nearStrip(y) or d.index >= self.tabs.items.len) return;
+    if (!d.dragging or self.nearStrip(y)) return;
+    const index = std.mem.indexOfScalar(*Tab, self.tabs.items, d.tab) orelse return;
     var screen: c.POINT = .{ .x = x, .y = y };
     _ = c.ClientToScreen(self.hwnd, &screen);
     if (self.dropTargetAt(screen)) |t| {
-        self.moveTabTo(d.index, t.window, t.index) catch |err| log.warn("error moving a tab err={}", .{err});
+        self.moveTabTo(index, t.window, t.index) catch |err| log.warn("error moving a tab err={}", .{err});
         _ = c.SetForegroundWindow(t.window.hwnd);
         return;
     }
@@ -706,7 +722,7 @@ fn dropTab(self: *Window, x: c_int, y: c_int) void {
     // The new window's first tab under the mouse, about.
     const dpi = c.GetDpiForWindow(self.hwnd);
     const at: c.POINT = .{ .x = screen.x - draw.scale(dpi, 60), .y = screen.y - draw.scale(dpi, 16) };
-    self.tearOff(d.index, at) catch |err| switch (err) {
+    self.tearOff(index, at) catch |err| switch (err) {
         error.OnlyTab => {},
         else => log.warn("error tearing a tab off err={}", .{err}),
     };
@@ -1928,7 +1944,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 // Selected, and maybe dragged (dragTab).
                 .tab => |i| {
                     self.select(i);
-                    self.tab_drag = .{ .index = i, .start = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) } };
+                    self.tab_drag = .{ .tab = self.tabs.items[i], .start = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) } };
                     _ = c.SetCapture(hwnd);
                 },
                 .close => |i| self.requestCloseTab(i),

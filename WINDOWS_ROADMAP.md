@@ -2144,9 +2144,14 @@ mouse captured); past the system's drag distance the tab takes the place
 of each tab it passes along the strip, live. Released more than a row's
 height from the strip, it moves onto the title bar or tab row of the
 murrtty window under the mouse (at the place its position gives), or,
-outside its own window, into a new window as large as this one with its
-first tab under the mouse (`tearOff`; nothing for a window's only tab, as
-GTK's `move_tab_to_new_window`); dropped on its own terminal, nothing.
+outside its own window, into a new window of the default size, as GTK's
+new window, with its first tab under the mouse inside that monitor's
+work area (`tearOff`; nothing for a window's only tab, as GTK's
+`move_tab_to_new_window`); dropped on its own terminal, nothing. The
+drag keeps the tab pressed, not its place: in review, a tab closed
+during a drag (a middle click, a process ending) left a stale index that
+panicked in Debug and would have crashed the release build
+(`tab-drag-close` checks it).
 `moveTabTo` takes the tab out, reparents its container (`adoptTab`: the
 panes' window pointers, DPI and translucency follow), and a window it
 leaves empty hides and closes through the request queue.
