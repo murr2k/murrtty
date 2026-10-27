@@ -1111,7 +1111,8 @@ pub fn configChanged(self: *Window) void {
 pub fn syncTranslucent(self: *Window) void {
     const on = self.app.translucent();
     if (on == self.translucent) return;
-    const region = if (on) c.CreateRectRgn(0, 0, -1, -1) else null;
+    // Without the empty region, blur-behind would blur the whole window.
+    const region: ?c.HRGN = if (on) (c.CreateRectRgn(0, 0, -1, -1) orelse return) else null;
     defer if (region) |r| {
         _ = c.DeleteObject(r);
     };
@@ -1122,9 +1123,11 @@ pub fn syncTranslucent(self: *Window) void {
     };
     const hr = c.DwmEnableBlurBehindWindow(self.hwnd, &bb);
     if (hr < 0) {
+        // The window stays as DWM composes it: turning on, frames with
+        // their own alpha would show darker, not see-through; turning off,
+        // GDI's alpha 0 would show the backdrop through the chrome.
         log.warn("DwmEnableBlurBehindWindow failed hr=0x{x}", .{@as(u32, @bitCast(hr))});
-        // Frames with their own alpha would show darker, not see-through.
-        if (on) return;
+        return;
     }
     self.translucent = on;
     var it = self.panes();

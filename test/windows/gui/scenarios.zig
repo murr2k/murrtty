@@ -5116,9 +5116,12 @@ fn translucent(h: *Harness) anyerror!void {
     h.key(surf, .{ .ctrl = true, .shift = true }, 'N');
     try waitWindowCount(h, &g, 2);
     try expectTranslucent(h, &g, &.{ false, false });
+    // The new window's pane, after the first window's two.
+    try expectFrameBackground(h, &g, 2, bg, 0xff);
     h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
     try expectTranslucent(h, &g, &.{ true, true });
     try expectFrameBackground(h, &g, 0, half, 0x80);
+    try expectFrameBackground(h, &g, 2, half, 0x80);
 
     // A reload to an opacity of 1; the toggle then does nothing.
     const cfg_path = try std.fmt.allocPrint(h.alloc, "{s}\\translucent\\murrtty\\config.ghostty", .{h.temp_dir});
