@@ -71,6 +71,10 @@ pub const all = [_]Scenario{
     .{ .name = "pwsh-integration", .about = "PowerShell 7 and 5.1: the folder carries to new tabs, idle tabs close without asking, jump_to_prompt", .run = pwshIntegration },
     .{ .name = "cmd-integration", .about = "cmd (and Clink with GHOSTTY_GUI_CLINK): the folder carries to new tabs, idle tabs close without asking", .run = cmdIntegration },
     .{ .name = "cwd-fallback", .about = "without shell integration, cmd's cd still carries to new tabs and relative links", .run = cwdFallback },
+    .{ .name = "ipc", .about = "+new-window (title, directory, command) and +new-tab (by surface id) open in the running murrtty over its pipe; what isn't a request is refused", .run = ipcRequests },
+    .{ .name = "ipc-launch", .about = "+new-window with no murrtty running starts one for it, which serves the next; one started for a request that never comes quits", .run = ipcLaunch },
+    .{ .name = "single-instance", .about = "gtk-single-instance hands a launch's window to the running murrtty; a separate one takes the pipe over when the first quits", .run = singleInstance },
+    .{ .name = "open-config-window", .about = "open_config:new_window runs $EDITOR on the config in a new window; without one it opens the file as open_config does", .run = openConfigWindow },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
@@ -6977,4 +6981,282 @@ fn windowSize(h: *Harness) anyerror!void {
         .{ r.left, r.top, r.right, r.bottom, work.left, work.top, work.right, work.bottom },
     );
     try quit(h, &big, try h.surface(&big, win));
+}
+
+//---------------------------------------------------------------
+// The single instance (roadmap 5.1)
+
+/// A class of this harness run's own for `which`: its murrtty is reached by
+/// that name, and the owner's murrtty never is.
+fn ipcClass(h: *Harness, which: []const u8) ![]u8 {
+    return std.fmt.allocPrint(h.alloc, "murrtty-gui-{s}-{d}", .{ which, w.GetCurrentProcessId() });
+}
+
+/// Wait until `g` holds its single-instance pipe; its name (caller frees).
+fn waitListening(h: *Harness, g: *Harness.Ghostty, ms: u32) ![]u8 {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.ipc.listening) return h.alloc.dupe(u8, d.value.ipc.pipe);
+        w.Sleep(100);
+    }
+    return h.fail("murrtty never listened on its pipe", .{});
+}
+
+/// Wait until window `wi`'s first tab shows `needle` (any case, across the
+/// rows a long line wraps onto).
+fn waitWindowText(h: *Harness, g: *Harness.Ghostty, wi: usize, needle: []const u8) !void {
+    return waitWindowTabText(h, g, wi, 0, needle);
+}
+
+/// waitWindowText for tab `ti` of window `wi`.
+fn waitWindowTabText(h: *Harness, g: *Harness.Ghostty, wi: usize, ti: usize, needle: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 20000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (wi < d.value.windows.len and ti < d.value.windows[wi].tabs.len) {
+            if (d.value.windows[wi].tabs[ti].text) |text| {
+                const joined = try std.mem.replaceOwned(u8, h.alloc, text, "\n", "");
+                defer h.alloc.free(joined);
+                if (std.ascii.findIgnoreCase(joined, needle) != null) return;
+            }
+        }
+        w.Sleep(200);
+    }
+    return h.fail("window {d}'s tab {d} never showed '{s}'", .{ wi, ti, needle });
+}
+
+/// +new-window and +new-tab reach the running murrtty over its pipe: a
+/// window with the title, directory and command given, a tab in the window
+/// of the pane its surface id names, the CLI exiting 0 each time. Bytes
+/// that aren't a request, and a kind it doesn't know (a newer murrtty's),
+/// are refused and open nothing; +toggle-quick-terminal waits for 5.7.
+fn ipcRequests(h: *Harness) anyerror!void {
+    const class = try ipcClass(h, "ipc");
+    defer h.alloc.free(class);
+    const extra = try std.fmt.allocPrint(h.alloc, "class = {s}\n", .{class});
+    defer h.alloc.free(extra);
+    var g = try start(h, "ipc", extra, ">");
+    defer g.deinit();
+    const pipe = try waitListening(h, &g, 5000);
+    defer h.alloc.free(pipe);
+    try h.expect(std.mem.startsWith(u8, pipe, "\\\\.\\pipe\\") and std.mem.indexOf(u8, pipe, class) != null, "the pipe is named for the class ({s})", .{pipe});
+    const class_arg = try std.fmt.allocPrint(h.alloc, "--class={s}", .{class});
+    defer h.alloc.free(class_arg);
+
+    {
+        const wd = try std.fmt.allocPrint(h.alloc, "--working-directory={s}", .{g.dir});
+        defer h.alloc.free(wd);
+        var r = try h.runCli("ipc-new-window", &.{ "+new-window", class_arg, "--title=IPC window", wd, "-e", "cmd.exe", "/k", "echo", "ipc-ok" });
+        defer r.deinit();
+        try h.expect(r.code == 0, "+new-window exits 0 (got {d})", .{r.code});
+    }
+    try waitWindowCount(h, &g, 2);
+    try waitWindowText(h, &g, 1, "ipc-ok");
+    {
+        const prompt = try std.fmt.allocPrint(h.alloc, "{s}>", .{g.dir});
+        defer h.alloc.free(prompt);
+        try waitWindowText(h, &g, 1, prompt);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[1].tabs[0];
+        try h.expect(std.mem.eql(u8, t.pane_name, "IPC window") and std.mem.eql(u8, t.label, "IPC window"), "the window opened in this murrtty runs the command in the directory given, titled IPC window (name '{s}', label '{s}')", .{ t.pane_name, t.label });
+        try h.expect(d.value.windows[0].tabs[0].pane_name.len == 0, "the first window's pane keeps its own title", .{});
+    }
+
+    // A tab, by its pane's id, in the window whose pane the core doesn't
+    // have focused (that one is where an id ignored would put it), in the
+    // home directory.
+    var target: usize = 0;
+    const id = id: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        if (d.value.windows[0].tabs[0].focused orelse false) target = 1;
+        const t = d.value.windows[target].tabs[0];
+        try h.expect(!(t.focused orelse true), "window {d}'s pane isn't the core's focused one", .{target});
+        break :id (t.panes orelse return h.fail("no panes", .{}))[0].surface_id;
+    };
+    try h.expect(id != 0, "the pane has a surface id", .{});
+    {
+        const id_arg = try std.fmt.allocPrint(h.alloc, "--surface-id={d}", .{id});
+        defer h.alloc.free(id_arg);
+        var r = try h.runCli("ipc-new-tab", &.{ "+new-tab", class_arg, id_arg, "--title=IPC tab", "--working-directory=home" });
+        defer r.deinit();
+        try h.expect(r.code == 0, "+new-tab exits 0 (got {d})", .{r.code});
+    }
+    try waitTabCount(h, &g, target, 2);
+    {
+        var home_buf: [260]u16 = undefined;
+        const n = w.GetEnvironmentVariableW(w.L("USERPROFILE"), &home_buf, home_buf.len);
+        const home = try std.unicode.utf16LeToUtf8Alloc(h.alloc, home_buf[0..n]);
+        defer h.alloc.free(home);
+        const prompt = try std.fmt.allocPrint(h.alloc, "{s}>", .{home});
+        defer h.alloc.free(prompt);
+        try waitWindowTabText(h, &g, target, 1, prompt);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.windows.len == 2 and d.value.windows[1 - target].tabs.len == 1, "the tab went to the window of the pane named only", .{});
+        const name = d.value.windows[target].tabs[1].pane_name;
+        try h.expect(std.mem.eql(u8, name, "IPC tab"), "the new tab's pane is titled IPC tab and starts at home (got '{s}')", .{name});
+        try h.expect(d.value.ipc.received == 2, "two requests received (got {d})", .{d.value.ipc.received});
+    }
+
+    // A pipe of another class's name that a lower integrity level made
+    // first: the client sends nothing to it.
+    {
+        const squat_class = try std.fmt.allocPrint(h.alloc, "{s}-squat", .{class});
+        defer h.alloc.free(squat_class);
+        const prefix = "\\\\.\\pipe\\";
+        const squat_name = try std.mem.concat(h.alloc, u8, &.{ prefix, squat_class, pipe[prefix.len + class.len ..] });
+        defer h.alloc.free(squat_name);
+        const squat = try h.squatPipe(squat_name);
+        defer _ = w.CloseHandle(squat);
+        const squat_arg = try std.fmt.allocPrint(h.alloc, "--class={s}", .{squat_class});
+        defer h.alloc.free(squat_arg);
+        var r = try h.runCli("ipc-squat", &.{ "+new-window", squat_arg, "--title=never sent" });
+        defer r.deinit();
+        try h.expect(r.code == 1, "a pipe labeled below the caller's level is refused: exit 1 (got {d})", .{r.code});
+        var avail: w.DWORD = 0;
+        if (w.PeekNamedPipe(squat, null, 0, null, &avail, null) == 0) avail = 0;
+        try h.expect(avail == 0, "and nothing was written to it ({d} bytes)", .{avail});
+    }
+
+    const garbage = try h.pipeRequest(pipe, "this is not a murrtty request");
+    try h.expect(garbage != null and garbage.? == 1, "bytes that aren't a request are refused as malformed (reply {?d})", .{garbage});
+    // The header of a version 1 request of kind 9, which no murrtty knows.
+    const unknown = try h.pipeRequest(pipe, "MRTY\x01\x09\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+    try h.expect(unknown != null and unknown.? == 2, "a kind it doesn't know is refused as unsupported (reply {?d})", .{unknown});
+    {
+        var r = try h.runCli("ipc-quick-terminal", &.{ "+toggle-quick-terminal", class_arg });
+        defer r.deinit();
+        try h.expect(r.code == 1, "+toggle-quick-terminal isn't supported yet: exit 1 (got {d})", .{r.code});
+    }
+    var d = try h.dump(&g);
+    defer d.deinit();
+    try h.expect(d.value.ipc.received == 2 and d.value.windows.len == 2 and d.value.windows[target].tabs.len == 2, "and nothing more opened", .{});
+}
+
+/// With no murrtty serving the class, +new-window starts one for its
+/// request, which opens no window of its own, takes the request's and
+/// serves the next; the CLI still exits 0 at once (the murrtty it started
+/// doesn't hold its output). One started for a request that never comes
+/// quits by itself.
+fn ipcLaunch(h: *Harness) anyerror!void {
+    const class = try ipcClass(h, "ipc-launch");
+    defer h.alloc.free(class);
+    const class_arg = try std.fmt.allocPrint(h.alloc, "--class={s}", .{class});
+    defer h.alloc.free(class_arg);
+    {
+        var r = try h.runCli("ipc-launch", &.{ "+new-window", class_arg, "--title=Launched for IPC", "-e", "cmd.exe", "/k", "set", "MURRTTY" });
+        defer r.deinit();
+        try h.expect(r.code == 0, "+new-window with none running exits 0 (got {d})", .{r.code});
+    }
+    var g = h.adopt("ipc-launch", "Launched for IPC", 15000) catch |err| {
+        h.killStray();
+        return err;
+    };
+    defer g.deinit();
+    const pipe = try waitListening(h, &g, 5000);
+    defer h.alloc.free(pipe);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.ipc.launch and d.value.windows.len == 1, "started for the request, with its window only ({d} windows, launch {})", .{ d.value.windows.len, d.value.ipc.launch });
+        try h.expect(std.mem.indexOf(u8, pipe, class) != null, "it serves the class ({s})", .{pipe});
+        const name = d.value.windows[0].tabs[0].pane_name;
+        try h.expect(std.mem.eql(u8, name, "Launched for IPC"), "with the request's title (got '{s}')", .{name});
+    }
+    // Its shells don't see the variable it was started with.
+    try waitWindowText(h, &g, 0, "Environment variable MURRTTY not defined");
+    {
+        var r = try h.runCli("ipc-launch-again", &.{ "+new-window", class_arg });
+        defer r.deinit();
+        try h.expect(r.code == 0, "the next +new-window exits 0 (got {d})", .{r.code});
+    }
+    try waitWindowCount(h, &g, 2);
+
+    const idle_class = try std.fmt.allocPrint(h.alloc, "--class={s}-idle", .{class});
+    defer h.alloc.free(idle_class);
+    const started = w.GetTickCount64();
+    var r = try h.runCliWith("ipc-launch-idle", &.{idle_class}, &.{.{ "MURRTTY_IPC_LAUNCH", "1" }});
+    defer r.deinit();
+    const took = w.GetTickCount64() - started;
+    try h.expect(r.code == 0 and took >= 10000, "one started for a request that never comes quits after its wait, code 0 (code {d} after {d} ms)", .{ r.code, took });
+}
+
+/// gtk-single-instance: a launch with it on hands its window to the murrtty
+/// serving its class and exits 0. One launched from a program (detect: not
+/// single) is its own murrtty, without the pipe while the first holds it,
+/// and takes it over once the first quits.
+fn singleInstance(h: *Harness) anyerror!void {
+    const class = try ipcClass(h, "single");
+    defer h.alloc.free(class);
+    const extra = try std.fmt.allocPrint(h.alloc, "class = {s}\n", .{class});
+    defer h.alloc.free(extra);
+    var g = try start(h, "single-instance", extra, ">");
+    defer g.deinit();
+    const pipe = try waitListening(h, &g, 5000);
+    defer h.alloc.free(pipe);
+    const class_arg = try std.fmt.allocPrint(h.alloc, "--class={s}", .{class});
+    defer h.alloc.free(class_arg);
+    {
+        var r = try h.runCli("single-instance-launch", &.{ class_arg, "--gtk-single-instance=true" });
+        defer r.deinit();
+        try h.expect(r.code == 0, "a launch with gtk-single-instance hands its window over and exits 0 (got {d})", .{r.code});
+    }
+    try waitWindowCount(h, &g, 2);
+
+    const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
+    defer h.alloc.free(config);
+    var other = try h.launch("single-instance-other", config);
+    defer other.deinit();
+    w.Sleep(500);
+    {
+        var d = try h.dump(&other);
+        defer d.deinit();
+        try h.expect(!d.value.ipc.listening and std.mem.eql(u8, d.value.ipc.pipe, pipe), "one launched from a program is its own murrtty, without the pipe the first holds", .{});
+    }
+    try waitWindowCount(h, &g, 2);
+    // It tries again every 3 s.
+    _ = w.TerminateProcess(g.proc, 1);
+    _ = g.waitExit(5000);
+    const taken = try waitListening(h, &other, 8000);
+    defer h.alloc.free(taken);
+    try h.expect(std.mem.eql(u8, taken, pipe), "it serves the class once the first is gone", .{});
+}
+
+/// open_config:new_window: a new window running $EDITOR on the config file,
+/// titled as GTK's. With neither $VISUAL nor $EDITOR set, the file opens as
+/// open_config opens it (recorded while the hooks are on).
+fn openConfigWindow(h: *Harness) anyerror!void {
+    const config = base_config ++ "keybind = ctrl+shift+y=open_config:new_window\n";
+    {
+        var g = try h.launchWith("open-config-window", config, .{ .env = &.{ .{ "EDITOR", "cmd.exe /k echo editing" }, .{ "VISUAL", "" } } });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        h.key(try h.surface(&g, try h.mainWindow(&g)), .{ .ctrl = true, .shift = true }, 'Y');
+        try waitWindowCount(h, &g, 2);
+        const path = try std.fmt.allocPrint(h.alloc, "editing {s}\\murrtty\\config.ghostty", .{g.dir});
+        defer h.alloc.free(path);
+        try waitWindowText(h, &g, 1, path);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const name = d.value.windows[1].tabs[0].pane_name;
+        try h.expect(std.mem.startsWith(u8, name, "Editing configuration file ") and std.mem.endsWith(u8, name, "config.ghostty"), "the editor runs on the file, titled as GTK's (got '{s}')", .{name});
+        try h.expect(try launchCount(h, &g, "edit-config ") == 0, "and nothing else opens it", .{});
+    }
+    {
+        var g = try h.launchWith("open-config-window-none", config, .{ .env = &.{ .{ "EDITOR", "" }, .{ "VISUAL", "" } } });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        h.key(try h.surface(&g, try h.mainWindow(&g)), .{ .ctrl = true, .shift = true }, 'Y');
+        var waited: u32 = 0;
+        while (try launchCount(h, &g, "edit-config ") < 1 and waited < 5000) : (waited += 200) w.Sleep(200);
+        try h.expect(try launchCount(h, &g, "edit-config ") == 1, "with no editor set, the file opens as open_config opens it", .{});
+        const wins = try h.windows(&g, "MurrttyWindow");
+        defer h.alloc.free(wins);
+        try h.expect(wins.len == 1, "and no window opens ({d})", .{wins.len});
+    }
 }

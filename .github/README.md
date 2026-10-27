@@ -232,6 +232,16 @@ hosted Windows runner and then the unit tests.
   edge, with Windows' shadow and rounded corners; and
   `toggle_window_decorations`, per window as in Ghostty's GTK app, which
   keeps the terminal's grid.
+- One murrtty for your windows: `murrtty +new-window` and `+new-tab` (with
+  `-e`, `--title=`, `--working-directory=`, and `--surface-id=` for the
+  tab's window) open in the murrtty already running, over a pipe only your
+  own processes in your session can use; with none running they start
+  one. With `gtk-single-instance` (on by default for launches from the
+  Start menu, a shortcut or Explorer without arguments), a second launch
+  opens its window in the running murrtty, as in Ghostty's GTK app.
+  `--class=` keeps separate instances apart.
+- `open_config:new_window`: the config file in a new window, in `$VISUAL`
+  or `$EDITOR`.
 
 **Implemented but not yet tested**
 
@@ -257,16 +267,18 @@ hosted Windows runner and then the unit tests.
   same color on Windows 11.
 - Fullscreen (`Ctrl+Enter`), maximize, `window-show-tab-bar`, the bell's
   `system` and `attention` features, and paste protection.
+- New Window in the taskbar's Jump List (right-click murrtty's taskbar
+  button), set up by release builds. The tests check the list Windows
+  takes, not the taskbar showing it.
 
 **Not implemented yet**
 
 - Terminal inspector, quick terminal, desktop notifications.
 - Dragging panes to rearrange splits.
-- Sending commands to an already running instance (`murrtty +new-window`).
 
-[WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest, starting
-with desktop integration (Phase 5: one instance for every window, and
-the command line reaching it).
+[WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
+continuing with desktop integration (Phase 5: notifications, taskbar
+progress, global keys, the tray and the quick terminal).
 
 **Known issues**
 

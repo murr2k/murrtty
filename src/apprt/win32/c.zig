@@ -17,6 +17,7 @@ pub const LPARAM = isize;
 pub const LRESULT = isize;
 pub const HRESULT = c_long;
 pub const LPCWSTR = [*:0]const u16;
+pub const LPWSTR = [*:0]u16;
 
 pub const HWND = *opaque {};
 pub const HINSTANCE = *opaque {};
@@ -973,6 +974,117 @@ pub extern "kernel32" fn CreateFileW(
 ) callconv(.winapi) HANDLE;
 pub extern "kernel32" fn WriteFile(HANDLE, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
+
+// The single instance (roadmap 5.1, ipc.zig): its named pipe, the users
+// and integrity levels on either end, and starting an instance.
+pub const SECURITY_ATTRIBUTES = extern struct {
+    nLength: DWORD = @sizeOf(SECURITY_ATTRIBUTES),
+    lpSecurityDescriptor: ?*anyopaque = null,
+    bInheritHandle: BOOL = FALSE,
+};
+pub const GENERIC_READ = 0x80000000;
+pub const PIPE_ACCESS_DUPLEX = 0x00000003;
+pub const FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000;
+pub const PIPE_TYPE_MESSAGE = 0x00000004;
+pub const PIPE_READMODE_MESSAGE = 0x00000002;
+pub const PIPE_REJECT_REMOTE_CLIENTS = 0x00000008;
+pub const PIPE_UNLIMITED_INSTANCES = 255;
+pub const SECURITY_SQOS_PRESENT = 0x00100000;
+pub const SECURITY_IDENTIFICATION = 0x00010000;
+pub const ERROR_FILE_NOT_FOUND = 2;
+pub const ERROR_ACCESS_DENIED = 5;
+pub const ERROR_PIPE_BUSY = 231;
+pub const ERROR_MORE_DATA = 234;
+pub const ERROR_PIPE_CONNECTED = 535;
+pub extern "kernel32" fn CreateNamedPipeW(LPCWSTR, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, ?*const SECURITY_ATTRIBUTES) callconv(.winapi) HANDLE;
+pub extern "kernel32" fn ConnectNamedPipe(HANDLE, ?*anyopaque) callconv(.winapi) BOOL;
+pub extern "kernel32" fn DisconnectNamedPipe(HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn WaitNamedPipeW(LPCWSTR, DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn SetNamedPipeHandleState(HANDLE, ?*DWORD, ?*DWORD, ?*DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetNamedPipeServerProcessId(HANDLE, *u32) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetNamedPipeServerSessionId(HANDLE, *u32) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetNamedPipeClientSessionId(HANDLE, *u32) callconv(.winapi) BOOL;
+pub extern "kernel32" fn ReadFile(HANDLE, [*]u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
+pub extern "kernel32" fn WaitForSingleObject(HANDLE, DWORD) callconv(.winapi) DWORD;
+pub const INFINITE: DWORD = 0xFFFFFFFF;
+pub const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+pub extern "kernel32" fn OpenProcess(DWORD, BOOL, DWORD) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
+pub extern "kernel32" fn ProcessIdToSessionId(DWORD, *DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn LocalFree(?*anyopaque) callconv(.winapi) ?*anyopaque;
+pub extern "kernel32" fn GetModuleFileNameW(?HINSTANCE, [*]u16, DWORD) callconv(.winapi) DWORD;
+pub const STARTUPINFOW = extern struct {
+    cb: DWORD = @sizeOf(STARTUPINFOW),
+    lpReserved: ?LPWSTR = null,
+    lpDesktop: ?LPWSTR = null,
+    lpTitle: ?LPWSTR = null,
+    dwX: DWORD = 0,
+    dwY: DWORD = 0,
+    dwXSize: DWORD = 0,
+    dwYSize: DWORD = 0,
+    dwXCountChars: DWORD = 0,
+    dwYCountChars: DWORD = 0,
+    dwFillAttribute: DWORD = 0,
+    dwFlags: DWORD = 0,
+    wShowWindow: u16 = 0,
+    cbReserved2: u16 = 0,
+    lpReserved2: ?*u8 = null,
+    hStdInput: ?HANDLE = null,
+    hStdOutput: ?HANDLE = null,
+    hStdError: ?HANDLE = null,
+};
+pub const PROCESS_INFORMATION = extern struct {
+    hProcess: ?HANDLE = null,
+    hThread: ?HANDLE = null,
+    dwProcessId: DWORD = 0,
+    dwThreadId: DWORD = 0,
+};
+pub extern "kernel32" fn CreateProcessW(?LPCWSTR, ?LPWSTR, ?*anyopaque, ?*anyopaque, BOOL, DWORD, ?*anyopaque, ?LPCWSTR, *STARTUPINFOW, *PROCESS_INFORMATION) callconv(.winapi) BOOL;
+pub const TOKEN_DUPLICATE = 0x0002;
+pub const TOKEN_IMPERSONATE = 0x0004;
+pub const TOKEN_QUERY = 0x0008;
+pub const TokenUser = 1;
+pub const TokenIntegrityLevel = 25;
+pub extern "advapi32" fn OpenProcessToken(HANDLE, DWORD, *HANDLE) callconv(.winapi) BOOL;
+pub extern "advapi32" fn GetTokenInformation(HANDLE, c_int, ?*anyopaque, DWORD, *DWORD) callconv(.winapi) BOOL;
+pub const SE_KERNEL_OBJECT = 6;
+pub const OWNER_SECURITY_INFORMATION = 0x00000001;
+pub const LABEL_SECURITY_INFORMATION = 0x00000010;
+pub extern "advapi32" fn GetSecurityInfo(HANDLE, c_int, DWORD, ?*?*anyopaque, ?*?*anyopaque, ?*?*anyopaque, ?*?*anyopaque, ?*?*anyopaque) callconv(.winapi) DWORD;
+pub const CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+pub extern "userenv" fn CreateEnvironmentBlock(*?*anyopaque, ?HANDLE, BOOL) callconv(.winapi) BOOL;
+pub extern "userenv" fn DestroyEnvironmentBlock(*anyopaque) callconv(.winapi) BOOL;
+pub const SDDL_REVISION_1 = 1;
+pub extern "advapi32" fn ConvertStringSecurityDescriptorToSecurityDescriptorW(LPCWSTR, DWORD, *?*anyopaque, ?*u32) callconv(.winapi) BOOL;
+pub const OVERLAPPED = extern struct {
+    Internal: usize = 0,
+    InternalHigh: usize = 0,
+    Offset: DWORD = 0,
+    OffsetHigh: DWORD = 0,
+    hEvent: ?HANDLE = null,
+};
+pub const FILE_FLAG_OVERLAPPED = 0x40000000;
+pub const ERROR_BROKEN_PIPE = 109;
+pub const ERROR_IO_PENDING = 997;
+pub const ERROR_OPERATION_ABORTED = 995;
+pub const WAIT_OBJECT_0: DWORD = 0;
+pub const WAIT_TIMEOUT: DWORD = 258;
+pub extern "kernel32" fn CreateEventW(?*anyopaque, BOOL, BOOL, ?LPCWSTR) callconv(.winapi) ?HANDLE;
+pub extern "kernel32" fn ResetEvent(HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn WaitForMultipleObjects(DWORD, [*]const HANDLE, BOOL, DWORD) callconv(.winapi) DWORD;
+pub extern "kernel32" fn GetOverlappedResult(HANDLE, *OVERLAPPED, *DWORD, BOOL) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CancelIoEx(HANDLE, ?*OVERLAPPED) callconv(.winapi) BOOL;
+pub extern "kernel32" fn SetEnvironmentVariableW(LPCWSTR, ?LPCWSTR) callconv(.winapi) BOOL;
+pub const CREATE_BREAKAWAY_FROM_JOB = 0x01000000;
+pub extern "user32" fn AllowSetForegroundWindow(DWORD) callconv(.winapi) BOOL;
+
+// COM, for the taskbar's Jump List (jump_list.zig).
+pub const GUID = std.os.windows.GUID;
+pub const COINIT_APARTMENTTHREADED = 0x2;
+pub const CLSCTX_INPROC_SERVER = 0x1;
+pub extern "ole32" fn CoInitializeEx(?*anyopaque, DWORD) callconv(.winapi) HRESULT;
+pub extern "ole32" fn CoUninitialize() callconv(.winapi) void;
+pub extern "ole32" fn CoCreateInstance(*const GUID, ?*anyopaque, DWORD, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT;
 pub extern "kernel32" fn OpenEventW(dwDesiredAccess: DWORD, bInheritHandle: BOOL, lpName: LPCWSTR) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn SetEvent(hEvent: HANDLE) callconv(.winapi) BOOL;
 pub const EVENT_MODIFY_STATE: DWORD = 0x0002;

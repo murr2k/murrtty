@@ -172,7 +172,8 @@ pub fn log(self: *const Harness, comptime fmt: []const u8, args: anytype) void {
 pub const Ghostty = struct {
     h: *Harness,
     proc: w.HANDLE,
-    thread: w.HANDLE,
+    /// Its first thread, when the harness started it.
+    thread: ?w.HANDLE,
     pid: w.DWORD,
     dir: []const u8,
     dump_path: []const u8,
@@ -183,7 +184,7 @@ pub const Ghostty = struct {
             _ = w.WaitForSingleObject(self.proc, 5000);
         }
         _ = w.CloseHandle(self.proc);
-        _ = w.CloseHandle(self.thread);
+        if (self.thread) |t| _ = w.CloseHandle(t);
         self.h.alloc.free(self.dir);
         self.h.alloc.free(self.dump_path);
     }
@@ -393,6 +394,10 @@ fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8, extr
         for (drop) |d| {
             if (entry.len >= d.len and asciiEqlIgnoreCase16(entry[0..d.len], d)) keep = false;
         }
+        // One the caller sets replaces the inherited one.
+        for (extra) |kv| {
+            if (entry.len > kv[0].len and entry[kv[0].len] == '=' and asciiEqlIgnoreCase16(entry[0..kv[0].len], kv[0])) keep = false;
+        }
         if (keep) {
             try out.appendSlice(alloc, entry);
             try out.append(alloc, 0);
@@ -432,6 +437,11 @@ pub const CliResult = struct {
 /// murrtty.log there. Only those two handles are inherited. It gets 30 s
 /// to finish.
 pub fn runCli(self: *Harness, name: []const u8, args: []const []const u8) !CliResult {
+    return self.runCliWith(name, args, &.{});
+}
+
+/// runCli with extra environment variables, as name and value.
+pub fn runCliWith(self: *Harness, name: []const u8, args: []const []const u8, extra_env: []const [2][]const u8) !CliResult {
     const alloc = self.alloc;
     const dir = try std.fmt.allocPrint(alloc, "{s}\\{s}", .{ self.temp_dir, name });
     defer alloc.free(dir);
@@ -439,7 +449,7 @@ pub fn runCli(self: *Harness, name: []const u8, args: []const []const u8) !CliRe
     try self.launched.append(alloc, try alloc.dupe(u8, dir));
     const dump_path = try std.fmt.allocPrint(alloc, "{s}\\dump.json", .{dir});
     defer alloc.free(dump_path);
-    const env = try self.environment(dir, dump_path, &.{});
+    const env = try self.environment(dir, dump_path, extra_env);
     defer alloc.free(env);
 
     // Each argument quoted: none the tests pass holds a quote or ends in a
@@ -545,6 +555,116 @@ pub fn runCli(self: *Harness, name: []const u8, args: []const []const u8) !CliRe
     var code: w.DWORD = 0;
     if (w.GetExitCodeProcess(pi.hProcess, &code) == 0) return error.LaunchFailed;
     return .{ .alloc = alloc, .code = code, .out = try out.toOwnedSlice(alloc) };
+}
+
+const TitleCtx = struct {
+    title: []const u16,
+    pid: ?w.DWORD = null,
+};
+
+fn titleProc(hwnd: w.HWND, lparam: w.LPARAM) callconv(.winapi) w.BOOL {
+    const ctx: *TitleCtx = @ptrFromInt(@as(usize, @bitCast(lparam)));
+    if (w.IsWindowVisible(hwnd) == 0) return w.TRUE;
+    var buf: [256]u16 = undefined;
+    const n = w.GetClassNameW(hwnd, &buf, buf.len);
+    if (n <= 0 or !std.mem.eql(u16, buf[0..@intCast(n)], std.unicode.utf8ToUtf16LeStringLiteral("MurrttyWindow"))) return w.TRUE;
+    const t = w.GetWindowTextW(hwnd, &buf, buf.len);
+    if (t <= 0 or std.mem.indexOf(u16, buf[0..@intCast(t)], ctx.title) == null) return w.TRUE;
+    var pid: w.DWORD = 0;
+    _ = w.GetWindowThreadProcessId(hwnd, &pid);
+    ctx.pid = pid;
+    return w.FALSE;
+}
+
+/// A murrtty the harness didn't start (one a CLI action started for its
+/// request), found by its window whose caption holds `title`, with its
+/// dump in the run folder `name`, where the CLI's environment pointed it.
+/// Waits up to `ms` for the window. deinit ends it.
+pub fn adopt(self: *Harness, name: []const u8, caption: []const u8, ms: u32) !Ghostty {
+    const alloc = self.alloc;
+    const caption16 = try std.unicode.utf8ToUtf16LeAlloc(alloc, caption);
+    defer alloc.free(caption16);
+    var ctx: TitleCtx = .{ .title = caption16 };
+    var waited: u32 = 0;
+    while (ctx.pid == null) : (waited += 100) {
+        if (waited > ms) return self.fail("no murrtty window titled {s} appeared", .{caption});
+        _ = w.EnumWindows(&titleProc, @bitCast(@intFromPtr(&ctx)));
+        if (ctx.pid == null) w.Sleep(100);
+    }
+    const proc = w.OpenProcess(w.PROCESS_TERMINATE | w.SYNCHRONIZE | w.PROCESS_QUERY_LIMITED_INFORMATION, w.FALSE, ctx.pid.?) orelse
+        return self.fail("could not open the murrtty titled {s} ({d})", .{ caption, w.GetLastError() });
+    errdefer _ = w.CloseHandle(proc);
+    const dir = try std.fmt.allocPrint(alloc, "{s}\\{s}", .{ self.temp_dir, name });
+    errdefer alloc.free(dir);
+    return .{
+        .h = self,
+        .proc = proc,
+        .thread = null,
+        .pid = ctx.pid.?,
+        .dir = dir,
+        .dump_path = try std.fmt.allocPrint(alloc, "{s}\\dump.json", .{dir}),
+    };
+}
+
+fn strayProc(hwnd: w.HWND, lparam: w.LPARAM) callconv(.winapi) w.BOOL {
+    const h: *Harness = @ptrFromInt(@as(usize, @bitCast(lparam)));
+    var buf: [1024]u16 = undefined;
+    const n = w.GetClassNameW(hwnd, &buf, buf.len);
+    if (n <= 0 or !std.mem.eql(u16, buf[0..@intCast(n)], std.unicode.utf8ToUtf16LeStringLiteral("MurrttyWindow"))) return w.TRUE;
+    var pid: w.DWORD = 0;
+    _ = w.GetWindowThreadProcessId(hwnd, &pid);
+    const proc = w.OpenProcess(w.PROCESS_TERMINATE | w.PROCESS_QUERY_LIMITED_INFORMATION, w.FALSE, pid) orelse return w.TRUE;
+    defer _ = w.CloseHandle(proc);
+    var len: w.DWORD = buf.len;
+    if (w.QueryFullProcessImageNameW(proc, 0, &buf, &len) == 0) return w.TRUE;
+    if (len != h.exe.len) return w.TRUE;
+    for (buf[0..len], h.exe) |a, b| {
+        if (a != b and (a > 127 or b > 127 or std.ascii.toLower(@intCast(a)) != std.ascii.toLower(@intCast(b)))) return w.TRUE;
+    }
+    _ = w.TerminateProcess(proc, 1);
+    return w.TRUE;
+}
+
+/// End every murrtty of the build under test with a window on the hidden
+/// desktop: one a CLI action started that `adopt` couldn't take. Nothing
+/// on the user's desktop (with --visible there is no hidden one).
+pub fn killStray(self: *Harness) void {
+    if (self.desktop_name == null) return;
+    _ = w.EnumWindows(&strayProc, @bitCast(@intFromPtr(self)));
+}
+
+/// A pipe named `name` that the harness serves, labeled at low integrity:
+/// what a sandboxed process of the user's could create first. The caller
+/// closes it.
+pub fn squatPipe(self: *Harness, name: []const u8) !w.HANDLE {
+    const name16 = try std.unicode.utf8ToUtf16LeAllocZ(self.alloc, name);
+    defer self.alloc.free(name16);
+    var descriptor: ?*anyopaque = null;
+    if (w.ConvertStringSecurityDescriptorToSecurityDescriptorW(w.L("D:(A;;GA;;;WD)S:(ML;;NW;;;LW)"), 1, &descriptor, null) == 0) {
+        return self.fail("the low label's descriptor failed ({d})", .{w.GetLastError()});
+    }
+    defer _ = w.LocalFree(descriptor);
+    const sa: w.SECURITY_ATTRIBUTES = .{ .lpSecurityDescriptor = descriptor };
+    const h = w.CreateNamedPipeW(name16, w.PIPE_ACCESS_DUPLEX, w.PIPE_TYPE_MESSAGE | w.PIPE_READMODE_MESSAGE, 1, 4096, 4096, 0, &sa);
+    if (h == w.INVALID_HANDLE_VALUE) return self.fail("could not create the pipe {s} ({d})", .{ name, w.GetLastError() });
+    return h;
+}
+
+/// Send `bytes` as one message to the pipe `name` and return the one-byte
+/// reply, as murrtty's client does (roadmap 5.1), or null if none came.
+pub fn pipeRequest(self: *Harness, name: []const u8, bytes: []const u8) !?u8 {
+    const name16 = try std.unicode.utf8ToUtf16LeAllocZ(self.alloc, name);
+    defer self.alloc.free(name16);
+    const h = w.CreateFileW(name16, w.GENERIC_READ | w.GENERIC_WRITE, 0, null, w.OPEN_EXISTING, 0, null);
+    if (h == w.INVALID_HANDLE_VALUE) return self.fail("could not open the pipe {s} ({d})", .{ name, w.GetLastError() });
+    defer _ = w.CloseHandle(h);
+    var mode: w.DWORD = w.PIPE_READMODE_MESSAGE;
+    if (w.SetNamedPipeHandleState(h, &mode, null, null) == 0) return self.fail("the pipe's message mode failed ({d})", .{w.GetLastError()});
+    var n: w.DWORD = 0;
+    if (w.WriteFile(h, bytes.ptr, @intCast(bytes.len), &n, null) == 0) return null;
+    var reply: [16]u8 = undefined;
+    if (w.ReadFile(h, &reply, reply.len, &n, null) == 0 or n != 1) return null;
+    return reply[0];
 }
 
 //---------------------------------------------------------------
@@ -1208,6 +1328,19 @@ pub const Dump = struct {
     launches: []const []const u8 = &.{},
     /// Spike S1's overlays (setOverlays).
     overlays: []const Overlay = &.{},
+    /// The single instance's pipe (roadmap 5.1).
+    ipc: Ipc = .{},
+
+    pub const Ipc = struct {
+        /// Its name, "" with no server.
+        pipe: []const u8 = "",
+        /// Whether this murrtty holds the name.
+        listening: bool = false,
+        /// Requests it queued.
+        received: u32 = 0,
+        /// Started by a client for its request.
+        launch: bool = false,
+    };
 
     pub const Overlay = struct {
         kind: u8,
@@ -1363,6 +1496,8 @@ pub const Dump = struct {
 
     pub const Pane = struct {
         hwnd: u64,
+        /// The core surface's id (GHOSTTY_SURFACE_ID), 0 before it exists.
+        surface_id: u64 = 0,
         rect: [4]i32,
         /// The tab's focused pane.
         focused: bool,

@@ -23,6 +23,7 @@ const ContextMenu = @import("ContextMenu.zig");
 const Banner = @import("Banner.zig");
 const ClipboardDialog = @import("ClipboardDialog.zig");
 const draw = @import("draw.zig");
+const ipc = @import("ipc.zig");
 const KeyState = @import("KeyState.zig");
 const Overlay = @import("Overlay.zig");
 const Scrollbar = @import("Scrollbar.zig");
@@ -214,6 +215,11 @@ pub fn init(
 
     var config = try apprt.surface.newConfig(app.core_app, &app.config, context);
     defer config.deinit();
+    // An IPC request's command, directory and title (roadmap 5.1), for the
+    // first pane created only.
+    const overrides = app.ipc_overrides;
+    app.ipc_overrides = null;
+    if (overrides) |o| try o.apply(&config);
     self.colors = .fromConfig(&config);
 
     // Initializing the core surface creates the renderer, which sets
@@ -233,6 +239,9 @@ pub fn init(
 
     if (parent) |p| if (app.config.@"window-inherit-font-size") {
         try self.core_surface.setFontSize(p.font_size);
+    };
+    if (overrides) |o| if (o.title) |t| {
+        self.title_override = try app.core_app.alloc.dupeSentinel(u8, t, 0);
     };
 
     // The window may have been resized by an initial_size action
@@ -846,7 +855,11 @@ fn confirmClipboardWrite(self: *Surface, text: []const u8) void {
 
 pub fn defaultTermioEnv(self: *Surface) !std.process.Environ.Map {
     _ = self;
-    return try global.environMap();
+    var env = try global.environMap();
+    // A murrtty started for a request doesn't pass that on: a murrtty
+    // started from its shells would wait for one too.
+    _ = env.orderedRemove(ipc.launch_env);
+    return env;
 }
 
 pub fn redrawInspector(self: *Surface) void {

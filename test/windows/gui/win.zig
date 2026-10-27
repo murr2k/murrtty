@@ -280,6 +280,18 @@ pub extern "kernel32" fn SetHandleInformation(HANDLE, DWORD, DWORD) callconv(.wi
 pub const HANDLE_FLAG_INHERIT = 0x00000001;
 pub extern "kernel32" fn TerminateProcess(HANDLE, UINT) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
+// The single instance's pipe (roadmap 5.1).
+pub const PROCESS_TERMINATE = 0x0001;
+pub const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+pub const SYNCHRONIZE = 0x00100000;
+pub extern "kernel32" fn OpenProcess(DWORD, BOOL, DWORD) callconv(.winapi) ?HANDLE;
+pub const PIPE_READMODE_MESSAGE = 0x00000002;
+pub extern "kernel32" fn SetNamedPipeHandleState(HANDLE, ?*DWORD, ?*DWORD, ?*DWORD) callconv(.winapi) BOOL;
+pub const PIPE_ACCESS_DUPLEX = 0x00000003;
+pub const PIPE_TYPE_MESSAGE = 0x00000004;
+pub extern "kernel32" fn CreateNamedPipeW(LPCWSTR, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, ?*const SECURITY_ATTRIBUTES) callconv(.winapi) HANDLE;
+pub extern "advapi32" fn ConvertStringSecurityDescriptorToSecurityDescriptorW(LPCWSTR, DWORD, *?*anyopaque, ?*u32) callconv(.winapi) BOOL;
+pub extern "kernel32" fn QueryFullProcessImageNameW(HANDLE, DWORD, [*]u16, *DWORD) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetEnvironmentStringsW() callconv(.winapi) ?[*]u16;
 pub extern "kernel32" fn FreeEnvironmentStringsW([*]u16) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetTempPathW(DWORD, [*]u16) callconv(.winapi) DWORD;

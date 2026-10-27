@@ -3,9 +3,11 @@
 const App = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const apprt = @import("../../apprt.zig");
 const build_config = @import("../../build_config.zig");
+const global = @import("../../global.zig");
 const configpkg = @import("../../config.zig");
 const Config = configpkg.Config;
 const input = @import("../../input.zig");
@@ -17,6 +19,7 @@ const Banner = @import("Banner.zig");
 const AlertDialog = @import("AlertDialog.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const draw = @import("draw.zig");
+const ipc = @import("ipc.zig");
 const Overlay = @import("Overlay.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -37,6 +40,13 @@ const app_user_model_id = c.L("murrtty.murrtty");
 const WM_WAKEUP = c.WM_APP + 1;
 const WM_RUN_REQUESTS = c.WM_APP + 2;
 const WM_RAISE_MODAL = c.WM_APP + 3;
+/// An IPC request (ipc.zig) from the pipe's thread: lparam is an
+/// *ipc.Received, ours to free.
+const WM_IPC = c.WM_APP + 4;
+
+/// The wakeup window's timer for a murrtty started for an IPC request
+/// (`ipc_launch`).
+const ipc_launch_timer = 1;
 
 /// A request that closes tabs or windows, or opens a link. These never run
 /// inside a callback from the core or while a modal dialog is open: the
@@ -60,10 +70,13 @@ pub const Request = union(enum) {
     config_errors,
     /// Ask for a pane's, its tab's or its window's title (TitleDialog).
     prompt_title: struct { id: u64, which: apprt.action.PromptTitle },
+    /// +new-window, +new-tab or a launch handing off (runIpc).
+    ipc: *ipc.Received,
 
     fn deinit(self: Request, alloc: Allocator) void {
         switch (self) {
             .open_url => |v| alloc.free(v.url),
+            .ipc => |v| v.destroy(alloc),
             else => {},
         }
     }
@@ -186,6 +199,17 @@ config_errors_shown: ?u64 = null,
 config_errors_force: bool = false,
 config_errors_queued: bool = false,
 
+/// The single instance's pipe (ipc.zig), served from another thread.
+ipc_server: ?*ipc.Server = null,
+
+/// The overrides of an IPC request (or open_config:new_window) for the
+/// pane being created, which Surface.init takes.
+ipc_overrides: ?*const ipc.Overrides = null,
+
+/// A client started this murrtty for its request (ipc.launch_env): the
+/// request opens the first window, and without one it quits.
+ipc_launch: bool = false,
+
 /// The GUI test harness's state dump (Debug builds only; see test_hooks).
 test_state: test_hooks.State = .{},
 
@@ -275,6 +299,7 @@ pub fn init(
         .buffered_paint = c.BufferedPaintInit() >= 0,
         .windows_build = windowsBuild(),
         .fonts = draw.registerFonts(),
+        .ipc_launch = takeLaunchEnv(),
         .test_state = test_hooks.init(alloc),
     };
     if (self.fonts == null) log.warn("the chrome's font (Adwaita Sans) could not be registered", .{});
@@ -290,15 +315,31 @@ pub fn run(self: *App) !void {
         log.warn("error setting initial color scheme err={}", .{err});
     };
 
-    // There is no IPC, tray or dock to open a window later, and the app
-    // exits with its last window, so starting without one would leave an
-    // invisible process behind. (The option is documented as Linux and
-    // macOS only.)
+    // No tray icon (roadmap 5.6) would show that a murrtty without a
+    // window runs, and the app exits with its last window, so starting
+    // without one would leave an invisible process behind. (The option is
+    // documented as Linux and macOS only.)
     if (!self.config.@"initial-window") {
         log.warn("initial-window = false is not supported on Windows, ignoring it", .{});
     }
 
-    _ = Window.create(self, null) catch |err| {
+    // The pipe first: it is claimed at once if free, so of two launches
+    // together one holds it. Then gtk-single-instance (roadmap 5.1): the
+    // window goes to the murrtty holding it, as GTK's application hands
+    // it over.
+    self.startIpc();
+    const holding = if (self.ipc_server) |s| s.listening.load(.acquire) else false;
+    if (!self.ipc_launch and !holding and self.config.@"gtk-single-instance" == .true and
+        ipc.handOff(self.core_app.alloc, self.ipcClass()))
+    {
+        log.info("handed the window to the running murrtty", .{});
+        return;
+    }
+
+    if (self.ipc_launch) {
+        // The request brings the window; without it, don't linger.
+        _ = c.SetTimer(self.wakeup_hwnd, ipc_launch_timer, ipc.launch_timeout_ms, null);
+    } else _ = Window.create(self, null) catch |err| {
         // A GUI program has no console, so say why it can't start.
         const msg = std.fmt.allocPrint(
             self.core_app.alloc,
@@ -327,6 +368,9 @@ pub fn run(self: *App) !void {
 }
 
 pub fn terminate(self: *App) void {
+    // With the requests it queued that the loop never took.
+    if (self.ipc_server) |s| s.stop();
+    self.ipc_server = null;
     while (self.windows.items.len > 0) {
         _ = c.DestroyWindow(self.windows.items[self.windows.items.len - 1].hwnd);
     }
@@ -390,6 +434,119 @@ fn windowsBuild() u32 {
     var info: c.OSVERSIONINFOW = .{};
     if (c.RtlGetVersion(&info) != 0) return 0;
     return info.dwBuildNumber;
+}
+
+/// Whether a client started this murrtty for its request (ipc.launch_env),
+/// clearing the variable so that nothing this murrtty starts sees it.
+fn takeLaunchEnv() bool {
+    const name = c.L(ipc.launch_env);
+    if (c.GetEnvironmentVariableW(name, null, 0) == 0) return false;
+    _ = c.SetEnvironmentVariableW(name, null);
+    return true;
+}
+
+/// The class whose single instance this murrtty is (ipc.zig): `class` from
+/// the config, else murrtty's own. With the GUI tests' hooks on, each
+/// murrtty has its own, so that test instances never reach one another or
+/// a developer's; the tests name theirs.
+fn ipcClass(self: *App) ?[]const u8 {
+    if (self.config.class) |class| return class;
+    if (comptime test_hooks.enabled) if (test_hooks.active()) {
+        const S = struct {
+            var buf: [32]u8 = undefined;
+        };
+        return std.fmt.bufPrint(&S.buf, "murrtty-test-{d}", .{c.GetCurrentProcessId()}) catch null;
+    };
+    return null;
+}
+
+/// Serve the single instance's pipe. A release of murrtty's own class also
+/// keeps the taskbar's Jump List (New Window) once it holds the pipe.
+fn startIpc(self: *App) void {
+    const class = self.ipcClass();
+    const jump_list: ?c.LPCWSTR = if (builtin.mode != .debug and class == null) app_user_model_id else null;
+    self.ipc_server = ipc.Server.start(self.core_app.alloc, class, self.wakeup_hwnd, WM_IPC, jump_list) catch |err| {
+        log.warn("no single instance: the pipe could not be set up err={}", .{err});
+        return;
+    };
+}
+
+/// An IPC request: +new-window's window, or +new-tab's tab in the window of
+/// the pane it names (else the focused one's, else a window, as GTK), with
+/// the request's overrides, in front.
+fn runIpc(self: *App, msg: ipc.Message) void {
+    var arena: std.heap.ArenaAllocator = .init(self.core_app.alloc);
+    defer arena.deinit();
+    const overrides: ipc.Overrides = if (msg.arguments) |args|
+        ipc.Overrides.parse(arena.allocator(), args) catch .{}
+    else
+        .{};
+    self.ipc_overrides = &overrides;
+    defer self.ipc_overrides = null;
+
+    // Started for this request, with no window to show for it: quit.
+    defer if (self.ipc_launch and self.windows.items.len == 0) self.quitNow();
+
+    if (msg.kind == .new_tab) if (self.ipcTabTarget(msg.surface_id)) |s| {
+        const window = s.window;
+        _ = window.addTab(&s.core_surface, .tab) catch |err| {
+            log.warn("error creating the requested tab err={}", .{err});
+            return;
+        };
+        window.present();
+        return;
+    };
+    _ = Window.create(self, null) catch |err| {
+        log.warn("error creating the requested window err={}", .{err});
+    };
+}
+
+fn ipcTabTarget(self: *App, id: u64) ?*Surface {
+    if (id != 0) {
+        if (self.findSurface(id)) |s| return s;
+        log.warn("new-tab: no surface 0x{x:0>16}, using the focused one", .{id});
+    }
+    const focused = self.core_app.focusedSurface() orelse return null;
+    return self.findSurface(focused.id);
+}
+
+/// open_config:new_window: the config file in a new window running $VISUAL
+/// or $EDITOR, titled as GTK's. With neither set it opens as open_config
+/// does: GTK runs vi then, which Windows lacks.
+fn openConfigInWindow(self: *App) void {
+    var arena: std.heap.ArenaAllocator = .init(self.core_app.alloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const editor = editor: for ([_][]const u8{ "VISUAL", "EDITOR" }) |name| {
+        const value = global.environ().getAlloc(alloc, name) catch continue;
+        if (std.mem.trim(u8, value, " ").len > 0) break :editor value;
+    } else {
+        self.request(.open_config);
+        return;
+    };
+    const open_path = configpkg.edit.openPath(alloc) catch |err| {
+        log.warn("error getting config file path: {t}", .{err});
+        return;
+    };
+    // It joins the file name with a slash.
+    const path = alloc.dupeSentinel(u8, open_path, 0) catch return;
+    std.mem.replaceScalar(u8, path, '/', '\\');
+    // The editor as Windows splits a command (quotes group), then the file.
+    var command: configpkg.Command = undefined;
+    command.parseCLI(alloc, std.fmt.allocPrint(alloc, "direct:{s}", .{editor}) catch return) catch |err| {
+        log.warn("error reading the editor command err={}", .{err});
+        return;
+    };
+    const argv = std.mem.concat(alloc, [:0]const u8, &.{ command.direct, &.{path} }) catch return;
+    const overrides: ipc.Overrides = .{
+        .command = .{ .direct = argv },
+        .title = alloc.printSentinel("Editing configuration file {s}", .{path}, 0) catch null,
+    };
+    self.ipc_overrides = &overrides;
+    defer self.ipc_overrides = null;
+    _ = Window.create(self, null) catch |err| {
+        log.warn("error creating the config editor's window err={}", .{err});
+    };
 }
 
 /// Queue a request to run from the message loop. It takes ownership of
@@ -482,6 +639,10 @@ fn runRequests(self: *App) void {
             .open_url => |v| {
                 defer req.deinit(self.core_app.alloc);
                 self.openUrl(v);
+            },
+            .ipc => |v| {
+                defer req.deinit(self.core_app.alloc);
+                self.runIpc(v.message);
             },
         }
     }
@@ -930,6 +1091,32 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 },
                 WM_RUN_REQUESTS => self.runRequests(),
                 else => self.raiseModal(),
+            }
+            return 0;
+        },
+        // The pipe's requests, queued again here so that they wait for any
+        // dialog. The message carries nothing: any process on the desktop
+        // can post it.
+        WM_IPC => {
+            const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
+            if (ptr == 0) return 0;
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(ptr)));
+            const server = self.ipc_server orelse return 0;
+            while (server.take()) |received| {
+                // Its window comes, even after a dialog: no need to quit.
+                if (self.ipc_launch) _ = c.KillTimer(hwnd, ipc_launch_timer);
+                self.request(.{ .ipc = received });
+            }
+            return 0;
+        },
+        c.WM_TIMER => {
+            const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
+            if (ptr == 0 or wparam != ipc_launch_timer) return 0;
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(ptr)));
+            _ = c.KillTimer(hwnd, ipc_launch_timer);
+            if (self.windows.items.len == 0) {
+                log.warn("started for a request that never came, quitting", .{});
+                self.quitNow();
             }
             return 0;
         },
@@ -1497,8 +1684,12 @@ pub fn performAction(
         } }),
 
         // From the message loop: the shell can pump messages, and the
-        // core is using the surface that triggered this.
-        .open_config => self.request(.open_config),
+        // core is using the surface that triggered this. A window opens at
+        // once, as new_window's.
+        .open_config => switch (value) {
+            .os_open => self.request(.open_config),
+            .new_window => self.openConfigInWindow(),
+        },
 
         .reload_config => try self.reloadConfig(target, value.soft),
 
@@ -1722,25 +1913,34 @@ pub fn supportsAction(action: input.Binding.Action) bool {
 
         // Arguments the runtime can't honor yet. HTML alone is all
         // `copy_to_clipboard:html` gives, and setClipboard writes text only
-        // (it would copy nothing, yet clear the selection); there is no
-        // selection clipboard on Windows; and `open_config:new_window`
-        // needs 5.1 (it would open the editor instead).
+        // (it would copy nothing, yet clear the selection); and there is no
+        // selection clipboard on Windows.
         .copy_to_clipboard => |format| format != .html,
         .paste_from_selection => false,
-        .open_config => |where| where != .new_window,
 
         else => true,
     };
 }
 
-/// IPC to a running instance is not supported yet.
+/// A CLI action's request to the running murrtty (`+new-window`,
+/// `+new-tab`), over the single instance's pipe; a murrtty is started for
+/// it if none runs (ipc.request). The quick terminal comes with 5.7.
 pub fn performIpc(
-    _: Allocator,
-    _: apprt.ipc.Target,
+    alloc: Allocator,
+    target: apprt.ipc.Target,
     comptime action: apprt.ipc.Action.Key,
-    _: apprt.ipc.Action.Value(action),
+    value: apprt.ipc.Action.Value(action),
 ) (Allocator.Error || apprt.ipc.Errors)!bool {
-    return false;
+    const msg: ipc.Message = switch (action) {
+        .new_window => .{ .kind = .new_window, .arguments = value.arguments },
+        .new_tab => .{ .kind = .new_tab, .surface_id = value.surface_id, .arguments = value.arguments },
+        .toggle_quick_terminal => return false,
+    };
+    try ipc.request(alloc, switch (target) {
+        .class => |class| class,
+        .detect => null,
+    }, msg);
+    return true;
 }
 
 pub fn redrawInspector(_: *App, _: *Surface) void {}

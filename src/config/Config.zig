@@ -4936,14 +4936,18 @@ pub fn finalize(self: *Config) !void {
 
     // Apprt-specific defaults
     switch (build_config.app_runtime) {
-        .none, .win32 => {},
-        .gtk => {
+        .none => {},
+        // murrtty's win32 runtime has a single instance too (roadmap 5.1).
+        .gtk, .win32 => {
             switch (self.@"gtk-single-instance") {
                 .true, .false => {},
 
                 // For detection, we assume single instance unless we're
                 // in a CLI environment, then we disable single instance.
-                .detect => self.@"gtk-single-instance" = if (probable_cli)
+                // On Windows that is a launch from anywhere but the
+                // desktop, and arguments (a shortcut's) keep theirs too.
+                .detect => self.@"gtk-single-instance" = if (probable_cli or
+                    (comptime build_config.app_runtime == .win32) and global.args().vector.len > 1)
                     .false
                 else
                     .true,

@@ -488,7 +488,17 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             o.paints,
         });
     }
-    try out.appendSlice(alloc, "]}");
+    // The single instance's pipe (roadmap 5.1).
+    try out.appendSlice(alloc, "],\"ipc\":{\"pipe\":");
+    if (app.ipc_server) |s| {
+        try writeString(alloc, out, s.name_utf8);
+        try out.print(alloc, ",\"listening\":{},\"received\":{d},\"launch\":{}}}", .{
+            s.listening.load(.acquire),
+            s.received.load(.monotonic),
+            app.ipc_launch,
+        });
+    } else try out.print(alloc, "\"\",\"listening\":false,\"received\":0,\"launch\":{}}}", .{app.ipc_launch});
+    try out.append(alloc, '}');
 }
 
 /// A tab's panes in layout order (left to right, top to bottom, as the
@@ -519,8 +529,9 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         _ = c.GetClientRect(s.hwnd, &r);
         var corners = [2]c.POINT{ .{ .x = r.left, .y = r.top }, .{ .x = r.right, .y = r.bottom } };
         _ = c.MapWindowPoints(s.hwnd, tab.hwnd, &corners, 2);
-        try out.print(alloc, "{{\"hwnd\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
+        try out.print(alloc, "{{\"hwnd\":{d},\"surface_id\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
             @intFromPtr(s.hwnd),
+            if (s.core_initialized) s.core_surface.id else 0,
             corners[0].x,
             corners[0].y,
             corners[1].x,

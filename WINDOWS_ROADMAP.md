@@ -242,6 +242,27 @@ roadmap item behind it.
   Terminal's form) as well as OSC 7, and for `cmd` without integration from
   the process itself. GTK's integration covers bash, zsh, fish, elvish and
   nushell.
+- **Single instance** (5.1): a named pipe per user, session, integrity
+  level and class instead of D-Bus. The first murrtty of a class serves
+  `+new-window` and `+new-tab` whatever `gtk-single-instance` says; GTK's
+  reach only a single-instance app, which owns its D-Bus name.
+  `gtk-single-instance = detect` is on for a launch from the desktop (a
+  shortcut or Explorer) without arguments, since Windows' shells and
+  terminals don't set `TERM_PROGRAM`; GTK's asks `TERM_PROGRAM` and the
+  arguments.
+- **Requests** (5.1): `+new-tab` opens in the directory it passes (the
+  caller's, unless given) even beside a pane whose directory a new tab
+  would inherit; GTK applies the inherited one after the request's, so
+  that pane's wins. In `--working-directory=`, `home` is the home
+  directory and `inherit` the caller's; GTK takes both as paths. An
+  argument murrtty can't read (a bad `--command=`) is skipped, where GTK
+  drops all of them (`+new-window`) or opens nothing (`+new-tab`). A
+  request's command wins over `initial-command`, and `+new-tab` brings its
+  window forward; GTK's does neither.
+- **Config in a new window** (5.1): `open_config:new_window` runs `$VISUAL`
+  or `$EDITOR` itself, its words split as a command's (quotes group) with
+  the file as one argument, where GTK runs it through `/bin/sh -c`; with
+  neither set the file opens as `open_config` opens it, where GTK runs vi.
 
 *For now:*
 - **Dragging a tab** (4.5): once out of the strip, nothing follows the
@@ -1365,7 +1386,7 @@ tests) found, and these were fixed:
   palette's own binding, which now closes it.
 - `App.supportsAction` looks at arguments: `copy_to_clipboard:html` (HTML
   only, which the clipboard code can't write), `paste_from_selection` and
-  `open_config:new_window` are hidden and grayed.
+  `open_config:new_window` (until 5.1 built it) are hidden and grayed.
 - The palette tracks panes by core surface id, not address, and holds a
   chosen command while a dialog is open (`App.resumeAfterModal`); both
   fields' own right-click menus run in a modal scope; only the active
@@ -1700,8 +1721,8 @@ window, off-screen, for comparing by eye.
 - Add `open_config:new_window` once 5.1's command overrides exist (the basic
   `open_config` fix is in 0.6).
 
-*3.9 done 2026-10-26, but for `open_config:new_window` (with 5.1); Phase 3
-done.*
+*3.9 done 2026-10-26; `open_config:new_window` came with 5.1 on
+2026-10-27. Phase 3 done.*
 - **Close confirmations** (`App.confirmClose`): task dialogs with GTK's
   heading and body for the app ("Quit murrtty?"), a window, a tab, a split,
   plus "Close All Windows?" and "Close Tabs?" (several at once: one question
@@ -2219,6 +2240,55 @@ latency), and the missing cursor shapes, which need artwork.
 *Done when:* `ghostty +new-window -e pwsh` opens in the running instance and
 exits 0.
 
+*Built 2026-10-27 (`win32/ipc.zig`):* the first murrtty of a class
+listens on `\\.\pipe\<class>.<user SID>.<session>.<integrity RID>` (the
+class is `class`, else `murrtty`, `murrtty-debug` in Debug builds as GTK's
+application id). It claims the name as it starts, before any hand-off, so
+of two launches together one holds it; a thread of its own then always
+keeps one instance listening, so the name never lapses while it runs; one
+that finds the name taken tries again every 3 s and takes over when the
+holder quits. The pipe has `FILE_FLAG_FIRST_PIPE_INSTANCE`, the user as
+its owner, a protected DACL for the user alone, a mandatory label at the
+instance's integrity level that keeps lower ones from writing or reading,
+and `PIPE_REJECT_REMOTE_CLIENTS`; the server serves only clients in its
+session. A client connects at identification level and sends only after
+checking the pipe itself (`GetSecurityInfo`: owned by its user, labeled at
+its level or above, which no other user or lower process can arrange) and
+then its server (`GetNamedPipeServerSessionId`, and the process of
+`GetNamedPipeServerProcessId`: its user, in its session, at no lower
+level). A request is a small versioned message (kind, surface id, the
+CLI's arguments) answered with one byte as soon as it is queued (a locked
+queue the UI thread takes from on a wake message that carries nothing,
+since any process on the desktop can post one): it enters `App.request`,
+so it waits for any dialog, and the CLI exits 0. Its arguments are read
+as GTK's `Overrides` reads them (`-e`, `--command=`,
+`--working-directory=`, `--title=`, `--shell-integration=`; `home` is
+resolved there, and `inherit` keeps the caller's directory, which the CLI
+passes first) and reach the first pane `Window.create` or `addTab` makes
+through `App.ipc_overrides`, which `Surface.init` takes (with GTK's shell
+integration rule for a command; the command also wins over
+`initial-command`). `+new-tab` goes to the window of the pane its surface
+id names, else the focused one's, else a new window, as GTK, and brings
+it forward. `+toggle-quick-terminal` waits for 5.7. With no murrtty
+serving the class, the CLI starts one as a desktop launch would (in the
+home directory, with the user's own environment from
+`CreateEnvironmentBlock`, not the shell's), with `MURRTTY_IPC_LAUNCH` set:
+it opens no window of its own, takes the request's, and quits after 15 s
+if none comes, or if the request leaves it without a window (it doesn't
+pass the variable on). `gtk-single-instance` now works on Windows: with it
+on, a launch hands its window to the running murrtty and exits; `detect`
+means on for a desktop launch (a shortcut or Explorer) without arguments,
+since Windows' shells and terminals don't set `TERM_PROGRAM`. The taskbar's
+Jump List gets New Window, GTK's desktop action
+(`--gtk-single-instance=true`), from a release build of murrtty's own class
+once it listens (`win32/jump_list.zig`). `open_config:new_window` came with
+it: the config file in a new window running `$VISUAL` or `$EDITOR`, titled
+as GTK's. Scenarios `ipc`, `ipc-launch`, `single-instance` and
+`open-config-window` check them, each with a class of its own; while the
+test hooks are on, a murrtty's default class is its own
+(`murrtty-test-<pid>`), so test instances never reach each other or a
+developer's.
+
 **5.2 Desktop notifications, M then L.**
 - First `Shell_NotifyIconW` balloons on an app notification-area icon (added
   here, reused by the tray in 5.6). They show as toasts on Windows 10 and 11.
@@ -2547,7 +2617,7 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 - `linux-cgroup*`, and the `gtk-*` options the Look rule doesn't take
   (4.3 takes `gtk-titlebar`, `gtk-titlebar-hide-when-maximized`,
   `gtk-titlebar-style`, `gtk-wide-tabs`, `gtk-tabs-inverted` and
-  `gtk-toolbar-style`; `gtk-single-instance`'s Windows analog is 5.1);
+  `gtk-toolbar-style`, and 5.1 takes `gtk-single-instance`);
 - the Wayland quick-terminal layer options;
 - `async-backend`, `x11-instance-name`, `window-colorspace`.
 
