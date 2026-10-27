@@ -37,11 +37,30 @@ pub const Theme = struct {
     fg: Color,
     /// The bar while the window is inactive (libadwaita's backdrop).
     backdrop: Color,
+    /// The window's background (libadwaita's window-bg-color): a flat
+    /// bar's, and the split dividers'.
+    window: Color,
     /// The opacity of the shade color (`shade_color`), which the top bars
     /// cast onto the content (`shadeAlpha`).
     shade: f32,
     dark: bool,
+
+    /// What the top bars cast onto the content for `style`
+    /// (gtk-toolbar-style): nothing, the shadow, or a line in the darker
+    /// shade color (rgb(0 0 12 / 90%) dark, rgb(0 0 6 / 12%) light).
+    pub fn shadeFor(self: Theme, style: ToolbarStyle) Shade {
+        return switch (style) {
+            .flat => .none,
+            .raised => .{ .shadow = self.shade },
+            .@"raised-border" => .{ .border = if (self.dark)
+                .{ .color = .{ .r = 0, .g = 0, .b = 12 }, .alpha = 0.9 }
+            else
+                .{ .color = ink, .alpha = 0.12 } },
+        };
+    }
 };
+
+pub const ToolbarStyle = configpkg.Config.GtkToolbarStyle;
 
 /// libadwaita's colors (its stylesheet, 1.8): the header bar, its text
 /// (rgb(0 0 6 / 80%) over it, in light), the window's background (the
@@ -51,23 +70,32 @@ pub fn adwaita(dark: bool) Theme {
         .bar = .{ .r = 0x2e, .g = 0x2e, .b = 0x32 },
         .fg = .{ .r = 0xff, .g = 0xff, .b = 0xff },
         .backdrop = .{ .r = 0x22, .g = 0x22, .b = 0x26 },
+        .window = .{ .r = 0x22, .g = 0x22, .b = 0x26 },
         .shade = 0.36,
         .dark = true,
     } else .{
         .bar = .{ .r = 0xff, .g = 0xff, .b = 0xff },
         .fg = blend(.{ .r = 0xff, .g = 0xff, .b = 0xff }, ink, 0.8),
         .backdrop = .{ .r = 0xfa, .g = 0xfa, .b = 0xfb },
+        .window = .{ .r = 0xfa, .g = 0xfa, .b = 0xfb },
         .shade = 0.12,
         .dark = false,
     };
 }
 
-/// GTK's `window-theme = ghostty`: the bar in the terminal's (or the
-/// titlebar options') colors, its backdrop that background at 90% of its
-/// OKLab lightness.
+/// GTK's `window-theme = ghostty`: the bar and the window's background in
+/// the terminal's (or the titlebar options') colors, the bar's backdrop
+/// that background at 90% of its OKLab lightness.
 pub fn ghosttyTheme(bg: Color, fg: Color) Theme {
     const dark = isDark(bg);
-    return .{ .bar = bg, .fg = fg, .backdrop = scaleLightness(bg, 0.9), .shade = if (dark) 0.36 else 0.12, .dark = dark };
+    return .{
+        .bar = bg,
+        .fg = fg,
+        .backdrop = scaleLightness(bg, 0.9),
+        .window = bg,
+        .shade = if (dark) 0.36 else 0.12,
+        .dark = dark,
+    };
 }
 
 /// libadwaita's near-black, rgb(0 0 6).
@@ -75,6 +103,46 @@ const ink: Color = .{ .r = 0, .g = 0, .b = 6 };
 
 /// The shade's color, at the theme's `shade` opacity.
 pub const shade_color = ink;
+
+/// What the top bars cast onto the content below (Theme.shadeFor).
+pub const Shade = union(enum) {
+    none,
+    /// libadwaita's raised bar: the shadow (`shadeAlpha`) of the shade
+    /// color at this opacity.
+    shadow: f32,
+    /// raised-border: a 1 px line.
+    border: struct { color: Color, alpha: f32 },
+
+    /// The rows from the bars' edge it covers at `dpi`.
+    pub fn rows(self: Shade, dpi: c.UINT) u32 {
+        return switch (self) {
+            .none => 0,
+            .shadow => shadeRows(dpi),
+            .border => (dpi + c.USER_DEFAULT_SCREEN_DPI - 1) / c.USER_DEFAULT_SCREEN_DPI,
+        };
+    }
+
+    pub fn color(self: Shade) Color {
+        return switch (self) {
+            .none, .shadow => ink,
+            .border => |b| b.color,
+        };
+    }
+
+    /// Its opacity `row` pixels from the bars' edge at `dpi`.
+    pub fn alpha(self: Shade, dpi: c.UINT, row: u32) f32 {
+        return switch (self) {
+            .none => 0,
+            .shadow => |a| shadeAlpha(a, dpi, row),
+            .border => |b| b.alpha * std.math.clamp(@as(f32, @floatFromInt(dpi)) / c.USER_DEFAULT_SCREEN_DPI - @as(f32, @floatFromInt(row)), 0, 1),
+        };
+    }
+
+    /// `under` beneath its `row`.
+    pub fn over(self: Shade, under: Color, dpi: c.UINT, row: u32) Color {
+        return blend(under, self.color(), self.alpha(dpi, row));
+    }
+};
 
 /// The opacity of the shade the top bars cast onto the content below,
 /// `row` pixels from their edge at `dpi`, for a shade color of opacity
@@ -94,11 +162,6 @@ pub fn shadeAlpha(shade: f32, dpi: c.UINT, row: u32) f32 {
 /// copy, its offset and blur radius (6 px).
 pub fn shadeRows(dpi: c.UINT) u32 {
     return (6 * dpi + c.USER_DEFAULT_SCREEN_DPI - 1) / c.USER_DEFAULT_SCREEN_DPI;
-}
-
-/// `color` under the shade's `row` (as `shadeAlpha`).
-pub fn shaded(color: Color, shade: f32, dpi: c.UINT, row: u32) Color {
-    return blend(color, ink, shadeAlpha(shade, dpi, row));
 }
 
 /// The standard normal distribution's CDF (Abramowitz and Stegun 7.1.26,
@@ -375,8 +438,17 @@ test "shadeAlpha: GTK's shade under its bar at 96 DPI" {
     // default background, row by row, then nothing.
     const bg: Color = .{ .r = 0x28, .g = 0x2c, .b = 0x34 };
     const want = [_]u8{ 0x1c, 0x24, 0x25, 0x26, 0x27, 0x28 };
-    try testing.expectEqual(6, shadeRows(96));
-    for (want, 0..) |r, k| try testing.expectEqual(r, shaded(bg, 0.36, 96, @intCast(k)).r);
+    const raised = adwaita(true).shadeFor(.raised);
+    try testing.expectEqual(6, raised.rows(96));
+    for (want, 0..) |r, k| try testing.expectEqual(r, raised.over(bg, 96, @intCast(k)).r);
+    // raised-border: one line of the darker shade (GTK 1.5's measured
+    // #040405 in black; the current stylesheet's is rgb(0 0 12)); flat:
+    // nothing.
+    const border = adwaita(true).shadeFor(.@"raised-border");
+    try testing.expectEqual(1, border.rows(96));
+    try testing.expectEqual(Color{ .r = 4, .g = 4, .b = 16 }, border.over(bg, 96, 0));
+    try testing.expectEqual(2, border.rows(120));
+    try testing.expectEqual(0, adwaita(true).shadeFor(.flat).rows(96));
     // Twice the pixels at twice the DPI, as dark at the edge.
     try testing.expectEqual(12, shadeRows(192));
     try testing.expect(@abs(shadeAlpha(0.36, 192, 0) - shadeAlpha(0.36, 96, 0)) < 0.02);

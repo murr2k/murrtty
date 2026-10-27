@@ -840,7 +840,8 @@ runtime plus the WGL present path (1.7).
   `DeferWindowPos`.
 - **Dividers.**
   - A 1 DIP line in `split-divider-color`, defaulting to macOS's rule: the
-    background darkened 0.4 on dark themes, 0.08 on light ones.
+    background darkened 0.4 on dark themes, 0.08 on light ones. (Since 4.3
+    step 5, GTK's: the window's background.)
   - The grip band is kept inside the panes' padding. Otherwise it steals
     column-1 clicks, as GTK once did (Ghostty #3020).
   - Drags update `resizeInPlace` live; Esc restores the ratio, and a
@@ -1874,8 +1875,20 @@ as GTK draws the bar over the content) and over the dividers' tops; the
 `shade` scenario checks it. The reference is the snap, which bundles
 libadwaita 1.5 (header #303030, window #242424); murrtty keeps the
 current stylesheet's colors (step 2), Ghostty's look on a current GNOME,
-and the metrics measured on 1.5. Not taken yet: `gtk-toolbar-style`
-(`flat` and `raised-border`; murrtty always draws `raised`, the default).
+and the metrics measured on 1.5.
+
+*Step 5 done 2026-10-27:* `gtk-toolbar-style`, measured on GTK's
+(`-Extra "gtk-toolbar-style = ..."`): `raised-border` keeps the bar and
+draws one 1 px line of the darker shade (the stylesheet's rgb(0 0 12 /
+90%) in dark, rgb(0 0 6 / 12%) in light) instead of the shadow; `flat`
+casts nothing and shows the window's background (#222226 in dark) as the
+bar, except with `window-theme = ghostty`, whose stylesheet colors the
+header's window handle anyway (`Theme.shadeFor`, `draw.Shade`). The split
+dividers are GTK's too: Ghostty's stylesheet paints the separator in the
+window's background (`--window-bg-color`: Adwaita's, or the terminal's
+with the `ghostty` theme), so they no longer follow macOS's rule (the
+pane's background darkened) nor OSC 11. `shade` and `split-dim` check
+them.
 
 *Mid-phase review (2026-10-27, steps 1 to 4b), fixed:* the window's
 minimum width now holds the header bar's buttons side by side
@@ -2281,8 +2294,11 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 
 **Options with no Windows meaning,** to document as no-ops rather than build:
 - the `macos-*` options except those folded into items above;
-- `linux-cgroup*`, and all `gtk-*` options (their Windows analogs, such as
-  `gtk-single-instance` and `gtk-titlebar-style`, are folded into 5.1 and 4.3);
+- `linux-cgroup*`, and the `gtk-*` options the Look rule doesn't take
+  (4.3 takes `gtk-titlebar`, `gtk-titlebar-hide-when-maximized`,
+  `gtk-wide-tabs` and `gtk-toolbar-style`, with `gtk-titlebar-style` and
+  `gtk-tabs-inverted` to come; `gtk-single-instance`'s Windows analog is
+  5.1);
 - the Wayland quick-terminal layer options;
 - `async-backend`, `x11-instance-name`, `window-colorspace`.
 

@@ -468,7 +468,7 @@ pub fn layoutPanes(self: *Tab) void {
     self.syncPaneVisibility();
     // The bars' shade falls on the panes that reach them.
     const shade = self.window.shade();
-    for (layout.panes) |p| p.view.setShade(if (p.rect.top == 0 and !p.rect.isEmpty()) shade else 0);
+    for (layout.panes) |p| p.view.setShade(if (p.rect.top == 0 and !p.rect.isEmpty()) shade else .none);
     // WS_CLIPCHILDREN limits this to the dividers and any gap.
     _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
 }
@@ -555,18 +555,13 @@ fn toRect(r: split_layout.Rect) c.RECT {
     return .{ .left = r.left, .top = r.top, .right = r.right, .bottom = r.bottom };
 }
 
-/// The dividers' color: `split-divider-color`, else macOS's rule, the
-/// focused pane's background darkened 40% on a dark theme, 8% on a light
-/// one.
+/// The dividers' color: `split-divider-color`, else GTK's, the window's
+/// background (libadwaita's window-bg-color, which Ghostty's stylesheet
+/// gives the split's separator; the terminal's with window-theme =
+/// ghostty).
 fn dividerColor(self: *const Tab) draw.Color {
     if (self.window.app.config.@"split-divider-color") |col| return .{ .r = col.r, .g = col.g, .b = col.b };
-    const bg = self.focused.colors.bg;
-    const keep: f32 = if (Window.isDark(bg)) 0.6 else 0.92;
-    return .{
-        .r = @intFromFloat(@as(f32, @floatFromInt(bg.r)) * keep),
-        .g = @intFromFloat(@as(f32, @floatFromInt(bg.g)) * keep),
-        .b = @intFromFloat(@as(f32, @floatFromInt(bg.b)) * keep),
-    };
+    return self.window.chromeTheme().window;
 }
 
 /// Paint the dividers, and fill what the panes don't cover yet (while
@@ -598,11 +593,11 @@ fn paint(self: *Tab) void {
         _ = c.FillRect(hdc, &r, brush);
         // The bars' shade falls on a divider that reaches them, as on the
         // panes beside it.
-        if (shade <= 0 or r.top != 0) continue;
+        if (r.top != 0) continue;
         var row: u32 = 0;
-        while (row < draw.shadeRows(dpi)) : (row += 1) {
+        while (row < shade.rows(dpi)) : (row += 1) {
             const y: c_int = @intCast(row);
-            draw.fill(hdc, .{ .left = r.left, .top = y, .right = r.right, .bottom = @min(y + 1, r.bottom) }, draw.ref(draw.shaded(under, shade, dpi, row)));
+            draw.fill(hdc, .{ .left = r.left, .top = y, .right = r.right, .bottom = @min(y + 1, r.bottom) }, draw.ref(shade.over(under, dpi, row)));
         }
     }
 }

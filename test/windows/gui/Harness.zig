@@ -1335,7 +1335,8 @@ pub const Dump = struct {
         probe: ?u32 = null,
         /// Whether the frame asked for with `saveFrames` was read.
         frame_ready: bool = false,
-        /// The opacity of the top bars' shade over the pane, 0 for none.
+        /// The opacity of the top bars' shade over the pane's top row, 0
+        /// for none.
         shade: f64 = 0,
         /// Key events the pane passed to the core (presses, repeats and
         /// releases; not text from WM_CHAR alone).

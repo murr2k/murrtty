@@ -55,7 +55,7 @@ pub const all = [_]Scenario{
     .{ .name = "split-commands", .about = "goto_split, toggle_split_zoom (hidden panes stop drawing), resize_split, equalize_splits, minimums", .run = splitCommands },
     .{ .name = "split-mouse", .about = "dragging a divider, Esc (none of that keystroke reaches the core), double-click to equalize, the grip band", .run = splitMouse },
     .{ .name = "split-dim", .about = "unfocused panes are dimmed with unfocused-split-fill/-opacity; the dividers follow the focused pane's background, or split-divider-color", .run = splitDim },
-    .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar", .run = shade },
+    .{ .name = "shade", .about = "the top bars cast libadwaita's shade onto the panes that reach them, none without a bar; gtk-toolbar-style raised-border and flat", .run = shade },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
@@ -4634,7 +4634,8 @@ fn splitMouse(h: *Harness) anyerror!void {
 /// in sRGB. Read back from the renderers in a padding pixel (the
 /// background): half red over #282c34 in the dimmed pane, the background
 /// alone in the focused one; moving the focus moves the dimming. The
-/// dividers follow the background unless `split-divider-color` sets them.
+/// dividers are the window's background, as GTK's, unless
+/// `split-divider-color` sets them.
 fn splitDim(h: *Harness) anyerror!void {
     const dim_config = "unfocused-split-fill = #ff0000\nunfocused-split-opacity = 0.5\n";
     var g = try start(h, "split-dim", dim_config, ">");
@@ -4658,13 +4659,23 @@ fn splitDim(h: *Harness) anyerror!void {
     try expectColor(h, try h.probePane(&g, 0, 1, 40), bg, "after a click the left pane isn't dimmed");
     try expectColor(h, try h.probePane(&g, 1, 1, 40), dim, "and the right one is");
 
-    // The dividers are the focused pane's background darkened (60% of a
-    // dark one, 92% of a light one), and repaint when a program changes
-    // it: OSC 11 from cmd's prompt ($E is ESC; ESC \ ends the sequence).
-    try expectDividerColor(h, &g, 0x181a1f, "the dividers darken the dark background");
+    // The dividers are GTK's, the window's background (Adwaita's dark one
+    // for the dark default), and stay so when a program changes the
+    // terminal's: OSC 11 from cmd's prompt ($E is ESC; ESC \ ends the
+    // sequence), as GTK's window theme doesn't follow it either.
+    try expectDividerColor(h, &g, 0x222226, "the dividers are the window's background");
     try h.typeText(left, "prompt $E]11;#f0f0f0$E\\$G");
     h.enter(left);
-    try expectDividerColor(h, &g, 0xdcdcdc, "after OSC 11 they follow the light one");
+    var light: u32 = 0;
+    var waited: u32 = 0;
+    while (waited <= 5000 and light != 0xf0f0f0) : (waited += 250) {
+        light = try h.probePane(&g, 0, 1, 40);
+        if (light != 0xf0f0f0) w.Sleep(250);
+    }
+    try expectColor(h, light, 0xf0f0f0, "OSC 11 lightens the terminal");
+    // The tab repaints on the change (Window.colorsChanged).
+    w.Sleep(500);
+    try expectDividerColor(h, &g, 0x222226, "and the dividers stay the window's");
 
     // split-divider-color sets them over that rule: written to the running
     // instance's configuration, then reloaded (Ctrl+Shift+,).
@@ -4682,7 +4693,9 @@ fn splitDim(h: *Harness) anyerror!void {
 /// 96, 120 and 144 DPI, draw.shadeAlpha), and the background returns
 /// within 6 px per 96 DPI. Of a split, the panes reaching the bar are
 /// shaded and one below another isn't; without a bar (server decorations,
-/// one tab) nothing is.
+/// one tab) nothing is. gtk-toolbar-style = raised-border draws a line of
+/// the darker shade instead, and flat nothing, with the bar in the
+/// window's background.
 fn shade(h: *Harness) anyerror!void {
     const bg: u32 = 0x282c34;
     const shaded: u32 = 0x1c1f26;
@@ -4706,7 +4719,7 @@ fn shade(h: *Harness) anyerror!void {
         for (panes) |p| top = @min(top, p.rect[1]);
         for (panes, 0..) |p, i| {
             const reaches = p.rect[1] == top;
-            try h.expect((p.shade > 0.3) == reaches, "pane {d} {s} the bar: shade {d:.2}", .{ i, if (reaches) "reaching" else "below", p.shade });
+            try h.expect((p.shade > 0.2) == reaches, "pane {d} {s} the bar: shade {d:.2}", .{ i, if (reaches) "reaching" else "below", p.shade });
             const px = try h.probePane(&g, i, 1, 0);
             try expectColor(h, px, if (reaches) shaded else bg, "its top row");
         }
@@ -4719,6 +4732,23 @@ fn shade(h: *Harness) anyerror!void {
         defer d.deinit();
         try h.expect(d.value.windows[0].tabs[0].panes.?[0].shade == 0, "no bar, no shade", .{});
         try expectColor(h, try h.probePane(&g, 0, 1, 0), bg, "the top row is the background");
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+    {
+        var g = try start(h, "shade-border", "gtk-toolbar-style = raised-border\n", ">");
+        defer g.deinit();
+        try expectColor(h, try h.probePane(&g, 0, 1, 0), 0x040410, "raised-border: the top row is the darker shade's line");
+        try expectColor(h, try h.probePane(&g, 0, 1, 4), bg, "and the background below it");
+        const chrome = try chromeOf(h, &g);
+        try h.expect(chrome.caption == 0x2e2e32, "in the bar's own color (#{x:0>6})", .{@as(u64, @bitCast(chrome.caption))});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+    {
+        var g = try start(h, "shade-flat", "gtk-toolbar-style = flat\n", ">");
+        defer g.deinit();
+        try expectColor(h, try h.probePane(&g, 0, 1, 0), bg, "flat: nothing falls on the top row");
+        const chrome = try chromeOf(h, &g);
+        try h.expect(chrome.caption == 0x222226, "and the bar is the window's background (#{x:0>6})", .{@as(u64, @bitCast(chrome.caption))});
         try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
     }
 }

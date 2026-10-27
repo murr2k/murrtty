@@ -101,10 +101,10 @@ shown: bool = true,
 /// The color (sRGB, alpha) the pane is dimmed with as an unfocused pane of
 /// a split tab, or null (Tab.syncDim).
 dim_color: ?[4]f32 = null,
-/// The opacity of the shade the window's top bars cast onto the pane, 0
-/// when none falls on it (Tab.layoutPanes), and the DPI its rows were
-/// worked out for.
-shade: f32 = 0,
+/// The shade the window's top bars cast onto the pane, none when it
+/// doesn't reach them (Tab.layoutPanes), and the DPI its rows were worked
+/// out for.
+shade: draw.Shade = .none,
 shade_dpi: c.UINT = 0,
 cursor_pos: apprt.CursorPos = .{ .x = -1, .y = -1 },
 
@@ -238,7 +238,7 @@ pub fn init(
     };
     // Shapes given before the renderer existed (the pane is laid out, and
     // so shaded, first).
-    if (self.shade > 0 or self.dim_color != null) self.updateOverlay();
+    if (self.shade != .none or self.dim_color != null) self.updateOverlay();
     self.created_at = c.GetTickCount64();
     if (app.config.@"resize-overlay" == .always) self.showResizeOverlay();
 
@@ -270,13 +270,13 @@ pub fn setDim(self: *Surface, color: ?[4]f32) void {
     self.updateOverlay();
 }
 
-/// Cast the top bars' shade onto the pane (`alpha` the shade color's
-/// opacity), or none (0): libadwaita's raised top bar, which GTK draws over
-/// the content below it (roadmap 4.3). Forces a frame if it changes.
-pub fn setShade(self: *Surface, alpha: f32) void {
+/// Cast the top bars' shade onto the pane, or none: libadwaita's top bar,
+/// which GTK draws over the content below it (roadmap 4.3). Forces a frame
+/// if it changes.
+pub fn setShade(self: *Surface, shade: draw.Shade) void {
     const dpi = c.GetDpiForWindow(self.hwnd);
-    if (alpha == self.shade and (alpha == 0 or dpi == self.shade_dpi)) return;
-    self.shade = alpha;
+    if (std.meta.eql(shade, self.shade) and (shade == .none or dpi == self.shade_dpi)) return;
+    self.shade = shade;
     self.shade_dpi = dpi;
     self.updateOverlay();
 }
@@ -306,24 +306,22 @@ pub fn updateOverlay(self: *Surface) void {
         };
         n += 1;
     }
-    if (self.shade > 0) {
-        const ink = draw.shade_color;
-        var row: u32 = 0;
-        while (row < draw.shadeRows(self.shade_dpi) and n < rects.len) : (row += 1) {
-            rects[n] = .{
-                .x = 0,
-                .y = @intCast(row),
-                .width = std.math.maxInt(i16),
-                .height = 1,
-                .color = .{
-                    @as(f32, @floatFromInt(ink.r)) / 255.0,
-                    @as(f32, @floatFromInt(ink.g)) / 255.0,
-                    @as(f32, @floatFromInt(ink.b)) / 255.0,
-                    draw.shadeAlpha(self.shade, self.shade_dpi, row),
-                },
-            };
-            n += 1;
-        }
+    const ink = self.shade.color();
+    var row: u32 = 0;
+    while (row < self.shade.rows(self.shade_dpi) and n < rects.len) : (row += 1) {
+        rects[n] = .{
+            .x = 0,
+            .y = @intCast(row),
+            .width = std.math.maxInt(i16),
+            .height = 1,
+            .color = .{
+                @as(f32, @floatFromInt(ink.r)) / 255.0,
+                @as(f32, @floatFromInt(ink.g)) / 255.0,
+                @as(f32, @floatFromInt(ink.b)) / 255.0,
+                self.shade.alpha(self.shade_dpi, row),
+            },
+        };
+        n += 1;
     }
     api.setOverlay(rects[0..n]);
     if (self.frame_posted) return;

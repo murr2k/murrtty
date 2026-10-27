@@ -554,7 +554,7 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                 wgl_state.frames.load(.monotonic),
                 wgl_state.probe.load(.monotonic),
                 wgl_state.frame_ready.load(.acquire),
-                s.shade,
+                s.shade.alpha(s.shade_dpi, 0),
                 s.keys_sent,
                 grid.columns,
                 grid.rows,

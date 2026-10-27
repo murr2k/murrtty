@@ -997,9 +997,9 @@ fn chromeColors(self: *const Window) Surface.Colors {
 ///   configured background and foreground.
 /// - `system`: Adwaita's, following the system's light or dark setting.
 /// - `light`, `dark`: Adwaita's, as named.
-fn chromeTheme(self: *const Window) draw.Theme {
+pub fn chromeTheme(self: *const Window) draw.Theme {
     const config = &self.app.config;
-    return switch (config.@"window-theme") {
+    var theme = switch (config.@"window-theme") {
         .auto => draw.adwaita(draw.isDark(config.background)),
         .ghostty => draw.ghosttyTheme(
             config.@"window-titlebar-background" orelse config.background,
@@ -1009,6 +1009,11 @@ fn chromeTheme(self: *const Window) draw.Theme {
         .light => draw.adwaita(false),
         .dark => draw.adwaita(true),
     };
+    // A flat top bar has no background of its own, so the window's shows
+    // (gtk-toolbar-style = flat). Ghostty's stylesheet for the ghostty
+    // theme colors the header's window handle anyway.
+    if (config.@"gtk-toolbar-style" == .flat and config.@"window-theme" != .ghostty) theme.bar = theme.window;
+    return theme;
 }
 
 /// Color the window for `window-theme` (chromeTheme): the header bar and
@@ -1039,10 +1044,11 @@ pub fn isDark(color: configpkg.Config.Color) bool {
     return draw.isDark(color);
 }
 
-/// The opacity of the shade the header bar or tab row casts onto the
-/// content below, 0 without either (draw.shadeAlpha).
-pub fn shade(self: *const Window) f32 {
-    return if (self.chromeHeight() > 0) self.chromeTheme().shade else 0;
+/// The shade the header bar or tab row casts onto the content below
+/// (gtk-toolbar-style), none without either.
+pub fn shade(self: *const Window) draw.Shade {
+    if (self.chromeHeight() == 0) return .none;
+    return self.chromeTheme().shadeFor(self.app.config.@"gtk-toolbar-style");
 }
 
 /// A surface's colors changed (a program set them, or its config changed).
