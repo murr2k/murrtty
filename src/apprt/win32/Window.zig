@@ -67,8 +67,11 @@ size_limit: ?apprt.action.SizeLimit = null,
 
 /// Saved placement and style while fullscreen.
 fullscreen: ?Saved = null,
-/// The chrome's height at the last layout.
+/// The chrome's height, the client's width and whether the window was
+/// maximized at the last layout.
 chrome_shown: c_int = -1,
+chrome_width: c_int = -1,
+chrome_zoomed: bool = false,
 /// Whether the window is the active one: inactive, the chrome takes
 /// libadwaita's backdrop colors.
 active_window: bool = true,
@@ -716,6 +719,40 @@ fn frameY(self: *const Window) c_int {
     return c.GetSystemMetricsForDpi(c.SM_CYSIZEFRAME, dpi) + c.GetSystemMetricsForDpi(c.SM_CXPADDEDBORDER, dpi);
 }
 
+/// Whether (`x`, `y`), in client coordinates, is the window's own frame
+/// over the header bar: the caption between its buttons, the window's
+/// buttons, or the resize band along the top. An overlay over the bar
+/// leaves those to the window (the command palette's dimming).
+pub fn isFrameAt(self: *const Window, x: c_int, y: c_int) bool {
+    if (!self.csd() or y < 0 or y >= self.headerHeight()) return false;
+    if (c.IsZoomed(self.hwnd) == 0 and y < self.frameY()) return true;
+    return switch (self.header.hitTest(x, y, self.clientWidth())) {
+        .none, .minimize, .maximize, .window_close => true,
+        else => false,
+    };
+}
+
+/// A maximized client area that covers its monitor reads to the shell as
+/// a fullscreen window, which keeps an auto-hide taskbar from sliding in:
+/// leave it 2 px at each edge where one hides (as Windows Terminal does;
+/// with an auto-hide taskbar the work area is the whole monitor).
+fn insetForAutoHideTaskbars(hwnd: c.HWND, rect: *c.RECT) void {
+    const monitor = c.MonitorFromWindow(hwnd, c.MONITOR_DEFAULTTONEAREST) orelse return;
+    var info: c.MONITORINFO = .{};
+    if (c.GetMonitorInfoW(monitor, &info) == 0) return;
+    const inset = 2;
+    for ([_]c.UINT{ c.ABE_LEFT, c.ABE_TOP, c.ABE_RIGHT, c.ABE_BOTTOM }) |edge| {
+        var bar: c.APPBARDATA = .{ .uEdge = edge, .rc = info.rcMonitor };
+        if (c.SHAppBarMessage(c.ABM_GETAUTOHIDEBAREX, &bar) == 0) continue;
+        switch (edge) {
+            c.ABE_LEFT => rect.left += inset,
+            c.ABE_TOP => rect.top += inset,
+            c.ABE_RIGHT => rect.right -= inset,
+            else => rect.bottom -= inset,
+        }
+    }
+}
+
 /// `rect`, a client area, grown to the window around it: the system's
 /// frame, less the caption while the header bar replaces it
 /// (WM_NCCALCSIZE).
@@ -753,10 +790,19 @@ fn layout(self: *Window) void {
     // with a maximize or fullscreen): paint it, or the terminal where it
     // was.
     const chrome = self.chromeHeight();
+    const zoomed = c.IsZoomed(self.hwnd) != 0;
     if (chrome != self.chrome_shown) {
         self.chrome_shown = chrome;
         _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+    } else if (strip_width != self.chrome_width or zoomed != self.chrome_zoomed) {
+        // Windows keeps the old pixels and repaints only what a wider
+        // window adds: the right-aligned buttons, the centered title and
+        // the maximize button's glyph would stay where they were.
+        const r = self.chromeRect();
+        _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
     }
+    self.chrome_width = strip_width;
+    self.chrome_zoomed = zoomed;
     const r = self.tabRect(self.tabs.items.len);
     const flags = c.SWP_NOZORDER | c.SWP_NOACTIVATE | c.SWP_NOCOPYBITS;
     var hdwp = c.BeginDeferWindowPos(@intCast(self.tabs.items.len));
@@ -1354,6 +1400,12 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
     if (msg == c.WM_NCCREATE) {
         const cs: *const c.CREATESTRUCTW = @ptrFromInt(@as(usize, @bitCast(lparam)));
         _ = c.SetWindowLongPtrW(hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(cs.lpCreateParams)));
+        // CreateWindowExW sends WM_SIZE (and the layout using the handle)
+        // before it returns it.
+        if (cs.lpCreateParams) |p| {
+            const self: *Window = @ptrCast(@alignCast(p));
+            self.hwnd = hwnd;
+        }
         return c.DefWindowProcW(hwnd, msg, wparam, lparam);
     }
 
@@ -1385,7 +1437,9 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
 
         c.WM_MOUSELEAVE => {
             self.tab_bar.tracking = false;
-            self.setHover(.none);
+            // Leaving for a window button, whose WM_NCMOUSEMOVE may come
+            // first: that hover is the non-client tracking's to end.
+            if (!isControl(self.tab_bar.hover)) self.setHover(.none);
             return 0;
         },
 
@@ -1514,7 +1568,10 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_GETMINMAXINFO => {
             const min = self.minimumTabArea() orelse return 0;
             const info: *c.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            var rect: c.RECT = .{ .right = min.width, .bottom = min.height + self.chromeHeight() };
+            // The header bar's buttons side by side, as GTK's minimum
+            // width holds them: narrower, they would overlap.
+            const width = if (self.csd()) @max(min.width, self.header.minWidth()) else min.width;
+            var rect: c.RECT = .{ .right = width, .bottom = min.height + self.chromeHeight() };
             self.adjustFrame(&rect, c.GetDpiForWindow(hwnd));
             info.ptMinTrackSize = .{ .x = rect.right - rect.left, .y = rect.bottom - rect.top };
             return 0;
@@ -1529,7 +1586,10 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             const top = params.rgrc[0].top;
             const ret = c.DefWindowProcW(hwnd, msg, wparam, lparam);
             params.rgrc[0].top = top;
-            if (c.IsZoomed(hwnd) != 0) params.rgrc[0].top += self.frameY();
+            if (c.IsZoomed(hwnd) != 0) {
+                params.rgrc[0].top += self.frameY();
+                insetForAutoHideTaskbars(hwnd, &params.rgrc[0]);
+            }
             return ret;
         },
 

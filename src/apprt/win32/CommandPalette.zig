@@ -789,6 +789,14 @@ fn dimProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             if (fromHwnd(hwnd)) |self| self.close();
             return 0;
         },
+        // Over the header bar the window's caption, buttons and top resize
+        // band stay the window's: GTK's dimming moves and maximizes the
+        // window there, and Windows' title bar keeps its buttons.
+        c.WM_NCHITTEST => if (fromHwnd(hwnd)) |self| if (self.window) |win| {
+            var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
+            _ = c.ScreenToClient(win.hwnd, &pt);
+            if (win.isFrameAt(pt.x, pt.y)) return c.HTTRANSPARENT;
+        },
         else => {},
     }
     return c.DefWindowProcW(hwnd, msg, wparam, lparam);

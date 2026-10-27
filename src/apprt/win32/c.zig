@@ -943,6 +943,21 @@ pub extern "shell32" fn ILFree(?*anyopaque) callconv(.winapi) void;
 pub extern "shell32" fn SHGetPathFromIDListEx(*const anyopaque, [*]u16, DWORD, c_int) callconv(.winapi) BOOL;
 pub extern "shell32" fn SHOpenFolderAndSelectItems(*const anyopaque, UINT, ?[*]const *const anyopaque, DWORD) callconv(.winapi) HRESULT;
 
+pub const APPBARDATA = extern struct {
+    cbSize: DWORD = @sizeOf(APPBARDATA),
+    hWnd: ?HWND = null,
+    uCallbackMessage: UINT = 0,
+    uEdge: UINT = 0,
+    rc: RECT = .{},
+    lParam: LPARAM = 0,
+};
+pub const ABM_GETAUTOHIDEBAREX = 0x0000000b;
+pub const ABE_LEFT = 0;
+pub const ABE_TOP = 1;
+pub const ABE_RIGHT = 2;
+pub const ABE_BOTTOM = 3;
+pub extern "shell32" fn SHAppBarMessage(DWORD, *APPBARDATA) callconv(.winapi) usize;
+
 // shlwapi
 pub const ASSOCF_INIT_IGNOREUNKNOWN = 0x00000400;
 pub const ASSOCSTR_EXECUTABLE = 2;

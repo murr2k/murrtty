@@ -1699,6 +1699,19 @@ fn commandPalette(h: *Harness) anyerror!void {
     h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
     p = try waitPalette(h, &g, win, true);
     try h.expect(childAt(win, 10, 10) == hwndOf(p.dim), "the dimming covers the window, above the panes", .{});
+    // Over the header bar it leaves the caption and the window's buttons
+    // to the window, and covers the bar's own buttons.
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const hb = d.value.windows[0].header;
+        var client: w.RECT = .{};
+        _ = w.GetClientRect(win, &client);
+        const dim = hwndOf(p.dim);
+        try h.expect(hitTestAt(dim, win, .{ @divTrunc(client.right, 2), @divTrunc(hb.height, 2) }) == w.HTTRANSPARENT, "over the caption the dimming lets the window have it", .{});
+        try h.expect(hitTestAt(dim, win, rectMid(hb.window_close)) == w.HTTRANSPARENT, "and over close", .{});
+        try h.expect(hitTestAt(dim, win, rectMid(hb.new_tab)) == w.HTCLIENT, "but over \"+\" it is the dimming's", .{});
+    }
     _ = w.PostMessageW(hwndOf(p.dim), w.WM_LBUTTONDOWN, w.MK_LBUTTON, 10 << 16 | 10);
     _ = try waitPalette(h, &g, win, false);
     try h.expect(keyboardFocus(win) == surf, "a click outside it closes it too", .{});
@@ -2205,6 +2218,20 @@ fn headerBar(h: *Harness) anyerror!void {
         try expectNcHit(h, win, rectMid(hb.new_tab), w.HTCLIENT, "over \"+\": the window's own button");
         try expectNcHit(h, win, .{ @divTrunc(width, 2), @divTrunc(hb.height, 2) }, w.HTCAPTION, "between the buttons: the caption");
         try expectNcHit(h, win, .{ @divTrunc(width, 2), 1 }, w.HTTOP, "the top edge resizes");
+
+        // Never narrower than the bar's buttons side by side (they would
+        // overlap, and clicks reach other buttons than those drawn).
+        {
+            var r: w.RECT = .{};
+            _ = w.GetWindowRect(win, &r);
+            const flags = w.SWP_NOMOVE | w.SWP_NOZORDER | w.SWP_NOACTIVATE;
+            _ = w.SetWindowPos(win, null, 0, 0, 100, r.bottom - r.top, flags);
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const narrow = d.value.windows[0].header;
+            try h.expect(narrow.list[0] >= narrow.new_tab_menu[2], "at its narrowest the buttons stay apart (the arrow ends at {d}, the list starts at {d})", .{ narrow.new_tab_menu[2], narrow.list[0] });
+            _ = w.SetWindowPos(win, null, 0, 0, r.right - r.left, r.bottom - r.top, flags);
+        }
 
         // The window's buttons.
         ncClick(win, w.HTMAXBUTTON);
@@ -5599,6 +5626,14 @@ fn hitTest(target: w.HWND, x: i32, y: i32) isize {
     var result: usize = 0;
     _ = w.SendMessageTimeoutW(target, w.WM_NCHITTEST, 0, @bitCast(lp), w.SMTO_ABORTIFHUNG, 2000, &result);
     return @bitCast(result);
+}
+
+/// What `target` answers to WM_NCHITTEST at `at`, in `win`'s client
+/// coordinates.
+fn hitTestAt(target: w.HWND, win: w.HWND, at: [2]i32) isize {
+    var pt: w.POINT = .{ .x = at[0], .y = at[1] };
+    _ = w.ClientToScreen(win, &pt);
+    return hitTest(target, pt.x, pt.y);
 }
 
 /// Wait until `pane` is the tab's focused pane and has the keyboard focus.

@@ -94,6 +94,14 @@ pub fn place(self: *const HeaderBar, width: c_int) Place {
     };
 }
 
+/// The narrowest bar that holds its buttons apart: the split button, then
+/// GTK's spacing, then the buttons at the right (their place doesn't
+/// depend on the width). The title ellipsizes to nothing between.
+pub fn minWidth(self: *const HeaderBar) c_int {
+    const p = self.place(0);
+    return p.new_tab_menu.right + self.scale(spacing) - p.list.left;
+}
+
 /// The item at (`x`, `y`), or `.none` for the caption. A button takes the
 /// bar's whole height (a click at the top edge of a maximized window hits
 /// it), and close reaches the right edge, as Windows' does.
@@ -324,4 +332,20 @@ test "place: GTK's geometry at 96 DPI" {
     try testing.expectEqual(@as(c_int, 680), p.minimize.left);
     try testing.expectEqual(@as(c_int, 754), p.window_close.left);
     try testing.expectEqual(@as(c_int, 788), p.window_close.right);
+}
+
+test "minWidth: the buttons stay apart at the narrowest bar" {
+    const testing = std.testing;
+    for ([_]c.UINT{ 96, 120, 144, 192 }) |dpi| {
+        const bar: HeaderBar = .{ .dpi = dpi };
+        const min = bar.minWidth();
+        const p = bar.place(min);
+        try testing.expectEqual(p.new_tab_menu.right + bar.scale(spacing), p.list.left);
+        // Each column hit-tests as itself.
+        try testing.expectEqual(Hit.new_tab_menu, bar.hitTest(p.new_tab_menu.right - 1, 20, min));
+        try testing.expectEqual(Hit.list, bar.hitTest(p.list.left, 20, min));
+        try testing.expectEqual(Hit.minimize, bar.hitTest(p.minimize.left, 20, min));
+    }
+    // 61 px of split button, 6 of spacing, 188 of buttons at the right.
+    try testing.expectEqual(@as(c_int, 255), (HeaderBar{}).minWidth());
 }

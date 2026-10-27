@@ -205,6 +205,10 @@ roadmap item behind it.
   ("Tab 2: C:\src", "Window 2, tab 1: ..."), and typing matches that line
   too; GTK's rows show only the title. Results are ranked (title matches,
   then the line beneath, then letters in order) rather than alphabetical.
+- **Palette over the title bar** (3.3, 4.3): with the command palette open,
+  the header bar's caption, window buttons and top resize band still work
+  (its own buttons stay covered). GTK's dialog dims the whole window; its
+  dimming moves and maximizes the window, but its buttons are out of reach.
 - **Scrollbar track** (3.4): a click on the track pages, as Windows' scroll
   bars do; GTK's jumps to the spot.
 - **Link preview** (3.6): a long URL is cut with an ellipsis; GTK lets it
@@ -224,6 +228,9 @@ roadmap item behind it.
 - **Toasts** (3.6): the latest replaces the one showing, for 3 seconds;
   GTK queues them, each with a close button.
 - **Read-only badge** (3.6): shown at once; GTK fades it in over 500 ms.
+- **Palette dimming** (3.3): a click on it closes the palette. GTK's
+  palette, a floating libadwaita dialog, stays open; its dimming moves the
+  window instead (a window handle). 4.3b takes this with the dialogs.
 
 - **Tab menu** (3.8): a tab's right-click menu has Change Tab Title, Close
   Tab, Close Other Tabs and Close Tabs to the Right, acting on the tab
@@ -1741,7 +1748,8 @@ without interop fall back to opaque cleanly.
 - Replace `AdjustWindowRectExForDpi` in `setClientSize` and `WM_GETMINMAXINFO`
   with insets that match `WM_NCCALCSIZE`. Otherwise `window-width`/`-height`,
   `initial_size`, CSI 8 t and the minimum size are off by the caption height.
-- Handle maximized insets and auto-hide taskbars.
+- Handle maximized insets and auto-hide taskbars (done: the frame's inset
+  at the top since step 1, auto-hide taskbars after the mid-phase review).
 
 This is `window-decoration = auto/client`; `server` keeps today's layout.
 *Done when:* drag, double-click maximize, Snap Layouts, every resize edge and
@@ -1868,6 +1876,24 @@ libadwaita 1.5 (header #303030, window #242424); murrtty keeps the
 current stylesheet's colors (step 2), Ghostty's look on a current GNOME,
 and the metrics measured on 1.5. Not taken yet: `gtk-toolbar-style`
 (`flat` and `raised-border`; murrtty always draws `raised`, the default).
+
+*Mid-phase review (2026-10-27, steps 1 to 4b), fixed:* the window's
+minimum width now holds the header bar's buttons side by side
+(`HeaderBar.minWidth`, 255 DIP; narrower, they overlapped and clicks
+reached other buttons than those drawn; `header-bar` checks it); a wider
+or maximized window repaints the whole chrome (Windows keeps the old
+pixels and asks only for the strip it adds, which would leave the
+right-aligned buttons and the title behind; no desktop the tests can use
+shows it, so it rests on review); maximized, the client area leaves 2 px
+at an edge where an auto-hide taskbar hides (`SHAppBarMessage`), or the
+shell takes the window for fullscreen and the taskbar can't slide in, as
+Windows Terminal found (its #1438; not tested, it would change the
+owner's taskbar); the command palette's dimming leaves the header bar's
+caption, window buttons and top resize band to the window
+(`Window.isFrameAt`; `command-palette` checks the hit codes); leaving the
+tab row for a window button keeps its hover; and the window's handle is
+set in WM_NCCREATE, since CreateWindowExW sends WM_SIZE (and the layout
+using it) before returning it.
 
 *With the Look rule* (decided 2026-10-26, which made 4.3 Phase 4's first
 item): the bar and tab row take libadwaita's colors and metrics (taken from
