@@ -272,6 +272,12 @@ roadmap item behind it.
   murrtty in front it hides every window, otherwise it brings murrtty
   forward with the windows it hid, as they were; only while a global
   binding or the tray (5.6) can bring them back. GTK doesn't implement it.
+- **Terminal inspector** (5.12): its text scales with the window's DPI
+  (16 px at 100%); GTK's is 32 px at any scale (a TODO in the shared
+  code assumes a 2x scale). Ctrl, Shift, Alt and the Windows key reach
+  ImGui as its modifier keys, so its text fields take Ctrl+C and
+  Shift+arrows; GTK's sends only the left modifier keys, which ImGui 1.92
+  doesn't read as modifiers.
 - **Undo of closes** (5.11): `undo` and `redo` bring back a closed pane,
   tab or window, its programs still running, within `undo-timeout`, and
   close it again, as macOS's; GTK has no undo. Only closes (macOS also
@@ -322,6 +328,8 @@ roadmap item behind it.
   neither set the file opens as `open_config` opens it, where GTK runs vi.
 
 *For now:*
+- **Inspector window** (5.12): Windows' title bar, where GTK's has a
+  libadwaita header bar.
 - **Notifications** (5.2): balloons of a notification-area icon, which
   Windows shows as toasts, with the icon in the notification area while
   one is pending (GTK's have none). The icon stands for them all: a click
@@ -536,7 +544,8 @@ performable on Windows, and a unit test checks them; the log shows the core
 now encodes the key after the runtime declines. The done criterion can't be
 met yet, though: ConPTY drops the sequences these keys encode to before a
 console program sees them (0.12). Remove each override when its feature
-lands (Phase 1 splits, 3.3 palette, the inspector).
+lands (Phase 1 splits, 3.3 palette, the inspector). The last, the
+inspector's, went with 5.12 (2026-10-28).
 
 **0.3 `background-opacity` without darkening, S.** *Done 2026-10-24.* The renderer emits a
 premultiplied background, and `presentWgl` blits it onto opaque black, so any
@@ -2681,6 +2690,41 @@ pane's program ending, expiry, and quitting with the last window.
 - `export_terminal_io` through a save dialog.
 
 Remove 0.2's override for `Ctrl+Shift+I`.
+
+*Built 2026-10-28 (`win32/Inspector.zig`):* the embedded runtime's model
+(its `Inspector` struct, there with Metal): one object per pane owns the
+window, a WGL 4.3 core context of its own (the renderer's pixel format
+and context helpers, `App.wglExtensions` loaded once) and an ImGui
+context with ImGui's OpenGL 3 backend (GLSL 4.10), and turns the core's
+inspector on and off (`activateInspector`, `deactivateInspector`). The
+window is GTK's, "murrtty: Terminal Inspector" at 1000x600 DIPs. It draws
+on the UI thread (its context current only for the frame) on a 33 ms
+timer, as macOS's view does, and at once after input, with vsync off
+(SwapBuffers must not wait on the UI thread); the frame runs ImGui twice,
+as the other runtimes do. Input goes to ImGui by hand, as GTK's widget
+does: the mouse (capture while any button is held, released buttons on
+its loss, the wheel both ways), keys (letters and digits as the layout
+has them, so Ctrl+A and Ctrl+Z follow it as GTK's keyval does, the rest
+by place through `input.Key.imguiKey`), text from WM_CHAR, focus, the
+cursor shape ImGui asks for, and the modifiers as ImGuiMod_ keys too
+(GTK's and the embedded runtime's send only the left keys, so Ctrl and
+Shift never reach ImGui's text fields there). A bare Alt doesn't put the
+window in menu mode. ImGui's clipboard goes through murrtty's, which
+retries. Its GL backend shuts down without the loader cleanup GTK uses:
+the GL function table is the process's, and closing one of two
+inspectors zeroed it under the other. The style scales with the
+window's DPI, its text too (16 px at 96 DPI; the core loads its font at
+32 px, assuming a 2x scale). `inspector` toggles, shows or hides it;
+closing the pane (or parking it for undo, 5.11) closes it.
+`export_terminal_io` arrives mid-frame with the terminal's lock held, so
+its text is copied and the save dialog ("Export Terminal IO Events",
+`murrtty-terminal-io.txt`, GTK's) runs from the message loop. Ctrl+Shift+I
+is consumed again, as upstream's (0.2's last override is gone). The
+`inspector` scenario checks opening and drawing, the mouse reaching
+ImGui, closing by the toggle, by its window and with its pane, two
+closing with their tab, one open at the quit, the export (through the
+action; clicking ImGui's Export button isn't scripted), and that nothing
+leaks.
 
 ---
 

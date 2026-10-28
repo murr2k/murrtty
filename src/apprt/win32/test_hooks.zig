@@ -280,6 +280,12 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
             };
         };
     }
+    // The inspector's export (roadmap 5.12) of the first window's active
+    // pane, as its Export button asks: through the action, as the core
+    // calls it (GHOSTTY_WIN32_TEST_EXPORT names the file).
+    if (wparam == 18) if (app.windows.items.len > 0) if (app.windows.items[0].activeSurface()) |s| if (s.core_initialized) {
+        _ = app.performAction(.{ .surface = &s.core_surface }, .export_terminal_io, .{ .contents = "Seq\tKind\tDescription\n1\tpty\ttest-export\n" }) catch {};
+    };
     if (wparam == 16) app.test_state.in_front = switch (lparam) {
         1 => .yes,
         2 => .no,
@@ -707,6 +713,24 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                 p.pulse,
             });
         } else try out.appendSlice(alloc, "{");
+        // Its inspector (roadmap 5.12): the window, frames drawn, the core's
+        // inspector on, and where ImGui has the mouse.
+        if (s.inspector) |insp| {
+            const pos = if (insp.ig) |ig| pos: {
+                const cimgui = @import("dcimgui");
+                // Put back: a dump is a sent message, which can come in the
+                // middle of an inspector's frame.
+                const prev = cimgui.c.ImGui_GetCurrentContext();
+                defer cimgui.c.ImGui_SetCurrentContext(prev);
+                cimgui.c.ImGui_SetCurrentContext(ig);
+                const ig_io: *cimgui.c.ImGuiIO = cimgui.c.ImGui_GetIO();
+                break :pos ig_io.MousePos;
+            } else @import("dcimgui").c.ImVec2{ .x = 0, .y = 0 };
+            try out.print(alloc, "\"inspector\":{{\"hwnd\":{d},\"frames\":{d},\"mouse\":[{d:.0},{d:.0}]}},", .{
+                @intFromPtr(insp.hwnd), insp.frames, pos.x, pos.y,
+            });
+        }
+        try out.print(alloc, "\"inspector_active\":{},", .{s.core_initialized and s.core_surface.inspector != null});
         try out.print(alloc, "\"handle\":{{\"shown\":{},\"hover\":{}}},\"drop\":\"{s}\",\"dimmed\":{},", .{
             s.handleShown(),
             s.handle_hover,

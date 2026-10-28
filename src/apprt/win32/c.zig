@@ -169,6 +169,7 @@ pub const WM_IME_STARTCOMPOSITION = 0x010D;
 pub const WM_IME_ENDCOMPOSITION = 0x010E;
 pub const WM_IME_COMPOSITION = 0x010F;
 pub const WM_SYSCOMMAND = 0x0112;
+pub const SC_KEYMENU = 0xF100;
 pub const WM_TIMER = 0x0113;
 pub const WM_MOUSEMOVE = 0x0200;
 pub const WM_LBUTTONDOWN = 0x0201;
@@ -585,12 +586,52 @@ pub extern "user32" fn FindWindowExW(?HWND, ?HWND, ?LPCWSTR, ?LPCWSTR) callconv(
 pub extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.winapi) DWORD;
 pub extern "user32" fn SetParent(HWND, ?HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetSystemMetrics(c_int) callconv(.winapi) c_int;
+
+// The inspector's window (roadmap 5.12): GL 1.1's clears, from opengl32
+// itself, and the save dialog for its Terminal IO events.
+pub extern "opengl32" fn glViewport(x: c_int, y: c_int, width: c_int, height: c_int) callconv(.winapi) void;
+pub extern "opengl32" fn glClearColor(r: f32, g: f32, b: f32, a: f32) callconv(.winapi) void;
+pub extern "opengl32" fn glClear(mask: u32) callconv(.winapi) void;
+pub const GL_COLOR_BUFFER_BIT = 0x4000;
+
+pub const OPENFILENAMEW = extern struct {
+    lStructSize: DWORD = @sizeOf(OPENFILENAMEW),
+    hwndOwner: ?HWND = null,
+    hInstance: ?HINSTANCE = null,
+    lpstrFilter: ?[*:0]const u16 = null,
+    lpstrCustomFilter: ?[*]u16 = null,
+    nMaxCustFilter: DWORD = 0,
+    nFilterIndex: DWORD = 0,
+    lpstrFile: [*]u16,
+    nMaxFile: DWORD,
+    lpstrFileTitle: ?[*]u16 = null,
+    nMaxFileTitle: DWORD = 0,
+    lpstrInitialDir: ?[*:0]const u16 = null,
+    lpstrTitle: ?[*:0]const u16 = null,
+    Flags: DWORD = 0,
+    nFileOffset: u16 = 0,
+    nFileExtension: u16 = 0,
+    lpstrDefExt: ?[*:0]const u16 = null,
+    lCustData: LPARAM = 0,
+    lpfnHook: ?*const anyopaque = null,
+    lpTemplateName: ?[*:0]const u16 = null,
+    pvReserved: ?*anyopaque = null,
+    dwReserved: DWORD = 0,
+    FlagsEx: DWORD = 0,
+};
+pub extern "comdlg32" fn GetSaveFileNameW(*OPENFILENAMEW) callconv(.winapi) BOOL;
+pub const OFN_OVERWRITEPROMPT = 0x00000002;
+pub const OFN_NOCHANGEDIR = 0x00000008;
+pub const OFN_PATHMUSTEXIST = 0x00000800;
+pub const OFN_EXPLORER = 0x00080000;
 pub const SM_CXDRAG = 68;
 pub const SM_CYDRAG = 69;
 pub extern "user32" fn GetCursorPos(*POINT) callconv(.winapi) BOOL;
 pub const CS_DBLCLKS = 0x0008;
 pub const HTTRANSPARENT: LRESULT = -1;
 pub const WM_LBUTTONDBLCLK = 0x0203;
+pub const WM_RBUTTONDBLCLK = 0x0206;
+pub const WM_MBUTTONDBLCLK = 0x0209;
 pub extern "user32" fn GetKeyState(c_int) callconv(.winapi) c_short;
 pub extern "user32" fn GetKeyboardState(*[256]u8) callconv(.winapi) BOOL;
 pub extern "user32" fn ToUnicode(UINT, UINT, *const [256]u8, [*]u16, c_int, UINT) callconv(.winapi) c_int;

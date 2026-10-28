@@ -263,6 +263,9 @@ hosted Windows runner and then the unit tests.
   and `initial-window = false` starts it there. A click on its icon brings
   it forward (or opens a window); its menu has New Window, Quick
   Terminal, Config and Quit.
+- The terminal inspector (`Ctrl+Shift+I`), as in Ghostty's GTK app: a
+  window per pane with the terminal's state, its key and VT event streams
+  and the renderer's details; its Terminal IO events save to a file.
 - Undo and redo of closes, as on macOS: a closed pane, tab or window
   comes back where it was, its programs still running, within
   `undo-timeout` (5 seconds by default). They have no default keys (Ctrl+Z
@@ -330,11 +333,11 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- Terminal inspector.
+- Session restore (restoring windows, tabs and splits after a restart).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with desktop integration (Phase 5: session restore, undo of
-closes, the terminal inspector).
+continuing with session restore (Phase 5) and platform quality (Phase 6:
+DirectWrite fonts, keyboard layouts and IMEs, OpenGL fallbacks).
 
 **Known issues**
 

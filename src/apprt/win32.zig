@@ -28,6 +28,7 @@ test {
     _ = @import("win32/Overlay.zig");
     _ = @import("win32/PaneDrag.zig");
     _ = @import("win32/Undo.zig");
+    _ = @import("win32/Inspector.zig");
     _ = @import("win32/key.zig");
     _ = @import("win32/split_layout.zig");
     _ = @import("win32/TabBar.zig");

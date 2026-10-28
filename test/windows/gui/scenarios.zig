@@ -63,6 +63,7 @@ pub const all = [_]Scenario{
     .{ .name = "window-options", .about = "window-position-x/-y for each window, toggle_window_float_on_top, reset_window_size, window-step-resize", .run = windowOptions },
     .{ .name = "tab-drag-close", .about = "a tab closing while another is dragged: the drag goes on with the tab pressed", .run = tabDragClose },
     .{ .name = "tab-drag", .about = "tabs reorder live as they are dragged, tear off into a new window, move onto another window's bar (an emptied window closes); move_tab_to_new_window", .run = tabDrag },
+    .{ .name = "inspector", .about = "the terminal inspector: Ctrl+Shift+I opens a window for the pane that draws, with the core's inspector on; the mouse reaches it; the toggle, its close and the pane's close end it; its Terminal IO export writes the events", .run = inspectorScenario },
     .{ .name = "undo", .about = "undo and redo of closes (macOS's): a pane back where it was, still running, a tab, closed tabs together, a window where it was; not a pane whose program ended; a parked pane's program ending; expiry; quitting with the last window", .run = undoCloses },
     .{ .name = "pane-drag", .about = "panes move by their drag handle onto a half of another pane, in the tab, into a hovered tab, into another window (an emptied window closes); Escape cancels", .run = paneDrag },
     .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
@@ -1808,7 +1809,8 @@ fn commandPalette(h: *Harness) anyerror!void {
     try h.expect(p.count > 20, "it lists the commands ({d})", .{p.count});
     try h.expect(p.has("New Tab"), "New Tab is there", .{});
     try h.expect(p.hasPrefix("Focus: "), "and a jump to the terminal", .{});
-    try h.expect(!p.has("Toggle Inspector"), "commands this runtime lacks are not", .{});
+    try h.expect(!p.has("Check for Updates"), "commands this runtime lacks are not", .{});
+    try h.expect(p.has("Toggle Inspector"), "Toggle Inspector is, since 5.12", .{});
     try h.expect(p.has("Move Tab to New Window"), "Move Tab to New Window is, since 4.5", .{});
     try h.expect(p.has("Change Tab Title\u{2026}"), "the title prompts are (roadmap 3.5)", .{});
     try h.expect(!p.has("Copy Selection as HTML to Clipboard"), "nor ones whose argument it can't honor", .{});
@@ -2119,8 +2121,8 @@ fn tabMenu(h: *Harness) anyerror!void {
 
 /// The strip's buttons (roadmap 3.8, GTK's header bar): the arrow beside
 /// "+" opens Split Up, Down, Left and Right for the active pane; the
-/// button at the right end opens GTK's main menu for it (Terminal
-/// Inspector grayed), whose New Tab and Command Palette work, and whose
+/// button at the right end opens GTK's main menu for it, whose New Tab and
+/// Command Palette work, and whose
 /// About murrtty shows the About box.
 fn tabButtons(h: *Harness) anyerror!void {
     var g = try start(h, "tab-buttons", "window-show-tab-bar = always\n", ">");
@@ -2153,7 +2155,7 @@ fn tabButtons(h: *Harness) anyerror!void {
         if (items.len == 21) {
             try h.expect(std.mem.startsWith(u8, items[0].text, "&Copy") and std.mem.startsWith(u8, items[8].text, "&New Tab"), "Copy first, New Tab with the tab's items", .{});
             try h.expect(items[10].submenu and std.mem.eql(u8, items[10].text, "&Split"), "a Split submenu", .{});
-            try h.expect(std.mem.startsWith(u8, items[16].text, "Terminal &Inspector") and items[16].grayed, "Terminal Inspector, grayed (roadmap 5.12)", .{});
+            try h.expect(std.mem.startsWith(u8, items[16].text, "Terminal &Inspector") and !items[16].grayed, "Terminal Inspector (roadmap 5.12)", .{});
             try h.expect(std.mem.eql(u8, items[19].text, "Abo&ut murrtty") and std.mem.startsWith(u8, items[20].text, "&Quit"), "About murrtty, then Quit", .{});
         }
     }
@@ -5382,6 +5384,154 @@ fn tabDrag(h: *Harness) anyerror!void {
     defer h.alloc.free(wins);
     try h.expect(wins.len == 2, "and does nothing for a window's only tab", .{});
     try quit(h, &g, torn);
+}
+
+/// The terminal inspector (roadmap 5.12), GTK's: Ctrl+Shift+I opens a
+/// window of its own for the pane, which draws, the core's inspector on;
+/// the mouse reaches ImGui in it; Ctrl+Shift+I again closes it and turns
+/// the core's off, as do its own close and the pane's. Two open close one
+/// after the other with their tab (ImGui's GL functions are the process's:
+/// neither may break the other's), and one open as murrtty quits. Its
+/// Terminal IO export (the core's export_terminal_io) writes the events to
+/// the file (GHOSTTY_WIN32_TEST_EXPORT standing in for the save dialog's
+/// choice). Nothing leaks.
+fn inspectorScenario(h: *Harness) anyerror!void {
+    const export_path = try std.fmt.allocPrint(h.alloc, "{s}\\inspector\\terminal-io.txt", .{h.temp_dir});
+    defer h.alloc.free(export_path);
+    const config = base_config ++ "confirm-close-surface = false\nkeybind = ctrl+shift+f6=close_surface\n";
+    var g = try h.launchWith("inspector", config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_EXPORT", export_path }} });
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const win = try h.mainWindow(&g);
+    const a = try h.surface(&g, win);
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+
+    h.key(a, cs, 'I');
+    const insp = try waitInspector(h, &g, a, true, "Ctrl+Shift+I opens the pane's inspector, the core's on");
+    try waitInspectorFrames(h, &g, a, 3);
+    const opened = try h.windows(&g, "MurrttyInspector");
+    defer h.alloc.free(opened);
+    try h.expect(opened.len == 1, "one inspector window ({d})", .{opened.len});
+
+    // The mouse reaches ImGui (pinned: on the hidden desktop a real
+    // WM_MOUSELEAVE follows a posted move).
+    try h.pinMouse(&g, true);
+    h.move(insp, 120, 80, false);
+    try waitInspectorMouse(h, &g, a, .{ 120, 80 });
+
+    // Ctrl+Shift+I again closes it.
+    h.key(a, cs, 'I');
+    _ = try waitInspector(h, &g, a, false, "Ctrl+Shift+I again closes it, the core's off");
+    try waitClassCount(h, &g, "MurrttyInspector", 0, "its window is gone");
+
+    // Its own close.
+    h.key(a, cs, 'I');
+    const again = try waitInspector(h, &g, a, true, "it opens again");
+    _ = w.PostMessageW(again, w.WM_CLOSE, 0, 0);
+    _ = try waitInspector(h, &g, a, false, "its window's close ends it");
+
+    // The Terminal IO export.
+    try h.exportTerminalIo(&g);
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        if (h.readFileOrNull(export_path)) |text| {
+            defer h.alloc.free(text);
+            if (std.mem.indexOf(u8, text, "test-export") != null) break;
+        }
+        if (waited >= 5000) return h.fail("the Terminal IO events weren't written to {s}", .{export_path});
+        w.Sleep(100);
+    }
+    try h.expect(true, "the export writes the Terminal IO events", .{});
+
+    // A pane closing closes its inspector.
+    try splitPane(h, &g, 0, 'O');
+    const b = try paneHwnd(h, &g, 1);
+    h.key(b, cs, 'I');
+    _ = try waitInspector(h, &g, b, true, "the new pane's inspector opens");
+    h.key(b, cs, w.VK_F6);
+    try waitPanes(h, &g, 1);
+    try waitClassCount(h, &g, "MurrttyInspector", 0, "and closes with its pane");
+
+    // Two open, both drawn, closed together with their tab.
+    h.key(a, cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    const t1 = try paneHwnd(h, &g, 0);
+    try splitPane(h, &g, 0, 'O');
+    const t2 = try paneHwnd(h, &g, 1);
+    h.key(t1, cs, 'I');
+    _ = try waitInspector(h, &g, t1, true, "the tab's first pane's inspector opens");
+    h.key(t2, cs, 'I');
+    _ = try waitInspector(h, &g, t2, true, "and its second's");
+    try waitInspectorFrames(h, &g, t1, 3);
+    try waitInspectorFrames(h, &g, t2, 3);
+    h.key(t2, cs, 'W');
+    try waitWindowTabs(h, &g, win, 1);
+    try waitClassCount(h, &g, "MurrttyInspector", 0, "both close with their tab, one after the other");
+
+    // One open as murrtty quits.
+    h.key(a, cs, 'I');
+    _ = try waitInspector(h, &g, a, true, "an inspector open at the quit");
+    try waitInspectorFrames(h, &g, a, 3);
+    // Nothing to confirm (confirm-close-surface = false).
+    h.key(a, cs, 'Q');
+    const code = g.waitExit(10000);
+    try h.expect(code != null and code.? == 0, "exits with code 0 after quit (got {?d})", .{code});
+    try expectNoLeaks(h, &g, "its inspectors leaked nothing");
+}
+
+/// Wait until `pane`'s inspector is open (with the core's on) or closed;
+/// returns its window when open.
+fn waitInspector(h: *Harness, g: *Harness.Ghostty, pane: w.HWND, open: bool, comptime what: []const u8) !w.HWND {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const p = findPane(d.value, pane) orelse return h.fail(what ++ ": no such pane", .{});
+        if ((p.inspector != null) == open and p.inspector_active == open) {
+            try h.expect(true, what, .{});
+            return if (p.inspector) |i| hwndOf(i.hwnd) else pane;
+        }
+        if (waited >= 5000) return h.fail(what ++ ": window {}, core's {}", .{ p.inspector != null, p.inspector_active });
+        w.Sleep(100);
+    }
+}
+
+fn waitInspectorFrames(h: *Harness, g: *Harness.Ghostty, pane: w.HWND, frames: u32) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const p = findPane(d.value, pane) orelse return h.fail("no such pane", .{});
+        const got = if (p.inspector) |i| i.frames else 0;
+        if (got >= frames) return h.expect(true, "the inspector draws ({d} frames)", .{got});
+        if (waited >= 5000) return h.fail("the inspector drew {d} frames, not {d}", .{ got, frames });
+        w.Sleep(100);
+    }
+}
+
+fn waitInspectorMouse(h: *Harness, g: *Harness.Ghostty, pane: w.HWND, at: [2]f32) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const p = findPane(d.value, pane) orelse return h.fail("no such pane", .{});
+        const got: [2]f32 = if (p.inspector) |i| i.mouse else .{ -1, -1 };
+        if (got[0] == at[0] and got[1] == at[1]) return h.expect(true, "the mouse reaches the inspector's ImGui ({d},{d})", .{ got[0], got[1] });
+        if (waited >= 3000) return h.fail("ImGui has the mouse at {d},{d}, not {d},{d}", .{ got[0], got[1], at[0], at[1] });
+        w.Sleep(100);
+    }
+}
+
+/// Wait until murrtty has `count` windows of class `class`.
+fn waitClassCount(h: *Harness, g: *Harness.Ghostty, comptime class: []const u8, count: usize, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        const found = try h.windows(g, class);
+        defer h.alloc.free(found);
+        if (found.len == count) return h.expect(true, what, .{});
+        if (waited >= 5000) return h.fail(what ++ ": {d} windows of {s}", .{ found.len, class });
+        w.Sleep(100);
+    }
 }
 
 const undo_binds = "keybind = ctrl+shift+f11=undo\nkeybind = ctrl+shift+f12=redo\n" ++

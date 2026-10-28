@@ -29,6 +29,7 @@ const KeyState = @import("KeyState.zig");
 const DropTarget = @import("DropTarget.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
+const Inspector = @import("Inspector.zig");
 const Scrollbar = @import("Scrollbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Window = @import("Window.zig");
@@ -172,6 +173,8 @@ drop_dir: ?PaneDrag.Direction = null,
 /// The left release after this pane's drag lost the mouse goes nowhere:
 /// the terminal never saw its press.
 drag_release: bool = false,
+/// This pane's terminal inspector window (roadmap 5.12), while open.
+inspector: ?*Inspector = null,
 
 pub const Colors = struct {
     bg: configpkg.Config.Color,
@@ -286,6 +289,36 @@ pub fn init(
     // now.
     if (self.has_focus) app.core_app.focusSurface(&self.core_surface);
     self.queueFocus();
+}
+
+/// The inspector action (roadmap 5.12): toggle, show or hide this pane's
+/// inspector window, as GTK's.
+pub fn controlInspector(self: *Surface, mode: apprt.action.Inspector) bool {
+    if (!self.core_initialized) return false;
+    const open = self.inspector != null;
+    const want = switch (mode) {
+        .toggle => !open,
+        .show => true,
+        .hide => false,
+    };
+    if (!want) {
+        self.closeInspector();
+        return true;
+    }
+    if (self.inspector) |i| {
+        i.present();
+        return true;
+    }
+    self.inspector = Inspector.create(self) catch |err| {
+        log.warn("error opening the inspector err={}", .{err});
+        return false;
+    };
+    return true;
+}
+
+/// Close its inspector window, if open (its destroy clears `inspector`).
+pub fn closeInspector(self: *Surface) void {
+    if (self.inspector) |i| i.destroy();
 }
 
 /// Closed but kept for undo (roadmap 5.11): its window is the shelf.
@@ -688,6 +721,8 @@ fn scaledPadding(points: u32, scale: f32) u32 {
 /// with its parent.
 pub fn deinit(self: *Surface) void {
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+    // Its inspector first, while the core surface it deactivates is here.
+    self.closeInspector();
     if (self.core_initialized) PaneDrag.surfaceGone(self.app, self.core_surface.id);
     if (self.drop_target) |d| d.revoke(self.hwnd);
     self.drop_target = null;
@@ -2062,7 +2097,7 @@ fn openClipboard(hwnd: c.HWND) bool {
 
 /// Read CF_UNICODETEXT from the clipboard as UTF-8. Returns null if the
 /// clipboard has no text.
-fn readClipboardText(alloc: Allocator, hwnd: c.HWND) !?[]u8 {
+pub fn readClipboardText(alloc: Allocator, hwnd: c.HWND) !?[]u8 {
     if (!openClipboard(hwnd)) return error.ClipboardOpenFailed;
     defer _ = c.CloseClipboard();
 

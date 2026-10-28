@@ -6703,13 +6703,6 @@ pub const Keybinds = struct {
         table: []const u8,
     } = .root,
 
-    /// Flags for default bindings whose actions the Windows runtime doesn't
-    /// implement yet: performable there, so the keys reach programs instead
-    /// of doing nothing. Drop each use as its feature lands on Windows.
-    const windows_unimplemented: inputpkg.Binding.Flags = .{
-        .performable = builtin.target.os.tag == .windows,
-    };
-
     pub fn init(self: *Keybinds, alloc: Allocator) !void {
         // We don't clear the memory because it's in the arena and unlikely
         // to be free-able anyways (since arenas can only clear the last
@@ -7097,11 +7090,10 @@ pub const Keybinds = struct {
             );
 
             // Inspector, matching Chromium
-            try self.set.putFlags(
+            try self.set.put(
                 alloc,
                 .{ .key = .{ .unicode = 'i' }, .mods = .{ .shift = true, .ctrl = true } },
                 .{ .inspector = .toggle },
-                windows_unimplemented,
             );
 
             // Terminal
@@ -10809,7 +10801,7 @@ test "clone default" {
     // try testing.expectEqualDeep(dest, source);
 }
 
-test "windows: defaults for actions the runtime lacks are performable" {
+test "windows: defaults for actions the runtime has are consumed" {
     if (comptime builtin.target.os.tag != .windows) return error.SkipZigTest;
     const testing = std.testing;
     const alloc = testing.allocator;
@@ -10817,24 +10809,11 @@ test "windows: defaults for actions the runtime lacks are performable" {
     var config = try Config.default(alloc);
     defer config.deinit();
 
-    // If they weren't, the core would swallow these keys even though the
-    // Windows runtime does nothing with them.
+    // The inspector, splits and the command palette are implemented, so
+    // their keys are consumed as upstream's.
     const ctrl_shift: inputpkg.Mods = .{ .ctrl = true, .shift = true };
-    const triggers = [_]inputpkg.Binding.Trigger{
-        .{ .key = .{ .unicode = 'i' }, .mods = ctrl_shift }, // inspector
-    };
-    for (triggers) |t| {
-        const entry = config.keybind.set.get(t) orelse return error.TestUnexpectedResult;
-        const leaf = switch (entry.value_ptr.*) {
-            .leader => return error.TestUnexpectedResult,
-            inline .leaf, .leaf_chained => |*l| l.generic(),
-        };
-        try testing.expect(leaf.flags.performable);
-    }
-
-    // Splits and the command palette are implemented, so their keys are
-    // consumed as upstream's.
     for ([_]inputpkg.Binding.Trigger{
+        .{ .key = .{ .unicode = 'i' }, .mods = ctrl_shift },
         .{ .key = .{ .unicode = 'p' }, .mods = ctrl_shift },
         .{ .key = .{ .unicode = 'o' }, .mods = ctrl_shift },
         .{ .key = .{ .unicode = 'e' }, .mods = ctrl_shift },

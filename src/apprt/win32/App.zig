@@ -26,6 +26,8 @@ const Notifications = @import("Notifications.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
 const Undo = @import("Undo.zig");
+const Inspector = @import("Inspector.zig");
+const wgl = @import("opengl").wgl;
 const taskbar = @import("taskbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -85,10 +87,13 @@ pub const Request = union(enum) {
     /// Undo or redo a close (roadmap 5.11).
     undo,
     redo,
+    /// Save the inspector's Terminal IO events (roadmap 5.12), owned.
+    export_io: struct { surface: u64, contents: []u8 },
 
     fn deinit(self: Request, alloc: Allocator) void {
         switch (self) {
             .open_url => |v| alloc.free(v.url),
+            .export_io => |v| alloc.free(v.contents),
             .ipc => |v| v.destroy(alloc),
             else => {},
         }
@@ -229,6 +234,9 @@ notifications: Notifications = undefined,
 global_keys: GlobalKeys = undefined,
 /// Undo and redo of closes (roadmap 5.11), set up in init.
 undo: Undo = undefined,
+/// WGL's extensions, for the inspector's windows (roadmap 5.12), loaded at
+/// the first.
+wgl_ext: ?wgl.Extensions = null,
 /// toggle_visibility hid the windows: the ids of those it hid, and of the
 /// one in front then, to show them as they were.
 windows_hidden: bool = false,
@@ -318,6 +326,7 @@ pub fn init(
     try CommandPalette.registerClass(instance);
     try Banner.registerClass(instance);
     try Notifications.registerClass(instance);
+    try Inspector.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wakeupWndProc,
@@ -742,6 +751,10 @@ fn runRequests(self: *App) void {
             .present_surface => |id| if (self.findSurface(id)) |s| s.window.presentSurface(s),
             .undo => self.undo.runUndo(),
             .redo => self.undo.runRedo(),
+            .export_io => |v| {
+                defer req.deinit(self.core_app.alloc);
+                self.exportTerminalIo(v.surface, v.contents);
+            },
         }
     }
 }
@@ -1473,6 +1486,58 @@ fn quit(self: *App) void {
     self.quitNow();
 }
 
+/// WGL's extensions (the inspector's windows, roadmap 5.12), loaded once.
+pub fn wglExtensions(self: *App) !*const wgl.Extensions {
+    if (self.wgl_ext == null) self.wgl_ext = try wgl.Extensions.load();
+    return &self.wgl_ext.?;
+}
+
+/// Save the inspector's Terminal IO events where the user says, as GTK's:
+/// a save dialog, "Export Terminal IO Events", over the pane's inspector
+/// (else its window). With the test hooks, GHOSTTY_WIN32_TEST_EXPORT names
+/// the file instead and no dialog shows.
+fn exportTerminalIo(self: *App, id: u64, contents: []const u8) void {
+    var path: [1024:0]u16 = @splat(0);
+    const default_name = std.unicode.utf8ToUtf16LeStringLiteral("murrtty-terminal-io.txt");
+    @memcpy(path[0..default_name.len], default_name);
+    const from_test = test_hooks.enabled and
+        c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_EXPORT"), &path, path.len) > 0;
+    if (!from_test) {
+        const owner: ?c.HWND = if (self.findSurface(id)) |s|
+            if (s.inspector) |i| i.hwnd else s.window.hwnd
+        else
+            null;
+        var ofn: c.OPENFILENAMEW = .{
+            .hwndOwner = owner,
+            .lpstrFilter = c.L("Text files (*.txt)\x00*.txt\x00All files\x00*.*\x00"),
+            .lpstrFile = &path,
+            .nMaxFile = path.len,
+            .lpstrTitle = c.L("Export Terminal IO Events"),
+            .Flags = c.OFN_OVERWRITEPROMPT | c.OFN_PATHMUSTEXIST | c.OFN_NOCHANGEDIR | c.OFN_EXPLORER,
+            .lpstrDefExt = c.L("txt"),
+        };
+        var modal = self.beginModal(owner, .{});
+        defer modal.end();
+        if (c.GetSaveFileNameW(&ofn) == 0) return;
+    }
+    const file = c.CreateFileW(&path, c.GENERIC_WRITE, 0, null, c.CREATE_ALWAYS, c.FILE_ATTRIBUTE_NORMAL, null);
+    if (file == c.INVALID_HANDLE_VALUE) {
+        log.warn("error creating the Terminal IO file err={}", .{c.GetLastError()});
+        return;
+    }
+    defer _ = c.CloseHandle(file);
+    var rest = contents;
+    while (rest.len > 0) {
+        var written: c.DWORD = 0;
+        const n: c.DWORD = @intCast(@min(rest.len, 1 << 30));
+        if (c.WriteFile(file, rest.ptr, n, &written, null) == 0 or written == 0) {
+            log.warn("error writing the Terminal IO file err={}", .{c.GetLastError()});
+            return;
+        }
+        rest = rest[written..];
+    }
+}
+
 /// Close every window, kept for undo as one close if `park` (roadmap 5.11;
 /// not when quitting).
 fn closeAllWindows(self: *App, park: bool) void {
@@ -1843,6 +1908,7 @@ pub fn performAction(
         .toggle_command_palette,
         .float_window,
         .present_terminal,
+        .inspector,
         .reset_window_size,
         .prompt_title,
         .start_search,
@@ -1854,6 +1920,22 @@ pub fn performAction(
         // Closing runs from the message loop: the core is still using
         // the surface that triggered these (see Request).
         .quit => self.request(.quit),
+
+        // The terminal inspector (roadmap 5.12): its window, as GTK's.
+        .inspector => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            return surface.controlInspector(value);
+        },
+
+        // The core calls mid-frame of the inspector, with the terminal's
+        // lock held: a copy, saved from the message loop (a dialog's loop
+        // would draw the inspector again inside its own frame).
+        .export_terminal_io => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            if (!surface.core_initialized) return false;
+            const copy = try self.core_app.alloc.dupe(u8, value.contents);
+            self.request(.{ .export_io = .{ .surface = surface.core_surface.id, .contents = copy } });
+        },
 
         // Undo and redo of closes (roadmap 5.11), from the message loop:
         // what they bring back or close the core may be using now. False
@@ -2413,7 +2495,6 @@ fn syncMenuTheme(self: *const App) void {
 pub fn supportsAction(action: input.Binding.Action) bool {
     return switch (action) {
         // Runtime actions not implemented yet.
-        .inspector,
         .show_gtk_inspector,
         .show_on_screen_keyboard,
         .toggle_secure_input,

@@ -1645,6 +1645,10 @@ pub const Dump = struct {
         drop: []const u8 = "",
         /// Dimmed as an unfocused pane of its tab (unfocused-split-*).
         dimmed: bool = false,
+        /// Its inspector window (roadmap 5.12), while open: frames drawn and
+        /// where ImGui has the mouse; and the core's inspector on.
+        inspector: ?struct { hwnd: u64, frames: u32, mouse: [2]f32 } = null,
+        inspector_active: bool = false,
         /// Whether it takes drops (roadmap 5.8).
         drop_target: bool = false,
         /// OSC 9;4's progress (roadmap 5.4): its value (-1 while the bar
@@ -2209,6 +2213,14 @@ pub fn clearClipboard(self: *Harness) !void {
 /// Drop what the clipboard holds on the first window's active pane,
 /// through its drop target (dump wparam 17); the effect (1 a copy, 0
 /// refused, -1 no drop target).
+/// Have the first window's active pane export its inspector's Terminal IO
+/// events (roadmap 5.12), as the inspector's Export button does: through
+/// the core's export_terminal_io action (dump wparam 18).
+pub fn exportTerminalIo(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 18, 0);
+    d.deinit();
+}
+
 pub fn dropClipboard(self: *Harness, g: *const Ghostty) !i32 {
     var d = try self.dumpWith(g, 17, 0);
     defer d.deinit();

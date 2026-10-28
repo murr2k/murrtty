@@ -428,7 +428,11 @@ pub fn shelve(self: *Window, tab: *Tab) void {
     tab.setVisible(false);
     tab.window = self;
     var it = tab.panes();
-    while (it.next()) |entry| entry.view.window = self;
+    while (it.next()) |entry| {
+        entry.view.window = self;
+        // A closed pane's inspector goes with it, as GTK's.
+        entry.view.closeInspector();
+    }
     _ = c.SetParent(tab.hwnd, self.hwnd);
     self.tabs.appendAssumeCapacity(tab);
 }

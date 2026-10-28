@@ -545,6 +545,8 @@ pub fn hold(self: *Tab, surface: *Surface, tree: Tree) void {
     _ = c.SetWindowPos(self.hwnd, null, 0, 0, r.right, r.bottom, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
     _ = c.SetParent(surface.hwnd, self.hwnd);
     surface.window = self.window;
+    // A closed pane's inspector goes with it, as GTK's.
+    surface.closeInspector();
     self.tree = tree;
     self.focused = surface;
     self.syncPaneVisibility();
