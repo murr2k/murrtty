@@ -203,9 +203,6 @@ roadmap item behind it.
   to scroll at a time" are Windows' (a notch scrolls that many rows at
   `mouse-scroll-multiplier`'s default, which scales it), as macOS takes
   its double-click time; GTK's uses 500 ms and 3 rows a notch.
-- **HTML alone on the clipboard** (6.5): `copy_to_clipboard:html`, or a
-  program's kitty clipboard write (OSC 5522) offering only HTML, puts the
-  HTML on the clipboard, as macOS does; GTK's writes nothing without text.
 - **Links** (0.1): untrusted links (OSC 8, unknown kinds) are vetted. Web
   and mail links open; a file opens only if it is inert (code runners are
   blocked, symbolic links are not followed); anything else asks first. GTK
@@ -2992,12 +2989,15 @@ themselves.
   header of byte offsets, the copy between StartFragment and EndFragment
   comments in a document), beside the text for mixed (the default, so
   `Ctrl+Shift+C` carries it to rich editors) and alone for html, as macOS
-  writes them; GTK's writes nothing for html alone, having no text.
+  writes them, and GTK's since 1.4.0 (before, it wrote nothing without
+  text).
   `copy_to_clipboard:html` is no longer hidden from menus and the
   palette. An OSC 52 write is text only; a program's kitty clipboard
   write (OSC 5522) puts what it offered, text and HTML, its confirmation
   (`clipboard-write = ask`) showing the text, or the HTML when it offers
-  none (GTK's writes the HTML only beside text). Scenario
+  none (GTK's 1.4 previews every representation, pictures too). Its text
+  is any of the core's text types (`isTextMime`), as GTK's takes it; it
+  had to be exactly `text/plain`. Scenario
   `clipboard-html` (mixed, html, plain), which failed with the HTML left
   out.
 - `show_on_screen_keyboard`. *Done:* Windows' touch keyboard through the
@@ -3086,7 +3086,13 @@ takes in upstream many times before M3.
 release (see "The fork"): build, unit tests and the GUI suite on a
 `merge/<date>` branch before it lands. *Replaced 2026-10-26:* this was a
 proposal to upstream an `else => void` default for the GTK-only runtime
-switches, which no longer applies.
+switches, which no longer applies. *Merged 2026-10-28:* Ghostty 1.4.0
+(tag `v1.4.0`, 44 commits past the first merge), with no conflicts and
+no new workflows; murrtty now reports "based on Ghostty 1.4.0". Its GTK
+app writes every representation of a clipboard write, HTML alone too
+(6.5's difference for it went), toasts "Cleared clipboard" only when
+the write held nothing, as murrtty now does, and gains the kitty
+clipboard protocol, which murrtty already had.
 
 **7.2 Full CI, M.** Extend 0.11: run on pushes and pull requests (once
 decisions 6 and 8 allow the minutes), upload

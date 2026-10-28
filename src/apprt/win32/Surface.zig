@@ -1095,7 +1095,7 @@ fn confirmClipboardRead(
     // write puts what the program offered (HTML too, roadmap 6.5).
     const shown: []const u8 = text orelse switch (req) {
         .kitty_write => |k| for (k.contents) |content| {
-            if (std.mem.eql(u8, content.mime, "text/plain")) break content.data;
+            if (terminal.clipboard.isTextMime(content.mime)) break content.data;
         } else for (k.contents) |content| {
             if (std.mem.eql(u8, content.mime, "text/html")) break content.data;
         } else "",
@@ -1130,11 +1130,13 @@ pub fn setClipboard(
     contents: []const apprt.ClipboardContent,
     confirm: bool,
 ) !void {
-    // Text and HTML (copy_to_clipboard's mixed and html; roadmap 6.5).
+    // Text and HTML (copy_to_clipboard's mixed and html; roadmap 6.5). A
+    // program's kitty write may name its text otherwise
+    // (text/plain;charset=utf-8, UTF8_STRING), as GTK's takes it.
     var text: ?[:0]const u8 = null;
     var html: ?[:0]const u8 = null;
     for (contents) |content| {
-        if (text == null and std.mem.eql(u8, content.mime, "text/plain")) text = content.data;
+        if (text == null and terminal.clipboard.isTextMime(content.mime)) text = content.data;
         if (html == null and std.mem.eql(u8, content.mime, "text/html")) html = content.data;
     }
 
@@ -1161,7 +1163,11 @@ fn writeTo(self: *Surface, clipboard_type: apprt.Clipboard, text: ?[]const u8, h
         return;
     }
     try writeClipboard(self.app.core_app.alloc, self.hwnd, text, html);
-    self.clipboardWritten(if (text) |t| t.len > 0 else html != null);
+    // Cleared only when nothing written holds anything, as GTK's (1.4)
+    // decides it.
+    const has_text = if (text) |t| t.len > 0 else false;
+    const has_html = if (html) |x| x.len > 0 else false;
+    self.clipboardWritten(has_text or has_html);
 }
 
 /// GTK's toast for a write to the clipboard (app-notifications's

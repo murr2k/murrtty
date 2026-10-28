@@ -70,9 +70,11 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     };
 }
 
-/// `s` safe in a resource script's string and a `/d` define: a branch name
-/// in a version can hold a quote, an equals sign (where the define's value
-/// would be cut) or characters outside the script's code page.
+/// `s` safe in a resource script's string and a `/d` define, where a quote
+/// would end the string and an equals sign cut the define's value. The
+/// version can't hold either today (GitVersion reduces the branch to
+/// letters, digits and hyphens, and -Dversion-string must parse as a
+/// version); this keeps it so.
 fn rcString(b: *std.Build, s: []const u8) []const u8 {
     const out = b.allocator.dupe(u8, s) catch @panic("OOM");
     for (out) |*ch| {
