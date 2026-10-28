@@ -13,6 +13,7 @@ const Library = @import("main.zig").Library;
 const Presentation = @import("main.zig").Presentation;
 const Variation = @import("main.zig").face.Variation;
 const global = @import("../global.zig");
+const dwrite = @import("dwrite.zig");
 
 const log = std.log.scoped(.discovery);
 
@@ -951,26 +952,35 @@ pub const CoreText = struct {
     };
 };
 
-/// Windows font discovery. Enumerates font files in the system and
-/// per-user font directories and matches them to a descriptor via
-/// FreeType's family_name field (with a fallback to the SFNT name
-/// table when family_name is missing).
+/// Windows font discovery. A family is DirectWrite's (murrtty's roadmap
+/// 6.1): the system font collection has every installed font, wherever
+/// the registry has its file, under any of its localized names. A
+/// codepoint is first DirectWrite's fallback for it in the user's locale,
+/// so Japanese, Chinese and Korean text sharing ideographs each get a
+/// font of their own. FreeType rasterizes the files either way.
 ///
-/// No external service is used; each discover() call walks the
-/// directories, opening candidate files with FreeType only as needed.
-/// For typical Windows installations (~300 fonts) a name query is in
-/// the tens of milliseconds. A codepoint fallback query may be
-/// noticeably slower because every candidate has to be opened to
-/// probe its CMap.
+/// Otherwise (no DirectWrite, a family it doesn't know or without the
+/// style asked for, further codepoint candidates) the system and per-user
+/// font directories are walked and
+/// faces matched to the descriptor via FreeType's family_name field (with
+/// a fallback to the SFNT name table when family_name is missing),
+/// opening candidate files only as needed: tens of milliseconds for a
+/// name on a typical install (~300 fonts), noticeably slower for a
+/// codepoint, since every candidate is opened to probe its CMap.
 pub const Windows = struct {
     lib: Library,
+    /// DirectWrite, where it is.
+    dwrite: ?dwrite.Dwrite = null,
 
     pub fn init(lib: Library) Windows {
-        return .{ .lib = lib };
+        return .{
+            .lib = lib,
+            .dwrite = if (comptime builtin.os.tag == .windows) dwrite.Dwrite.init() else null,
+        };
     }
 
     pub fn deinit(self: *Windows) void {
-        _ = self;
+        if (self.dwrite) |*d| d.deinit();
     }
 
     pub fn discover(
@@ -988,6 +998,7 @@ pub const Windows = struct {
             .iter = null,
             .system_path = null,
             .user_path = null,
+            .dwrite = if (self.dwrite) |*d| d else null,
         };
         // A family has a handful of faces, so collect them all and return
         // the best match for the requested style first, as the other
@@ -1021,6 +1032,12 @@ pub const Windows = struct {
         iter: ?std.Io.Dir.Iterator,
         system_path: ?[:0]const u8,
         user_path: ?[:0]const u8,
+        dwrite: ?*const dwrite.Dwrite = null,
+        /// A codepoint query asked DirectWrite's fallback already.
+        mapped: bool = false,
+        /// The face it returned (owned), which the walk then skips.
+        mapped_path: ?[:0]u8 = null,
+        mapped_index: i32 = 0,
 
         /// For a family query: every match, best first (see collect). The
         /// faces from `pos` on are still owned here.
@@ -1034,6 +1051,7 @@ pub const Windows = struct {
             if (self.dir) |*d| d.close(global.io());
             if (self.system_path) |p| self.alloc.free(p);
             if (self.user_path) |p| self.alloc.free(p);
+            if (self.mapped_path) |p| self.alloc.free(p);
             if (self.sorted) |list| {
                 for (list[self.pos..]) |*s| s.face.deinit();
                 self.alloc.free(list);
@@ -1056,12 +1074,30 @@ pub const Windows = struct {
                 for (list.items) |*s| s.face.deinit();
                 list.deinit(self.alloc);
             }
-            while (try self.nextFound()) |found| {
+            // DirectWrite's family first. Its families are made by weight,
+            // width and slope, so a face whose style is something else can
+            // be a family of its own there while FreeType's name keeps it in
+            // this one (Fira Code's Retina): the directories are walked too
+            // when DirectWrite has no face, or none of the style asked for.
+            // A face both find is kept once.
+            if (self.dwrite) |dw| try self.collectDwrite(dw, &list);
+            const exact = for (list.items) |s| {
+                if (s.score.exact_style) break true;
+            } else false;
+            if (list.items.len == 0 or (self.desc.style != null and !exact)) while (try self.nextFound()) |found| {
                 var face = found;
+                const listed = for (list.items) |s| {
+                    if (s.face.win.?.face_index == face.win.?.face_index and
+                        std.ascii.eqlIgnoreCase(s.face.win.?.path, face.win.?.path)) break true;
+                } else false;
+                if (listed) {
+                    face.deinit();
+                    continue;
+                }
                 errdefer face.deinit();
                 const score: Score = .score(&self.desc, &face.win.?.peek);
                 try list.append(self.alloc, .{ .face = face, .score = score });
-            }
+            };
             std.mem.sort(Scored, list.items, {}, struct {
                 fn lessThan(_: void, a: Scored, b: Scored) bool {
                     return a.score.int() > b.score.int();
@@ -1070,8 +1106,60 @@ pub const Windows = struct {
             self.sorted = try list.toOwnedSlice(self.alloc);
         }
 
-        /// The next match in directory order.
+        /// The faces of DirectWrite's family `desc.family` (any of its
+        /// names), with the codepoint if one is asked for.
+        fn collectDwrite(self: *DiscoverIterator, dw: *const dwrite.Dwrite, list: *std.ArrayList(Scored)) !void {
+            const files = try dw.familyFiles(self.alloc, self.desc.family.?);
+            defer {
+                for (files) |f| f.deinit(self.alloc);
+                self.alloc.free(files);
+            }
+            for (files) |file| {
+                var face = (try self.dwriteFace(file)) orelse continue;
+                errdefer face.deinit();
+                const score: Score = .score(&self.desc, &face.win.?.peek);
+                try list.append(self.alloc, .{ .face = face, .score = score });
+            }
+        }
+
+        /// DirectWrite's fallback for the codepoint, in the user's
+        /// locale, as bold or italic as asked.
+        fn dwriteFallback(self: *DiscoverIterator) !?DeferredFace {
+            const dw = self.dwrite orelse return null;
+            const codepoint = std.math.cast(u21, self.desc.codepoint) orelse return null;
+            var buf: [dwrite.locale_max]u16 = undefined;
+            const locale = dwrite.userLocale(&buf) orelse std.unicode.utf8ToUtf16LeStringLiteral("en-US");
+            const file = (try dw.fallbackFile(self.alloc, codepoint, locale, self.desc.bold, self.desc.italic)) orelse return null;
+            defer file.deinit(self.alloc);
+            var face = (try self.dwriteFace(file)) orelse return null;
+            errdefer face.deinit();
+            self.mapped_path = try self.alloc.dupeSentinel(u8, face.win.?.path, 0);
+            self.mapped_index = face.win.?.face_index;
+            return face;
+        }
+
+        /// `file`'s face, if FreeType opens it and it has the codepoint
+        /// asked for.
+        fn dwriteFace(self: *DiscoverIterator, file: dwrite.File) !?DeferredFace {
+            const index = std.math.cast(i32, file.index) orelse return null;
+            var face = Face.initFile(self.lib, file.path, index, .{ .size = .{ .points = 12 } }) catch return null;
+            if (self.desc.codepoint != 0 and face.glyphIndex(self.desc.codepoint) == null) {
+                face.deinit();
+                return null;
+            }
+            return self.makeDeferred(face, file.path, index) catch |err| {
+                face.deinit();
+                return err;
+            };
+        }
+
+        /// The next match: for a codepoint, DirectWrite's fallback first;
+        /// then in directory order.
         fn nextFound(self: *DiscoverIterator) !?DeferredFace {
+            if (!self.mapped and self.desc.family == null and self.desc.codepoint != 0) {
+                self.mapped = true;
+                if (try self.dwriteFallback()) |face| return face;
+            }
             while (true) {
                 // Ensure we have a directory iterator for the current state.
                 if (self.iter == null) {
@@ -1186,6 +1274,9 @@ pub const Windows = struct {
             // Probe each face in the file.
             var face_index: i32 = 0;
             while (face_index < max_faces) : (face_index += 1) {
+                // DirectWrite's fallback returned this one already.
+                if (self.mapped_path) |p| if (face_index == self.mapped_index and
+                    std.ascii.eqlIgnoreCase(p, full_path)) continue;
                 var face = Face.initFile(
                     self.lib,
                     full_path,
@@ -1248,6 +1339,10 @@ pub const Windows = struct {
 
         /// More glyphs wins a tie.
         glyph_count: u16 = 0,
+        /// A face of normal width before a condensed or expanded one whose
+        /// style name reads the same (widths named only in the family
+        /// name, which DirectWrite's families gather as one).
+        normal_width: bool = false,
         /// How much of the style name is the wanted style.
         fuzzy_style: u8 = 0,
         bold: bool = false,
@@ -1271,7 +1366,10 @@ pub const Windows = struct {
             // OS/2 and head tables, which some fonts fill in better.
             var is_bold = handle.*.style_flags & ft.c.FT_STYLE_FLAG_BOLD != 0;
             var is_italic = handle.*.style_flags & ft.c.FT_STYLE_FLAG_ITALIC != 0;
+            self.normal_width = true;
             if (face.face.getSfntTable(.os2)) |os2| if (os2.version != 0xFFFF) {
+                // usWidthClass 5 is medium (normal).
+                self.normal_width = os2.usWidthClass == 5;
                 // fsSelection bit 5 is BOLD and bit 0 ITALIC; a weight
                 // class above 600 (semibold) counts as bold.
                 is_bold = is_bold or os2.fsSelection & (1 << 5) != 0 or os2.usWeightClass > 600;
@@ -1511,6 +1609,124 @@ test "coretext sorting" {
         var buf: [1024]u8 = undefined;
         const name = try res.name(&buf);
         try testing.expectEqualStrings("SF Pro Bold Italic", name);
+    }
+}
+
+test {
+    if (options.backend == .freetype_windows) _ = dwrite;
+}
+
+test "windows: a font registered from its own folder (DirectWrite)" {
+    if (options.backend != .freetype_windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var lib = try Library.init(alloc);
+    defer lib.deinit();
+
+    // Kawkab Mono, installed for this user from a folder of its own, as an
+    // installer keeping its fonts with it registers them; unless it is
+    // installed already.
+    {
+        var win = Windows.init(lib);
+        defer win.deinit();
+        const dw = if (win.dwrite) |*d| d else return error.SkipZigTest;
+        const have = try dw.familyFiles(alloc, "Kawkab Mono");
+        defer {
+            for (have) |f| f.deinit(alloc);
+            alloc.free(have);
+        }
+        if (have.len > 0) return error.SkipZigTest;
+    }
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "KawkabMono-Regular.ttf", .data = @import("embedded.zig").arabic });
+    const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", alloc);
+    defer alloc.free(dir);
+    const path = try std.fs.path.join(alloc, &.{ dir, "KawkabMono-Regular.ttf" });
+    defer alloc.free(path);
+    const path_w = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path);
+    defer alloc.free(path_w);
+
+    const reg = struct {
+        const HKEY_CURRENT_USER: usize = 0x80000001;
+        const REG_SZ = 1;
+        extern "advapi32" fn RegSetKeyValueW(usize, [*:0]const u16, [*:0]const u16, u32, ?*const anyopaque, u32) callconv(.winapi) i32;
+        extern "advapi32" fn RegDeleteKeyValueW(usize, [*:0]const u16, [*:0]const u16) callconv(.winapi) i32;
+        const key = std.unicode.utf8ToUtf16LeStringLiteral("Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts");
+        const value = std.unicode.utf8ToUtf16LeStringLiteral("Kawkab Mono Regular (murrtty unit test)");
+    };
+    const bytes: u32 = @intCast((path_w.len + 1) * 2);
+    if (reg.RegSetKeyValueW(reg.HKEY_CURRENT_USER, reg.key, reg.value, reg.REG_SZ, path_w.ptr, bytes) != 0) return error.SkipZigTest;
+    defer _ = reg.RegDeleteKeyValueW(reg.HKEY_CURRENT_USER, reg.key, reg.value);
+
+    // DirectWrite takes a moment to see it (its font cache service).
+    var tries: usize = 0;
+    while (true) : (tries += 1) {
+        var win = Windows.init(lib);
+        defer win.deinit();
+        var it = try win.discover(alloc, .{ .family = "Kawkab Mono" });
+        defer it.deinit();
+        if (try it.next()) |found| {
+            var face = found;
+            defer face.deinit();
+            try testing.expect(std.ascii.eqlIgnoreCase(face.win.?.path, path));
+            return;
+        }
+        // Where per-user fonts aren't taken (no font cache service).
+        if (tries >= 20) {
+            std.debug.print("DirectWrite never listed a font registered for the user; skipped\n", .{});
+            return error.SkipZigTest;
+        }
+        std.Io.sleep(testing.io, .fromMilliseconds(250), .awake) catch {};
+    }
+}
+
+test "windows: a style DirectWrite's family lacks walks the folders too" {
+    if (options.backend != .freetype_windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var lib = try Library.init(alloc);
+    defer lib.deinit();
+    var win = Windows.init(lib);
+    defer win.deinit();
+
+    // No Consolas face is "Retina", so the folders are walked as well,
+    // and find the same four files, each kept once.
+    var it = try win.discover(alloc, .{ .family = "Consolas", .style = "Retina", .size = 12 });
+    defer it.deinit();
+    var count: usize = 0;
+    while (try it.next()) |found| {
+        var face = found;
+        defer face.deinit();
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "windows: a codepoint falls back by DirectWrite" {
+    if (options.backend != .freetype_windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var lib = try Library.init(alloc);
+    defer lib.deinit();
+    var win = Windows.init(lib);
+    defer win.deinit();
+    if (win.dwrite == null) return error.SkipZigTest;
+
+    // 漢: the first candidate has it, from DirectWrite's fallback, and
+    // the folders' later candidates don't offer that face again.
+    var it = try win.discover(alloc, .{ .codepoint = 0x6F22 });
+    defer it.deinit();
+    var face = (try it.next()) orelse return error.TestUnexpectedResult;
+    defer face.deinit();
+    try testing.expect(face.hasCodepoint(0x6F22, null));
+    var later: usize = 0;
+    while (try it.next()) |found| : (later += 1) {
+        var other = found;
+        defer other.deinit();
+        try testing.expect(!(other.win.?.face_index == face.win.?.face_index and
+            std.ascii.eqlIgnoreCase(other.win.?.path, face.win.?.path)));
+        if (later == 40) break;
     }
 }
 

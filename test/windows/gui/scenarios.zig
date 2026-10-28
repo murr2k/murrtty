@@ -52,6 +52,7 @@ pub const all = [_]Scenario{
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
     .{ .name = "cli", .about = "CLI actions with output on a pipe: +version; +validate-config exits 0 for a valid file, 1 naming the problem for an invalid one", .run = cli },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
+    .{ .name = "font-registered", .about = "a font installed for the user from a folder with a non-ASCII name is found and opened", .run = fontRegistered },
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
     .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
     .{ .name = "focus-background-tab", .about = "a tab that never got the focus doesn't stay focused in the core", .run = focusBackgroundTab },
@@ -4011,6 +4012,60 @@ fn fonts(h: *Harness) anyerror!void {
         try h.expect(std.mem.eql(u8, line, case[1]), "{s} {s} (expected {s})", .{ case[0], line, case[1] });
     }
     try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+}
+
+/// A font installed for the user from a folder of its own, whose name isn't
+/// ASCII, is found and used (roadmap 6.1): DirectWrite lists it from the
+/// registry (HKCU's Fonts key, where Windows records a font installed for
+/// one user, with its full path), and FreeType opens the path, which needs
+/// the process's ANSI code page to be UTF-8 (the manifest's
+/// activeCodePage: FreeType opens files with CreateFileA). A font a user
+/// installs goes under their %LOCALAPPDATA%, so with a user name like 山田
+/// every one failed to open.
+fn fontRegistered(h: *Harness) anyerror!void {
+    const font = h.readFileOrNull("src\\font\\res\\KawkabMono-Regular.ttf") orelse
+        return h.skip("no src\\font\\res\\KawkabMono-Regular.ttf (run from the repository)", .{});
+    defer h.alloc.free(font);
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\\u{30D5}\u{30A9}\u{30F3}\u{30C8} 6.1", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    defer h.removeDirAt(dir);
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\KawkabMono-Regular.ttf", .{dir});
+    defer h.alloc.free(path);
+    try h.writeFileAt(path, font);
+    defer h.deleteFile(path);
+
+    const key = "Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts";
+    const value = "Kawkab Mono Regular (murrtty GUI test)";
+    try h.setRegString(key, value, path);
+    defer h.deleteRegValue(key, value);
+
+    // DirectWrite may take a moment to list it (its font cache service):
+    // a few launches, each checking its first discovery.
+    var got: []u8 = &.{};
+    defer h.alloc.free(got);
+    for (0..3) |attempt| {
+        if (attempt > 0) w.Sleep(2000);
+        var name_buf: [32]u8 = undefined;
+        var g = try start(h, try std.fmt.bufPrint(&name_buf, "font-registered-{d}", .{attempt}), "font-family = Kawkab Mono\n", ">");
+        defer g.deinit();
+        w.Sleep(1000);
+        const log_path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty.log", .{g.dir});
+        defer h.alloc.free(log_path);
+        const log = h.readFileOrNull(log_path) orelse return h.fail("no log", .{});
+        defer h.alloc.free(log);
+        // The grid set logs the face found for a configured family; none
+        // if the family wasn't found (or no face of it opened).
+        const tag = "font regular:";
+        h.alloc.free(got);
+        got = if (std.mem.indexOf(u8, log, tag)) |at| line: {
+            const rest = log[at + tag.len ..];
+            break :line try h.alloc.dupe(u8, std.mem.trim(u8, rest[0 .. std.mem.indexOfAny(u8, rest, "\r\n") orelse rest.len], " "));
+        } else try h.alloc.dupe(u8, "none (the family wasn't found)");
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+        if (std.mem.startsWith(u8, got, "Kawkab Mono")) break;
+    }
+    try h.expect(std.mem.startsWith(u8, got, "Kawkab Mono"), "font regular: {s} (expected Kawkab Mono, from {s})", .{ got, path });
 }
 
 /// Output that arrives with no key pressed must reach the screen: the

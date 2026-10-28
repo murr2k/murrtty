@@ -2737,6 +2737,43 @@ registry-installed fonts, and locale-aware fallback via
 Japanese UI font on ja-JP, and fonts installed under a registry path are
 found.
 
+*Done 2026-10-28 (`font/dwrite.zig`):* the `freetype_windows` discovery
+(shared code) asks DirectWrite first, through hand-written COM bindings
+for the few methods used. A family is the system font collection's
+(asked for at each discovery, so a font installed while murrtty runs is
+found by the next one, with an immediate check for new fonts at start):
+every installed font, wherever the registry has its file, by any of its
+localized names (MS Gothic as ＭＳ ゴシック), each real face once
+(DirectWrite's simulated bolds left out: FreeType has only the files),
+then scored for style as 0.9 does. DirectWrite makes families by weight,
+width and slope, so a face of another style can be a family of its own
+there while FreeType's name keeps it in this one (Fira Code's Retina):
+when it has no face of a `font-style` asked for, the folders are walked
+too, each face kept once. A face of normal width now wins a tie over a
+condensed one whose style name reads the same (widths named only in the
+family name, which DirectWrite gathers into one family). A codepoint is
+first DirectWrite's fallback for it in the language the user reads
+(Windows' display language, else the regional format's), weighted and
+slanted as asked: an ideograph gets Yu Gothic or MS Gothic for ja-JP,
+YaHei or SimSun for zh-CN, Malgun for ko-KR, an emoji Segoe UI Emoji;
+the folders then offer further candidates, not that one again. FreeType
+still rasterizes the files, and opens them with `CreateFileA`, so the
+manifest makes UTF-8 the process's ANSI code page (`activeCodePage`,
+Windows 10 1903+): a font a user installs goes under their
+`%LOCALAPPDATA%`, and with a user name in another script (山田) none of
+them opened, through DirectWrite or the folder walk. The folders are
+still walked where DirectWrite is missing and for a family it doesn't
+know. Unit tests: Consolas's four files, MS Gothic by its Japanese name,
+the fallback per locale and for an emoji, a font registered for the user
+from a folder of its own (Kawkab Mono, from a temporary folder, through
+HKCU's Fonts key, removed after; it skips where per-user fonts aren't
+listed), a style DirectWrite lacks walking the folders without repeating
+a face, and a codepoint's first candidate having it, not offered again.
+Scenarios: `fonts` still finds Consolas's bold and italic faces;
+`font-registered` registers Kawkab Mono from a folder named フォント
+and expects it as the regular face (without the manifest's code page it
+was never found).
+
 **6.2 Physical keyboards and IMEs, M.** A first pass is in M1, right after
 Phase 1, because non-US users cannot work if `@`, `{` or `[` mistype; a
 re-run is in M3. A manual matrix:

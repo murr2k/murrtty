@@ -84,7 +84,10 @@ hosted Windows runner and then the unit tests.
   statuses yet). Without integration, cmd's directory is still followed by
   reading it from the cmd process.
 - Rendering with exact colors, fallback fonts for CJK and symbols, and color
-  emoji.
+  emoji. Fonts are found through DirectWrite: any installed font (also one
+  an installer registered from its own folder), by any of its names
+  (`font-family = ＭＳ ゴシック` works), and fallbacks follow your locale, so
+  Japanese, Chinese and Korean text each get a font of their own.
 - Typing, Enter, Unicode text entry, mouse selection, copy and paste. On the
   test machine murrtty draws the echo of a key about 1.5 ms after it
   receives the key.
