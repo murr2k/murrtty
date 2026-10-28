@@ -3373,10 +3373,53 @@ the file by hand. Ghostty has none: its apps open the file in an editor
   (*recommended:* offer to create murrtty's own file importing Ghostty's
   with `config-file`, leaving Ghostty's untouched); and whether opening it
   is a new core action (a shared-code change) or a Windows-only binding.
+  *Taken 2026-10-28 on the owner's standing instruction to go with the
+  recommendations:* native Win32 controls, drawn as libadwaita's
+  preferences window (the Look rule: GTK has no editor, so libadwaita's
+  own settings look, as 4.3b drew its menus and dialogs); murrtty's own
+  file, but **copied** from Ghostty's rather than importing it: an included
+  file applies after the whole file that includes it (`loadRecursiveFiles`,
+  the `config-file` documentation), so a single-valued option set in an
+  imported Ghostty file would override every edit made in murrtty's; and
+  a new core action, `open_config_editor`, which runtimes without an
+  editor take as `open_config` (a binding needs a core action either way).
 
 *Done when:* every option can be set and reset from the editor, saving
 without changes leaves the file byte-identical, and the GUI harness drives
 a search, an edit, a key-binding capture and a save.
+
+*F1a built 2026-10-28, the model with no window:*
+- `src/config/EditableFile.zig`: a file as its lines, each with its own
+  ending, so saving without changes keeps every byte. A line splits into
+  a key and a value exactly as the loader's `LineIterator` splits it.
+  - `set` changes the last line for a key, the one the loader takes, or
+    adds the key at the end.
+  - `setList` gives a repeatable option exactly the lines asked for: the
+    longest run of values kept in order isn't touched, and new values go
+    beside their neighbors.
+  - `remove` drops a key's lines.
+  - Values the loader would change are quoted: surrounding spaces, or
+    quotes of their own.
+  - A line longer than the loader reads, where it stops reading the file,
+    is refused.
+- `src/config/option_list.zig`: every option from `Config`'s fields, each
+  with a kind (toggle, choice, flags, number, color, path, list, text), the
+  names of a choice or flags, whether it can be unset, and its
+  documentation (`help_strings`; a field documented with the one before it,
+  such as `font-family-bold`, gets that one's text). Each option also says
+  when a change takes effect, read from its documentation (at once, new
+  terminals, or a restart).
+  - A list is a type named `Repeatable...`, upstream's convention, so a
+    new one is found by itself; or one of `Keybinds`, `Palette`,
+    `RemapSet`.
+  - `values` formats an option's value as the file holds it, through the
+    core's formatter.
+  - `check` tries a value as the loader reads a line, through
+    `args.parse` with its compatibility handlers for old spellings, on a
+    fresh default configuration each time. It returns the loader's own
+    message, so the editor can refuse what the loader would.
+- Unit tests check what the loader's own `LineIterator` reads back from
+  each edited file.
 
 ---
 
