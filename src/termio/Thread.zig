@@ -249,6 +249,7 @@ fn threadMain_(self: *Thread, io: *termio.Termio) !void {
         .surface = io.surface_mailbox.surface,
     };
     defer crash.sentry.thread_state = null;
+    crash.sentry.guardStack();
 
     // Get the mailbox. This must be an SPSC mailbox for threading.
     const mailbox = switch (io.mailbox) {

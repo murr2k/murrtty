@@ -992,6 +992,9 @@ pub extern "user32" fn FillRect(HDC, *const RECT, HBRUSH) callconv(.winapi) c_in
 pub extern "user32" fn DrawTextW(HDC, [*]const u16, c_int, *RECT, UINT) callconv(.winapi) c_int;
 pub extern "user32" fn SystemParametersInfoForDpi(UINT, UINT, ?*anyopaque, UINT, UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn SystemParametersInfoW(UINT, UINT, ?*anyopaque, UINT) callconv(.winapi) BOOL;
+pub extern "kernel32" fn SetErrorMode(UINT) callconv(.winapi) UINT;
+pub const SEM_FAILCRITICALERRORS = 0x0001;
+pub const SEM_NOGPFAULTERRORBOX = 0x0002;
 pub extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(.winapi) ?HDC;
 pub extern "gdi32" fn AddFontMemResourceEx(*anyopaque, DWORD, ?*anyopaque, *DWORD) callconv(.winapi) ?HANDLE;
 pub extern "gdi32" fn RemoveFontMemResourceEx(HANDLE) callconv(.winapi) BOOL;

@@ -61,6 +61,7 @@ pub const all = [_]Scenario{
     .{ .name = "mouse-settings", .about = "Windows' double-click time; a wheel notch scrolls its lines to scroll at a time (a page), which mouse-scroll-multiplier scales; a touchpad's part of a notch its part", .run = mouseSettings },
     .{ .name = "clipboard-html", .about = "a copy puts the text and HTML Format (offsets that find the copy); copy_to_clipboard:html the HTML alone, :plain the text alone", .run = clipboardHtml },
     .{ .name = "on-screen-keyboard", .about = "show_on_screen_keyboard gets Windows' input pane for the window (the hooks stop short of showing it)", .run = onScreenKeyboard },
+    .{ .name = "crash-report", .about = "a crash (an access violation) and a Zig panic each leave a crash report naming it and the code, and +crash-report lists them", .run = crashReport },
     .{ .name = "osk-shown", .about = "show_on_screen_keyboard asks Windows to show the touch keyboard for real, then hides it; it may show ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = oskShown },
     .{ .name = "font-registered", .about = "a font installed for the user from a folder with a non-ASCII name is found and opened", .run = fontRegistered },
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
@@ -4259,6 +4260,119 @@ fn oskShownOffscreen(h: *Harness) !void {
     const osk = d.value.osk;
     try h.expect(osk.asks == 2 and osk.hr >= 0, "and TryHide (hr 0x{x})", .{@as(u32, @bitCast(osk.hr))});
     // deinit ends it: no dialog on the user's desktop.
+}
+
+/// Roadmap 7.5: Sentry's in-process backend on Windows. An access violation
+/// on the UI thread and a Zig panic each leave a crash report in murrtty's
+/// crash folder (under XDG_STATE_HOME, the scenario's own here, with
+/// Sentry's database under XDG_CACHE_HOME), naming what happened and where,
+/// and +crash-report lists them. A report Sentry keeps for the next start
+/// counts once a murrtty started after it has sent it. The report's frames
+/// are addresses; names come from murrtty's PDB (Harness.symbolizeReport),
+/// as for a release's symbols zip.
+fn crashReport(h: *Harness) anyerror!void {
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\crash-report", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    const state = try std.fmt.allocPrint(h.alloc, "{s}\\state", .{dir});
+    defer h.alloc.free(state);
+    const cache = try std.fmt.allocPrint(h.alloc, "{s}\\cache", .{dir});
+    defer h.alloc.free(cache);
+    const reports = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\crash", .{state});
+    defer h.alloc.free(reports);
+    const env: []const [2][]const u8 = &.{ .{ "XDG_STATE_HOME", state }, .{ "XDG_CACHE_HOME", cache } };
+
+    const kinds = [_]struct { name: []const u8, next: []const u8, panic: bool, code: u32, says: []const u8 }{
+        .{ .name = "crash-report-av", .next = "crash-report-av-next", .panic = false, .code = 0xC0000005, .says = "AccessViolation" },
+        .{ .name = "crash-report-panic", .next = "crash-report-panic-next", .panic = true, .code = 3, .says = "murrtty test panic" },
+    };
+    var before: usize = 0;
+    for (kinds) |k| {
+        {
+            var g = try h.launchWith(k.name, base_config, .{ .env = env });
+            defer g.deinit();
+            try h.waitText(&g, ">", 1, 20000);
+            // Sentry starts on a thread of its own: wait until it has.
+            try waitSentry(h, &g, 10000);
+            try h.crash(&g, if (k.panic) .panic else .access_violation);
+            const code = g.waitExit(15000) orelse return h.fail("{s}: murrtty didn't end", .{k.name});
+            try h.expect(code == k.code, "{s}: murrtty ended with 0x{x} (0x{x} expected)", .{ k.name, code, k.code });
+        }
+        var found = try findReports(h, reports);
+        if (found.count == before) {
+            // Kept for the next start: start one, and let it send it.
+            var g = try h.launchWith(k.next, base_config, .{ .env = env });
+            defer g.deinit();
+            try h.waitText(&g, ">", 1, 20000);
+            var waited: u32 = 0;
+            while (waited < 10000 and found.count == before) : (waited += 200) {
+                w.Sleep(200);
+                found = try findReports(h, reports);
+            }
+            h.log("{s}: the report came with the next start", .{k.name});
+        }
+        try h.expect(found.count == before + 1, "{s}: one more crash report ({d} now)", .{ k.name, found.count });
+        const newest = found.newest orelse return h.fail("{s}: no crash report in {s}", .{ k.name, reports });
+        const path = try std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ reports, std.mem.sliceTo(&newest, 0) });
+        defer h.alloc.free(path);
+        const text = h.readFileOrNull(path) orelse return h.fail("{s}: couldn't read {s}", .{ k.name, path });
+        defer h.alloc.free(text);
+        try h.expect(std.mem.indexOf(u8, text, k.says) != null, "{s}: the report says what happened ('{s}')", .{ k.name, k.says });
+        var names = try h.symbolizeReport(text);
+        defer {
+            for (names.items) |n| h.alloc.free(n);
+            names.deinit(h.alloc);
+        }
+        var named = false;
+        for (names.items) |n| named = named or std.mem.indexOf(u8, n, "crashForTest") != null;
+        try h.expect(named, "{s}: and its stack, read with murrtty's PDB, has the function that crashed (crashForTest; {d} frames in murrtty.exe named, the first '{s}')", .{ k.name, names.items.len, if (names.items.len > 0) names.items[0] else "" });
+        before = found.count;
+    }
+
+    var r = try h.runCliWith("crash-report", &.{"+crash-report"}, env);
+    defer r.deinit();
+    const listed = std.mem.count(u8, r.out, ".ghosttycrash");
+    try h.expect(r.code == 0 and listed == 2, "+crash-report lists the two reports (exit {d}, {d} listed)", .{ r.code, listed });
+}
+
+/// Wait until murrtty's Sentry has started (the dump's sentry_ready).
+fn waitSentry(h: *Harness, g: *Harness.Ghostty, ms: u32) !void {
+    var waited: u32 = 0;
+    while (waited < ms) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.sentry_ready) return;
+        w.Sleep(100);
+    }
+    return h.fail("Sentry never started", .{});
+}
+
+/// The crash reports (*.ghosttycrash) in `dir`: how many, and the newest's
+/// name (UTF-8, NUL-terminated).
+fn findReports(h: *Harness, dir: []const u8) !struct { count: usize, newest: ?[512:0]u8 } {
+    const pattern = try std.fmt.allocPrint(h.alloc, "{s}\\*.ghosttycrash", .{dir});
+    defer h.alloc.free(pattern);
+    const p16 = try std.unicode.utf8ToUtf16LeAllocZ(h.alloc, pattern);
+    defer h.alloc.free(p16);
+    var data: w.WIN32_FIND_DATAW = undefined;
+    const find = w.FindFirstFileW(p16, &data);
+    if (find == w.INVALID_HANDLE_VALUE) return .{ .count = 0, .newest = null };
+    defer _ = w.FindClose(find);
+    var count: usize = 0;
+    var newest: ?[512:0]u8 = null;
+    var newest_time: u64 = 0;
+    while (true) {
+        count += 1;
+        const t = (@as(u64, data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
+        if (newest == null or t >= newest_time) {
+            var name: [512:0]u8 = @splat(0);
+            const units = std.mem.sliceTo(&data.cFileName, 0);
+            _ = try std.unicode.utf16LeToUtf8(&name, units);
+            newest = name;
+            newest_time = t;
+        }
+        if (w.FindNextFileW(find, &data) == 0) break;
+    }
+    return .{ .count = count, .newest = newest };
 }
 
 /// With font-family set, bold and italic text use the family's own Bold

@@ -399,7 +399,7 @@ fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8, extr
     errdefer out.deinit(alloc);
     const block = w.GetEnvironmentStringsW() orelse return error.LaunchFailed;
     defer _ = w.FreeEnvironmentStringsW(block);
-    const drop = [_][]const u8{ "XDG_CONFIG_HOME=", "GHOSTTY_WIN32_TEST_DUMP=", "GHOSTTY_WIN32_TEST_LAUNCH=", "NO_COLOR=" };
+    const drop = [_][]const u8{ "XDG_CONFIG_HOME=", "XDG_STATE_HOME=", "XDG_CACHE_HOME=", "GHOSTTY_WIN32_TEST_DUMP=", "GHOSTTY_WIN32_TEST_LAUNCH=", "NO_COLOR=" };
     var i: usize = 0;
     while (block[i] != 0) {
         const entry = std.mem.sliceTo(block[i..], 0);
@@ -421,11 +421,25 @@ fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8, extr
             try out.append(alloc, 0);
         }
     }
+    // Each launch's state and cache (crash reports, Sentry's database) are
+    // its own, unless the caller names them: never the owner's.
+    const state_home = try std.fmt.allocPrint(alloc, "{s}\\state", .{cfg_home});
+    defer alloc.free(state_home);
+    const cache_home = try std.fmt.allocPrint(alloc, "{s}\\cache", .{cfg_home});
+    defer alloc.free(cache_home);
+    var has_state = false;
+    var has_cache = false;
+    for (extra) |kv| {
+        has_state = has_state or std.ascii.eqlIgnoreCase(kv[0], "XDG_STATE_HOME");
+        has_cache = has_cache or std.ascii.eqlIgnoreCase(kv[0], "XDG_CACHE_HOME");
+    }
     const fixed = [_][2][]const u8{
         .{ "XDG_CONFIG_HOME", cfg_home },
         .{ "GHOSTTY_WIN32_TEST_DUMP", dump_path },
     };
-    for ([_][]const [2][]const u8{ &fixed, extra }) |list| for (list) |kv| {
+    const homes = [_][2][]const u8{ .{ "XDG_STATE_HOME", state_home }, .{ "XDG_CACHE_HOME", cache_home } };
+    const defaults: []const [2][]const u8 = if (has_state and has_cache) &.{} else if (has_state) homes[1..] else if (has_cache) homes[0..1] else &homes;
+    for ([_][]const [2][]const u8{ &fixed, defaults, extra }) |list| for (list) |kv| {
         const s = try std.mem.concat(alloc, u8, &.{ kv[0], "=", kv[1] });
         defer alloc.free(s);
         const s16 = try std.unicode.utf8ToUtf16LeAlloc(alloc, s);
@@ -1551,6 +1565,8 @@ pub const Dump = struct {
     /// The last test drop's effect (dropClipboard; roadmap 5.8): 1 a
     /// copy, 0 refused, -1 none made.
     drop_effect: i32 = -1,
+    /// Sentry has started (roadmap 7.5).
+    sentry_ready: bool = false,
     /// show_on_screen_keyboard's requests and the last one's result
     /// (roadmap 6.5), and click-repeat-interval as murrtty has it.
     osk: struct { asks: u32 = 0, hr: i32 = 0, done: bool = false } = .{},
@@ -2377,6 +2393,68 @@ pub fn clearClipboard(self: *Harness) !void {
 pub fn exportTerminalIo(self: *Harness, g: *const Ghostty) !void {
     var d = try self.dumpWith(g, 18, 0);
     d.deinit();
+}
+
+/// The functions a crash report's stack names (roadmap 7.5), resolved as a
+/// maintainer would from murrtty's PDB with dbghelp: Sentry's in-process
+/// backend records each frame's address and the modules' load addresses
+/// (`debug_meta`), and names come from the symbols afterwards. Each frame
+/// inside murrtty.exe is looked up in the exe under test, loaded at the
+/// address the report gives; the caller frees the names.
+pub fn symbolizeReport(self: *Harness, report: []const u8) !std.ArrayList([]u8) {
+    var names: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (names.items) |n| self.alloc.free(n);
+        names.deinit(self.alloc);
+    }
+    // murrtty.exe's image in the report's module list.
+    const exe_mark = "murrtty.exe\"";
+    const at = std.mem.indexOf(u8, report, exe_mark) orelse return names;
+    const image_start = std.mem.lastIndexOf(u8, report[0..at], "{") orelse return names;
+    const image = report[image_start..at];
+    const base = jsonHex(image, "\"image_addr\":\"0x") orelse return names;
+    const size_at = std.mem.indexOf(u8, image, "\"image_size\":") orelse return names;
+    const size_text = image[size_at + "\"image_size\":".len ..];
+    var size_len: usize = 0;
+    while (size_len < size_text.len and std.ascii.isDigit(size_text[size_len])) size_len += 1;
+    const size = std.fmt.parseInt(u32, size_text[0..size_len], 10) catch return names;
+
+    const process: w.HANDLE = @ptrFromInt(0x7e57);
+    _ = w.SymSetOptions(w.SYMOPT_UNDNAME | w.SYMOPT_DEFERRED_LOADS);
+    if (w.SymInitializeW(process, null, w.FALSE) == 0) return names;
+    defer _ = w.SymCleanup(process);
+    if (w.SymLoadModuleExW(process, null, self.exe, null, base, size, null, 0) == 0) return names;
+
+    var rest = report;
+    const mark = "\"instruction_addr\":\"0x";
+    while (std.mem.indexOf(u8, rest, mark)) |i| {
+        rest = rest[i..];
+        const addr = jsonHex(rest, mark) orelse break;
+        rest = rest[mark.len..];
+        if (addr < base or addr >= base + size) continue;
+        var info: w.SYMBOL_INFOW = .{};
+        var displacement: u64 = 0;
+        if (w.SymFromAddrW(process, addr, &displacement, &info) == 0) continue;
+        const len = @min(info.NameLen, info.Name.len);
+        try names.append(self.alloc, try std.unicode.utf16LeToUtf8Alloc(self.alloc, info.Name[0..len]));
+    }
+    return names;
+}
+
+/// The hexadecimal number after `mark` in `text`.
+fn jsonHex(text: []const u8, mark: []const u8) ?u64 {
+    const i = std.mem.indexOf(u8, text, mark) orelse return null;
+    const digits = text[i + mark.len ..];
+    var n: usize = 0;
+    while (n < digits.len and std.ascii.isHex(digits[n])) n += 1;
+    return std.fmt.parseInt(u64, digits[0..n], 16) catch null;
+}
+
+/// Crash murrtty on purpose (dump wparam 21, posted): an access violation
+/// on its UI thread, or a Zig panic (roadmap 7.5).
+pub fn crash(self: *Harness, g: *const Ghostty, kind: enum { access_violation, panic }) !void {
+    const target = wakeupWindow(g.pid) orelse return self.fail("no wakeup window (is this a Debug build?)", .{});
+    if (w.PostMessageW(target, self.dump_msg, 21, @intFromEnum(kind)) == 0) return self.fail("couldn't post the crash request", .{});
 }
 
 /// Have murrtty hide the touch keyboard for its first window (dump wparam

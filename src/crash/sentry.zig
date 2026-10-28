@@ -25,6 +25,19 @@ var cache_dir_: ?[]const u8 = null;
 /// Holds the XDG state dir.
 var state_dir_: ?[]const u8 = null;
 
+/// Set once sentry_init has succeeded, for the panic handler, which may
+/// run on any thread while the init thread is still working.
+var initialized = std.atomic.Value(bool).init(false);
+
+/// Whether init_thread has been joined (waitInit, deinit; main thread only).
+var init_joined = false;
+
+/// The thread capturing a panic (0 for none), and whether it has finished:
+/// a panic on another thread meanwhile waits for it before Zig's handler
+/// ends the process.
+var capturing = std.atomic.Value(u32).init(0);
+var captured = std.atomic.Value(bool).init(false);
+
 /// Thread-local state that can be set by thread main functions so that
 /// crashes have more context.
 ///
@@ -63,15 +76,11 @@ pub fn init(gpa: Allocator, environ_map: std.process.Environ.Map) !void {
         return;
     }
 
-    // Not supported on Windows currently, doesn't build.
-    if (comptime builtin.target.os.tag == .windows) {
-        var map = environ_map;
-        map.deinit();
-        return;
-    }
-
     // Must only start once
     assert(init_thread == null);
+
+    // The main thread's room for the crash handler (see guardStack).
+    guardStack();
 
     // We use a thread for initializing Sentry because initialization is
     // slow enough to matter for process startup: resolving our directories
@@ -149,7 +158,9 @@ fn initThread(gpa: Allocator, environ_map_: std.process.Environ.Map) !void {
     //errdefer transport.deinit();
 
     const opts = sentry.c.sentry_options_new();
-    errdefer sentry.c.sentry_options_free(opts);
+    // sentry_init takes the options, and frees them itself if it fails.
+    var opts_owned = true;
+    errdefer if (opts_owned) sentry.c.sentry_options_free(opts);
     sentry.c.sentry_options_set_release_n(
         opts,
         build_config.version_string.ptr,
@@ -172,8 +183,18 @@ fn initThread(gpa: Allocator, environ_map_: std.process.Environ.Map) !void {
         sentry.c.sentry_options_set_debug(opts, @intFromBool(true));
     }
 
+    // On Windows, let dbghelp load a module's symbols only when asked:
+    // Sentry's handler initializes it while the process is crashing, with
+    // little room on the stack (murrtty, roadmap 7.5). Sentry adds its own
+    // options to these.
+    if (comptime builtin.target.os.tag == .windows) {
+        _ = SymSetOptions(SymGetOptions() | SYMOPT_DEFERRED_LOADS);
+    }
+
     // Initialize
+    opts_owned = false;
     if (sentry.c.sentry_init(opts) != 0) return error.SentryInitFailed;
+    initialized.store(true, .release);
 
     // Setup some basic tags that we always want present
     sentry.setTag("build-mode", build_config.mode_string);
@@ -203,8 +224,81 @@ fn cacheDir(io: std.Io, alloc: Allocator, environ_map: *const std.process.Enviro
         io,
         alloc,
         environ_map,
-        .{ .subdir = "ghostty/sentry" },
+        .{ .subdir = build_config.product_id ++ "/sentry" },
     );
+}
+
+/// On Windows, keep stack for the crash handler on the calling thread: a
+/// stack overflow is reported on the overflowing thread, which otherwise
+/// has only a few pages left for the in-process backend's handler (murrtty,
+/// roadmap 7.5). Called by each thread that sets its thread_state.
+pub fn guardStack() void {
+    if (comptime !build_options.sentry or builtin.target.os.tag != .windows) return;
+    var size: u32 = 64 * 1024;
+    _ = SetThreadStackGuarantee(&size);
+}
+
+extern "kernel32" fn SetThreadStackGuarantee(*u32) callconv(.winapi) i32;
+extern "kernel32" fn GetCurrentThreadId() callconv(.winapi) u32;
+extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
+extern "dbghelp" fn SymGetOptions() callconv(.winapi) u32;
+extern "dbghelp" fn SymSetOptions(u32) callconv(.winapi) u32;
+const SYMOPT_DEFERRED_LOADS: u32 = 0x00000004;
+
+/// Whether Sentry has started (for the GUI tests' crash scenario).
+pub fn ready() bool {
+    if (comptime !build_options.sentry) return false;
+    return initialized.load(.acquire);
+}
+
+/// Wait for Sentry's init thread. A short-lived process (a CLI action)
+/// calls this before it exits: the init thread also sends the reports an
+/// earlier crash left, which an exit mid-way would cut short, and
+/// +crash-report lists them only after.
+pub fn waitInit() void {
+    if (comptime !build_options.sentry) return;
+    const thr = init_thread orelse return;
+    if (init_joined) return;
+    thr.join();
+    init_joined = true;
+}
+
+/// The program's panic handler (main_ghostty.zig): on Windows a Zig panic
+/// ends the process without raising an exception, so the in-process
+/// backend never sees it; it is captured here as a fatal event, with the
+/// panic message and the current stack, then Zig's own handler runs as
+/// before. (On macOS the abort's SIGABRT reaches Sentry's handler.)
+pub fn panic(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    @branchHint(.cold);
+    if (comptime build_options.sentry and builtin.target.os.tag == .windows) capturePanic(msg);
+    // From the panic's caller, as Zig's handler starts without this one.
+    std.debug.defaultPanic(msg, first_trace_addr orelse @returnAddress());
+}
+
+fn capturePanic(msg: []const u8) void {
+    if (comptime !build_options.sentry) return;
+    if (!initialized.load(.acquire)) return;
+    const me = GetCurrentThreadId();
+    if (capturing.cmpxchgStrong(0, me, .acq_rel, .acquire)) |other| {
+        // Another thread is writing its report: give it a few seconds
+        // before Zig's handler ends the process. (A panic inside this
+        // thread's own capture goes straight on.)
+        if (other != me) {
+            var waited: u32 = 0;
+            while (!captured.load(.acquire) and waited < 3000) : (waited += 10) Sleep(10);
+        }
+        return;
+    }
+    defer captured.store(true, .release);
+
+    // A fatal event with the panic as its exception, and the stack.
+    const event = sentry.c.sentry_value_new_event();
+    _ = sentry.c.sentry_value_set_by_key(event, "level", sentry.c.sentry_value_new_string("fatal"));
+    const exception = sentry.c.sentry_value_new_exception_n("panic", "panic".len, msg.ptr, msg.len);
+    sentry.c.sentry_value_set_stacktrace(exception, null, 0);
+    sentry.c.sentry_event_add_exception(event, exception);
+    // The transport writes the report before this returns (Transport).
+    _ = sentry.c.sentry_capture_event(event);
 }
 
 /// Process-wide deinitialization of our Sentry client. This ensures all
@@ -212,13 +306,13 @@ fn cacheDir(io: std.Io, alloc: Allocator, environ_map: *const std.process.Enviro
 pub fn deinit() void {
     if (comptime !build_options.sentry) return;
 
-    if (comptime builtin.target.os.tag == .windows) return;
-
     // If we're still initializing then wait for init to finish. This
     // is highly unlikely since init is a very fast operation but we want
     // to avoid the possibility.
     const thr = init_thread orelse return;
-    thr.join();
+    if (!init_joined) thr.join();
+    init_joined = true;
+    initialized.store(false, .release);
     _ = sentry.c.sentry_close();
 }
 

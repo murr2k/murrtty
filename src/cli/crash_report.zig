@@ -58,6 +58,10 @@ fn runInner(
     stdout_file: *std.Io.File,
     stdout: *std.Io.Writer,
 ) !u8 {
+    // Sentry's init thread sends the reports an earlier crash left: list
+    // them after it.
+    crash.sentry.waitInit();
+
     const crash_dir = try crash.defaultDir(io, alloc, environ_map);
     var reports: std.ArrayList(crash.Report) = .empty;
     errdefer reports.deinit(alloc);

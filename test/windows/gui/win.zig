@@ -339,6 +339,50 @@ pub extern "kernel32" fn GlobalUnlock(HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GlobalFree(HANDLE) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn GlobalSize(HANDLE) callconv(.winapi) usize;
 pub extern "user32" fn IsClipboardFormatAvailable(UINT) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetFileAttributesW(LPCWSTR) callconv(.winapi) DWORD;
+pub const INVALID_FILE_ATTRIBUTES: DWORD = 0xFFFFFFFF;
+pub const FILETIME = extern struct { dwLowDateTime: DWORD, dwHighDateTime: DWORD };
+pub const WIN32_FIND_DATAW = extern struct {
+    dwFileAttributes: DWORD,
+    ftCreationTime: FILETIME,
+    ftLastAccessTime: FILETIME,
+    ftLastWriteTime: FILETIME,
+    nFileSizeHigh: DWORD,
+    nFileSizeLow: DWORD,
+    dwReserved0: DWORD,
+    dwReserved1: DWORD,
+    cFileName: [260]u16,
+    cAlternateFileName: [14]u16,
+};
+pub extern "kernel32" fn FindFirstFileW(LPCWSTR, *WIN32_FIND_DATAW) callconv(.winapi) HANDLE;
+pub extern "kernel32" fn FindNextFileW(HANDLE, *WIN32_FIND_DATAW) callconv(.winapi) BOOL;
+pub extern "kernel32" fn FindClose(HANDLE) callconv(.winapi) BOOL;
+/// SYMBOL_INFOW with room for a 256-character name; SizeOfStruct is the C
+/// struct's size (88), not this one's.
+pub const SYMBOL_INFOW = extern struct {
+    SizeOfStruct: u32 = 88,
+    TypeIndex: u32 = 0,
+    Reserved: [2]u64 = .{ 0, 0 },
+    Index: u32 = 0,
+    Size: u32 = 0,
+    ModBase: u64 = 0,
+    Flags: u32 = 0,
+    Value: u64 = 0,
+    Address: u64 = 0,
+    Register: u32 = 0,
+    Scope: u32 = 0,
+    Tag: u32 = 0,
+    NameLen: u32 = 0,
+    MaxNameLen: u32 = 256,
+    Name: [256]u16 = @splat(0),
+};
+pub const SYMOPT_UNDNAME = 0x00000002;
+pub const SYMOPT_DEFERRED_LOADS = 0x00000004;
+pub extern "dbghelp" fn SymSetOptions(DWORD) callconv(.winapi) DWORD;
+pub extern "dbghelp" fn SymInitializeW(HANDLE, ?LPCWSTR, BOOL) callconv(.winapi) BOOL;
+pub extern "dbghelp" fn SymLoadModuleExW(HANDLE, ?HANDLE, LPCWSTR, ?LPCWSTR, u64, DWORD, ?*anyopaque, DWORD) callconv(.winapi) u64;
+pub extern "dbghelp" fn SymFromAddrW(HANDLE, u64, ?*u64, *SYMBOL_INFOW) callconv(.winapi) BOOL;
+pub extern "dbghelp" fn SymCleanup(HANDLE) callconv(.winapi) BOOL;
 pub extern "user32" fn SystemParametersInfoW(UINT, UINT, ?*anyopaque, UINT) callconv(.winapi) BOOL;
 pub const SPI_GETWHEELSCROLLLINES = 0x0068;
 pub const WHEEL_PAGESCROLL = 0xFFFFFFFF;

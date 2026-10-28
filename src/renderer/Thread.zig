@@ -213,6 +213,7 @@ fn threadMain_(self: *Thread) !void {
         .surface = self.renderer.surface_mailbox.surface,
     };
     defer crash.sentry.thread_state = null;
+    crash.sentry.guardStack();
 
     // Setup our thread QoS
     self.setQosClass();

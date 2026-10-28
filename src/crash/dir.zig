@@ -1,11 +1,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const build_config = @import("../build_config.zig");
 const internal_os = @import("../os/main.zig");
 
 /// Returns a Dir for the default directory. The Dir.path field must be
 /// freed with the given allocator.
 pub fn defaultDir(io: std.Io, alloc: Allocator, environ_map: *const std.process.Environ.Map) !Dir {
-    const crash_dir = try internal_os.xdg.state(io, alloc, environ_map, .{ .subdir = "ghostty/crash" });
+    // Under the product's own folder: murrtty's on Windows.
+    const crash_dir = try internal_os.xdg.state(io, alloc, environ_map, .{ .subdir = build_config.product_id ++ "/crash" });
     errdefer alloc.free(crash_dir);
     return .{ .path = crash_dir };
 }

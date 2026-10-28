@@ -524,6 +524,11 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
 - **Logs.** `murrtty.exe` is a GUI program, so it has no console. To see its
   log, start it from a shell with stderr redirected:
   `murrtty.exe 2> murrtty.log`.
+- **Crash reports.** A crash or an internal error writes a report to
+  `%LOCALAPPDATA%\murrtty\crash` (or `XDG_STATE_HOME\murrtty\crash` if
+  that is set; a crash's comes when murrtty next starts);
+  `murrtty +crash-report` lists them. Nothing is sent anywhere:
+  attach a report to an issue if you want it looked at.
 
 ## How it works
 

@@ -1574,6 +1574,7 @@ pub const ReadThread = struct {
             .surface = io.surface_mailbox.surface,
         };
         defer crash.sentry.thread_state = null;
+        crash.sentry.guardStack();
 
         // Set the fd to non-blocking so the gather stage can drain it
         // in a tight loop and fall back to poll for readiness. The
@@ -1956,6 +1957,7 @@ pub const ReadThread = struct {
             .surface = io.surface_mailbox.surface,
         };
         defer crash.sentry.thread_state = null;
+        crash.sentry.guardStack();
 
         // Debug builds: GHOSTTY_PTY_LOG names a folder that gets each
         // terminal's raw pty output, for seeing what ConPTY sends.

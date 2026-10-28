@@ -527,14 +527,19 @@ function Get-ZigDir {
 # Run the unpacked package's murrtty.exe with its output in a file (it is a
 # GUI program: PowerShell wouldn't wait for it otherwise), without
 # GHOSTTY_RESOURCES_DIR (which murrtty and Ghostty set for their shells, and
-# which a release build reads before looking beside its exe), for at most
-# a minute.
-function Invoke-Packaged([string]$Exe, [string[]]$Arguments) {
+# which a release build reads before looking beside its exe), with its
+# state and cache (crash reports, Sentry's database) under $CheckHome rather
+# than the user's, for at most a minute.
+function Invoke-Packaged([string]$Exe, [string[]]$Arguments, [string]$CheckHome) {
     $outFile = [IO.Path]::GetTempFileName()
     $errFile = [IO.Path]::GetTempFileName()
     $resources = $env:GHOSTTY_RESOURCES_DIR
+    $state = $env:XDG_STATE_HOME
+    $cache = $env:XDG_CACHE_HOME
     try {
         $env:GHOSTTY_RESOURCES_DIR = $null
+        $env:XDG_STATE_HOME = Join-Path $CheckHome 'state'
+        $env:XDG_CACHE_HOME = Join-Path $CheckHome 'cache'
         $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -RedirectStandardOutput $outFile `
             -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
         # Windows PowerShell reports no exit code for a process whose handle
@@ -547,6 +552,8 @@ function Invoke-Packaged([string]$Exe, [string[]]$Arguments) {
         return [pscustomobject]@{ Code = $p.ExitCode; Lines = @(Get-Content -LiteralPath $outFile) }
     } finally {
         $env:GHOSTTY_RESOURCES_DIR = $resources
+        $env:XDG_STATE_HOME = $state
+        $env:XDG_CACHE_HOME = $cache
         Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
     }
 }
@@ -633,11 +640,11 @@ function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
     $check = Join-Path $Work 'check'
     [IO.Compression.ZipFile]::ExtractToDirectory("$zip.partial", $check)
     $packed = Join-Path $check "$name\bin\murrtty.exe"
-    $v = Invoke-Packaged $packed @('+version')
+    $v = Invoke-Packaged $packed @('+version') (Join-Path $Work 'home')
     if ($v.Code -ne 0 -or -not ($v.Lines -match [regex]::Escape($version))) {
         Fail "The packaged murrtty.exe +version exited $($v.Code) without naming $version."
     }
-    $themes = Invoke-Packaged $packed @('+list-themes', '--plain')
+    $themes = Invoke-Packaged $packed @('+list-themes', '--plain') (Join-Path $Work 'home')
     $found = @($themes.Lines | Where-Object { $_ -like '*(resources)' }).Count
     if ($themes.Code -ne 0 -or $found -lt 100) {
         Fail "The packaged murrtty.exe found $found themes in its share folder (exit $($themes.Code)); its resources are not where it looks."

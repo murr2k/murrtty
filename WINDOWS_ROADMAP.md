@@ -220,6 +220,10 @@ roadmap item behind it.
   macOS; GTK moves it.
 - **`resize_split`** (1.5): each step is clamped, since upstream's resize
   asserts on large deltas; GTK doesn't clamp.
+- **Crash reports** (7.5): on by default, as in the macOS app: Sentry's
+  in-process backend writes a report of a crash or a Zig panic to
+  `%LOCALAPPDATA%\murrtty\crash`, which `+crash-report` lists; nothing is
+  sent. GTK's builds have Sentry off (its reports carried little on Linux).
 - **Background blur** (4.2): Windows' own: Acrylic, its documented
   backdrop (tinted for the light or dark theme, with its grain), in an
   active window from Windows 11 22H2, and otherwise a plain blur through
@@ -3130,7 +3134,7 @@ free-inside-callback bug.
   first, so a failed run leaves nothing that looks like a release. Of
   zig's options it takes only `-Dversion-string=`, `-Dstrip=false`, `-j`
   and `--verbose`: the notices describe the default Windows build (with
-  `-Dsentry=true` they would miss Sentry). It warns when the tree has
+  `-Dsentry=false` they would list a Sentry the exe lacks). It warns when the tree has
   uncommitted changes. The notices come from
   `dist/windows/third-party.json`, written from an inventory of the
   release exe's sources (its PDB), the build graph and `share\`: 32
@@ -3192,17 +3196,74 @@ free-inside-callback bug.
 - Publish PDBs for symbolication. `ghostty +crash-report` lists the local
   reports.
 
+*Built 2026-10-28.* Sentry is on by default for murrtty on Windows (the
+win32 runtime: an app embedding libghostty keeps its own crash handling),
+in every build mode as on macOS, with the in-process backend and no
+breakpad (the
+backend is passed as a string: the build decides the target at run
+time). It had been kept out on Windows as "doesn't build"; it builds
+with `SENTRY_BUILD_STATIC` (else `sentry.h` declares its API
+`dllimport`) and dbghelp and version linked (`pkg/sentry/build.zig`).
+Reports and Sentry's database live under murrtty's own folders
+(`%LOCALAPPDATA%\murrtty\crash` and `\sentry`, `build_config.product_id`;
+Ghostty's elsewhere are unchanged), and nothing is sent: Ghostty's
+transport writes each report to disk. Three Windows specifics:
+- Zig's segfault handler is a vectored exception handler, which runs
+  before Sentry's unhandled exception filter and ends the process, so with
+  Sentry it is off on Windows (`main_ghostty.zig`'s `std_options`). Debug
+  builds lose its symbolized trace on stderr; the report's stack, read
+  with the PDB, stands in.
+- A Zig panic on Windows ends the process with `RtlExitUserProcess(3)`,
+  raising nothing for a handler to see, so the program's panic handler
+  (`crash.sentry.panic`) first records a fatal event with the panic's
+  message and the current stack, then runs Zig's own (on macOS the
+  abort's SIGABRT reaches Sentry). The transport writes it at once. A
+  panic on another thread meanwhile waits up to 3 s for that report
+  before Zig's handler ends the process.
+- The UI, renderer, IO and pty read threads ask `SetThreadStackGuarantee`
+  for 64 KB, so a stack overflow leaves room for the handler, and dbghelp
+  loads symbols only when asked (`SYMOPT_DEFERRED_LOADS`, set before
+  Sentry starts).
+A CLI action waits for Sentry's init thread before it exits (that thread
+sends an earlier crash's report), so `+crash-report` lists a crash right
+after it and no action cuts a report short. Shells start with Windows'
+default error mode (`CREATE_DEFAULT_ERROR_MODE`), not the one Sentry sets
+in murrtty. A failed `sentry_init` no longer frees its options twice
+(upstream's code: `sentry_init` frees them itself). The GUI harness gives
+every launch its own XDG_STATE_HOME and XDG_CACHE_HOME, so no test writes
+reports or Sentry's database into the owner's folders.
+A crash's report comes with the next start (the backend keeps it in its
+database; the next murrtty sends it through the transport); a panic's at
+once. The reports' frames are addresses, with the modules' load addresses
+and the PDB's identity (`debug_meta`): names come from the symbols zip
+(7.4) afterwards. Scenario `crash-report` (its own XDG_STATE_HOME and
+XDG_CACHE_HOME): an access violation on the UI thread and a Zig panic,
+through dump wparam 21 with Windows Error Reporting's dialog off, each
+leave a report saying what happened, whose stack, read with murrtty's PDB
+through dbghelp (`Harness.symbolizeReport`), names the function that
+crashed; `+crash-report` lists both. With Zig's segfault handler left on,
+murrtty ended with exit 3 and no report; without the panic hook, the panic
+left none. Not reported: a stack overflow on a thread without the
+guarantee, a crash or panic before Sentry has started (its init runs on a
+thread of its own), fail-fast exits that bypass every handler (the C
+runtime's `abort`, stack-buffer checks, heap corruption, C++
+`std::terminate` in glslang or SPIRV-Cross), and access violations that
+COM, RPC or user32's callback guard catch first (the UI Automation
+provider, the drop target, sent messages).
+
 **7.6 Updates, M.** winget is the primary channel. An opt-in check
 (`auto-update = check`) reads a static appcast over WinHTTP; downloads are
 verified with SHA-256 and Authenticode. The `check_for_updates` action runs the
 same check on demand. *Hosting, decided 2026-10-28 by the owner:* murrtty's
-site and appcast on the owner's own domain, murraykopit.com, as a subdomain
-(recommended: `murrtty.murraykopit.com`, one DNS record to static hosting
-such as Cloudflare Pages or GitHub Pages, wherever the main site lives) or
-at `murraykopit.com/murrtty`, rather than a new murrtty.org; downloads on
-the public repository's GitHub Releases (winget's usual source). murrtty
-has no server part, so no Fly.io unless one comes (crash reports, 7.5, may
-rather go to a hosted service).
+site and appcast on its own domain, **murrtty.org**, which the owner
+registered on Cloudflare that day (it replaces the plan of the same day
+for a murraykopit.com subdomain): static files on Cloudflare Pages, the
+appcast at a fixed address there; downloads on the public repository's
+GitHub Releases (winget's usual source). murrtty has no server part, so no
+Fly.io unless one comes. The site waits for the public repository (R4),
+which it links to; until then the domain gets only its baseline: no mail
+(a null MX, SPF `-all`, DMARC reject, so nobody can send as it) and HTTPS
+only.
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3.

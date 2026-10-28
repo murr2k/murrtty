@@ -229,10 +229,15 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
     config.sentry = b.option(
         bool,
         "sentry",
-        "Build with Sentry crash reporting. Default for macOS is true, false for any other system.",
+        "Build with Sentry crash reporting. Default for macOS and Windows is true, false for any other system.",
     ) orelse sentry: {
         switch (target.result.os.tag) {
             .macos, .ios => break :sentry true,
+
+            // murrtty: Sentry's in-process backend (roadmap 7.5), in its own
+            // app only: an app embedding libghostty keeps its own crash
+            // handling.
+            .windows => break :sentry config.app_runtime == .win32,
 
             // Note its false for linux because the crash reports on Linux
             // don't have much useful information.

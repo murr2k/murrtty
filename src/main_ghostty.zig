@@ -14,6 +14,8 @@ const apprt = @import("apprt.zig");
 const App = @import("App.zig");
 const Ghostty = @import("main_c.zig").Ghostty;
 const global = @import("global.zig");
+const build_options = @import("build_options");
+const crash = @import("crash/main.zig");
 
 /// The return type for main() depends on the build artifact. The lib build
 /// also calls "main" in order to run the CLI actions, but it calls it as
@@ -71,10 +73,13 @@ pub fn main(minimal: std.process.Init.Minimal) !MainReturn {
     // Execute our action if we have one
     if (global.action()) |action| {
         std.log.info("executing CLI action={}", .{action});
-        std.process.exit(action.run(alloc) catch |err| err: {
+        const code = action.run(alloc) catch |err| err: {
             std.log.err("CLI action failed error={}", .{err});
             break :err 1;
-        });
+        };
+        // Sentry's init thread may be sending an earlier crash's report.
+        crash.sentry.waitInit();
+        std.process.exit(code);
         return;
     }
 
@@ -202,7 +207,20 @@ fn macosLogger(comptime scope: @TypeOf(.EnumLiteral)) *macos.os.Log {
     return created;
 }
 
+/// Zig's panic handler, after recording the panic for the crash report
+/// where Sentry wouldn't see it otherwise (crash.sentry.panic).
+pub const panic = std.debug.FullPanic(crash.sentry.panic);
+
 pub const std_options: std.Options = .{
+    // On Windows, Zig's segfault handler is a vectored exception handler,
+    // which runs before Sentry's unhandled exception filter and ends the
+    // process: with Sentry built in, Sentry's must see crashes first
+    // (murrtty, roadmap 7.5).
+    .enable_segfault_handler = if (builtin.target.os.tag == .windows and build_options.sentry)
+        false
+    else
+        std.debug.default_enable_segfault_handler,
+
     // Our log level is always at least info in every build mode.
     //
     // Note, we don't lower this to debug even with conditional logging

@@ -173,6 +173,18 @@
       "texts": [{ "from": "repo", "path": "src/stb/stb_image.h", "start": "This software is available under 2 licenses", "end": "WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE." }]
     },
     {
+      "name": "Sentry Native SDK",
+      "version": "0.7.8",
+      "use": "crash reports (its in-process backend), linked into murrtty.exe; reports stay on disk",
+      "license": "MIT; its vendored mpack and jsmn MIT",
+      "home": "https://github.com/getsentry/sentry-native",
+      "texts": [
+        { "from": "pkg/sentry:sentry", "path": "LICENSE" },
+        { "from": "pkg/sentry:sentry", "path": "vendor/mpack.h", "title": "mpack", "start": "The MIT License (MIT)", "end": "SOFTWARE." },
+        { "from": "pkg/sentry:sentry", "path": "vendor/jsmn.h", "title": "jsmn", "start": "MIT License", "end": "SOFTWARE." }
+      ]
+    },
+    {
       "name": "libxev",
       "version": "0.0.0 (commit 819ffa18)",
       "use": "the event loop, compiled into murrtty.exe",
@@ -359,6 +371,7 @@
     "pkg/highway:highway": "N-V-__8AAGmZhABbsPJLfbqrh6JTHsXhY6qCaLAQyx25e0XE",
     "pkg/libpng:libpng": "N-V-__8AAJrvXQCqAT8Mg9o_tk6m0yf5Fz-gCNEOKLyTSerD",
     "pkg/oniguruma:oniguruma": "N-V-__8AAHjwMQDBXnLq3Q2QhaivE0kE2aD138vtX2Bq1g7c",
+    "pkg/sentry:sentry": "N-V-__8AAPlZGwBEa-gxrcypGBZ2R8Bse4JYSfo_ul8i2jlG",
     "pkg/spirv-cross:spirv_cross": "N-V-__8AANb6pwD7O1WG6L5nvD_rNMvnSc9Cpg1ijSlTYywv",
     "pkg/translate-c:translate_c": "translate_c-2.0.0-Q_BUWltOBwBYABF84EUL208pIFeUIwbBs29FmVBaafN5",
     "pkg/wuffs:wuffs": "N-V-__8AAP5JWgCGP_AD0teWpa4krRvE9VPZzvviGdbmN4jI",
@@ -388,8 +401,7 @@
     "pkg/fontconfig:fontconfig": "not used on Windows (fonts come from DirectWrite)",
     "pkg/libxml2:libxml2": "fontconfig's, not used on Windows",
     "pkg/libintl:gettext": "translations are off on Windows",
-    "pkg/sentry:sentry": "crash reporting is off on Windows",
-    "pkg/breakpad:breakpad": "crash reporting is off on Windows",
+    "pkg/breakpad:breakpad": "not on Windows, where Sentry's in-process backend catches crashes",
     "pkg/wuffs:pixels": "test images only",
     ":vaxis/zigimg": "vaxis's image support, not compiled into murrtty (none of its code is in murrtty's symbols)",
     "pkg/translate-c:translate_c/aro": "the C translator translate-c uses while building, not compiled into murrtty"

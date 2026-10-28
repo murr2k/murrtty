@@ -93,6 +93,17 @@ pub const Notified = struct {
     body: []u8,
 };
 
+/// Crash for the crash report scenario: the report must come from Sentry's
+/// in-process backend (an exception) or the panic handler.
+fn crashForTest(kind: c.LPARAM) noreturn {
+    // No "murrtty has stopped working" from Windows Error Reporting.
+    _ = c.SetErrorMode(c.SEM_FAILCRITICALERRORS | c.SEM_NOGPFAULTERRORBOX);
+    if (kind == 1) @panic("murrtty test panic (roadmap 7.5)");
+    const p: *volatile u8 = @ptrFromInt(0x10);
+    p.* = 1;
+    unreachable;
+}
+
 /// Whether the hooks are on, for code with no App at hand.
 var on = false;
 
@@ -256,10 +267,14 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 /// - 17: drop what the clipboard holds on the first window's active pane,
 ///   through its drop target (DragEnter, then Drop): OLE wraps the
 ///   clipboard as the data object a drag would bring (roadmap 5.8).
+/// - 21 (posted, not sent): crash on purpose (roadmap 7.5), with Windows'
+///   error dialog off: an access violation on the UI thread (`lparam` 0),
+///   or a Zig panic (1).
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (comptime !enabled) return 0;
+    if (wparam == 21) crashForTest(lparam);
     if (wparam == 3) {
         var name_buf: [64]u8 = undefined;
         const name = std.fmt.bufPrint(&name_buf, "Local\\GhosttyGuiSync-{d}", .{c.GetCurrentProcessId()}) catch return 0;
@@ -732,6 +747,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         app.test_state.global_refreshes,
     });
     try out.print(alloc, ",\"drop_effect\":{d}", .{app.test_state.drop_effect});
+    try out.print(alloc, ",\"sentry_ready\":{}", .{@import("../../crash/main.zig").sentry.ready()});
     try out.print(alloc, ",\"osk\":{{\"asks\":{d},\"hr\":{d},\"done\":{}}},\"click_interval\":{d}", .{
         app.test_state.osk_asks,
         app.test_state.osk_hr,

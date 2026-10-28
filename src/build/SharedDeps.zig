@@ -402,10 +402,13 @@ pub fn add(
 
     // Sentry
     if (self.config.sentry) {
+        // Windows has no breakpad client in the vendored build: Sentry's
+        // in-process backend catches crashes there (murrtty, roadmap 7.5).
+        const windows = target.result.os.tag == .windows;
         if (b.lazyDependency("sentry", .{
             .target = target,
             .optimize = optimize,
-            .backend = .breakpad,
+            .backend = @as([]const u8, if (windows) "inproc" else "breakpad"),
         })) |sentry_dep| {
             step.root_module.addImport(
                 "sentry",
@@ -418,14 +421,16 @@ pub fn add(
             );
 
             // We also need to include breakpad in the static libs.
-            if (sentry_dep.builder.lazyDependency("breakpad", .{
-                .target = target,
-                .optimize = optimize,
-            })) |breakpad_dep| {
-                try static_libs.append(
-                    b.allocator,
-                    breakpad_dep.artifact("breakpad").getEmittedBin(),
-                );
+            if (!windows) {
+                if (sentry_dep.builder.lazyDependency("breakpad", .{
+                    .target = target,
+                    .optimize = optimize,
+                })) |breakpad_dep| {
+                    try static_libs.append(
+                        b.allocator,
+                        breakpad_dep.artifact("breakpad").getEmittedBin(),
+                    );
+                }
             }
         }
     }

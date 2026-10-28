@@ -41,6 +41,9 @@ pub fn build(b: *std.Build) !void {
     if (target.result.os.tag == .windows) {
         try flags.appendSlice(b.allocator, &.{
             "-DSENTRY_WITH_UNWINDER_DBGHELP",
+            // A static library: without this, sentry.h declares its API
+            // __declspec(dllimport) on Windows.
+            "-DSENTRY_BUILD_STATIC",
         });
     } else {
         try flags.appendSlice(b.allocator, &.{
@@ -86,6 +89,10 @@ pub fn build(b: *std.Build) !void {
                 },
                 .flags = flags.items,
             });
+            // Stack walking and symbols (dbghelp), and the module list's
+            // file versions (version).
+            lib.root_module.linkSystemLibrary("dbghelp", .{});
+            lib.root_module.linkSystemLibrary("version", .{});
         } else {
             lib.root_module.addCSourceFiles(.{
                 .root = upstream.path(""),

@@ -75,6 +75,7 @@ pub const TRUE: windows.BOOL = .fromBool(true);
 
 // Bit-field and enum constant values
 pub const CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+pub const CREATE_DEFAULT_ERROR_MODE = 0x04000000;
 pub const DELETE = 0x00010000;
 pub const DRIVE_FIXED = 3;
 pub const DRIVE_RAMDISK = 6;

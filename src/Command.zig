@@ -432,7 +432,9 @@ fn startWindows(self: *Command, arena: Allocator) !void {
         .lpAttributeList = attribute_list,
     };
 
-    var flags: windows.DWORD = windows.CREATE_UNICODE_ENVIRONMENT;
+    // The default error mode, not murrtty's (Sentry's crash handling sets
+    // it), for the shell and what it starts.
+    var flags: windows.DWORD = windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_DEFAULT_ERROR_MODE;
     if (attribute_list != null) flags |= windows.EXTENDED_STARTUPINFO_PRESENT;
 
     var process_information: windows.PROCESS_INFORMATION = undefined;

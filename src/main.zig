@@ -21,6 +21,12 @@ pub const std_options: std.Options = if (@hasDecl(entrypoint, "std_options"))
 else
     .{};
 
+/// The panic handler: the entrypoint's, else Zig's default.
+pub const panic = if (@hasDecl(entrypoint, "panic"))
+    entrypoint.panic
+else
+    std.debug.FullPanic(std.debug.defaultPanic);
+
 comptime {
     // Force-reference our memset override so its export is emitted.
     // See quirks_memset.zig for details on why this exists.
