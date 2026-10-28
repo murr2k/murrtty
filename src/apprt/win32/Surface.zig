@@ -13,6 +13,7 @@ const global = @import("../../global.zig");
 const input = @import("../../input.zig");
 const renderer = @import("../../renderer.zig");
 const terminal = @import("../../terminal/main.zig");
+const unicode = @import("../../unicode/main.zig");
 const CoreSurface = @import("../../Surface.zig");
 
 const c = @import("c.zig");
@@ -1562,6 +1563,14 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             return null;
         },
 
+        // murrtty draws the composition itself, in the terminal at the
+        // cursor (the core's preedit), as GTK has the terminal draw its
+        // input method's preedit: the IME's own composition window would
+        // show it a second time beside it. Its candidate window stays.
+        c.WM_IME_SETCONTEXT => return c.DefWindowProcW(self.hwnd, msg, wparam, lparam & ~c.ISC_SHOWUICOMPOSITIONWINDOW),
+
+        c.WM_IME_REQUEST => return self.imeRequest(wparam, lparam),
+
         c.WM_MOUSEMOVE => {
             if (!self.tracking_leave) {
                 var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE, .hwndTrack = self.hwnd };
@@ -1800,7 +1809,17 @@ fn handleKey(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c
     const is_sys = msg == c.WM_SYSKEYDOWN or msg == c.WM_SYSKEYUP;
 
     // The IME is processing this key; it will send composition messages.
-    if (vk == c.VK_PROCESSKEY) return null;
+    // It is a keystroke all the same: scroll to the bottom as one does
+    // (scroll-to-bottom), or the composition, drawn at the cursor, wouldn't
+    // show while the view is scrolled back.
+    if (vk == c.VK_PROCESSKEY) {
+        if (is_down and self.core_initialized and self.core_surface.config.scroll_to_bottom.keystroke) {
+            _ = self.core_surface.performBindingAction(.scroll_to_bottom) catch |err| {
+                log.warn("error scrolling for an IME key err={}", .{err});
+            };
+        }
+        return null;
+    }
 
     const mods = key.currentMods();
 
@@ -1845,15 +1864,15 @@ fn handleKey(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) ?c
     else
         .press;
 
-    // Determine the text and which modifiers it consumed. AltGr text is
-    // used as-is. With Ctrl or Alt held otherwise, report the text the
-    // key makes without them (e.g. "c" for Ctrl+C), as the encoder
-    // applies Ctrl and Alt itself.
+    // Determine the text and which modifiers it consumed. AltGr text
+    // (also Ctrl+Alt's, key.altGrText) is used as-is. With Ctrl or Alt
+    // held otherwise, report the text the key makes without them (e.g.
+    // "c" for Ctrl+C), as the encoder applies Ctrl and Alt itself.
     var consumed: input.Mods = .{};
     var text_slice: []const u16 = text16[0..text16_len];
     var alt_buf: [8]u16 = undefined;
     if (is_down and !dead) {
-        const altgr = key.altGrDown() and text16_len > 0 and !key.isControl(text_slice);
+        const altgr = key.altGrText(mods, text_slice);
         if (altgr) {
             consumed.ctrl = true;
             consumed.alt = true;
@@ -2059,24 +2078,141 @@ fn updatePreedit(self: *Surface) void {
     };
 }
 
-/// Place the IME composition and candidate windows at the cursor.
+/// Place the IME's windows at the composition: its composition window
+/// (hidden while murrtty draws the composition, WM_IME_SETCONTEXT) where
+/// the composition starts, and its candidate window below the cursor's
+/// row, kept off the composition.
 fn positionIme(self: *Surface) void {
-    if (!self.core_initialized) return;
+    const place = self.imePlace(0) orelse return;
     const himc = c.ImmGetContext(self.hwnd) orelse return;
     defer _ = c.ImmReleaseContext(self.hwnd, himc);
+    _ = c.ImmSetCompositionWindow(himc, &.{ .dwStyle = c.CFS_POINT, .ptCurrentPos = .{ .x = place.x, .y = place.top } });
+    _ = c.ImmSetCandidateWindow(himc, &place.candidateForm(0));
+}
 
-    // Window coordinates are device pixels, so don't unscale.
+/// Where the composition is drawn, in the pane's client pixels: on the
+/// cursor's row from `left` to `right` (one cell with nothing composing),
+/// and `x`, where one of its characters starts.
+const ImePlace = struct {
+    x: c_int,
+    top: c_int,
+    left: c_int,
+    right: c_int,
+    height: c_int,
+
+    /// The candidate window below the cursor's row, kept off the
+    /// composition (CFS_EXCLUDE: where below doesn't fit, an IME puts it
+    /// above).
+    fn candidateForm(self: ImePlace, index: u32) c.CANDIDATEFORM {
+        return .{
+            .dwIndex = index,
+            .dwStyle = c.CFS_EXCLUDE,
+            .ptCurrentPos = .{ .x = self.left, .y = self.top + self.height },
+            .rcArea = .{ .left = self.left, .top = self.top, .right = self.right, .bottom = self.top + self.height },
+        };
+    }
+};
+
+/// Where the composition is drawn, as the renderer draws the core's
+/// preedit (`Preedit.range`: from the cursor, shifted left to fit the row,
+/// leading characters dropped where it can't), with `x` at the character
+/// at UTF-16 offset `char_pos` (the composition's end past it).
+fn imePlace(self: *Surface, char_pos: u32) ?ImePlace {
+    if (!self.core_initialized) return null;
+    const size = self.core_surface.size;
+    const cell_w: c_int = @intCast(size.cell.width);
+    const pad: c_int = @intCast(size.padding.left);
+    const cols = size.grid().columns;
+    if (cols == 0 or cell_w == 0) return null;
+    // The middle of the cursor cell's bottom, in device pixels.
     const pos = self.core_surface.imePointScaled(.{ .x = 1, .y = 1 });
-    const pt: c.POINT = .{
-        .x = @intFromFloat(pos.x),
-        .y = @intFromFloat(pos.y),
+    const height: c_int = @intFromFloat(pos.height);
+    const top: c_int = @as(c_int, @intFromFloat(@round(pos.y))) - height;
+    const cursor_left: c_int = @intFromFloat(@round(pos.x - @as(f64, @floatFromInt(cell_w)) / 2));
+    const cursor_col: terminal.size.CellCountInt = @intCast(std.math.clamp(@divTrunc(cursor_left - pad, cell_w), 0, @as(c_int, cols) - 1));
+
+    // The composition, as the core keeps it for its preedit (zero-width
+    // characters left out), with each character's UTF-16 offset.
+    const Codepoint = renderer.State.Preedit.Codepoint;
+    var cps: [256]Codepoint = undefined;
+    var offsets: [256]u32 = undefined;
+    var n: usize = 0;
+    if (c.ImmGetContext(self.hwnd)) |himc| {
+        defer _ = c.ImmReleaseContext(self.hwnd, himc);
+        var units: [256]u16 = undefined;
+        const bytes = c.ImmGetCompositionStringW(himc, c.GCS_COMPSTR, &units, @sizeOf(@TypeOf(units)));
+        if (bytes > 0) {
+            const len: usize = @min(units.len, @as(usize, @intCast(@divTrunc(bytes, 2))));
+            var it = std.unicode.Utf16LeIterator.init(units[0..len]);
+            while (n < cps.len) {
+                const offset: u32 = @intCast(it.i / 2);
+                const cp = (it.nextCodepoint() catch break) orelse break;
+                const width = unicode.table.get(cp).width;
+                if (width <= 0) continue;
+                cps[n] = .{ .codepoint = cp, .wide = width >= 2 };
+                offsets[n] = offset;
+                n += 1;
+            }
+        }
+    }
+    const preedit: renderer.State.Preedit = .{ .codepoints = cps[0..n] };
+    const range = preedit.range(cursor_col, cols - 1);
+    var col: c_int = range.start;
+    for (range.cp_offset..n) |i| {
+        if (offsets[i] >= char_pos) break;
+        col += if (cps[i].wide) 2 else 1;
+    }
+    const end: c_int = if (n == 0) range.start else range.end;
+    return .{
+        .x = pad + col * cell_w,
+        .top = top,
+        .left = pad + @as(c_int, range.start) * cell_w,
+        .right = pad + (end + 1) * cell_w,
+        .height = height,
     };
-    _ = c.ImmSetCompositionWindow(himc, &.{ .dwStyle = c.CFS_POINT, .ptCurrentPos = pt });
-    _ = c.ImmSetCandidateWindow(himc, &.{
-        .dwIndex = 0,
-        .dwStyle = c.CFS_CANDIDATEPOS,
-        .ptCurrentPos = .{ .x = pt.x, .y = pt.y + @as(c_long, @intFromFloat(pos.height)) },
-    });
+}
+
+/// Answer an IME's WM_IME_REQUEST. IMEs built on the Text Services
+/// Framework ask where text is rather than read what positionIme set:
+/// where a character of the composition is (IMR_QUERYCHARPOSITION, in
+/// screen pixels, with its line's height and the pane as the document),
+/// and the composition and candidate windows' places. Null for others
+/// (DefWindowProc's).
+fn imeRequest(self: *Surface, wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
+    const ptr: usize = @bitCast(lparam);
+    if (ptr == 0) return null;
+    // The place is worked out only for the requests answered (it takes the
+    // terminal's lock for the cursor).
+    switch (wparam) {
+        c.IMR_QUERYCHARPOSITION => {
+            const pos: *c.IMECHARPOSITION = @ptrFromInt(ptr);
+            if (pos.dwSize < @sizeOf(c.IMECHARPOSITION)) return null;
+            const place = self.imePlace(pos.dwCharPos) orelse return null;
+            var pt: c.POINT = .{ .x = place.x, .y = place.top };
+            _ = c.ClientToScreen(self.hwnd, &pt);
+            var r: c.RECT = .{};
+            _ = c.GetClientRect(self.hwnd, &r);
+            var corners = [2]c.POINT{ .{ .x = r.left, .y = r.top }, .{ .x = r.right, .y = r.bottom } };
+            _ = c.MapWindowPoints(self.hwnd, null, &corners, 2);
+            pos.pt = pt;
+            pos.cLineHeight = @intCast(place.height);
+            pos.rcDocument = .{ .left = corners[0].x, .top = corners[0].y, .right = corners[1].x, .bottom = corners[1].y };
+            return 1;
+        },
+        c.IMR_COMPOSITIONWINDOW => {
+            const place = self.imePlace(0) orelse return null;
+            const form: *c.COMPOSITIONFORM = @ptrFromInt(ptr);
+            form.* = .{ .dwStyle = c.CFS_POINT, .ptCurrentPos = .{ .x = place.x, .y = place.top } };
+            return 1;
+        },
+        c.IMR_CANDIDATEWINDOW => {
+            const place = self.imePlace(0) orelse return null;
+            const form: *c.CANDIDATEFORM = @ptrFromInt(ptr);
+            form.* = place.candidateForm(form.dwIndex);
+            return 1;
+        },
+        else => return null,
+    }
 }
 
 //---------------------------------------------------------------

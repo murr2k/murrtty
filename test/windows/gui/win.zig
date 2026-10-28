@@ -219,6 +219,7 @@ pub const VK_OEM_COMMA = 0xBC;
 pub const VK_LSHIFT = 0xA0;
 pub const VK_LCONTROL = 0xA2;
 pub const VK_LMENU = 0xA4;
+pub const VK_RMENU = 0xA5;
 pub const VK_NUMLOCK = 0x90;
 
 // kernel32

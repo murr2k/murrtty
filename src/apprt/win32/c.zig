@@ -135,6 +135,14 @@ pub const CANDIDATEFORM = extern struct {
     rcArea: RECT = .{},
 };
 
+pub const IMECHARPOSITION = extern struct {
+    dwSize: DWORD = @sizeOf(IMECHARPOSITION),
+    dwCharPos: DWORD,
+    pt: POINT = .{ .x = 0, .y = 0 },
+    cLineHeight: UINT = 0,
+    rcDocument: RECT = .{},
+};
+
 // Window messages
 pub const WM_CREATE = 0x0001;
 pub const WM_DESTROY = 0x0002;
@@ -168,6 +176,8 @@ pub const WM_UNICHAR = 0x0109;
 pub const WM_IME_STARTCOMPOSITION = 0x010D;
 pub const WM_IME_ENDCOMPOSITION = 0x010E;
 pub const WM_IME_COMPOSITION = 0x010F;
+pub const WM_IME_SETCONTEXT = 0x0281;
+pub const WM_IME_REQUEST = 0x0288;
 pub const WM_SYSCOMMAND = 0x0112;
 pub const SC_KEYMENU = 0xF100;
 pub const WM_TIMER = 0x0113;
@@ -397,6 +407,11 @@ pub const GCS_COMPSTR = 0x0008;
 pub const GCS_RESULTSTR = 0x0800;
 pub const CFS_POINT = 0x0002;
 pub const CFS_CANDIDATEPOS = 0x0040;
+pub const CFS_EXCLUDE = 0x0080;
+pub const ISC_SHOWUICOMPOSITIONWINDOW: LPARAM = 0x80000000;
+pub const IMR_COMPOSITIONWINDOW = 0x0001;
+pub const IMR_CANDIDATEWINDOW = 0x0002;
+pub const IMR_QUERYCHARPOSITION = 0x0006;
 
 // DPI
 pub const USER_DEFAULT_SCREEN_DPI = 96;

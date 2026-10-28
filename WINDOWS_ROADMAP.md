@@ -191,6 +191,10 @@ roadmap item behind it.
   a binding of its own takes its dedicated key's, so the numpad's
   `Ctrl+Ins` copies and `Shift+Ins` pastes, as in other Windows apps;
   GTK's binds only the dedicated keys.
+- **Ctrl+Alt as AltGr** (6.2): on a layout with AltGr, Ctrl+Alt makes
+  AltGr's character (German `Ctrl+Alt+Q` types `@`), as Windows' layouts
+  define it and its programs take it. On Linux the layouts (XKB) give
+  AltGr's characters to AltGr alone, so GTK's sees Ctrl+Alt+Q.
 - **Links** (0.1): untrusted links (OSC 8, unknown kinds) are vetted. Web
   and mail links open; a file opens only if it is inert (code runners are
   blocked, symbolic links are not followed); anything else asks first. GTK
@@ -2801,6 +2805,51 @@ change), so the numpad's Ctrl+Ins copies and Shift+Ins pastes, as in other
 Windows apps. Scenario `copy-keys` copies a double-clicked word ten times
 each with Ctrl+Insert, the numpad's Ctrl+Ins and Ctrl+Shift+C, moves with
 the numpad's Left and pastes with its Shift+Ins.
+
+*Done in part 2026-10-28 (what needs no other layout or IME installed):*
+the known AltGr bug no longer reproduced in console programs: since 0.12
+a key goes to ConPTY as a Windows key event carrying the character
+Windows made of it, so German Ctrl+Alt+Q reached them as `@` (as AltGr+Q
+did). The runtime's own reading still took it as Ctrl+Alt+q: `key.altGrText`
+now takes Ctrl and Alt held, on either side, with a character made, as
+AltGr. And the core's own encoding, used without win32-input-mode (an
+older ConPTY that doesn't ask for it) and for a key that brings more than
+one character (a dead key that doesn't combine: German ´ then AltGr+Q
+gives ´@), applied Ctrl again to text that had consumed it, AltGr's
+included: `@` went as NUL, the euro sign as ^E, and ´@ as a lone Ctrl+Q.
+The legacy encoder (`input/key_encode.zig`, a shared-code change) now
+sends text that consumed Ctrl as it is, ESC-prefixed only for an Alt it
+didn't consume. Alt+Numpad was already
+right: Windows makes the character as Alt goes up (Alt+0228 is ä, also
+under the manifest's UTF-8 code page from 6.1, since Windows reads the
+code with the layout's code page), and the digits' own Alt+NumPad key
+events go ahead of it as a classic console's do, which .NET's ReadKey
+and PSReadLine skip. IMEs: murrtty draws the composition in the terminal
+(the core's preedit), so the IME's own composition window is hidden
+(WM_IME_SETCONTEXT without ISC_SHOWUICOMPOSITIONWINDOW), as GTK has the
+terminal draw its input method's preedit. WM_IME_REQUEST is answered
+(`Surface.imeRequest`): IMR_QUERYCHARPOSITION gets a composition
+character's place in screen pixels (the cells before it as the core lays
+out its preedit), its line's height and the pane as the document;
+IMR_COMPOSITIONWINDOW and IMR_CANDIDATEWINDOW get the places
+`positionIme` sets, now the cursor cell's top left for the composition
+and below the cursor's row, kept off the composition (CFS_EXCLUDE), for
+the candidate list, which went a row lower before. Both follow the
+renderer's own placing of the preedit (`Preedit.range`: it shifts left to
+fit the row), so near the right edge the IME is told where the text is
+drawn. A key the IME takes (VK_PROCESSKEY) is a keystroke: it scrolls the
+view to the bottom (`scroll-to-bottom`), or a composition begun while
+scrolled back, drawn at the cursor, wouldn't show. Scenarios:
+`intl-keys` (what `[Console]::ReadKey` reads for the characters German
+Ctrl+Alt+Q, AltGr+Q, AltGr+E and Ctrl+Alt+E make, posted as the WM_CHARs
+Windows makes of them, since loading a layout would change the
+session's; a dead key's ´ with AltGr+Q's @; and Alt+0228) and
+`ime-place` (the answers at the prompt and after typing; a key the IME
+takes scrolling to the bottom). The dead-key and scrolling checks failed
+before their fixes. Still to run: the manual matrix (real layouts; the
+Japanese, Chinese and Korean IMEs; the emoji panel, voice typing and the
+on-screen keyboard), on a machine with them installed. The hidden
+composition window and the candidate window's place want it most.
 
 **6.3 OpenGL fallbacks, M.**
 - Diagnose failures: no driver, Remote Desktop, the basic display adapter or an

@@ -94,11 +94,14 @@ pub fn controlKeyState(flags: u16) u32 {
     return state;
 }
 
-/// True if Right Alt is down together with Left Ctrl. Windows reports
-/// AltGr as this combination, which we treat as a character modifier
-/// rather than Ctrl+Alt when it produces text.
-pub fn altGrDown() bool {
-    return down(c.VK_RMENU) and down(c.VK_LCONTROL);
+/// Whether a key's text `text` (its WM_CHARs) is AltGr's: Ctrl and Alt
+/// held, on either side, and a character made. Windows reports AltGr as
+/// Left Ctrl + Right Alt, and its AltGr layouts give AltGr's characters for
+/// Ctrl+Alt too (German Ctrl+Alt+Q is @, as AltGr+Q), which other Windows
+/// programs type either way. A layout without AltGr makes no text for
+/// Ctrl+Alt, so those keys stay Ctrl+Alt+key.
+pub fn altGrText(mods: input.Mods, text: []const u16) bool {
+    return mods.ctrl and mods.alt and text.len > 0 and !isControl(text);
 }
 
 /// Translate a virtual key with a given keyboard state into UTF-16
@@ -153,6 +156,21 @@ pub fn firstCodepoint(utf16: []const u16) ?u21 {
 /// the key and modifiers.
 pub fn isControl(utf16: []const u16) bool {
     return utf16.len == 1 and (utf16[0] < 0x20 or utf16[0] == 0x7F);
+}
+
+test "altGrText" {
+    const testing = std.testing;
+    const at = [_]u16{'@'};
+    const ctrl_q = [_]u16{0x11};
+    // German Ctrl+Alt+Q (either side) and AltGr+Q type @.
+    try testing.expect(altGrText(.{ .ctrl = true, .alt = true }, &at));
+    try testing.expect(altGrText(.{ .ctrl = true, .alt = true, .sides = .{ .alt = .right } }, &at));
+    // No text (a US layout's Ctrl+Alt+Q), a control character, or Ctrl or
+    // Alt alone: not AltGr.
+    try testing.expect(!altGrText(.{ .ctrl = true, .alt = true }, &.{}));
+    try testing.expect(!altGrText(.{ .ctrl = true, .alt = true }, &ctrl_q));
+    try testing.expect(!altGrText(.{ .ctrl = true }, &at));
+    try testing.expect(!altGrText(.{ .alt = true }, &at));
 }
 
 test "nativeKeycode" {

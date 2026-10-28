@@ -272,12 +272,30 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (wparam == 17) {
         app.test_state.drop_effect = -1;
         if (app.windows.items.len > 0) if (app.windows.items[0].activeSurface()) |s| if (s.drop_target) |d| {
-            var obj: ?*anyopaque = null;
-            if (c.OleGetClipboard(&obj) >= 0) if (obj) |o| {
-                const data: *DropTarget.DataObject = @ptrCast(@alignCast(o));
-                defer data.release();
-                app.test_state.drop_effect = @intCast(d.simulate(data));
-            };
+            // OLE's clipboard object reads the clipboard as DragEnter asks
+            // for its formats, so another program holding it then (a
+            // clipboard manager reading what the harness just put there)
+            // made a text drop read as refused on the desktop CI
+            // (2026-10-28). A real drag's data object is the source's own.
+            // Wait for the clipboard to be free, and try again after a
+            // refusal (a drop with nothing to take still ends refused).
+            for (0..3) |attempt| {
+                if (attempt > 0) c.Sleep(50);
+                for (0..20) |_| {
+                    if (c.OpenClipboard(null) != 0) {
+                        _ = c.CloseClipboard();
+                        break;
+                    }
+                    c.Sleep(10);
+                }
+                var obj: ?*anyopaque = null;
+                if (c.OleGetClipboard(&obj) >= 0) if (obj) |o| {
+                    const data: *DropTarget.DataObject = @ptrCast(@alignCast(o));
+                    defer data.release();
+                    app.test_state.drop_effect = @intCast(d.simulate(data));
+                };
+                if (app.test_state.drop_effect > 0) break;
+            }
         };
     }
     // The inspector's export (roadmap 5.12) of the first window's active
@@ -731,6 +749,29 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             });
         }
         try out.print(alloc, "\"inspector_active\":{},", .{s.core_initialized and s.core_surface.inspector != null});
+        // What an IME asking (WM_IME_REQUEST, roadmap 6.2) is told: where
+        // a composition's first character goes (screen pixels), its
+        // line's height, the document (the pane, on screen), and the
+        // candidate window's style and place (client pixels).
+        {
+            var pos: c.IMECHARPOSITION = .{ .dwCharPos = 0 };
+            const answered = c.SendMessageW(s.hwnd, c.WM_IME_REQUEST, c.IMR_QUERYCHARPOSITION, @bitCast(@intFromPtr(&pos))) != 0;
+            var cand: c.CANDIDATEFORM = .{ .dwIndex = 0, .dwStyle = 0, .ptCurrentPos = .{ .x = 0, .y = 0 } };
+            _ = c.SendMessageW(s.hwnd, c.WM_IME_REQUEST, c.IMR_CANDIDATEWINDOW, @bitCast(@intFromPtr(&cand)));
+            try out.print(alloc, "\"ime\":{{\"answered\":{},\"char\":[{d},{d}],\"line\":{d},\"doc\":[{d},{d},{d},{d}],\"cand\":[{d},{d},{d}]}},", .{
+                answered,
+                pos.pt.x,
+                pos.pt.y,
+                pos.cLineHeight,
+                pos.rcDocument.left,
+                pos.rcDocument.top,
+                pos.rcDocument.right,
+                pos.rcDocument.bottom,
+                cand.dwStyle,
+                cand.ptCurrentPos.x,
+                cand.ptCurrentPos.y,
+            });
+        }
         try out.print(alloc, "\"handle\":{{\"shown\":{},\"hover\":{}}},\"drop\":\"{s}\",\"dimmed\":{},", .{
             s.handleShown(),
             s.handle_hover,

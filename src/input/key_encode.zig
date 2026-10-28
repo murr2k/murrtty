@@ -407,6 +407,16 @@ fn legacy(
     // for any char with a modifier. This must happen before converting
     // Ctrl+<char> to a C0 byte because mode 2 encodes those keys, too.
     const utf8 = event.utf8;
+
+    // murrtty: text that consumed Ctrl already holds what Ctrl did to the
+    // key: Windows reports AltGr as Ctrl+Alt, and its AltGr layouts type
+    // AltGr's characters for Ctrl+Alt too (German Ctrl+Alt+Q is "@").
+    // Encoding Ctrl again made "@" a NUL and the euro sign a ^E. Send the
+    // text, ESC-prefixed only for an Alt it didn't consume.
+    if (event.consumed_mods.ctrl and utf8.len > 0) {
+        if (try legacyAltPrefix(writer, event, binding_mods, all_mods, opts)) return;
+        return try writer.writeAll(utf8);
+    }
     if (opts.modify_other_keys_state_2) modify_other: {
         const view = std.unicode.Utf8View.init(utf8) catch {
             // Assume invalid UTF-8 means we no UTF-8.
@@ -2180,6 +2190,54 @@ test "legacy: alt+c" {
         .macos_option_as_alt = .true,
     });
     try testing.expectEqualStrings("\x1Bc", writer.buffered());
+}
+
+test "legacy: text that consumed ctrl is sent as it is" {
+    // Windows' AltGr (Ctrl+Alt) and German Ctrl+Alt+Q (@), AltGr+E (the
+    // euro sign), AltGr+7 ({) and AltGr+ß (\): the text, not Ctrl+<key>.
+    const Case = struct { key: key.Key, text: []const u8, unshifted: u21 };
+    const cases = [_]Case{
+        .{ .key = .key_q, .text = "@", .unshifted = 'q' },
+        .{ .key = .key_e, .text = "\u{20AC}", .unshifted = 'e' },
+        .{ .key = .digit_7, .text = "{", .unshifted = '7' },
+        .{ .key = .minus, .text = "\\", .unshifted = 0xDF },
+    };
+    for (cases) |case| {
+        for ([_]bool{ false, true }) |mode2| {
+            var buf: [128]u8 = undefined;
+            var writer: std.Io.Writer = .fixed(&buf);
+            try legacy(&writer, .{
+                .key = case.key,
+                .mods = .{ .ctrl = true, .alt = true },
+                .consumed_mods = .{ .ctrl = true, .alt = true },
+                .utf8 = case.text,
+                .unshifted_codepoint = case.unshifted,
+            }, .{ .alt_esc_prefix = true, .modify_other_keys_state_2 = mode2 });
+            try testing.expectEqualStrings(case.text, writer.buffered());
+        }
+    }
+
+    // Ctrl consumed but not Alt: Alt still prefixes ESC.
+    var buf: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try legacy(&writer, .{
+        .key = .key_q,
+        .mods = .{ .ctrl = true, .alt = true },
+        .consumed_mods = .{ .ctrl = true },
+        .utf8 = "@",
+        .unshifted_codepoint = 'q',
+    }, .{ .alt_esc_prefix = true });
+    try testing.expectEqualStrings("\x1B@", writer.buffered());
+
+    // Ctrl not consumed (Ctrl+Alt+Q on a layout without AltGr): as before.
+    writer = .fixed(&buf);
+    try legacy(&writer, .{
+        .key = .key_q,
+        .mods = .{ .ctrl = true, .alt = true },
+        .utf8 = "q",
+        .unshifted_codepoint = 'q',
+    }, .{ .alt_esc_prefix = true });
+    try testing.expectEqualStrings("\x1B\x11", writer.buffered());
 }
 
 test "legacy: alt+e only unshifted" {

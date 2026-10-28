@@ -52,6 +52,8 @@ pub const all = [_]Scenario{
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
     .{ .name = "cli", .about = "CLI actions with output on a pipe: +version; +validate-config exits 0 for a valid file, 1 naming the problem for an invalid one", .run = cli },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
+    .{ .name = "ime-place", .about = "an IME asking where text is (WM_IME_REQUEST) is told the cursor's cell, and follows typing", .run = imePlace },
+    .{ .name = "intl-keys", .about = "AltGr and Ctrl+Alt characters, and Alt+Numpad codes, reach a console program as Windows types them", .run = intlKeys },
     .{ .name = "font-registered", .about = "a font installed for the user from a folder with a non-ASCII name is found and opened", .run = fontRegistered },
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
     .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
@@ -3432,6 +3434,9 @@ const ScrollState = struct {
     }
     fn atBottom(s: ScrollState) bool {
         return s.total > s.len and s.offset + s.len == s.total;
+    }
+    fn scrolledBack(s: ScrollState) bool {
+        return s.total > s.len and s.offset + s.len < s.total;
     }
     fn atTop(s: ScrollState) bool {
         return s.total > s.len and s.offset == 0 and !s.pressed;
@@ -6974,6 +6979,128 @@ fn consoleKeys(h: *Harness) anyerror!void {
         };
         try h.expect(true, "{s} arrives as '{s}'", .{ k.what, k.want });
     }
+}
+
+/// Keys of layouts other than US (roadmap 6.2), as a console program reads
+/// them ([Console]::ReadKey): the character AltGr makes, also for Ctrl+Alt,
+/// which Windows' AltGr layouts take as AltGr (German Ctrl+Alt+Q is @,
+/// AltGr+E is the euro sign); and a character typed by its code with Alt
+/// and the numeric keypad (Alt+0228 is ä), which must arrive alone, not
+/// after Alt+digit keys (PowerShell's PSReadLine takes Alt+digits as a
+/// repeat count). The layouts' characters come as the WM_CHARs Windows
+/// would make (`keyChars`): loading a layout would change the session's.
+fn intlKeys(h: *Harness) anyerror!void {
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\intl-keys", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    const script = try std.fmt.allocPrint(h.alloc, "{s}\\keys.ps1", .{dir});
+    defer h.alloc.free(script);
+    try h.writeFileAt(script,
+        \\[Console]::TreatControlCAsInput = $true
+        \\Write-Host 'keys-ready'
+        \\while ($true) {
+        \\  $k = [Console]::ReadKey($true)
+        \\  Write-Host ('key {0} {1} {2}' -f $k.Key, ($k.Modifiers -replace ', ', '+'), [int]$k.KeyChar)
+        \\}
+        \\
+    );
+    const config = try std.fmt.allocPrint(h.alloc, "command = pwsh -NoLogo -NoProfile -File {s}\n", .{script});
+    defer h.alloc.free(config);
+    var g = try start(h, "intl-keys", config, "keys-ready");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+
+    // A dead key (´) that doesn't combine with what AltGr+Q makes: Windows
+    // sends both characters behind the key, which go as text rather than
+    // one Windows key event, through the core's own encoding of AltGr's
+    // text (it made "@" a Ctrl+Q). PowerShell reads ´ and then @.
+    try h.keyChars(surf, .{ .altgr = true }, 'Q', "\u{B4}@");
+    {
+        try h.waitText(&g, " 64", 1, 5000);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const text = d.value.windows[0].tabs[0].text orelse "";
+        const at = std.mem.indexOf(u8, text, " 180") orelse return h.fail("a dead key's ´ before AltGr+Q's @ didn't arrive; the program read:\n{s}", .{text});
+        const rest = text[at..];
+        try h.expect(std.mem.indexOf(u8, rest, " 64") != null and std.mem.indexOf(u8, rest, " 17") == null, "a dead key's ´ and AltGr+Q's @ arrive as both characters, not Ctrl+Q; the program read:\n{s}", .{text});
+    }
+
+    const cases = [_]struct { mods: Harness.Mods, vk: u8, chars: []const u8, want: []const u8, what: []const u8 }{
+        .{ .mods = .{ .ctrl = true, .alt = true }, .vk = 'Q', .chars = "@", .want = "key Q Alt+Control 64", .what = "German Ctrl+Alt+Q (@)" },
+        .{ .mods = .{ .altgr = true }, .vk = 'Q', .chars = "@", .want = "key Q Alt+Control 64", .what = "German AltGr+Q (@)" },
+        .{ .mods = .{ .altgr = true }, .vk = 'E', .chars = "\u{20AC}", .want = "key E Alt+Control 8364", .what = "German AltGr+E (the euro sign)" },
+        .{ .mods = .{ .ctrl = true, .alt = true }, .vk = 'E', .chars = "\u{20AC}", .want = "key E Alt+Control 8364", .what = "German Ctrl+Alt+E (the euro sign)" },
+    };
+    for (cases) |k| {
+        try h.keyChars(surf, k.mods, k.vk, k.chars);
+        h.waitText(&g, k.want, 1, 5000) catch {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            return h.fail("{s} didn't arrive as '{s}'; the program read:\n{s}", .{ k.what, k.want, d.value.windows[0].tabs[0].text orelse "" });
+        };
+        try h.expect(true, "{s} arrives as '{s}'", .{ k.what, k.want });
+    }
+
+    // Alt+0228: ä, and nothing before it but Alt.
+    h.altNumpad(surf, "0228");
+    h.waitText(&g, " 228", 1, 5000) catch {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        return h.fail("Alt+0228 didn't arrive as ä (228); the program read:\n{s}", .{d.value.windows[0].tabs[0].text orelse ""});
+    };
+    var d = try h.dump(&g);
+    defer d.deinit();
+    const text = d.value.windows[0].tabs[0].text orelse "";
+    try h.expect(std.mem.indexOf(u8, text, "NumPad") == null, "Alt+0228 arrives as ä alone, its digits not as keys of their own; the program read:\n{s}", .{text});
+}
+
+/// Where IMEs place their windows (roadmap 6.2). IMEs built on the Text
+/// Services Framework ask (WM_IME_REQUEST, IMR_QUERYCHARPOSITION) where a
+/// composition's characters are: the cursor's cell, in screen pixels, a
+/// cell high, in the pane as the document; the candidate window goes below
+/// the cursor's row (IMR_CANDIDATEWINDOW, CFS_EXCLUDE). Typing moves both
+/// along.
+fn imePlace(h: *Harness) anyerror!void {
+    var g = try start(h, "ime-place", "", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    for (0..2) |round| {
+        if (round == 1) {
+            try h.typeText(surf, "abc");
+            try h.waitText(&g, ">abc", 1, 5000);
+        }
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const tab = d.value.windows[0].tabs[0];
+        const pane = (tab.panes orelse return h.fail("no panes in the dump", .{}))[0];
+        const ime = pane.ime orelse return h.fail("no ime in the dump", .{});
+        const cell = tab.cell orelse return h.fail("no cell size in the dump", .{});
+        const pad = tab.padding orelse return h.fail("no padding in the dump", .{});
+        const cur = pane.cursor orelse return h.fail("no cursor in the dump", .{});
+        const x: i32 = @intCast(cur[0] * cell[0] + pad[0]);
+        const y: i32 = @intCast(cur[1] * cell[1] + pad[1]);
+        const when = if (round == 0) "at the prompt" else "after typing abc";
+        try h.expect(ime.answered, "{s}: IMR_QUERYCHARPOSITION is answered", .{when});
+        try h.expect(ime.char[0] - ime.doc[0] == x and ime.char[1] - ime.doc[1] == y and ime.line == cell[1], "{s}: the composition starts at the cursor's cell ({d},{d} in the pane, {d} high; got {d},{d}, {d} high)", .{
+            when, x, y, cell[1], ime.char[0] - ime.doc[0], ime.char[1] - ime.doc[1], ime.line,
+        });
+        try h.expect(ime.doc[2] - ime.doc[0] == pane.rect[2] - pane.rect[0] and ime.doc[3] - ime.doc[1] == pane.rect[3] - pane.rect[1], "{s}: the document is the pane", .{when});
+        try h.expect(ime.cand[0] == 0x80 and ime.cand[1] == x and ime.cand[2] == y + @as(i32, @intCast(cell[1])), "{s}: the candidate window goes below the cursor's row, clear of it (style {d} at {d},{d})", .{
+            when, ime.cand[0], ime.cand[1], ime.cand[2],
+        });
+    }
+
+    // A key the IME takes (VK_PROCESSKEY) is a keystroke: scrolled back,
+    // the view goes to the bottom, where the composition is drawn.
+    h.key(surf, .{}, w.VK_ESCAPE); // cmd clears the line
+    try h.typeText(surf, "for /L %i in (1,1,120) do @echo line %i");
+    h.enter(surf);
+    try h.waitText(&g, "line 120", 1, 10000);
+    h.key(surf, .{ .shift = true }, w.VK_PRIOR);
+    _ = try waitScroll(h, &g, ScrollState.scrolledBack, "scrolled back by Shift+PgUp", 5000);
+    h.postImeKey(surf);
+    _ = try waitScroll(h, &g, ScrollState.atBottom, "back at the bottom after a key the IME takes", 5000);
+    try h.expect(true, "a key the IME takes scrolls the view to the bottom", .{});
 }
 
 /// PowerShell's own keys, which reach it through ConPTY only as Windows

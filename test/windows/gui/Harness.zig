@@ -1005,6 +1005,8 @@ pub const Mods = struct {
     ctrl: bool = false,
     shift: bool = false,
     alt: bool = false,
+    /// AltGr, as Windows reports it: Left Ctrl and Right Alt.
+    altgr: bool = false,
     /// NumLock off while the key is handled (numpadKey).
     num_lock_off: bool = false,
 };
@@ -1064,6 +1066,12 @@ const Held = struct {
         if (mods.alt) {
             state[w.VK_MENU] = 0x80;
             state[w.VK_LMENU] = 0x80;
+        }
+        if (mods.altgr) {
+            state[w.VK_CONTROL] = 0x80;
+            state[w.VK_LCONTROL] = 0x80;
+            state[w.VK_MENU] = 0x80;
+            state[w.VK_RMENU] = 0x80;
         }
         if (mods.num_lock_off) state[w.VK_NUMLOCK] &= ~@as(u8, 1);
         _ = w.SetKeyboardState(&state);
@@ -1196,20 +1204,76 @@ pub fn numpadKey(self: *Harness, target: w.HWND, mods: Mods, vk: u8) void {
 }
 
 fn postKey(self: *Harness, target: w.HWND, mods: Mods, vk: u8, extended: bool) void {
+    self.postKeyChars(target, mods, vk, extended, &.{});
+}
+
+/// A key press whose key down also brings the characters `chars` (UTF-8),
+/// as WM_CHARs behind it: what Windows' TranslateMessage makes of the key
+/// on a layout that types them (German Ctrl+Alt+Q is "@"), without
+/// loading that layout, which would be the whole session's.
+pub fn keyChars(self: *Harness, target: w.HWND, mods: Mods, vk: u8, chars: []const u8) !void {
+    var units: [8]u16 = undefined;
+    const n = try std.unicode.utf8ToUtf16Le(units[0 .. std.unicode.calcUtf16LeLen(chars) catch return error.InvalidUtf8], chars);
+    self.postKeyChars(target, mods, vk, false, units[0..n]);
+}
+
+fn postKeyChars(self: *Harness, target: w.HWND, mods: Mods, vk: u8, extended: bool, chars: []const u16) void {
     var held: Held = .init(self.dump_msg, target, mods);
     defer held.release();
 
     const sc = w.MapVirtualKeyW(vk, w.MAPVK_VK_TO_VSC);
     var flags: usize = 1 | (@as(usize, sc) << 16);
     if (extended) flags |= 1 << 24;
-    if (mods.alt) flags |= 1 << 29;
-    const sys = mods.alt and !mods.ctrl;
+    if (mods.alt or mods.altgr) flags |= 1 << 29;
+    const sys = mods.alt and !mods.ctrl and !mods.altgr;
     _ = w.PostMessageW(target, if (sys) w.WM_SYSKEYDOWN else w.WM_KEYDOWN, vk, @bitCast(flags));
+    for (chars) |u| _ = w.PostMessageW(target, w.WM_CHAR, u, @bitCast(flags));
     // As with a keyboard: the key down's WM_CHAR, which Windows posts as
     // Ghostty translates it, comes before the key up (posted together, the
     // key up went first, and the key down was handled without its text).
     held.wait();
     _ = w.PostMessageW(target, if (sys) w.WM_SYSKEYUP else w.WM_KEYUP, vk, @bitCast(flags | 0xC0000000));
+}
+
+/// Alt held while the numeric keypad's `digits` are typed (NumLock on),
+/// then let go, as one types a character by its code (Alt+0228 for ä).
+/// Windows makes the character as Alt goes up; the digits' own key
+/// messages come first, with Alt held (WM_SYSKEYDOWN).
+pub fn altNumpad(self: *Harness, target: w.HWND, digits: []const u8) void {
+    // The keypad's scan codes for 0 to 9.
+    const scans = [10]u32{ 0x52, 0x4F, 0x50, 0x51, 0x4B, 0x4C, 0x4D, 0x47, 0x48, 0x49 };
+    {
+        var held: Held = .init(self.dump_msg, target, .{ .alt = true });
+        defer held.release();
+        const alt_flags: usize = 1 | (@as(usize, 0x38) << 16) | (1 << 29);
+        _ = w.PostMessageW(target, w.WM_SYSKEYDOWN, w.VK_MENU, @bitCast(alt_flags));
+        held.wait();
+        for (digits) |d| {
+            const i = d - '0';
+            const flags: usize = 1 | (@as(usize, scans[i]) << 16) | (1 << 29);
+            _ = w.PostMessageW(target, w.WM_SYSKEYDOWN, @as(usize, 0x60) + i, @bitCast(flags));
+            held.wait();
+            _ = w.PostMessageW(target, w.WM_SYSKEYUP, @as(usize, 0x60) + i, @bitCast(flags | 0xC0000000));
+            held.wait();
+        }
+    }
+    // Alt's release, after other keys: WM_KEYUP (not SYSKEYUP), with Alt
+    // up in the key state.
+    var held: Held = .init(self.dump_msg, target, .{});
+    defer held.release();
+    const up: usize = 1 | (@as(usize, 0x38) << 16) | 0xC0000000;
+    _ = w.PostMessageW(target, w.WM_KEYUP, w.VK_MENU, @bitCast(up));
+}
+
+/// A key the IME takes, as Windows sends it to the window (VK_PROCESSKEY
+/// in place of the key's own code); no IME is needed to send it.
+pub fn postImeKey(self: *Harness, target: w.HWND) void {
+    var held: Held = .init(self.dump_msg, target, .{});
+    defer held.release();
+    const flags: usize = 1 | (@as(usize, 0x1E) << 16);
+    _ = w.PostMessageW(target, w.WM_KEYDOWN, 0xE5, @bitCast(flags));
+    held.wait();
+    _ = w.PostMessageW(target, w.WM_KEYUP, 0xE5, @bitCast(flags | 0xC0000000));
 }
 
 pub fn enter(self: *Harness, target: w.HWND) void {
@@ -1655,6 +1719,12 @@ pub const Dump = struct {
         /// where ImGui has the mouse; and the core's inspector on.
         inspector: ?struct { hwnd: u64, frames: u32, mouse: [2]f32 } = null,
         inspector_active: bool = false,
+        /// What an IME asking where text is (WM_IME_REQUEST, roadmap 6.2)
+        /// is told: answered at all, where a composition's first character
+        /// goes and its line's height (screen pixels), the document (the
+        /// pane on screen), and the candidate window's style and place
+        /// (client pixels).
+        ime: ?struct { answered: bool, char: [2]i32, line: i32, doc: [4]i32, cand: [3]i32 } = null,
         /// Whether it takes drops (roadmap 5.8).
         drop_target: bool = false,
         /// OSC 9;4's progress (roadmap 5.4): its value (-1 while the bar

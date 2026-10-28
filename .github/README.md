@@ -104,6 +104,11 @@ hosted Windows runner and then the unit tests.
   highlighted with `Shift+arrows` is PowerShell's own selection: copy it
   with `Ctrl+Shift+C` or `Ctrl+C`. (A mouse selection is murrtty's, and
   `Ctrl+Shift+C` copies that.)
+- Keyboard layouts' characters: AltGr's, also from `Ctrl+Alt` as Windows'
+  layouts give them (German `Ctrl+Alt+Q` is `@`), and a character typed
+  by its code with Alt and the numeric keypad (`Alt+0228` is `ä`), reach
+  console programs as Windows types them. The tests post the characters a
+  layout makes rather than switch the machine's layout.
 - Tabs: a tab strip themed from your terminal colors, new tab (the `+`
   button or a keybinding), switching tabs (clicking or a keybinding), and
   closing a tab (its close button, a middle-click or a keybinding). A
@@ -310,8 +315,9 @@ hosted Windows runner and then the unit tests.
   Acrylic in the active window on Windows 11 22H2 and later, otherwise a
   plain blur (Windows draws Acrylic solid in inactive windows). The tests
   check that it is applied, not yet how it looks.
-- AltGr layouts, dead keys, IME composition (preedit and candidate window
-  placement).
+- Dead keys, and IME composition: murrtty draws it in the terminal at the
+  cursor, with the IME's candidate list below the cursor's row. The tests
+  check what an IME is told, not a real IME.
 - Moving tabs (`Ctrl+Shift+PgUp`/`PgDn`), jumping to a tab (`Alt+1` to `Alt+8`, and `Alt+9` for the last tab), closing
   the other tabs or the tabs to the right (no default keys: bind
   `close_tab:other` or `close_tab:right`).
