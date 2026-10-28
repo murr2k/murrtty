@@ -32,6 +32,18 @@ pub fn build(b: *std.Build) void {
     record.subsystem = .windows;
     b.installArtifact(record);
 
+    // The uia scenario's UI Automation client (see uia_client.zig), run on
+    // the hidden desktop as a screen reader would read a pane.
+    const uia = b.addExecutable(.{
+        .name = "ghostty-gui-uia",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("uia_client.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(uia);
+
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
     b.step("run", "Run the GUI tests").dependOn(&run.step);

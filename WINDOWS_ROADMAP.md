@@ -195,6 +195,10 @@ roadmap item behind it.
   AltGr's character (German `Ctrl+Alt+Q` types `@`), as Windows' layouts
   define it and its programs take it. On Linux the layouts (XKB) give
   AltGr's characters to AltGr alone, so GTK's sees Ctrl+Alt+Q.
+- **Screen readers** (6.4): a pane is a UI Automation text control that
+  Narrator, NVDA and JAWS read (its text, caret, selection; changes
+  announced), as the macOS app gives VoiceOver the terminal's text; GTK's
+  app gives assistive technology no terminal text yet.
 - **Links** (0.1): untrusted links (OSC 8, unknown kinds) are vetted. Web
   and mail links open; a file opens only if it is inert (code runners are
   blocked, symbolic links are not followed); anything else asks first. GTK
@@ -2911,6 +2915,47 @@ Spike S6 informs the ARM64 story.
 `ITextRangeProvider`) so Narrator and NVDA can read the terminal, with
 selection and text-changed events. Windows Terminal's `UiaTextRange` is the
 reference design. Critical for screen-reader users.
+
+*Done 2026-10-28, a first part (`win32/Uia.zig`, `win32/uia_text.zig`):*
+each pane is a UI Automation element, a Text control named by the pane's
+title, with the Text pattern (ITextProvider2, ITextRangeProvider) over the
+whole screen, scrollback included. Its units: a character (a wide
+character's two cells one), a word (text after a blank, or a row's start
+unless the row before runs into it), a line (a row: a soft-wrapped line is
+several, as on screen), a page (the viewport's height) and the document
+(to the last row with text or the cursor). It gives text (rows apart by
+"\r\n" but for soft-wrapped ones, trailing blanks left out), moves by unit
+and to other ranges, compares, expands to units, finds text (ASCII case
+folded or not), bounding rectangles per visible row, ranges from points,
+the visible range, the selection (or an empty range at the caret), the
+caret range, selects (the terminal's selection; an empty range clears it)
+and scrolls a range into view. Events: TextSelectionChanged on the core's
+`selection_changed` and when the cursor moves, TextChanged when the text in
+view changes, polled every 150 ms for the pane with the keyboard, only
+while clients listen and after a frame was presented; a selection's
+changes (each cell of a drag) are told once per poll.
+Positions count rows from the scrollback's top, so they shift when a full
+scrollback drops its oldest rows, as Windows Terminal's buffer coordinates
+do. The pane answers WM_GETOBJECT through UiaReturnRawElementProvider for
+UI Automation's root, for MSAA's client object (UI Automation's MSAA
+bridge then answers MSAA clients) and for the keys (ids above 0) UI
+Automation sends to resolve each event raised: answering the root alone,
+every event was dropped, though raising it succeeded. Calls take the terminal's lock with
+a bounded wait: the render thread holds it for moments, and a call that
+arrives while the UI thread holds it (a sent message inside a core
+callback) fails rather than deadlocks. An element-scoped listener alone
+heard nothing from this window-hosted provider, while one on the desktop's
+root (as Narrator and NVDA listen) hears every event. Tests: unit tests on
+a terminal of their own (text, units, wide characters, finding, rows in
+view), and the `uia` scenario, a UI Automation client in another process
+on the same desktop (`ghostty-gui-uia.exe`): the name and control type, the
+document's and the visible text, the caret, lines and words, the caret
+line's rectangle, text found and selected (then the terminal's
+selection), and the events for typing (the text and the caret) and a
+selection (none came before WM_GETOBJECT's keys were answered). Still to
+do: announcing new output (UI Automation's notification events, as
+Windows Terminal does for Narrator), and trying Narrator, NVDA and JAWS
+themselves.
 
 **6.5 Small fidelity items, S each.**
 - The system double-click time and wheel-scroll lines.

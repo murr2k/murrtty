@@ -181,6 +181,7 @@ pub const WM_IME_REQUEST = 0x0288;
 pub const WM_SYSCOMMAND = 0x0112;
 pub const SC_KEYMENU = 0xF100;
 pub const WM_TIMER = 0x0113;
+pub const WM_GETOBJECT = 0x003D;
 pub const WM_MOUSEMOVE = 0x0200;
 pub const WM_LBUTTONDOWN = 0x0201;
 pub const WM_LBUTTONUP = 0x0202;

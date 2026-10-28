@@ -100,6 +100,9 @@ const Wgl = struct {
     probe: std.atomic.Value(u32) = .init(0),
     /// Frames presented, so the tests can tell whether something drew.
     frames: std.atomic.Value(u32) = .init(0),
+    /// Frames presented, in every build: UI Automation's poll looks at the
+    /// text again only after one (murrtty's roadmap 6.4).
+    presented: std.atomic.Value(u32) = .init(0),
     /// And once asked (`frame_wanted`), the next present reads its whole
     /// back buffer into `frame` (BGRA rows, top first) and sets
     /// `frame_ready`; the UI thread takes the frame from there, freeing it
@@ -684,6 +687,7 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     }
     if (overlay.len > 0) try drawOverlay(state, &overlay, win_w, win_h);
 
+    _ = state.presented.fetchAdd(1, .monotonic);
     if (comptime builtin.mode == .debug) if (state.sampling) {
         _ = state.frames.fetchAdd(1, .monotonic);
         state.sample.store(readPixel(@max(win_w - 6, 0), 6), .monotonic);

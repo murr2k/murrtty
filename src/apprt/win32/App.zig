@@ -2238,6 +2238,11 @@ pub fn performAction(
             const surface = surfaceFromTarget(target) orelse return false;
             surface.setRendererHealth(value);
         },
+        // For UI Automation's listeners (roadmap 6.4).
+        .selection_changed => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            @import("Uia.zig").selectionChanged(surface);
+        },
         .mouse_over_link => {
             const surface = surfaceFromTarget(target) orelse return false;
             surface.setLinkPreview(value.url);

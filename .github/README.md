@@ -315,6 +315,12 @@ hosted Windows runner and then the unit tests.
   Acrylic in the active window on Windows 11 22H2 and later, otherwise a
   plain blur (Windows draws Acrylic solid in inactive windows). The tests
   check that it is applied, not yet how it looks.
+- Screen readers and magnifiers (Narrator, NVDA, JAWS) read a pane
+  through UI Automation: its text by character, word and line, the caret,
+  the selection (and selecting), finding text, where text is on screen,
+  and changes as they come. The tests read it as a UI Automation client in
+  another process; the screen readers themselves haven't been tried, and
+  new output isn't announced on its own yet.
 - Dead keys, and IME composition: murrtty draws it in the terminal at the
   cursor, with the IME's candidate list below the cursor's row. The tests
   check what an IME is told, not a real IME.

@@ -52,6 +52,7 @@ pub const all = [_]Scenario{
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
     .{ .name = "cli", .about = "CLI actions with output on a pipe: +version; +validate-config exits 0 for a valid file, 1 naming the problem for an invalid one", .run = cli },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
+    .{ .name = "uia", .about = "a screen reader reads a pane through UI Automation's Text pattern: text, caret, words, lines, finding and selecting", .run = uiaScenario },
     .{ .name = "gl-reset", .about = "after a GPU driver reset (faked), the renderer builds itself in a new OpenGL context and draws the same frame", .run = glReset },
     .{ .name = "gl-missing", .about = "without OpenGL 4.3, murrtty says why at start: Remote Desktop, the basic display adapter, no driver, an old one", .run = glMissing },
     .{ .name = "gl-library", .about = "MURRTTY_OPENGL names the opengl32.dll to use; one that can't load is said so", .run = glLibrary },
@@ -4226,6 +4227,73 @@ fn glLibrary(h: *Harness) anyerror!void {
         const code = g.waitExit(10000);
         try h.expect(code != null and code.? != 0, "{s}: murrtty then exits with an error (exit {?d})", .{ case.name, code });
     }
+}
+
+/// UI Automation (roadmap 6.4): a screen reader reads the pane through the
+/// Text pattern, from another process on the same desktop
+/// (ghostty-gui-uia.exe, as Narrator or NVDA would): its name and control
+/// type (Text), the document's and the visible text, the text before the
+/// caret (the prompt), lines and words moved through, the caret's line on
+/// screen, and text found case-insensitively and selected, which is then
+/// the terminal's selection.
+fn uiaScenario(h: *Harness) anyerror!void {
+    var g = try start(h, "uia", "", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    try h.typeText(surf, "echo murrtty-uia one two");
+    h.enter(surf);
+    try h.waitText(&g, "murrtty-uia one two", 2, 5000);
+    w.Sleep(300);
+
+    const hwnd_text = try std.fmt.allocPrint(h.alloc, "{d}", .{@intFromPtr(surf)});
+    defer h.alloc.free(hwnd_text);
+    var r = try h.runHelper("ghostty-gui-uia.exe", "uia-client", &.{ hwnd_text, "name", "doc", "visible", "caret", "line:0", "word:0", "word:1", "rects", "find:ONE TWO", "selection" }, .default);
+    defer r.deinit();
+    const out = r.out;
+    const line = struct {
+        fn of(text: []const u8, prefix: []const u8) []const u8 {
+            var it = std.mem.splitScalar(u8, text, '\n');
+            while (it.next()) |l| if (std.mem.startsWith(u8, l, prefix)) return std.mem.trimEnd(u8, l[prefix.len..], "\r");
+            return "";
+        }
+    }.of;
+    try h.expect(std.mem.indexOf(u8, out, "error") == null, "the client's calls all succeed:\n{s}", .{out});
+    try h.expect(std.mem.endsWith(u8, line(out, "name: "), "type 50020"), "a Text control ({s})", .{line(out, "name: ")});
+    const doc = line(out, "doc: ");
+    try h.expect(std.mem.indexOf(u8, doc, "echo murrtty-uia one two\\nmurrtty-uia one two\\n") != null, "the document holds the command and its output ({s})", .{doc});
+    try h.expect(std.mem.indexOf(u8, line(out, "visible: "), "murrtty-uia one two") != null, "so does the visible range", .{});
+    try h.expect(std.mem.endsWith(u8, line(out, "caret: "), ">"), "the caret stands after the prompt ({s})", .{line(out, "caret: ")});
+    try h.expect(std.mem.startsWith(u8, line(out, "line:0: "), "0 Microsoft Windows"), "the first line is cmd's banner ({s})", .{line(out, "line:0: ")});
+    try h.expect(std.mem.eql(u8, line(out, "word:0: "), "0 Microsoft "), "the first word, with its space ({s})", .{line(out, "word:0: ")});
+    try h.expect(std.mem.eql(u8, line(out, "word:1: "), "1 Windows "), "the next word ({s})", .{line(out, "word:1: ")});
+    var rects = std.mem.tokenizeScalar(u8, line(out, "rects: "), ' ');
+    const count = std.fmt.parseInt(u32, rects.next() orelse "0", 10) catch 0;
+    _ = rects.next();
+    _ = rects.next();
+    const width = std.fmt.parseInt(i32, rects.next() orelse "0", 10) catch 0;
+    const height = std.fmt.parseInt(i32, rects.next() orelse "0", 10) catch 0;
+    try h.expect(count == 1 and width > 0 and height > 0, "the caret's line has one rectangle on screen ({s})", .{line(out, "rects: ")});
+    try h.expect(std.mem.eql(u8, line(out, "find: "), "one two"), "found case-insensitively ({s})", .{line(out, "find: ")});
+    try h.expect(std.mem.eql(u8, line(out, "selection: "), "1 one two"), "and selected ({s})", .{line(out, "selection: ")});
+    var d = try h.dump(&g);
+    defer d.deinit();
+    const pane = (d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{}))[0];
+    try h.expect(pane.selection orelse false, "the terminal's selection holds it", .{});
+
+    // A client listening as a screen reader does: a typed character
+    // changes the text and moves the caret, and a selection made through
+    // UI Automation says so. (Typing clears the selection: after it.)
+    var events = try h.runHelper("ghostty-gui-uia.exe", "uia-events", &.{ hwnd_text, "events" }, .default);
+    defer events.deinit();
+    var ev = std.mem.tokenizeScalar(u8, line(events.out, "events: "), ' ');
+    var counts: [3]u32 = .{ 0, 0, 0 };
+    var k: usize = 0;
+    while (ev.next()) |tok| {
+        const n = std.fmt.parseInt(u32, tok, 10) catch continue;
+        if (k < counts.len) counts[k] = n;
+        k += 1;
+    }
+    try h.expect(counts[0] > 0 and counts[1] > 0 and counts[2] > 0, "a listening client hears the text change, the caret move and a selection ({s})", .{line(events.out, "events: ")});
 }
 
 /// Output that arrives with no key pressed must reach the screen: the

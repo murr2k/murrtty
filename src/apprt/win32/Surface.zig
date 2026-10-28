@@ -31,6 +31,7 @@ const DropTarget = @import("DropTarget.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
 const Inspector = @import("Inspector.zig");
+const Uia = @import("Uia.zig");
 const Scrollbar = @import("Scrollbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Window = @import("Window.zig");
@@ -176,6 +177,8 @@ drop_dir: ?PaneDrag.Direction = null,
 drag_release: bool = false,
 /// This pane's terminal inspector window (roadmap 5.12), while open.
 inspector: ?*Inspector = null,
+/// Its UI Automation element (roadmap 6.4), once a client asked for it.
+uia: ?*Uia.Provider = null,
 
 pub const Colors = struct {
     bg: configpkg.Config.Color,
@@ -234,6 +237,8 @@ pub fn init(
         return error.CreateWindowFailed;
     };
     errdefer _ = c.DestroyWindow(self.hwnd);
+    // A UI Automation client may ask for the pane before it is whole.
+    errdefer Uia.detach(self);
     self.drop_target = DropTarget.register(app.core_app.alloc, self);
     errdefer if (self.drop_target) |d| d.revoke(self.hwnd);
 
@@ -722,6 +727,8 @@ fn scaledPadding(points: u32, scale: f32) u32 {
 /// with its parent.
 pub fn deinit(self: *Surface) void {
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+    // UI Automation's clients drop the element while the pane is whole.
+    Uia.detach(self);
     // Its inspector first, while the core surface it deactivates is here.
     self.closeInspector();
     if (self.core_initialized) PaneDrag.surfaceGone(self.app, self.core_surface.id);
@@ -1437,7 +1444,11 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             return 0;
         },
 
+        // UI Automation (roadmap 6.4): the terminal as a text control.
+        c.WM_GETOBJECT => return Uia.getObject(self, wparam, lparam),
+
         c.WM_TIMER => {
+            if (wparam == Uia.timer_id) Uia.tick(self);
             if (wparam == Scrollbar.timer_id) self.scrollbar.tick(self);
             if (wparam == PaneDrag.timer_id) PaneDrag.tick(self.app);
             // No report for 15 s: a program that stalled, or left.

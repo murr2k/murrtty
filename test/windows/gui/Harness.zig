@@ -460,6 +460,21 @@ pub fn runCli(self: *Harness, name: []const u8, args: []const []const u8) !CliRe
 
 /// runCli with extra environment variables, as name and value.
 pub fn runCliWith(self: *Harness, name: []const u8, args: []const []const u8, extra_env: []const [2][]const u8) !CliResult {
+    return self.runExe(self.exe, name, args, extra_env, .default);
+}
+
+/// Run a test helper installed beside the harness (helperPath) as runCli
+/// runs murrtty: on the hidden desktop (`.offscreen`: the user's, beside
+/// a murrtty launched there), its stdout on a pipe.
+pub fn runHelper(self: *Harness, comptime helper: []const u8, name: []const u8, args: []const []const u8, where: Where) !CliResult {
+    const path = try self.helperPath(helper);
+    defer self.alloc.free(path);
+    const path16 = try std.unicode.utf8ToUtf16LeAllocZ(self.alloc, path);
+    defer self.alloc.free(path16);
+    return self.runExe(path16, name, args, &.{}, where);
+}
+
+fn runExe(self: *Harness, exe: [:0]const u16, name: []const u8, args: []const []const u8, extra_env: []const [2][]const u8, where: Where) !CliResult {
     const alloc = self.alloc;
     const dir = try std.fmt.allocPrint(alloc, "{s}\\{s}", .{ self.temp_dir, name });
     defer alloc.free(dir);
@@ -475,7 +490,7 @@ pub fn runCliWith(self: *Harness, name: []const u8, args: []const []const u8, ex
     var cmdline: std.ArrayList(u16) = .empty;
     defer cmdline.deinit(alloc);
     try cmdline.append(alloc, '"');
-    try cmdline.appendSlice(alloc, self.exe);
+    try cmdline.appendSlice(alloc, exe);
     try cmdline.append(alloc, '"');
     for (args) |a| {
         const a16 = try std.unicode.utf8ToUtf16LeAlloc(alloc, a);
@@ -506,9 +521,9 @@ pub fn runCliWith(self: *Harness, name: []const u8, args: []const []const u8, ex
 
     var desktop: ?[:0]u16 = null;
     defer if (desktop) |d| alloc.free(d);
-    if (self.desktop_name) |n| {
+    if (where == .default) if (self.desktop_name) |n| {
         desktop = try std.mem.concatWithSentinel(alloc, u16, &.{ std.unicode.utf8ToUtf16LeStringLiteral("WinSta0\\"), n }, 0);
-    }
+    };
     var siex: w.STARTUPINFOEXW = .{ .StartupInfo = .{
         .cb = @sizeOf(w.STARTUPINFOEXW),
         .lpDesktop = if (desktop) |d| d.ptr else null,
@@ -530,7 +545,7 @@ pub fn runCliWith(self: *Harness, name: []const u8, args: []const []const u8, ex
     const dir16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, dir);
     defer alloc.free(dir16);
     if (w.CreateProcessW(
-        self.exe,
+        exe,
         @ptrCast(cmdline.items.ptr),
         null,
         null,

@@ -34,5 +34,7 @@ test {
     _ = @import("win32/split_layout.zig");
     _ = @import("win32/TabBar.zig");
     _ = @import("win32/text.zig");
+    _ = @import("win32/uia_text.zig");
+    _ = @import("win32/Uia.zig");
     _ = @import("win32/url.zig");
 }
