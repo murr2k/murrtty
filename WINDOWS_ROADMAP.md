@@ -2620,6 +2620,15 @@ the buffer, the untouched system clipboard, and both pastes.
 
 **5.10 Session end and restore, S then L.**
 - `WM_QUERYENDSESSION` with a shutdown block reason when sessions are running.
+  *Decided 2026-10-28: no block, as upstream.* Ghostty quits without
+  asking at shutdown, restart and log-off: macOS's
+  `applicationShouldTerminate` returns `terminateNow` for them before its
+  quit confirmation, and the GTK app holds no logout inhibitor. murrtty
+  answers `WM_QUERYENDSESSION` yes (`DefWindowProc`) and sets no
+  `ShutdownBlockReasonCreate`, so Windows never lists it as holding up a
+  shutdown, though a close would ask. `WM_ENDSESSION` stays where the
+  restore below writes its state. The `session-end` scenario checks the
+  answer and that no dialog opens.
 - Then `window-save-state`: windows, placement, tabs, split trees and
   directories as JSON under `%LOCALAPPDATA%`, with `RegisterApplicationRestart`
   for the `default` policy. State is written on change and on `WM_ENDSESSION`,

@@ -22,6 +22,7 @@ pub const all = [_]Scenario{
     .{ .name = "selection", .about = "murrtty's own selection clipboard: copy-on-select = primary (the default) fills it, not the system clipboard; a middle click and paste_from_selection paste it", .run = selectionScenario },
     .{ .name = "copy-keys", .about = "a word selected by a double click is copied 10 times each by Ctrl+Insert, the numpad's Ctrl+Ins (NumLock off) and Ctrl+Shift+C; the numpad's Left moves, its Shift+Ins pastes", .run = copyKeys },
     .{ .name = "alt-f4", .about = "Alt+F4 asks, then closes", .run = altF4 },
+    .{ .name = "session-end", .about = "Windows ending the session (log-off, shutdown) is answered yes with no dialog, as upstream quits without asking then", .run = sessionEnd },
     .{ .name = "clipboard-queue", .about = "a burst of OSC 52 writes asks one dialog at a time", .run = clipboardQueue },
     .{ .name = "clipboard-dialog", .about = "GTK's clipboard dialog: the whole text in a box, Deny the default, remember for OSC 52; an unsafe paste's warning", .run = clipboardDialog },
     .{ .name = "system-menu", .about = "murrtty's items in the system menu (Alt+Space) after Windows' own: About, New Tab; its Close still asks", .run = systemMenu },
@@ -621,6 +622,29 @@ fn altF4(h: *Harness) anyerror!void {
     h.answer(&g, dlg, w.IDYES);
     const code = g.waitExit(10000);
     try h.expect(code != null and code.? == 0, "exits with code 0 (got {?d})", .{code});
+}
+
+/// Windows ending the session (roadmap 5.10's first part, decided): murrtty
+/// lets it end without asking, as upstream does at shutdown, restart and
+/// log-off (macOS skips its quit confirmation then, GTK holds no logout
+/// inhibitor), though a close here would ask (the base config's idle cmd
+/// prompt). WM_QUERYENDSESSION is answered yes and no dialog opens.
+fn sessionEnd(h: *Harness) anyerror!void {
+    var g = try start(h, "session-end", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    var result: usize = 0;
+    const sent = w.SendMessageTimeoutW(win, w.WM_QUERYENDSESSION, 0, w.ENDSESSION_LOGOFF, w.SMTO_ABORTIFHUNG, 5000, &result);
+    try h.expect(sent != 0 and result != 0, "WM_QUERYENDSESSION is answered yes (sent {d}, result {d})", .{ sent, result });
+    h.sync(surf);
+    w.Sleep(300);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.modal_depth == 0, "and no dialog asks", .{});
+    }
+    try quit(h, &g, surf);
 }
 
 fn clipboardQueue(h: *Harness) anyerror!void {

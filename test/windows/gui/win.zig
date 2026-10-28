@@ -84,6 +84,8 @@ pub const WNDENUMPROC = *const fn (HWND, LPARAM) callconv(.winapi) BOOL;
 
 // Messages and flags
 pub const WM_CLOSE = 0x0010;
+pub const WM_QUERYENDSESSION = 0x0011;
+pub const ENDSESSION_LOGOFF: isize = 0x80000000;
 pub const WM_KEYDOWN = 0x0100;
 pub const WM_KEYUP = 0x0101;
 pub const WM_CHAR = 0x0102;
