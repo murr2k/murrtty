@@ -83,6 +83,7 @@ pub const all = [_]Scenario{
     .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
+    .{ .name = "pane-commit", .about = "thread stacks commit as they grow (under 1 MB each on average), not 16 MB each up front; a pane adds under 80 MB of commit charge in all", .run = paneCommit },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
     .{ .name = "pwd", .about = "OSC 9;9 and OSC 7 set the working directory; new tabs start there; relative links resolve against it", .run = pwdReports },
     .{ .name = "console-keys", .about = "a console program reads Shift+Left, Ctrl+C, Ctrl+Shift+C and Shift+Enter whole (win32-input-mode)", .run = consoleKeys },
@@ -4844,6 +4845,107 @@ fn splits(h: *Harness) anyerror!void {
         try h.expect(t.dividers.?.len == 0, "no dividers", .{});
     }
     try quit(h, &g, second);
+}
+
+/// Roadmap 0.15: std.Thread on Windows passes its stack size (16 MB) as
+/// the stack's commit, so each of a terminal's threads committed 16 MB up
+/// front. Spawned through internal_os.thread.spawnConfig they commit their
+/// stacks as they grow. Measured over four tabs opened after the first,
+/// each with its prompt drawn: the threads' stacks (every thread reserves
+/// the exe's 16 MB) and what a pane adds in all. Most of what is left is
+/// the GL driver's, one context per pane: on NVIDIA about 8 MB for a bare
+/// context and up to 32 MB of command and staging buffers.
+fn paneCommit(h: *Harness) anyerror!void {
+    var g = try start(h, "pane-commit", "", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    w.Sleep(1000);
+    const one = privateBytes(&g);
+
+    const added = 4;
+    for (0..added) |i| {
+        h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'T');
+        try waitTabCount(h, &g, 0, i + 2);
+        try waitPrompts(h, &g);
+    }
+    w.Sleep(2000);
+    const more = privateBytes(&g);
+    try h.expect(one > 0 and more > 0, "the process's commit charge is readable", .{});
+
+    // Each pane has at least its renderer, IO and pty read threads.
+    const stacks = threadStacks(&g);
+    h.log("{d} thread stacks commit {d} KB, the largest {d} KB", .{
+        stacks.count,
+        stacks.committed >> 10,
+        stacks.largest >> 10,
+    });
+    try h.expect(stacks.count >= 3 * (added + 1), "the threads' stacks are found (got {d})", .{stacks.count});
+    try h.expect(
+        stacks.committed < stacks.count * (1 << 20),
+        "thread stacks commit under 1 MB each on average (got {d} KB for {d})",
+        .{ stacks.committed >> 10, stacks.count },
+    );
+
+    const per_pane = (more -| one) / added;
+    h.log("commit charge: one pane {d} MB, {d} panes {d} MB, {d} MB a pane", .{
+        one >> 20,
+        added + 1,
+        more >> 20,
+        per_pane >> 20,
+    });
+    try h.expect(per_pane < 80 << 20, "a pane adds under 80 MB of commit charge (got {d} MB)", .{per_pane >> 20});
+}
+
+const ThreadStacks = struct { count: usize = 0, committed: usize = 0, largest: usize = 0 };
+
+/// Ghostty's thread stacks, from its address space: every thread reserves
+/// the exe's stack reserve (16 MB) as a private allocation of its own,
+/// and commits what the stack has used (all of it, before 0.15).
+fn threadStacks(g: *Harness.Ghostty) ThreadStacks {
+    const reserve = 16 << 20;
+    const Allocation = struct { base: usize = 0, reserved: usize = 0, committed: usize = 0, private: bool = false };
+    var out: ThreadStacks = .{};
+    var current: Allocation = .{};
+    var addr: usize = 0;
+    while (true) {
+        var info: w.MEMORY_BASIC_INFORMATION = .{};
+        if (w.VirtualQueryEx(g.proc, addr, &info, @sizeOf(w.MEMORY_BASIC_INFORMATION)) == 0) break;
+        if (info.State != w.MEM_FREE) {
+            if (info.AllocationBase != current.base) {
+                if (current.private and current.reserved == reserve) {
+                    out.count += 1;
+                    out.committed += current.committed;
+                    out.largest = @max(out.largest, current.committed);
+                }
+                current = .{ .base = info.AllocationBase, .private = info.Type == w.MEM_PRIVATE };
+            }
+            current.reserved += info.RegionSize;
+            if (info.State == w.MEM_COMMIT) current.committed += info.RegionSize;
+        }
+        addr = info.BaseAddress + info.RegionSize;
+    }
+    if (current.private and current.reserved == reserve) {
+        out.count += 1;
+        out.committed += current.committed;
+        out.largest = @max(out.largest, current.committed);
+    }
+    return out;
+}
+
+/// Wait until each of the first window's tabs shows cmd's prompt.
+fn waitPrompts(h: *Harness, g: *Harness.Ghostty) !void {
+    var waited: u32 = 0;
+    while (waited <= 20000) : (waited += 200) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const shown = for (d.value.windows[0].tabs) |t| {
+            const text = t.text orelse break false;
+            if (std.mem.indexOfScalar(u8, text, '>') == null) break false;
+        } else true;
+        if (shown) return;
+        w.Sleep(200);
+    }
+    return h.fail("not every tab shows a prompt", .{});
 }
 
 /// Roadmap S4: sixteen panes, each with its own GL context and render

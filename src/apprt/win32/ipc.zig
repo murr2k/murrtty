@@ -575,7 +575,7 @@ pub const Server = struct {
             _ = c.CloseHandle(h);
         };
         if (claimed != null) self.listening.store(true, .release);
-        self.thread = try std.Thread.spawn(.{}, run, .{ self, claimed });
+        self.thread = try std.Thread.spawn(internal_os.thread.spawnConfig(), run, .{ self, claimed });
         return self;
     }
 

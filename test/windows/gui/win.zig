@@ -271,6 +271,19 @@ pub const PROCESS_MEMORY_COUNTERS = extern struct {
     PeakPagefileUsage: usize = 0,
 };
 pub extern "kernel32" fn K32GetProcessMemoryInfo(HANDLE, *PROCESS_MEMORY_COUNTERS, DWORD) callconv(.winapi) BOOL;
+pub const MEMORY_BASIC_INFORMATION = extern struct {
+    BaseAddress: usize = 0,
+    AllocationBase: usize = 0,
+    AllocationProtect: DWORD = 0,
+    RegionSize: usize = 0,
+    State: DWORD = 0,
+    Protect: DWORD = 0,
+    Type: DWORD = 0,
+};
+pub const MEM_COMMIT = 0x1000;
+pub const MEM_FREE = 0x10000;
+pub const MEM_PRIVATE = 0x20000;
+pub extern "kernel32" fn VirtualQueryEx(HANDLE, usize, *MEMORY_BASIC_INFORMATION, usize) callconv(.winapi) usize;
 pub extern "kernel32" fn ReleaseMutex(HANDLE) callconv(.winapi) BOOL;
 pub const THREAD_START_ROUTINE = *const fn (?*anyopaque) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateThread(?*anyopaque, usize, THREAD_START_ROUTINE, ?*anyopaque, DWORD, ?*DWORD) callconv(.winapi) ?HANDLE;
