@@ -251,6 +251,22 @@ pub const exp = struct {
         pub extern "kernel32" fn GetFileAttributesW(
             lpFileName: LPCWSTR,
         ) callconv(.winapi) DWORD;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemdirectoryw
+        pub extern "kernel32" fn GetSystemDirectoryW(
+            lpBuffer: [*]u16,
+            uSize: UINT,
+        ) callconv(.winapi) UINT;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemwindowsdirectoryw
+        pub extern "kernel32" fn GetSystemWindowsDirectoryW(
+            lpBuffer: [*]u16,
+            uSize: UINT,
+        ) callconv(.winapi) UINT;
+        /// https://learn.microsoft.com/en-us/windows/win32/api/processenv/nf-processenv-getenvironmentvariablew
+        pub extern "kernel32" fn GetEnvironmentVariableW(
+            lpName: LPCWSTR,
+            lpBuffer: ?[*]u16,
+            nSize: DWORD,
+        ) callconv(.winapi) DWORD;
         /// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppathw
         pub extern "kernel32" fn GetTempPathW(
             nBufferLength: DWORD,

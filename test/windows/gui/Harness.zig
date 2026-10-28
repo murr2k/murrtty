@@ -233,6 +233,8 @@ pub const LaunchOptions = struct {
     where: Where = .default,
     /// Extra environment variables, as name and value.
     env: []const [2][]const u8 = &.{},
+    /// Inherited environment variables to leave out, by name.
+    unset: []const []const u8 = &.{},
     /// Start Ghostty as a shortcut (.lnk) at this path would: Windows sets
     /// STARTF_TITLEISLINKNAME with the shortcut as the title.
     shortcut: ?[]const u8 = null,
@@ -270,7 +272,7 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
     const dump_path = try std.fmt.allocPrint(alloc, "{s}\\dump.json", .{dir});
     errdefer alloc.free(dump_path);
 
-    const env = try self.environment(dir, dump_path, opts.env);
+    const env = try self.environment(dir, dump_path, opts.env, opts.unset);
     defer alloc.free(env);
 
     var cmdline: std.ArrayList(u16) = .empty;
@@ -391,7 +393,7 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
 }
 
 /// This process's environment with the test's variables replaced.
-fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8, extra: []const [2][]const u8) ![]u16 {
+fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8, extra: []const [2][]const u8, unset: []const []const u8) ![]u16 {
     const alloc = self.alloc;
     var out: std.ArrayList(u16) = .empty;
     errdefer out.deinit(alloc);
@@ -406,9 +408,13 @@ fn environment(self: *Harness, cfg_home: []const u8, dump_path: []const u8, extr
         for (drop) |d| {
             if (entry.len >= d.len and asciiEqlIgnoreCase16(entry[0..d.len], d)) keep = false;
         }
-        // One the caller sets replaces the inherited one.
+        // One the caller sets replaces the inherited one, and one it unsets
+        // goes.
         for (extra) |kv| {
             if (entry.len > kv[0].len and entry[kv[0].len] == '=' and asciiEqlIgnoreCase16(entry[0..kv[0].len], kv[0])) keep = false;
+        }
+        for (unset) |name| {
+            if (entry.len > name.len and entry[name.len] == '=' and asciiEqlIgnoreCase16(entry[0..name.len], name)) keep = false;
         }
         if (keep) {
             try out.appendSlice(alloc, entry);
@@ -461,7 +467,7 @@ pub fn runCliWith(self: *Harness, name: []const u8, args: []const []const u8, ex
     try self.launched.append(alloc, try alloc.dupe(u8, dir));
     const dump_path = try std.fmt.allocPrint(alloc, "{s}\\dump.json", .{dir});
     defer alloc.free(dump_path);
-    const env = try self.environment(dir, dump_path, extra_env);
+    const env = try self.environment(dir, dump_path, extra_env, &.{});
     defer alloc.free(env);
 
     // Each argument quoted: none the tests pass holds a quote or ends in a

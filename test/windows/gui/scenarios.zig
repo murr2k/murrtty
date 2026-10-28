@@ -22,6 +22,7 @@ pub const all = [_]Scenario{
     .{ .name = "selection", .about = "murrtty's own selection clipboard: copy-on-select = primary (the default) fills it, not the system clipboard; a middle click and paste_from_selection paste it", .run = selectionScenario },
     .{ .name = "copy-keys", .about = "a word selected by a double click is copied 10 times each by Ctrl+Insert, the numpad's Ctrl+Ins (NumLock off) and Ctrl+Shift+C; the numpad's Left moves, its Shift+Ins pastes", .run = copyKeys },
     .{ .name = "alt-f4", .about = "Alt+F4 asks, then closes", .run = altF4 },
+    .{ .name = "bare-command", .about = "a bare command name runs Windows' program, not a same-named one planted where murrtty started", .run = bareCommand },
     .{ .name = "session-end", .about = "Windows ending the session (log-off, shutdown) is answered yes with no dialog, as upstream quits without asking then", .run = sessionEnd },
     .{ .name = "clipboard-queue", .about = "a burst of OSC 52 writes asks one dialog at a time", .run = clipboardQueue },
     .{ .name = "clipboard-dialog", .about = "GTK's clipboard dialog: the whole text in a box, Deny the default, remember for OSC 52; an unsafe paste's warning", .run = clipboardDialog },
@@ -624,6 +625,72 @@ fn altF4(h: *Harness) anyerror!void {
     h.answer(&g, dlg, w.IDYES);
     const code = g.waitExit(10000);
     try h.expect(code != null and code.? == 0, "exits with code 0 (got {?d})", .{code});
+}
+
+/// A bare command name (roadmap 6.6) runs the program in Windows' system
+/// folders or on PATH, never a same-named one in the folder murrtty started
+/// in (a shell's, when started from one), which Windows' own search tries
+/// first: with a "cmd.exe" there (a copy of whoami), `command = cmd.exe /d`
+/// still starts Windows' cmd. Launched without
+/// NoDefaultCurrentDirectoryInExePath (Claude Code's environment sets it,
+/// which keeps Windows' search out of the current folder and so would hide
+/// the planted one). PowerShell 7 by its bare name, `pwsh`, starts in
+/// pwsh-keys and pwsh-integration.
+fn bareCommand(h: *Harness) anyerror!void {
+    // murrtty starts in its scenario's folder (Harness.launchWith).
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\bare-command", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    const planted = try std.fmt.allocPrint(h.alloc, "{s}\\cmd.exe", .{dir});
+    defer h.alloc.free(planted);
+    const whoami = h.readFileOrNull("C:\\Windows\\System32\\whoami.exe") orelse return h.skip("no whoami.exe to plant", .{});
+    defer h.alloc.free(whoami);
+    try h.writeFileAt(planted, whoami);
+    defer h.deleteFile(planted);
+
+    // With an argument: a lone `cmd.exe` is %COMSPEC%'s full path (Exec).
+    {
+        var g = try h.launchWith("bare-command", base_config ++ "command = cmd.exe /d\n", .{ .unset = &.{"NoDefaultCurrentDirectoryInExePath"} });
+        defer g.deinit();
+        try h.waitText(&g, "Microsoft Windows", 1, 20000);
+        try h.expect(true, "with a cmd.exe planted where murrtty started, command = cmd.exe starts Windows' cmd (its banner)", .{});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+
+    // A batch file on PATH, a same-named one in the shell's folder
+    // (working-directory): it runs as `cmd /c`, which looks its name up
+    // again, in that folder first; murrtty hands it the found path.
+    const real = try std.fmt.allocPrint(h.alloc, "{s}\\bare-command-batch-real", .{h.temp_dir});
+    defer h.alloc.free(real);
+    const there = try std.fmt.allocPrint(h.alloc, "{s}\\bare-command-batch-there", .{h.temp_dir});
+    defer h.alloc.free(there);
+    try h.makeDirAt(real);
+    try h.makeDirAt(there);
+    const real_cmd = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty-test-tool.cmd", .{real});
+    defer h.alloc.free(real_cmd);
+    const there_cmd = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty-test-tool.cmd", .{there});
+    defer h.alloc.free(there_cmd);
+    try h.writeFileAt(real_cmd, "@echo the-real-tool\r\n@cmd /d /k\r\n");
+    defer h.deleteFile(real_cmd);
+    try h.writeFileAt(there_cmd, "@echo a-planted-tool\r\n@cmd /d /k\r\n");
+    defer h.deleteFile(there_cmd);
+    const path_var = try std.fmt.allocPrint(h.alloc, "{s};C:\\Windows\\System32;C:\\Windows", .{real});
+    defer h.alloc.free(path_var);
+    const config = try std.fmt.allocPrint(h.alloc, base_config ++ "command = murrtty-test-tool.cmd\nworking-directory = {s}\n", .{there});
+    defer h.alloc.free(config);
+    var g = try h.launchWith("bare-command-batch", config, .{
+        .env = &.{.{ "PATH", path_var }},
+        .unset = &.{"NoDefaultCurrentDirectoryInExePath"},
+    });
+    defer g.deinit();
+    try h.waitText(&g, "the-real-tool", 1, 20000);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const text = d.value.windows[0].tabs[0].text orelse "";
+        try h.expect(std.mem.indexOf(u8, text, "a-planted-tool") == null, "a bare batch name runs the one on PATH, not the shell folder's", .{});
+    }
+    try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
 }
 
 /// Windows ending the session (roadmap 5.10's first part, decided): murrtty

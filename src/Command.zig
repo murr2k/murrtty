@@ -305,14 +305,31 @@ fn fork() !posix.pid_t {
 fn startWindows(self: *Command, arena: Allocator) !void {
     const cwd_w = if (self.cwd) |cwd| try std.unicode.utf8ToUtf16LeAllocZ(arena, cwd) else null;
 
-    // Pass null for lpApplicationName and put the program as the first
-    // token of lpCommandLine. This lets CreateProcessW perform the
-    // standard program search (parent-app dir, CWD, system dirs, PATH)
-    // and append ".exe" when the name has no extension, which is what
-    // users expect for bare commands like `wsl ~` or `pwsh.exe`.
-    // It also preserves the child's argv[0] as written by the caller
-    // rather than replacing it with the resolved absolute path.
-    const command_line = if (self.args.len > 0)
+    // The program goes first in lpCommandLine as the caller wrote it, so
+    // the child's argv[0] is that. A bare name (`wsl ~`, `pwsh.exe`) is
+    // found here and passed as lpApplicationName (roadmap 6.6): with null
+    // there, CreateProcessW searches the parent's folder and its current
+    // one before the system folders and PATH, so a same-named program
+    // planted where murrtty started (a shell's folder) would run instead.
+    const program = if (self.args.len > 0) self.args[0] else self.path;
+    // A batch file runs as `cmd /c` with the command line, and cmd finds
+    // its first token again, in the child's folder first: there it is the
+    // found path too.
+    var batch: ?[]const u8 = null;
+    const app_name_w: ?[:0]u16 = if (internal_os.default_shell.isBareName(program)) app: {
+        const path_var = if (self.env) |env| env.get("PATH") else try internal_os.default_shell.processPath(arena);
+        const found = (try internal_os.default_shell.findProgram(arena, program, path_var)) orelse
+            return error.FileNotFound;
+        if (std.ascii.endsWithIgnoreCase(found, ".bat") or std.ascii.endsWithIgnoreCase(found, ".cmd")) batch = found;
+        break :app try std.unicode.wtf8ToWtf16LeAllocZ(arena, found);
+    } else null;
+    const command_line = if (batch) |found| line: {
+        const given: []const [:0]const u8 = if (self.args.len > 0) self.args else &.{self.path};
+        const argv = try arena.alloc([]const u8, given.len);
+        for (given, argv) |arg, *out| out.* = arg;
+        argv[0] = found;
+        break :line try windowsCreateCommandLine(arena, argv);
+    } else if (self.args.len > 0)
         try windowsCreateCommandLine(arena, self.args)
     else
         try windowsCreateCommandLine(arena, &.{self.path});
@@ -420,7 +437,7 @@ fn startWindows(self: *Command, arena: Allocator) !void {
 
     var process_information: windows.PROCESS_INFORMATION = undefined;
     if (windows.exp.kernel32.CreateProcessW(
-        null,
+        if (app_name_w) |w| w.ptr else null,
         command_line_w.ptr,
         null,
         null,

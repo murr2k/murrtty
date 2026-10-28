@@ -2175,8 +2175,9 @@ fn execCommand(
                     // No arguments. If the shell is literally "cmd.exe"
                     // (the default), resolve via %COMSPEC% which is the
                     // documented path to the current command processor.
-                    // Other values are passed as-is and resolved by
-                    // `internal_os.path.expand` in Command.startWindows.
+                    // Other values are passed as-is and resolved in
+                    // Command.startWindows (a bare name by findProgram,
+                    // roadmap 6.6).
                     const argv0 = if (std.ascii.eqlIgnoreCase(v, "cmd.exe"))
                         global.environ().getAlloc(alloc, "COMSPEC") catch
                             try alloc.dupe(u8, v)

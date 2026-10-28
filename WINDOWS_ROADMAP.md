@@ -2813,6 +2813,32 @@ the current directory (honoring `PATHEXT`, fixed drives only as
 Small and security-related, so it can land with any phase rather than
 waiting for M3.
 
+*Done 2026-10-28 (`default_shell.findProgram`):* a bare name (no folder or
+drive) is found in the system folder, the Windows folder, then PATH's
+absolute entries, on fixed drives first and then the others (shares,
+network and removable drives; forward slashes taken), with PATH from the
+child's environment, else murrtty's. Its full path goes to
+`lpApplicationName`; the command line keeps the name as written, but for a
+batch file, which runs as `cmd /c` with the command line and is looked up
+again by cmd in the shell's folder first: its first token is the found
+path. Not found, the start fails, rather than falling back to Windows'
+search. murrtty's own folder is still searched, last (Exec puts it at the
+end of the child's PATH). A name with a folder in it (`.\tool.exe`,
+`C:tool`) keeps Windows' own resolution, as planned. A name without an extension takes
+".exe", as CreateProcess gives it: PATHEXT is left out on purpose
+(CreateProcess never runs `tool.cmd` for `tool`, and a batch file as the
+program would get its arguments through cmd's parsing). A lone `cmd.exe`
+was already `%COMSPEC%` (Exec), so the hole was reachable with arguments
+(`cmd.exe /d`) or another name (`pwsh -NoLogo`, `wsl ~`). The `bare-command`
+scenario plants a "cmd.exe" (whoami) in murrtty's starting folder and
+expects Windows' cmd for `command = cmd.exe /d`, and runs a bare batch
+name found on PATH while a same-named one sits in `working-directory`
+(the review's finding: cmd's second lookup ran that one); launched without
+`NoDefaultCurrentDirectoryInExePath`, which Claude Code's environment sets
+and which keeps Windows' search out of the current folder (with it, the
+check passed even against the old code). PowerShell 7 by its bare name
+starts in `pwsh-keys` and `pwsh-integration`.
+
 ---
 
 ## Phase 7: Release engineering (about 3 to 7 weeks, finished for M3, plus 7.8)
