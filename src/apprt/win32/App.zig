@@ -238,6 +238,8 @@ quit_timer: enum { off, active, expired } = .off,
 /// A window was opened (GTK's requested_window): with no delay, closing the
 /// last window quits only once one was, so initial-window = false waits.
 requested_window: bool = false,
+/// closeAllWindows is closing them: no hidden quick terminal comes back.
+closing_all: bool = false,
 /// run() has opened the first window or the tray. Before, nothing quits:
 /// the color scheme's soft reload at start (a dark system) reaches the
 /// config change, with no window yet.
@@ -556,6 +558,11 @@ fn runIpc(self: *App, msg: ipc.Message) void {
     // Started for this request, with no window to show for it: quit.
     defer if (self.ipc_launch and self.windows.items.len == 0) self.quitNow();
 
+    // +toggle-quick-terminal (roadmap 5.7).
+    if (msg.kind == .toggle_quick_terminal) {
+        _ = self.toggleQuickTerminal(.ipc);
+        return;
+    }
     if (msg.kind == .new_tab) if (self.ipcTabTarget(msg.surface_id)) |s| {
         const window = s.window;
         _ = window.addTab(&s.core_surface, .tab) catch |err| {
@@ -862,12 +869,19 @@ pub const Modal = struct {
     /// order or twice (either would leave close requests held forever).
     depth: u32,
     ended: bool = false,
+    /// The quick terminal (by id), taken out of the topmost band so that a
+    /// dialog of another window doesn't open under it.
+    lowered_quick: ?u64 = null,
 
     pub fn end(self: *Modal) void {
         const app = self.app;
         if (self.ended) return;
         self.ended = true;
         std.debug.assert(app.modal_depth == self.depth);
+        if (self.lowered_quick) |id| if (app.findWindow(id)) |w| if (w.quick) |*q| {
+            q.lowered = false;
+            _ = c.SetWindowPos(w.hwnd, c.HWND_TOPMOST, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE | c.SWP_NOACTIVATE);
+        };
         for (self.disabled.items) |hwnd| _ = c.EnableWindow(hwnd, c.TRUE);
         self.disabled.deinit(app.core_app.alloc);
         app.modal_owner = self.prev_owner;
@@ -892,6 +906,13 @@ pub fn beginModal(self: *App, owner: ?c.HWND, opts: ModalOptions) Modal {
         .depth = self.modal_depth + 1,
     };
     if (opts.disable_others) {
+        // A dialog of another window would open under the topmost quick
+        // terminal (roadmap 5.7): out of the topmost band until it closes.
+        if (self.quickWindow()) |q| if (c.IsWindowVisible(q.hwnd) != 0 and (owner == null or owner.? != q.hwnd) and !q.quick.?.lowered) {
+            _ = c.SetWindowPos(q.hwnd, c.HWND_NOTOPMOST, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE | c.SWP_NOACTIVATE);
+            q.quick.?.lowered = true;
+            modal.lowered_quick = q.id;
+        };
         const alloc = self.core_app.alloc;
         for (self.windows.items) |w| {
             if (owner != null and w.hwnd == owner.?) continue;
@@ -1245,6 +1266,7 @@ pub fn windowDestroyed(self: *App, window: *Window) void {
         if (self.hidden_front == window.id) self.hidden_front = null;
         if (self.hidden_windows.items.len == 0) self.windows_hidden = false;
     }
+    self.rescueQuick();
 
     self.checkQuit();
 }
@@ -1296,10 +1318,77 @@ fn syncTray(self: *App) void {
 pub fn trayActivate(self: *App) void {
     if (self.modal_depth > 0) return self.raiseModal();
     if (self.windows_hidden) return self.showWindows();
-    const last = if (self.last_window) |id| self.findWindow(id) else null;
-    const front = last orelse
-        (if (self.windows.items.len > 0) self.windows.items[self.windows.items.len - 1] else null);
-    if (front) |w| self.raiseWindows(w) else self.runAppAction(.new_window);
+    if (self.frontWindow()) |w| self.raiseWindows(w) else self.runAppAction(.new_window);
+}
+
+/// The window last activated, else the newest; never the quick terminal.
+fn frontWindow(self: *App) ?*Window {
+    if (self.last_window) |id| if (self.findWindow(id)) |w| return w;
+    var i = self.windows.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (self.windows.items[i].quick == null) return self.windows.items[i];
+    }
+    return null;
+}
+
+/// The quick terminal's window, if it is open.
+pub fn quickWindow(self: *App) ?*Window {
+    for (self.windows.items) |w| if (w.quick != null) return w;
+    return null;
+}
+
+/// toggle_quick_terminal (roadmap 5.7), GTK's: hide it or show it again,
+/// or open it. Hiding needs a way back (a global binding with it, the tray,
+/// another window's bindings, or the command that toggled it), or murrtty
+/// would be out of reach. One autohide has just hidden (the click opening
+/// the tray's menu took the keyboard) stays hidden.
+fn toggleQuickTerminal(self: *App, from: enum { binding, ipc }) bool {
+    const w = self.quickWindow() orelse {
+        const created = Window.createQuick(self) catch |err| {
+            log.warn("error creating the quick terminal err={}", .{err});
+            return false;
+        };
+        if (from == .ipc) created.quick.?.ipc_toggled = true;
+        return true;
+    };
+    const q = &w.quick.?;
+    if (from == .ipc) q.ipc_toggled = true;
+    if (!q.shown) {
+        if (!q.justAutohidden()) q.show(w);
+        return true;
+    }
+    if (!self.canShowQuick()) return false;
+    q.hide(w);
+    return true;
+}
+
+/// Whether a hidden quick terminal can come back: a global binding with
+/// toggle_quick_terminal, the tray's menu, another window, or the command
+/// that toggled it before.
+pub fn canShowQuick(self: *App) bool {
+    if (self.global_keys.binds(.toggle_quick_terminal) or self.notifications.tray) return true;
+    for (self.windows.items) |w| {
+        if (w.quick == null) return true;
+        if (w.quick.?.ipc_toggled) return true;
+    }
+    return false;
+}
+
+/// A hidden quick terminal that nothing can bring back any more (its last
+/// other window closed, a reload took the binding or the tray) shows; not
+/// while everything closes.
+fn rescueQuick(self: *App) void {
+    if (self.quitting or self.closing_all) return;
+    const w = self.quickWindow() orelse return;
+    if (!w.quick.?.shown and !self.canShowQuick()) w.quick.?.show(w);
+}
+
+/// Whether `hwnd` is one of murrtty's (this process's).
+pub fn ownsWindow(_: *const App, hwnd: c.HWND) bool {
+    var pid: c.DWORD = 0;
+    _ = c.GetWindowThreadProcessId(hwnd, &pid);
+    return pid == c.GetCurrentProcessId();
 }
 
 /// The tray icon's menu at `at` (owned by its window, `owner`), then the
@@ -1352,6 +1441,8 @@ fn quit(self: *App) void {
 }
 
 fn closeAllWindows(self: *App) void {
+    self.closing_all = true;
+    defer self.closing_all = false;
     while (self.windows.items.len > 0) {
         self.windows.items[self.windows.items.len - 1].destroy();
     }
@@ -1656,16 +1747,26 @@ fn openConfig(self: *App) bool {
     return false;
 }
 
+/// goto_window: the next or previous window, never the quick terminal
+/// (roadmap 5.7, which has its own toggle; GTK's and macOS's cycle through
+/// theirs too). From the quick terminal, the first or the last window.
 fn gotoWindow(self: *App, target: apprt.Target, direction: apprt.action.GotoWindow) bool {
     const current = windowFromTarget(target) orelse return false;
-    const n = self.windows.items.len;
+    var list: std.ArrayList(*Window) = .empty;
+    defer list.deinit(self.core_app.alloc);
+    for (self.windows.items) |w| if (w.quick == null) list.append(self.core_app.alloc, w) catch return false;
+    const n = list.items.len;
+    const i = std.mem.indexOfScalar(*Window, list.items, current) orelse {
+        if (n == 0) return false;
+        list.items[if (direction == .next) 0 else n - 1].present();
+        return true;
+    };
     if (n < 2) return false;
-    const i = std.mem.indexOfScalar(*Window, self.windows.items, current) orelse return false;
     const next = switch (direction) {
         .next => (i + 1) % n,
         .previous => (i + n - 1) % n,
     };
-    self.windows.items[next].present();
+    list.items[next].present();
     return true;
 }
 
@@ -1848,6 +1949,7 @@ pub fn performAction(
         },
 
         .toggle_visibility => return self.toggleVisibility(),
+        .toggle_quick_terminal => return self.toggleQuickTerminal(.binding),
 
         // OSC 9;4 (roadmap 5.4): the pane's bar and its window's taskbar
         // button.
@@ -1928,6 +2030,7 @@ pub fn performAction(
                 // closed (a delay still applies).
                 if (self.started and self.windows.items.len == 0 and !self.notifications.tray and
                     self.quit_timer == .off) self.startQuitTimer();
+                self.rescueQuick();
                 self.checkQuit();
             },
         },
@@ -2070,10 +2173,7 @@ fn toggleVisibility(self: *App) bool {
         return true;
     }
     if (!self.inFront()) {
-        const last = if (self.last_window) |id| self.findWindow(id) else null;
-        const front = last orelse
-            (if (self.windows.items.len > 0) self.windows.items[self.windows.items.len - 1] else return false);
-        self.raiseWindows(front);
+        self.raiseWindows(self.frontWindow() orelse return false);
         return true;
     }
     if (!self.canShowHidden()) return false;
@@ -2084,8 +2184,8 @@ fn toggleVisibility(self: *App) bool {
     const front_root = if (foreground) |f| c.GetAncestor(f, c.GA_ROOTOWNER) else null;
     for (self.windows.items) |w| {
         // Windows out of sight already (a tab torn off, not yet shown)
-        // stay so.
-        if (c.IsWindowVisible(w.hwnd) == 0) continue;
+        // stay so, and the quick terminal has its own toggle.
+        if (c.IsWindowVisible(w.hwnd) == 0 or w.quick != null) continue;
         self.hidden_windows.append(alloc, w.id) catch return false;
         if (w.hwnd == foreground or w.hwnd == front_root) self.hidden_front = w.id;
     }
@@ -2132,7 +2232,9 @@ pub fn showWindows(self: *App) void {
 fn raiseWindows(self: *App, front: *Window) void {
     front.present();
     for (self.windows.items) |w| {
-        if (w == front or c.IsWindowVisible(w.hwnd) == 0 or c.IsIconic(w.hwnd) != 0) continue;
+        // Placed behind a window, the topmost quick terminal would stop
+        // being topmost.
+        if (w == front or w.quick != null or c.IsWindowVisible(w.hwnd) == 0 or c.IsIconic(w.hwnd) != 0) continue;
         _ = c.SetWindowPos(w.hwnd, front.hwnd, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE | c.SWP_NOACTIVATE);
     }
 }
@@ -2229,7 +2331,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         .show_gtk_inspector,
         .show_on_screen_keyboard,
         .toggle_secure_input,
-        .toggle_quick_terminal,
         .check_for_updates,
         .undo,
         .redo,
@@ -2251,8 +2352,8 @@ pub fn supportsAction(action: input.Binding.Action) bool {
 }
 
 /// A CLI action's request to the running murrtty (`+new-window`,
-/// `+new-tab`), over the single instance's pipe; a murrtty is started for
-/// it if none runs (ipc.request). The quick terminal comes with 5.7.
+/// `+new-tab`, `+toggle-quick-terminal`), over the single instance's pipe;
+/// a murrtty is started for it if none runs (ipc.request).
 pub fn performIpc(
     alloc: Allocator,
     target: apprt.ipc.Target,
@@ -2262,7 +2363,7 @@ pub fn performIpc(
     const msg: ipc.Message = switch (action) {
         .new_window => .{ .kind = .new_window, .arguments = value.arguments },
         .new_tab => .{ .kind = .new_tab, .surface_id = value.surface_id, .arguments = value.arguments },
-        .toggle_quick_terminal => return false,
+        .toggle_quick_terminal => .{ .kind = .toggle_quick_terminal },
     };
     try ipc.request(alloc, switch (target) {
         .class => |class| class,

@@ -717,11 +717,6 @@ pub const Server = struct {
                 error.OutOfMemory => .failed,
             };
         };
-        // The quick terminal comes with roadmap 5.7.
-        if (received.message.kind == .toggle_quick_terminal) {
-            received.destroy(self.alloc);
-            return .unsupported;
-        }
         const io = global.io();
         {
             self.mutex.lockUncancelable(io);

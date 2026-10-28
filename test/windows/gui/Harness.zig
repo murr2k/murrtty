@@ -1434,6 +1434,17 @@ pub const Dump = struct {
     toggles: u32 = 0,
     global_refreshes: u32 = 0,
 
+    /// The quick terminal's state (roadmap 5.7): shown (also while it
+    /// slides in), sliding, and the work area and DPI it chose.
+    pub const Quick = struct {
+        shown: bool = false,
+        sliding: bool = false,
+        /// Out of the topmost band for another window's dialog.
+        lowered: bool = false,
+        work: [4]i32 = .{ 0, 0, 0, 0 },
+        dpi: u32 = 96,
+    };
+
     pub const Global = struct {
         /// As menus write it.
         trigger: []const u8 = "",
@@ -1482,6 +1493,13 @@ pub const Dump = struct {
         /// Windows keeps it there.
         floating: bool = false,
         topmost: bool = false,
+        /// Its window rectangle, whether it is shown, whether it is a tool
+        /// window (no taskbar button), and the quick terminal's state if
+        /// it is the quick terminal (roadmap 5.7).
+        rect: [4]i32 = .{ 0, 0, 0, 0 },
+        visible: bool = false,
+        toolwindow: bool = false,
+        quick: ?Quick = null,
         /// Its taskbar button's progress (roadmap 5.4: "none", "normal",
         /// "error", "paused", "indeterminate"), shown once `ready` (the
         /// button exists, never on the hidden desktop).

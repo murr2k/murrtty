@@ -18,6 +18,7 @@ const App = @import("App.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Overlay = @import("Overlay.zig");
+const QuickTerminal = @import("QuickTerminal.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 const TabBar = @import("TabBar.zig");
@@ -136,6 +137,11 @@ system_menu: ContextMenu.SystemMenu = .{},
 /// for every other nested loop.
 menu_modal: ?App.Modal = null,
 
+/// The quick terminal's state, if this is it (roadmap 5.7): borderless,
+/// topmost, no taskbar button or header bar, placed by its config and
+/// never resized otherwise.
+quick: ?QuickTerminal = null,
+
 const TabDrag = struct {
     /// The tab pressed, found again on each move: tabs can close or move
     /// meanwhile (a middle click, a process ending, a binding), which
@@ -182,13 +188,24 @@ pub fn registerClass(instance: c.HINSTANCE) !void {
 
 /// Create and show a new window with a single tab.
 pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
-    const self = try createEmpty(app);
+    const self = try createEmpty(app, .normal);
     errdefer self.discard();
     // Before the pane, which then opens at that monitor's DPI and the
     // first size fits its work area.
     self.placeAsConfigured();
     _ = try self.addTab(parent, .window);
     self.show();
+    return self;
+}
+
+/// Create the quick terminal (roadmap 5.7) with a single tab, and slide it
+/// in. It is made (hidden) where it shows, so its pane opens at that
+/// monitor's DPI and its final size.
+pub fn createQuick(app: *App) !*Window {
+    const self = try createEmpty(app, .quick);
+    errdefer self.discard();
+    _ = try self.addTab(null, .window);
+    self.quick.?.show(self);
     return self;
 }
 
@@ -244,6 +261,8 @@ fn showProgress(self: *Window) void {
 /// float_window (toggle_window_float_on_top): kept above other windows, or
 /// not, as macOS's floating level (GTK lacks it).
 pub fn setFloat(self: *Window, mode: apprt.action.FloatWindow) void {
+    // The quick terminal is always above.
+    if (self.quick != null) return;
     // As the window is: another program (Always On Top) may have changed it.
     if (self.isTopmost()) self.floating = true;
     self.floating = switch (mode) {
@@ -259,6 +278,13 @@ pub fn setFloat(self: *Window, mode: apprt.action.FloatWindow) void {
     }
 }
 
+/// quick-terminal-autohide may hide the quick terminal now: no dialog is
+/// open, and something can bring it back.
+pub fn wantsAutohide(self: *const Window) bool {
+    return self.quick != null and self.app.config.@"quick-terminal-autohide" and
+        self.app.modal_depth == 0 and self.app.canShowQuick();
+}
+
 /// Whether Windows keeps the window above others now.
 pub fn isTopmost(self: *const Window) bool {
     return c.GetWindowLongPtrW(self.hwnd, c.GWL_EXSTYLE) & c.WS_EX_TOPMOST != 0;
@@ -269,7 +295,7 @@ pub fn isTopmost(self: *const Window) bool {
 /// initial_size; else the default), as macOS's; restored first if
 /// maximized, nothing fullscreen or minimized. Returns whether it resized.
 pub fn resetSize(self: *Window) bool {
-    if (self.fullscreen != null or c.IsIconic(self.hwnd) != 0) return false;
+    if (self.quick != null or self.fullscreen != null or c.IsIconic(self.hwnd) != 0) return false;
     if (c.IsZoomed(self.hwnd) != 0) {
         // Restoring shows the window: with those toggle_visibility hid.
         self.app.showWindows();
@@ -308,8 +334,8 @@ fn stepResize(self: *Window, rect: *c.RECT, edge: c.WPARAM) void {
 }
 
 /// A new window, not yet shown, with no tab: for create to add one to, or
-/// for a tab moved out of another window (tearOff).
-fn createEmpty(app: *App) !*Window {
+/// for a tab moved out of another window (tearOff); or the quick terminal.
+fn createEmpty(app: *App, kind: enum { normal, quick }) !*Window {
     const alloc = app.core_app.alloc;
     const self = try alloc.create(Window);
     errdefer alloc.destroy(self);
@@ -318,15 +344,25 @@ fn createEmpty(app: *App) !*Window {
     // Closing the last window may now quit (App.checkQuit).
     app.requested_window = true;
 
+    // The quick terminal: a topmost popup tool window (no frame, no
+    // taskbar button), made (hidden) where it shows, so its pane opens at
+    // that monitor's DPI and its final size.
+    var at: c.RECT = .{ .left = c.CW_USEDEFAULT, .top = c.CW_USEDEFAULT, .right = default_width, .bottom = default_height };
+    if (kind == .quick) {
+        self.quick = .{};
+        self.quick.?.chooseScreen(&app.config);
+        const shown = self.quick.?.placement(&app.config).shown;
+        at = .{ .left = shown.left, .top = shown.top, .right = shown.right - shown.left, .bottom = shown.bottom - shown.top };
+    }
     self.hwnd = c.CreateWindowExW(
-        c.WS_EX_APPWINDOW,
+        if (kind == .quick) c.WS_EX_TOOLWINDOW | c.WS_EX_TOPMOST else c.WS_EX_APPWINDOW,
         class_name,
         c.L("murrtty"),
-        c.WS_OVERLAPPEDWINDOW | c.WS_CLIPCHILDREN,
-        c.CW_USEDEFAULT,
-        c.CW_USEDEFAULT,
-        default_width,
-        default_height,
+        if (kind == .quick) c.WS_POPUP | c.WS_CLIPCHILDREN else c.WS_OVERLAPPEDWINDOW | c.WS_CLIPCHILDREN,
+        at.left,
+        at.top,
+        at.right,
+        at.bottom,
         null,
         null,
         app.instance,
@@ -363,7 +399,7 @@ fn createEmpty(app: *App) !*Window {
     // asks for it, Windows shows the shared one, and asking while it opens
     // makes a copy other than the menu showing (WM_INITMENUPOPUP).
     _ = c.GetSystemMenu(self.hwnd, c.FALSE);
-    self.setClientSize(default_width, default_height);
+    if (kind == .normal) self.setClientSize(default_width, default_height);
     self.applyChrome();
     // Before the first pane, which takes it up.
     self.syncTranslucent();
@@ -720,7 +756,7 @@ pub fn moveTabToNewWindow(self: *Window, surface: *Surface) bool {
 /// (an error) for the only tab, which would leave this window empty.
 fn tearOff(self: *Window, index: usize, at: ?c.POINT) !void {
     if (self.tabs.items.len < 2) return error.OnlyTab;
-    const target = try createEmpty(self.app);
+    const target = try createEmpty(self.app, .normal);
     if (at == null) target.placeAsConfigured();
     if (at) |p| {
         var r: c.RECT = .{};
@@ -1042,7 +1078,7 @@ fn tabsShownFor(self: *const Window, count: usize) bool {
 /// gtk-titlebar-style = tabs: the tab row is the title bar, with the
 /// header bar's buttons in it (HeaderBar.tabs_style), and no header bar.
 pub fn tabsTitlebar(self: *const Window) bool {
-    return self.app.config.@"gtk-titlebar-style" == .tabs;
+    return self.quick == null and self.app.config.@"gtk-titlebar-style" == .tabs;
 }
 
 /// Lay the bars out for the window's style: the tab row is the top bar
@@ -1074,6 +1110,8 @@ fn titleBarHeight(self: *const Window) c_int {
 /// it the system's caption shows, and no header buttons, as GTK's tab bar
 /// then has none.
 pub fn csd(self: *const Window) bool {
+    // The quick terminal has no title bar, as GTK's never shows its header.
+    if (self.quick != null) return false;
     const config = &self.app.config;
     switch (self.decoration()) {
         .auto, .client => {},
@@ -1094,6 +1132,8 @@ pub fn decoration(self: *const Window) configpkg.WindowDecoration {
 /// rounded corners, and the tab row becomes the top bar. Fullscreen has
 /// no frame anyway.
 pub fn captionless(self: *const Window) bool {
+    // The quick terminal's popup has no frame to take the caption from.
+    if (self.quick != null) return false;
     return self.csd() or (self.decoration() == .none and self.fullscreen == null);
 }
 
@@ -1113,6 +1153,7 @@ pub fn inTopBand(self: *const Window, screen: c.POINT) bool {
 /// toggle. The terminal area keeps its size, so the grid doesn't change,
 /// unless the window is maximized or fullscreen.
 pub fn toggleDecorations(self: *Window) void {
+    if (self.quick != null) return;
     const before = self.tabRect(self.tabs.items.len);
     self.decoration_override = if (self.decoration_override != null) null else switch (self.app.config.@"window-decoration") {
         .none => .auto,
@@ -1313,7 +1354,8 @@ pub fn toastText(self: *const Window) []const u16 {
 /// actions: it divides pixel sizes by the content scale. A zero
 /// dimension keeps its current size, as resize_window requires.
 pub fn setClientSize(self: *Window, width: u32, height: u32) void {
-    if (width == 0 and height == 0) return;
+    // The quick terminal's config sizes it.
+    if (self.quick != null or (width == 0 and height == 0)) return;
     const dpi = c.GetDpiForWindow(self.hwnd);
     const current = self.tabRect(self.tabs.items.len);
     // Round up so the grid doesn't lose a column or row.
@@ -1377,7 +1419,7 @@ fn resizeTabArea(self: *Window, w: c_int, h: c_int, fit: bool) void {
 /// window is maximized or fullscreen; setClientSize keeps it within the
 /// monitor's work area. Returns whether the window was resized.
 pub fn resizeFromTerminal(self: *Window, width: u32, height: u32) bool {
-    if (self.tabs.items.len > 1) return false;
+    if (self.quick != null or self.tabs.items.len > 1) return false;
     if (self.activeTab()) |t| if (t.tree.isSplit()) return false;
     if (c.IsZoomed(self.hwnd) != 0 or self.fullscreen != null) return false;
     self.setClientSize(width, height);
@@ -1385,12 +1427,14 @@ pub fn resizeFromTerminal(self: *Window, width: u32, height: u32) bool {
 }
 
 pub fn toggleMaximize(self: *Window) void {
+    if (self.quick != null) return;
     // Both show the window: with those toggle_visibility hid.
     self.app.showWindows();
     _ = c.ShowWindow(self.hwnd, if (c.IsZoomed(self.hwnd) != 0) c.SW_RESTORE else c.SW_MAXIMIZE);
 }
 
 pub fn toggleFullscreen(self: *Window) void {
+    if (self.quick != null) return;
     // `fullscreen` changes first: the layouts the moves cause show or hide
     // the strip by it (headerShown).
     if (self.fullscreen) |saved| {
@@ -1422,8 +1466,15 @@ pub fn toggleFullscreen(self: *Window) void {
 }
 
 pub fn present(self: *Window) void {
-    // Coming forward brings back what toggle_visibility hid, as on macOS.
-    self.app.showWindows();
+    // The quick terminal slides in, and leaves what toggle_visibility hid
+    // hidden (its own toggle).
+    if (self.quick) |*q| {
+        if (!q.shown) return q.show(self);
+    } else {
+        // Coming forward brings back what toggle_visibility hid, as on
+        // macOS.
+        self.app.showWindows();
+    }
     if (c.IsIconic(self.hwnd) != 0) _ = c.ShowWindow(self.hwnd, c.SW_RESTORE);
     _ = c.SetForegroundWindow(self.hwnd);
     // Activating the window is the point here.
@@ -1529,6 +1580,8 @@ pub fn configChanged(self: *Window) void {
     self.syncTranslucent();
     self.syncBlur();
     for (self.tabs.items) |t| t.syncDim();
+    // The quick terminal's position and size may have changed.
+    if (self.quick) |*q| q.replace(self);
     self.layout();
     // An unchanged tab rectangle sends the tabs no WM_SIZE.
     for (self.tabs.items) |t| t.layoutPanes();
@@ -2167,6 +2220,14 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_ACTIVATE => {
+            if (c.loword(wparam) == c.WA_INACTIVE) if (self.quick) |*q| {
+                // quick-terminal-autohide, as GTK's: another window took
+                // the keyboard (not one of its own dialogs; while it slides
+                // in, the slide's end checks).
+                const to: ?c.HWND = if (lparam != 0) @ptrFromInt(@as(usize, @bitCast(lparam))) else null;
+                const own = if (to) |t| c.GetAncestor(t, c.GA_ROOTOWNER) == hwnd else false;
+                if (q.shown and q.slide == null and !own and self.wantsAutohide()) q.autohide(self);
+            };
             if (c.loword(wparam) != c.WA_INACTIVE) {
                 // Activated (from the taskbar, say) while a dialog has
                 // it disabled: bring the dialog forward instead.
@@ -2213,6 +2274,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_GETMINMAXINFO => {
+            // The quick terminal's config sizes it.
+            if (self.quick != null) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
             const min = self.minimumTabArea() orelse return 0;
             const info: *c.MINMAXINFO = @ptrFromInt(@as(usize, @bitCast(lparam)));
             // The header bar's buttons side by side, as GTK's minimum
@@ -2311,8 +2374,9 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         // and the blur (Acrylic only while active, syncBlur).
         c.WM_NCACTIVATE => {
             const active = wparam != 0;
-            // The window toggle_visibility brings forward.
-            if (active) self.app.last_window = self.id;
+            // The window toggle_visibility brings forward (never the quick
+            // terminal, which comes with its own toggle).
+            if (active and self.quick == null) self.app.last_window = self.id;
             if (active != self.active_window) {
                 self.active_window = active;
                 self.invalidateTabBar();
@@ -2339,6 +2403,9 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         c.WM_DPICHANGED => {
+            // The quick terminal keeps the DPI of the monitor it shows on
+            // while it slides across another's edge.
+            if (self.quick) |*q| if (!q.takesDpi(self, c.hiword(wparam))) return 0;
             self.tab_bar.setDpi(c.hiword(wparam), self.app.config.@"window-title-font-family");
             self.header.setDpi(c.hiword(wparam), self.app.config.@"window-title-font-family");
             self.loadIcons(c.hiword(wparam));
@@ -2348,7 +2415,11 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             var it = self.panes();
             while (it.next()) |s| s.dpiChanged();
             const r: *const c.RECT = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            _ = c.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+            // The quick terminal keeps its own place (it may cross a
+            // monitor's edge as it slides).
+            if (self.quick) |*q| {
+                q.replace(self);
+            } else _ = c.SetWindowPos(hwnd, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
             // An unchanged size sends the tabs no WM_SIZE.
             for (self.tabs.items) |t| t.layoutPanes();
             return 0;
@@ -2362,7 +2433,19 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 }
             }
             self.app.systemSettingChanged();
+            // The work area may have changed (the taskbar moved).
+            if (self.quick) |*q| q.replace(self);
             return 0;
+        },
+
+        // The quick terminal's slide, and monitors changing under it.
+        c.WM_TIMER => {
+            if (wparam == QuickTerminal.timer_id) if (self.quick) |*q| q.tick(self);
+            return 0;
+        },
+        c.WM_DISPLAYCHANGE => {
+            if (self.quick) |*q| q.replace(self);
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
         c.WM_CLOSE => {

@@ -344,6 +344,17 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try out.print(alloc, "\"translucent\":{},", .{w.translucent});
         try out.print(alloc, "\"decoration\":\"{t}\",\"captionless\":{},", .{ w.decoration(), w.captionless() });
         try out.print(alloc, "\"active_window\":{},\"floating\":{},\"topmost\":{},", .{ w.active_window, w.floating, w.isTopmost() });
+        // Where it is, whether it is shown, and the quick terminal's state
+        // (roadmap 5.7): shown, sliding, the work area and DPI it chose.
+        {
+            var r: c.RECT = .{};
+            _ = c.GetWindowRect(w.hwnd, &r);
+            const ex = c.GetWindowLongPtrW(w.hwnd, c.GWL_EXSTYLE);
+            try out.print(alloc, "\"rect\":[{d},{d},{d},{d}],\"visible\":{},\"toolwindow\":{},", .{ r.left, r.top, r.right, r.bottom, c.IsWindowVisible(w.hwnd) != 0, ex & c.WS_EX_TOOLWINDOW != 0 });
+            if (w.quick) |q| {
+                try out.print(alloc, "\"quick\":{{\"shown\":{},\"sliding\":{},\"lowered\":{},\"work\":[{d},{d},{d},{d}],\"dpi\":{d}}},", .{ q.shown, q.slide != null, q.lowered, q.work.left, q.work.top, q.work.right, q.work.bottom, q.dpi });
+            } else try out.appendSlice(alloc, "\"quick\":null,");
+        }
         // Its taskbar button's progress (roadmap 5.4), shown once ready.
         try out.print(alloc, "\"taskbar\":{{\"state\":\"{t}\",\"value\":{d},\"ready\":{},\"hr\":{d}}},", .{
             w.taskbar_progress.state,

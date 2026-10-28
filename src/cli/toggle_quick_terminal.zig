@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Action = @import("../cli.zig").ghostty.Action;
 const apprt = @import("../apprt.zig");
+const args = @import("args.zig");
 const global = @import("../global.zig");
 
 pub const Options = struct {
@@ -30,7 +31,8 @@ pub const Options = struct {
 /// to be running, as D-Bus will handle launching a new instance if it is not
 /// already running.
 ///
-/// Only supported on GTK.
+/// Supported on GTK and Windows. On Windows, a murrtty is started for the
+/// request if none runs.
 ///
 /// Flags:
 ///
@@ -43,9 +45,18 @@ pub fn run(alloc: Allocator) !u8 {
     var stderr_writer = std.Io.File.stderr().writer(global.io(), &buf);
     const stderr = &stderr_writer.interface;
 
+    // `--class` reaches the instance it names (it was declared, never read).
+    var opts: Options = .{};
+    defer opts.deinit();
+    {
+        var iter = try args.argsIterator(alloc, global.args());
+        defer iter.deinit();
+        try args.parse(Options, alloc, &opts, &iter);
+    }
+
     if (apprt.App.performIpc(
         alloc,
-        .detect,
+        if (opts.class) |class| .{ .class = class } else .detect,
         .toggle_quick_terminal,
         {},
     ) catch |err| switch (err) {

@@ -191,6 +191,11 @@ fn tell(self: *GlobalKeys, trigger: Trigger, reason: []const u8) void {
 /// Whether a global binding can show windows toggle_visibility hid: one
 /// whose actions include it.
 pub fn canShow(self: *const GlobalKeys) bool {
+    return self.binds(.toggle_visibility);
+}
+
+/// Whether a registered global binding's actions include `tag`.
+pub fn binds(self: *const GlobalKeys, tag: std.meta.Tag(input.Binding.Action)) bool {
     for (self.bound.items) |b| {
         const entry = self.app.config.keybind.set.get(b.trigger) orelse continue;
         // A local: a single action's slice points into it.
@@ -198,7 +203,7 @@ pub fn canShow(self: *const GlobalKeys) bool {
             .leader => continue,
             inline .leaf, .leaf_chained => |l| l.generic(),
         };
-        for (leaf.actionsSlice()) |a| if (a == .toggle_visibility) return true;
+        for (leaf.actionsSlice()) |a| if (a == tag) return true;
     }
     return false;
 }

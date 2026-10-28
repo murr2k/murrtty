@@ -272,6 +272,18 @@ roadmap item behind it.
   murrtty in front it hides every window, otherwise it brings murrtty
   forward with the windows it hid, as they were; only while a global
   binding or the tray (5.6) can bring them back. GTK doesn't implement it.
+- **Quick terminal** (5.7): it slides in and out over
+  `quick-terminal-animation-duration`, as macOS's; GTK's appears at once
+  (only KDE's Sliding Popups animate it). It hides only while something
+  can bring it back (a global binding with `toggle_quick_terminal`, the
+  tray, another murrtty window) and shows again when its last other
+  window closes; GTK's hides whenever toggled. `quick-terminal-screen =
+  main` is the primary monitor, as GTK's primary output. A percentage in
+  `quick-terminal-size` is of the work area, as macOS's visible frame;
+  GTK's is of the whole monitor. `goto_window` skips it (it has its own
+  toggle); GTK's and macOS's cycle through theirs too.
+  `+toggle-quick-terminal --class=` reaches the instance it names
+  (upstream's CLI declares `--class` and ignores it).
 - **Tray** (5.6): while murrtty can run with no window
   (`quit-after-last-window-closed = false` or `initial-window = false`),
   its icon stays in the notification area: a click brings murrtty forward
@@ -2307,7 +2319,7 @@ through `App.ipc_overrides`, which `Surface.init` takes (with GTK's shell
 integration rule for a command; the command also wins over
 `initial-command`). `+new-tab` goes to the window of the pane its surface
 id names, else the focused one's, else a new window, as GTK, and brings
-it forward. `+toggle-quick-terminal` waits for 5.7. With no murrtty
+it forward. `+toggle-quick-terminal` toggles the quick terminal (5.7). With no murrtty
 serving the class, the CLI starts one as a desktop launch would (in the
 home directory, with the user's own environment from
 `CreateEnvironmentBlock`, not the shell's), with `MURRTTY_IPC_LAUNCH` set:
@@ -2496,6 +2508,49 @@ with no taskbar button:
   toggle or the tray is registered; `goto_window` skips the quick window.
 
 Toggled by a global key (5.5), the tray (5.6) or IPC (5.1).
+
+*Built 2026-10-27 (`win32/QuickTerminal.zig`):* `toggle_quick_terminal`
+opens one quick window (`Window.quick`), hides it or shows it again, as
+GTK's. It is a `WS_POPUP` tool window, topmost, with no frame, taskbar
+button or header bar (tabs as any window's, the tab row on top), made
+(hidden) where it shows, so its pane opens at that monitor's DPI and its
+final size. Each time it shows, it picks the monitor
+(`quick-terminal-screen`: the primary one, or the mouse's) and places
+itself in its work area by `quick-terminal-position` and `-size` (a
+percentage of the work area's pixels, pixel sizes and the defaults in
+DIPs, as GTK's logical pixels; centered across its side; never past the
+work area), then slides in from past that edge (from above for `center`,
+as macOS's) over `quick-terminal-animation-duration`, eased, by moving on
+a timer, clipped to the work area so it never shows on a neighboring
+monitor or over the taskbar; `0` places it at once. Mid-slide, the
+window can lie mostly on that neighboring monitor: it ignores a DPI
+change there, keeping its monitor's. It takes the keyboard as it shows,
+and gives it back to the window that had it before it hides.
+`quick-terminal-autohide` hides it when another window (not one of its
+own dialogs, nor during a dialog) takes the keyboard, checking again as a
+slide-in ends; Windows keeps GTK's default, off. A toggle right after an
+autohide (the tray's menu, whose click took the keyboard) leaves it
+hidden. A dialog of another window takes it out of the topmost band until
+the dialog closes, so the dialog isn't under it. Its config sizes it:
+`resize_window`, `initial_size`, maximize, fullscreen, decorations and
+`float_window` don't apply, and a config change, a DPI change or a moved
+taskbar puts it back in place on its monitor. `goto_window` and
+`toggle_visibility` skip it (from it, `goto_window` goes to the first or
+last window), showing it leaves what `toggle_visibility` hid hidden, and
+bringing murrtty's windows forward never places it behind one (which
+would end its topmost). It hides only while something can bring it back
+(a global binding with it, the tray, another window, or
+`+toggle-quick-terminal` once that has toggled it), and a hidden one
+shows when the last of those goes (not while everything closes). The
+tray's menu gains Quick Terminal; `+toggle-quick-terminal` toggles it over
+the pipe, with `--class` now read (a shared CLI fix).
+`quick-terminal-space-behavior` (macOS's spaces) and the GTK Wayland
+layer options have no Windows meaning. The `quick-terminal` scenario
+checks its monitor and DPI against the harness's own reading, its
+placement (top by default, right at 30% by 50%), its window styles,
+sliding in and out, another window's dialog over it, toggling from either
+window, the stranded cases, autohide, the CLI (hiding what it opened),
+and `toggle_visibility`'s hidden windows staying hidden.
 
 **5.8 Drag and drop onto a terminal, S.** Files from Explorer paste as quoted
 paths, and text pastes, both through the core's paste path (bracketed paste

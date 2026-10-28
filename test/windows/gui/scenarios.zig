@@ -77,6 +77,7 @@ pub const all = [_]Scenario{
     .{ .name = "open-config-window", .about = "open_config:new_window runs $EDITOR on the config in a new window; without one it opens the file as open_config does", .run = openConfigWindow },
     .{ .name = "global-keys", .about = "global: bindings as hot keys: registered, one runs its binding on WM_HOTKEY (new_window) and waits for a dialog, toggle_visibility hides every window in front and shows them, a binding that can't be had is told once as GTK's notification, a config with none brings hidden windows back", .run = globalKeysScenario },
     .{ .name = "tray", .about = "quit-after-last-window-closed = false: the tray icon stays and murrtty outlives its last window; a click opens a window or shows hidden ones, its menu has New Window, Config and Quit, a notification comes and goes on it; initial-window = false starts in the tray; a delay quits once it passes", .run = trayScenario },
+    .{ .name = "quick-terminal", .about = "toggle_quick_terminal: one topmost tool window with no header bar at quick-terminal-position and -size, sliding in and out, hiding only while something can bring it back and showing when its last other window closes; quick-terminal-autohide; +toggle-quick-terminal over the pipe", .run = quickTerminalScenario },
     .{ .name = "progress", .about = "OSC 9;4: GTK's bar over the pane (accent, error tint, pulsing, paused) and the window's taskbar progress, the active tab's; gone after 15 s without a report; progress-style = false", .run = progressScenario },
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
@@ -7040,7 +7041,8 @@ fn waitWindowTabText(h: *Harness, g: *Harness.Ghostty, wi: usize, ti: usize, nee
 /// window with the title, directory and command given, a tab in the window
 /// of the pane its surface id names, the CLI exiting 0 each time. Bytes
 /// that aren't a request, and a kind it doesn't know (a newer murrtty's),
-/// are refused and open nothing; +toggle-quick-terminal waits for 5.7.
+/// are refused and open nothing; +toggle-quick-terminal opens the quick
+/// terminal (roadmap 5.7).
 fn ipcRequests(h: *Harness) anyerror!void {
     const class = try ipcClass(h, "ipc");
     defer h.alloc.free(class);
@@ -7139,11 +7141,18 @@ fn ipcRequests(h: *Harness) anyerror!void {
     {
         var r = try h.runCli("ipc-quick-terminal", &.{ "+toggle-quick-terminal", class_arg });
         defer r.deinit();
-        try h.expect(r.code == 1, "+toggle-quick-terminal isn't supported yet: exit 1 (got {d})", .{r.code});
+        try h.expect(r.code == 0, "+toggle-quick-terminal exits 0 (got {d})", .{r.code});
+    }
+    var waited: u32 = 0;
+    while (waited < 5000) : (waited += 100) {
+        if (try quickState(h, &g) != null) break;
+        w.Sleep(100);
     }
     var d = try h.dump(&g);
     defer d.deinit();
-    try h.expect(d.value.ipc.received == 2 and d.value.windows.len == 2 and d.value.windows[target].tabs.len == 2, "and nothing more opened", .{});
+    var quick: usize = 0;
+    for (d.value.windows) |win| quick += @intFromBool(win.quick != null);
+    try h.expect(d.value.ipc.received == 3 and d.value.windows.len == 3 and quick == 1 and d.value.windows[target].tabs.len == 2, "it opens the quick terminal, and nothing else opened", .{});
 }
 
 /// With no murrtty serving the class, +new-window starts one for its
@@ -7482,6 +7491,267 @@ fn notifyShownOffscreen(h: *Harness) !void {
     try h.expect(s.icon, "Windows took the icon and its balloon", .{});
     try h.withdrawNotification(&g);
     try waitIconGone(h, &g, 2000, "and it is taken back");
+}
+
+//---------------------------------------------------------------
+// The quick terminal (roadmap 5.7)
+
+const QuickState = struct {
+    /// Its index in the dump's windows, its HWND.
+    index: usize,
+    hwnd: w.HWND,
+    quick: Harness.Dump.Quick,
+    rect: [4]i32,
+    visible: bool,
+    toolwindow: bool,
+    topmost: bool,
+    header: bool,
+    tabs: usize,
+    windows: usize,
+    windows_hidden: bool,
+};
+
+/// The quick terminal as the dump has it, or null.
+fn quickState(h: *Harness, g: *Harness.Ghostty) !?QuickState {
+    var d = try h.dump(g);
+    defer d.deinit();
+    for (d.value.windows, 0..) |win, i| {
+        const q = win.quick orelse continue;
+        return .{
+            .index = i,
+            .hwnd = @ptrFromInt(win.hwnd),
+            .quick = q,
+            .rect = win.rect,
+            .visible = win.visible,
+            .toolwindow = win.toolwindow,
+            .topmost = win.topmost,
+            .header = win.header.visible,
+            .tabs = win.tabs.len,
+            .windows = d.value.windows.len,
+            .windows_hidden = d.value.windows_hidden,
+        };
+    }
+    return null;
+}
+
+/// Wait until the quick terminal exists and has stopped sliding.
+fn waitQuickSettled(h: *Harness, g: *Harness.Ghostty) !QuickState {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 50) {
+        if (try quickState(h, g)) |q| if (!q.quick.sliding) return q;
+        w.Sleep(50);
+    }
+    return h.fail("the quick terminal never settled", .{});
+}
+
+/// The primary monitor's work area and DPI, read here (not from murrtty).
+fn primaryScreen() struct { work: [4]i32, dpi: u32 } {
+    const mon = w.MonitorFromPoint(.{}, w.MONITOR_DEFAULTTOPRIMARY) orelse return .{ .work = .{ 0, 0, 0, 0 }, .dpi = 96 };
+    var mi: w.MONITORINFO = .{};
+    _ = w.GetMonitorInfoW(mon, &mi);
+    var dpi: u32 = 96;
+    if (w.LoadLibraryW(w.L("shcore.dll"))) |lib| {
+        defer _ = w.FreeLibrary(lib);
+        if (w.GetProcAddress(lib, "GetDpiForMonitor")) |p| {
+            const getDpi: *const fn (*anyopaque, c_int, *u32, *u32) callconv(.winapi) c_long = @ptrCast(p);
+            var x: u32 = 0;
+            var y: u32 = 0;
+            if (getDpi(mon, 0, &x, &y) == 0 and x != 0) dpi = x;
+        }
+    }
+    const r = mi.rcWork;
+    return .{ .work = .{ r.left, r.top, r.right, r.bottom }, .dpi = dpi };
+}
+
+/// Where the quick terminal belongs in `work` at `dpi`: a percentage of the
+/// work area's pixels, the default 400 DIP, all of the other side; centered
+/// across its side, never past the work area.
+fn quickExpected(work: [4]i32, dpi: u32, position: enum { top, right }, primary: ?f32, secondary: ?f32) [4]i32 {
+    const ww = work[2] - work[0];
+    const wh = work[3] - work[1];
+    const pct = struct {
+        fn of(v: f32, px: i32) i32 {
+            const f: f32 = @floatFromInt(px);
+            return @intFromFloat(v / 100.0 * f);
+        }
+    };
+    const dip400: i32 = @intCast(@as(u32, 400) * dpi / 96);
+    var pw: i32 = undefined;
+    var ph: i32 = undefined;
+    switch (position) {
+        .top => {
+            pw = if (secondary) |s| pct.of(s, ww) else ww;
+            ph = if (primary) |p| pct.of(p, wh) else dip400;
+        },
+        .right => {
+            pw = if (primary) |p| pct.of(p, ww) else dip400;
+            ph = if (secondary) |s| pct.of(s, wh) else wh;
+        },
+    }
+    pw = @min(pw, ww);
+    ph = @min(ph, wh);
+    return switch (position) {
+        .top => .{ work[0] + @divTrunc(ww - pw, 2), work[1], work[0] + @divTrunc(ww - pw, 2) + pw, work[1] + ph },
+        .right => .{ work[2] - pw, work[1] + @divTrunc(wh - ph, 2), work[2], work[1] + @divTrunc(wh - ph, 2) + ph },
+    };
+}
+
+/// toggle_quick_terminal (roadmap 5.7), as GTK's: one window, a topmost
+/// borderless tool window with no header bar, placed by
+/// quick-terminal-position and -size in the work area of the monitor
+/// quick-terminal-screen names (the primary one), sliding in and out; a
+/// dialog of another window opens above it; it hides only while something
+/// can bring it back, and comes back when the last other window closes;
+/// quick-terminal-autohide hides it when another window takes the
+/// keyboard; +toggle-quick-terminal reaches it over the pipe, and can hide
+/// what it opened; it leaves what toggle_visibility hid hidden.
+fn quickTerminalScenario(h: *Harness) anyerror!void {
+    const screen = primaryScreen();
+    {
+        var g = try start(h, "quick", "keybind = ctrl+shift+f6=toggle_quick_terminal\n" ++
+            "keybind = ctrl+shift+f8=close_window\n" ++
+            "quick-terminal-animation-duration = 0.8\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const surf = try h.surface(&g, win);
+        h.key(surf, .{ .ctrl = true, .shift = true }, 0x75);
+        {
+            const q = try quickState(h, &g) orelse return h.fail("no quick terminal opened", .{});
+            try h.expect(q.quick.shown and q.quick.sliding, "toggle_quick_terminal opens it, sliding in", .{});
+        }
+        const q = try waitQuickSettled(h, &g);
+        try h.expect(std.mem.eql(i32, &q.quick.work, &screen.work) and q.quick.dpi == screen.dpi, "on the primary monitor, at its DPI ({d})", .{q.quick.dpi});
+        const want = quickExpected(screen.work, screen.dpi, .top, null, null);
+        try h.expect(std.mem.eql(i32, &q.rect, &want), "at the top of the work area, 400 DIP tall, across it ({d},{d},{d},{d}; want {d},{d},{d},{d})", .{ q.rect[0], q.rect[1], q.rect[2], q.rect[3], want[0], want[1], want[2], want[3] });
+        try h.expect(q.visible and q.toolwindow and q.topmost and !q.header and q.tabs == 1 and q.windows == 2, "a topmost tool window (no taskbar button), no header bar, one tab", .{});
+        const qsurf = try h.surface(&g, q.hwnd);
+        try h.waitText(&g, ">", 1, 20000);
+
+        // A dialog of the main window opens above it: it leaves the topmost
+        // band until the dialog closes.
+        h.key(surf, .{ .ctrl = true, .shift = true }, 0x77);
+        const dlg = try h.waitDialog(&g, 5000);
+        {
+            const s = try quickState(h, &g) orelse return h.fail("the quick terminal went", .{});
+            try h.expect(!s.topmost and s.quick.lowered and s.visible, "under another window's dialog it isn't topmost", .{});
+        }
+        h.answer(&g, dlg, w.IDCANCEL);
+        w.Sleep(300);
+        {
+            // Asked back into the topmost band: Windows grants it only to a
+            // process with the foreground, never on the hidden desktop.
+            const s = try quickState(h, &g) orelse return h.fail("the quick terminal went", .{});
+            try h.expect(!s.quick.lowered, "and goes back above as the dialog closes", .{});
+        }
+
+        // From its own pane: it slides out and hides (the main window could
+        // bring it back).
+        h.key(qsurf, .{ .ctrl = true, .shift = true }, 0x75);
+        {
+            const hidden = try waitQuickSettled(h, &g);
+            try h.expect(!hidden.quick.shown and !hidden.visible and hidden.windows == 2, "toggled from itself, it slides out and hides", .{});
+        }
+        // Again from the main window: the same window comes back.
+        h.key(surf, .{ .ctrl = true, .shift = true }, 0x75);
+        {
+            const again = try waitQuickSettled(h, &g);
+            try h.expect(again.quick.shown and again.visible and again.hwnd == q.hwnd and std.mem.eql(i32, &again.rect, &want), "toggled again, the same window slides back", .{});
+        }
+        // Hidden, then the main window closes: nothing could bring it back,
+        // so it shows.
+        h.key(surf, .{ .ctrl = true, .shift = true }, 0x75);
+        _ = try waitQuickSettled(h, &g);
+        h.key(surf, .{ .ctrl = true, .shift = true }, 0x77);
+        h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
+        var waited: u32 = 0;
+        while (waited < 5000) : (waited += 100) {
+            if (try quickState(h, &g)) |s| if (s.windows == 1 and s.quick.shown and !s.quick.sliding) break;
+            w.Sleep(100);
+        }
+        {
+            const alone = try quickState(h, &g) orelse return h.fail("the quick terminal went", .{});
+            try h.expect(alone.windows == 1 and alone.quick.shown and alone.visible, "its last other window closed, the hidden quick terminal shows", .{});
+        }
+        // Now nothing could bring it back: it won't hide.
+        h.key(qsurf, .{ .ctrl = true, .shift = true }, 0x75);
+        w.Sleep(1200);
+        {
+            const kept = try quickState(h, &g) orelse return h.fail("the quick terminal went", .{});
+            try h.expect(kept.quick.shown and kept.visible, "with no other way back, it doesn't hide", .{});
+        }
+    }
+
+    // On the right, 30% by 50%, with no slide; quick-terminal-autohide; the
+    // pipe.
+    {
+        const class = try ipcClass(h, "quick");
+        defer h.alloc.free(class);
+        const extra = try std.fmt.allocPrint(h.alloc, "class = {s}\n" ++
+            "keybind = ctrl+shift+f6=toggle_quick_terminal\nkeybind = ctrl+shift+f8=close_window\n" ++
+            "quick-terminal-position = right\nquick-terminal-size = 30%,50%\n" ++
+            "quick-terminal-animation-duration = 0\nquick-terminal-autohide = true\n", .{class});
+        defer h.alloc.free(extra);
+        var g = try start(h, "quick-right", extra, ">");
+        defer g.deinit();
+        const main = try h.mainWindow(&g);
+        h.key(try h.surface(&g, main), .{ .ctrl = true, .shift = true }, 0x75);
+        const q = try quickState(h, &g) orelse return h.fail("no quick terminal opened", .{});
+        const want = quickExpected(screen.work, screen.dpi, .right, 30, 50);
+        try h.expect(!q.quick.sliding and q.visible and std.mem.eql(i32, &q.rect, &want), "with no animation it is there at once, on the right, 30% by 50% ({d},{d},{d},{d}; want {d},{d},{d},{d})", .{ q.rect[0], q.rect[1], q.rect[2], q.rect[3], want[0], want[1], want[2], want[3] });
+        // Another window takes the keyboard: it hides.
+        var result: usize = 0;
+        _ = w.SendMessageTimeoutW(q.hwnd, w.WM_ACTIVATE, w.WA_INACTIVE, 0, w.SMTO_ABORTIFHUNG, 5000, &result);
+        {
+            const hidden = try quickState(h, &g) orelse return h.fail("the quick terminal went", .{});
+            try h.expect(!hidden.quick.shown and !hidden.visible, "quick-terminal-autohide hides it when another window takes the keyboard", .{});
+        }
+        w.Sleep(600);
+        // +toggle-quick-terminal over the pipe shows it again.
+        const class_arg = try std.fmt.allocPrint(h.alloc, "--class={s}", .{class});
+        defer h.alloc.free(class_arg);
+        try quickCli(h, &g, class_arg, true, "+toggle-quick-terminal shows it again");
+        // Alone with the quick terminal, the command can still hide it: it
+        // brings it back too.
+        h.key(try h.surface(&g, main), .{ .ctrl = true, .shift = true }, 0x77);
+        h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
+        var waited: u32 = 0;
+        while (waited < 5000) : (waited += 100) {
+            if (try quickState(h, &g)) |s| if (s.windows == 1) break;
+            w.Sleep(100);
+        }
+        try quickCli(h, &g, class_arg, false, "alone, +toggle-quick-terminal still hides what it toggled");
+        try quickCli(h, &g, class_arg, true, "and shows it again");
+    }
+
+    // With the tray, toggle_visibility hides the main window; the quick
+    // terminal shows without bringing it back.
+    {
+        var g = try start(h, "quick-hidden", "quit-after-last-window-closed = false\n" ++
+            "keybind = ctrl+shift+f6=toggle_quick_terminal\nkeybind = ctrl+shift+f9=toggle_visibility\n" ++
+            "quick-terminal-animation-duration = 0\n", ">");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try h.setInFront(&g, .yes);
+        h.key(surf, .{ .ctrl = true, .shift = true }, 0x78);
+        try waitHidden(h, &g);
+        h.key(surf, .{ .ctrl = true, .shift = true }, 0x75);
+        const q = try quickState(h, &g) orelse return h.fail("no quick terminal opened", .{});
+        try h.expect(q.quick.shown and q.visible and q.windows_hidden and try visibleWindows(h, &g) == 1, "the quick terminal shows, and what toggle_visibility hid stays hidden", .{});
+    }
+}
+
+/// Run +toggle-quick-terminal for `class_arg` and wait until the quick
+/// terminal is `shown` (or not).
+fn quickCli(h: *Harness, g: *Harness.Ghostty, class_arg: []const u8, shown: bool, comptime what: []const u8) !void {
+    var r = try h.runCli("quick-cli", &.{ "+toggle-quick-terminal", class_arg });
+    defer r.deinit();
+    var waited: u32 = 0;
+    while (waited < 5000) : (waited += 100) {
+        if (try quickState(h, g)) |s| if (s.quick.shown == shown and s.visible == shown) break;
+        w.Sleep(100);
+    }
+    const s = try quickState(h, g) orelse return h.fail("the quick terminal went", .{});
+    try h.expect(r.code == 0 and s.quick.shown == shown and s.visible == shown, what ++ " (exit code {d})", .{r.code});
 }
 
 /// The tray really shown (roadmap 5.6): Windows takes its icon (the dump's
@@ -8197,9 +8467,10 @@ fn trayScenario(h: *Harness) anyerror!void {
                 labels[n] = it.text;
                 n += 1;
             };
-            const ok = n == 3 and std.mem.startsWith(u8, labels[0], "New &Window") and
-                std.mem.eql(u8, labels[1], "C&onfig") and std.mem.startsWith(u8, labels[2], "&Quit");
-            try h.expect(ok and items[2].submenu, "the menu: New Window, Config, Quit ({d} items)", .{n});
+            const ok = n == 4 and std.mem.startsWith(u8, labels[0], "New &Window") and
+                std.mem.startsWith(u8, labels[1], "Quick &Terminal") and
+                std.mem.eql(u8, labels[2], "C&onfig") and std.mem.startsWith(u8, labels[3], "&Quit");
+            try h.expect(ok and items[3].submenu, "the menu: New Window, Quick Terminal, Config, Quit ({d} items)", .{n});
             h.menuKey(menu, 'w');
         }
         try waitWindowCount(h, &g, 2);

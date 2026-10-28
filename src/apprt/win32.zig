@@ -22,6 +22,7 @@ test {
     _ = @import("win32/ipc.zig");
     _ = @import("win32/jump_list.zig");
     _ = @import("win32/KeyState.zig");
+    _ = @import("win32/QuickTerminal.zig");
     _ = @import("win32/Notifications.zig");
     _ = @import("win32/Overlay.zig");
     _ = @import("win32/key.zig");

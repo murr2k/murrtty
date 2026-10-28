@@ -168,9 +168,11 @@ const system_items = [_]Item{
     act("&Quit", .quit),
 };
 
-/// The tray icon's menu (roadmap 5.6): what needs no window.
+/// The tray icon's menu (roadmap 5.6): what needs no window, and the quick
+/// terminal (5.7).
 const tray_items = [_]Item{
     act("New &Window", .new_window),
+    act("Quick &Terminal", .toggle_quick_terminal),
     .separator,
     .{ .submenu = .{ .label = "C&onfig", .items = &config_submenu } },
     .separator,
@@ -473,19 +475,10 @@ fn show(
     return built.choices.items[@intCast(id - 1)];
 }
 
-/// The DPI of the monitor at `screen`, else `fallback` (GetDpiForMonitor,
-/// loaded from shcore.dll as murrtty links no import library for it).
+/// The DPI of the monitor at `screen`, else `fallback`.
 fn dpiAt(screen: c.POINT, fallback: c.UINT) c.UINT {
     const monitor = c.MonitorFromPoint(screen, c.MONITOR_DEFAULTTONEAREST) orelse return fallback;
-    const shcore = c.LoadLibraryW(c.L("shcore.dll")) orelse return fallback;
-    defer _ = c.FreeLibrary(shcore);
-    const p = c.GetProcAddress(shcore, "GetDpiForMonitor") orelse return fallback;
-    const getDpi: *const fn (c.HMONITOR, c_int, *c.UINT, *c.UINT) callconv(.winapi) c.HRESULT = @ptrCast(p);
-    var x: c.UINT = 0;
-    var y: c.UINT = 0;
-    // MDT_EFFECTIVE_DPI.
-    if (getDpi(monitor, 0, &x, &y) != 0 or x == 0) return fallback;
-    return x;
+    return draw.monitorDpi(monitor, fallback);
 }
 
 const BuildError = error{ CreateMenuFailed, OutOfMemory, InvalidUtf8 };

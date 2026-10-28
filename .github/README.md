@@ -257,8 +257,14 @@ hosted Windows runner and then the unit tests.
 - Running in the background: with `quit-after-last-window-closed = false`
   murrtty stays in the notification area after its last window closes,
   and `initial-window = false` starts it there. A click on its icon brings
-  it forward (or opens a window); its menu has New Window, Config and
-  Quit.
+  it forward (or opens a window); its menu has New Window, Quick
+  Terminal, Config and Quit.
+- The quick terminal (`toggle_quick_terminal`, or `murrtty
+  +toggle-quick-terminal`): a terminal that slides in from an edge of the
+  screen and out again, usually on a global key binding such as
+  `keybind = global:ctrl+backquote=toggle_quick_terminal`. It follows
+  `quick-terminal-position`, `-size`, `-screen`, `-animation-duration`
+  and `-autohide`, has tabs, and no taskbar button.
 - Progress from programs (OSC 9;4, as `winget` and PowerShell modules
   write it): a thin bar over the terminal as in Ghostty's GTK app (red
   after an error, a moving block while indeterminate), and on the window's
@@ -303,12 +309,12 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- Terminal inspector, quick terminal.
+- Terminal inspector.
 - Dragging panes to rearrange splits.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with desktop integration (Phase 5: the tray, the quick
-terminal, drag and drop, the selection clipboard).
+continuing with desktop integration (Phase 5: drag and drop, the
+selection clipboard, session restore, undo of closes).
 
 **Known issues**
 

@@ -422,6 +422,20 @@ pub const AlphaPaint = struct {
     }
 };
 
+/// `monitor`'s DPI, else `fallback` (GetDpiForMonitor, loaded from
+/// shcore.dll, as murrtty links no import library for it).
+pub fn monitorDpi(monitor: c.HMONITOR, fallback: c.UINT) c.UINT {
+    const shcore = c.LoadLibraryW(c.L("shcore.dll")) orelse return fallback;
+    defer _ = c.FreeLibrary(shcore);
+    const p = c.GetProcAddress(shcore, "GetDpiForMonitor") orelse return fallback;
+    const getDpi: *const fn (c.HMONITOR, c_int, *c.UINT, *c.UINT) callconv(.winapi) c.HRESULT = @ptrCast(p);
+    var x: c.UINT = 0;
+    var y: c.UINT = 0;
+    // MDT_EFFECTIVE_DPI.
+    if (getDpi(monitor, 0, &x, &y) != 0 or x == 0) return fallback;
+    return x;
+}
+
 /// `v` device-independent pixels at `dpi`.
 pub fn scale(dpi: c.UINT, v: c_int) c_int {
     return @intCast(@divTrunc(@as(i64, v) * dpi, c.USER_DEFAULT_SCREEN_DPI));

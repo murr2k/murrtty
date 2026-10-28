@@ -2856,13 +2856,13 @@ keybind: Keybinds = .{},
 /// Set it to 0 to disable animation completely. This can be changed at
 /// runtime.
 ///
-/// Only implemented on macOS.
+/// Only implemented on macOS and Windows.
 @"quick-terminal-animation-duration": f64 = 0.2,
 
 /// Automatically hide the quick terminal when focus shifts to another window.
 /// Set it to false for the quick terminal to remain open even when it loses focus.
 ///
-/// Defaults to true on macOS and on false on Linux/BSD. This is because global
+/// Defaults to true on macOS and on false on Linux/BSD and Windows. This is because global
 /// shortcuts on Linux require system configuration and are considerably less
 /// accessible than on macOS, meaning that it is more preferable to keep the
 /// quick terminal open until the user has completed their task.

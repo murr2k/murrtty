@@ -258,6 +258,7 @@ pub const WHEEL_DELTA = 120;
 pub const TME_LEAVE = 0x00000002;
 
 pub const MONITOR_DEFAULTTONEAREST = 0x00000002;
+pub const MONITOR_DEFAULTTOPRIMARY = 0x00000001;
 
 pub const FLASHW_TRAY = 0x00000002;
 pub const FLASHW_TIMERNOFG = 0x0000000C;
@@ -557,6 +558,7 @@ pub extern "user32" fn GetCapture() callconv(.winapi) ?HWND;
 pub const HWND_TOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -1))));
 pub const HWND_NOTOPMOST: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -2))));
 pub const WS_EX_TOPMOST = 0x00000008;
+pub const WS_EX_TOOLWINDOW = 0x00000080;
 pub const GWL_EXSTYLE = -20;
 pub const WM_SIZING = 0x0214;
 pub const WMSZ_LEFT = 1;
@@ -619,6 +621,8 @@ pub extern "user32" fn GetDoubleClickTime() callconv(.winapi) UINT;
 pub extern "user32" fn EnableWindow(HWND, BOOL) callconv(.winapi) BOOL;
 pub extern "user32" fn IsWindowEnabled(HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn IsWindowVisible(HWND) callconv(.winapi) BOOL;
+pub extern "user32" fn IsWindow(?HWND) callconv(.winapi) BOOL;
+pub const WM_DISPLAYCHANGE = 0x007E;
 pub extern "user32" fn RegisterWindowMessageW(LPCWSTR) callconv(.winapi) UINT;
 pub extern "user32" fn GetLastActivePopup(HWND) callconv(.winapi) HWND;
 
