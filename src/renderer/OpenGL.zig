@@ -64,6 +64,25 @@ const Wgl = struct {
     hdc: wgl.HDC,
     context: wgl.HGLRC,
 
+    /// A GPU driver reset (murrtty's roadmap 6.3). A robust context loses
+    /// itself on one, which `reset_status` (glGetGraphicsResetStatusARB,
+    /// loaded on the render thread) reports; the renderer then builds
+    /// itself again in a new context (`contextLost`, `replaceContext`,
+    /// `dropLostContext`). `lost` holds until a new one is made (`tries`
+    /// so far, the last at `last_try`, in milliseconds since boot);
+    /// `lost_context` is the old one until the renderer has released what
+    /// it made there. There is always a context current: the lost one
+    /// until another is made. `fake_reset`: the GUI tests' stand-in for a
+    /// reset. `contexts`: contexts made, the first included.
+    robust: bool = false,
+    reset_status: ?*const fn () callconv(.winapi) u32 = null,
+    lost: bool = false,
+    tries: u32 = 0,
+    last_try: u64 = 0,
+    lost_context: ?wgl.HGLRC = null,
+    fake_reset: std.atomic.Value(bool) = .init(false),
+    contexts: std.atomic.Value(u32) = .init(1),
+
     /// The present pass's program and (empty) vertex array, made on the
     /// render thread at the first present.
     present: ?struct { program: gl.Program, vao: gl.VertexArray } = null,
@@ -212,12 +231,13 @@ fn initWgl(
     errdefer _ = wgl.ReleaseDC(hwnd, hdc);
 
     try device.wgl_ext.setPixelFormat(hdc);
-    const context = try device.wgl_ext.createContext(
+    const created = try device.wgl_ext.createContext(
         hdc,
         MIN_VERSION_MAJOR,
         MIN_VERSION_MINOR,
         builtin.mode == .debug,
     );
+    const context = created.handle;
     errdefer _ = wgl.wglDeleteContext(context);
 
     // Verify the context works, then release it so the render
@@ -234,6 +254,7 @@ fn initWgl(
             .hwnd = hwnd,
             .hdc = hdc,
             .context = context,
+            .robust = created.robust,
             // A pane opening in a translucent window presents so from its
             // first frame (the win32 runtime's; an embedding host has none).
             .transparent = .init(if (@hasDecl(apprt.Surface, "translucent")) opts.rt_surface.translucent() else false),
@@ -246,6 +267,7 @@ fn initWgl(
 pub fn deinit(self: *OpenGL) void {
     if (comptime is_windows) {
         _ = wgl.wglMakeCurrent(null, null);
+        if (self.wgl_state.lost_context) |old| _ = wgl.wglDeleteContext(old);
         _ = wgl.wglDeleteContext(self.wgl_state.context);
         _ = wgl.ReleaseDC(self.wgl_state.hwnd, self.wgl_state.hdc);
         self.* = undefined;
@@ -363,11 +385,12 @@ fn prepareContext(getProcAddress: anytype) !void {
 pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     _ = surface;
     if (comptime is_windows) {
-        const state = self.wgl_state;
+        const state = &self.wgl_state;
         if (wgl.wglMakeCurrent(state.hdc, state.context) == 0) {
             return error.WglMakeCurrentFailed;
         }
         try prepareContext(&wgl.getProcAddress);
+        state.reset_status = resetStatusFn(state.robust);
 
         // DWM composites windowed GL output so there is no tearing
         // without vsync, and blocking in SwapBuffers would only add
@@ -379,6 +402,93 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     try self.device.display.makeCurrent(null, null, self.egl_context);
     // Load our function pointers for this thread's threadlocal.
     try prepareContext(&gl.egl.getProcAddress);
+}
+
+/// glGetGraphicsResetStatusARB for a robust context (glad's GL 4.3 has no
+/// robustness), loaded with it current; null without.
+fn resetStatusFn(robust: bool) ?*const fn () callconv(.winapi) u32 {
+    if (!robust) return null;
+    const p = wgl.getProcAddress("glGetGraphicsResetStatusARB") orelse
+        wgl.getProcAddress("glGetGraphicsResetStatus") orelse return null;
+    return @ptrCast(p);
+}
+
+/// murrtty: whether the context was lost to a GPU driver reset (a robust
+/// one reports it), or a test faked one, and no new one was made yet. At
+/// each frame's start, on the render thread, with the context current.
+pub fn contextLost(self: *OpenGL) bool {
+    if (comptime !is_windows) return false;
+    const state = &self.wgl_state;
+    if (state.lost) return true;
+    const reset = if (state.fake_reset.swap(false, .acq_rel))
+        true
+    else if (state.reset_status) |status|
+        status() != 0
+    else
+        false;
+    if (!reset) return false;
+    log.warn("the OpenGL context was lost (a graphics driver reset); making a new one", .{});
+    state.lost = true;
+    return true;
+}
+
+/// murrtty: make a new context on the same window (its pixel format
+/// stays), current from now on, with GL loaded again from it. The lost one
+/// is kept for `dropLostContext`: the renderer releases what it made there
+/// first, here, where none of those names exist yet, so releasing deletes
+/// nothing. False if no new one could be made, or the last try was under
+/// a second ago: the lost one stays current (its calls do nothing), and
+/// the renderer draws nothing until a later try.
+pub fn replaceContext(self: *OpenGL) bool {
+    if (comptime !is_windows) return true;
+    const state = &self.wgl_state;
+    const now = wgl.GetTickCount64();
+    if (state.tries > 0 and now -% state.last_try < 1000) return false;
+    state.last_try = now;
+    state.tries +|= 1;
+    const created = self.device.wgl_ext.createContext(
+        state.hdc,
+        MIN_VERSION_MAJOR,
+        MIN_VERSION_MINOR,
+        builtin.mode == .debug,
+    ) catch |err| {
+        if (state.tries == 1) log.err("no new OpenGL context after the reset err={}; trying again each second", .{err});
+        return false;
+    };
+    if (wgl.wglMakeCurrent(state.hdc, created.handle) == 0) {
+        _ = wgl.wglMakeCurrent(state.hdc, state.context);
+        _ = wgl.wglDeleteContext(created.handle);
+        return false;
+    }
+    prepareContext(&wgl.getProcAddress) catch |err| {
+        log.err("could not load OpenGL in the new context err={}", .{err});
+        _ = wgl.wglMakeCurrent(state.hdc, state.context);
+        _ = wgl.wglDeleteContext(created.handle);
+        prepareContext(&wgl.getProcAddress) catch {};
+        return false;
+    };
+    // The present pass's programs go with the lost context.
+    state.present = null;
+    state.overlay_program = null;
+    state.lost_context = state.context;
+    state.context = created.handle;
+    state.robust = created.robust;
+    state.reset_status = resetStatusFn(created.robust);
+    state.lost = false;
+    state.tries = 0;
+    if (self.device.wgl_ext.swapInterval) |swapInterval| _ = swapInterval(0);
+    _ = state.contexts.fetchAdd(1, .monotonic);
+    log.info("made a new OpenGL context after the reset", .{});
+    return true;
+}
+
+/// murrtty: delete the context `replaceContext` replaced, and with it
+/// everything made in it.
+pub fn dropLostContext(self: *OpenGL) void {
+    if (comptime !is_windows) return;
+    const state = &self.wgl_state;
+    if (state.lost_context) |old| _ = wgl.wglDeleteContext(old);
+    state.lost_context = null;
 }
 
 /// Callback called by renderer.Thread when it exits. Called on the render

@@ -1751,6 +1751,43 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }, .instant) > 0) self.scrollbar_dirty = false;
             };
 
+            // murrtty: the graphics API lost its context (a GPU driver
+            // reset). Make a new one current, and release there what the
+            // lost one held: none of those names exist in the new one yet,
+            // so this deletes nothing. The images go too (the terminal's
+            // are prepared again from its storage at the next update; the
+            // background image is read from its file again), then the lost
+            // context with all it held, and everything is built again from
+            // this frame on, as after the display is realized again. Until
+            // a new context can be made, nothing is drawn and the surface
+            // hears the renderer is unhealthy.
+            if (@hasDecl(GraphicsAPI, "contextLost")) if (self.api.contextLost()) {
+                if (!self.api.replaceContext()) {
+                    if (self.health.load(.seq_cst) != .unhealthy) {
+                        self.health.store(.unhealthy, .seq_cst);
+                        _ = self.surface_mailbox.push(.{ .renderer_health = .unhealthy }, .instant);
+                    }
+                    return false;
+                }
+                self.display_realized = false;
+                self.releaseGpuResources();
+                self.images.deinit(self.alloc);
+                self.images = .empty;
+                if (self.bg_image) |img| img.deinit(self.alloc);
+                self.bg_image = null;
+                self.prepBackgroundImage() catch |err| {
+                    log.warn("error loading the background image again err={}", .{err});
+                };
+                self.bg_image_buffer_modified +%= 1;
+                self.api.dropLostContext();
+                self.display_realized = true;
+                self.reinitialize_shaders = true;
+                self.target_config_modified = 1;
+                if (@hasDecl(GraphicsAPI, "setViewport")) {
+                    self.api.setViewport(self.size.screen.width, self.size.screen.height);
+                }
+            };
+
             // Let our graphics API do any bookkeeping, etc.
             // that it needs to do before / after `drawFrame`.
             self.api.drawFrameStart();

@@ -170,6 +170,7 @@ pub const DIB_RGB_COLORS = 0;
 pub const IDOK = 1;
 pub const IDCANCEL = 2;
 pub const IDYES = 6;
+pub const IDCLOSE = 8;
 pub const IDNO = 7;
 
 pub const CREATE_UNICODE_ENVIRONMENT = 0x00000400;

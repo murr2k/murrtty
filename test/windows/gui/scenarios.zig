@@ -52,6 +52,9 @@ pub const all = [_]Scenario{
     .{ .name = "launch-context", .about = "from a shell: the shell's directory; from a shortcut: home; a POSIX SHELL is ignored", .run = launchContext },
     .{ .name = "cli", .about = "CLI actions with output on a pipe: +version; +validate-config exits 0 for a valid file, 1 naming the problem for an invalid one", .run = cli },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
+    .{ .name = "gl-reset", .about = "after a GPU driver reset (faked), the renderer builds itself in a new OpenGL context and draws the same frame", .run = glReset },
+    .{ .name = "gl-missing", .about = "without OpenGL 4.3, murrtty says why at start: Remote Desktop, the basic display adapter, no driver, an old one", .run = glMissing },
+    .{ .name = "gl-library", .about = "MURRTTY_OPENGL names the opengl32.dll to use; one that can't load is said so", .run = glLibrary },
     .{ .name = "ime-place", .about = "an IME asking where text is (WM_IME_REQUEST) is told the cursor's cell, and follows typing", .run = imePlace },
     .{ .name = "intl-keys", .about = "AltGr and Ctrl+Alt characters, and Alt+Numpad codes, reach a console program as Windows types them", .run = intlKeys },
     .{ .name = "font-registered", .about = "a font installed for the user from a folder with a non-ASCII name is found and opened", .run = fontRegistered },
@@ -4071,6 +4074,158 @@ fn fontRegistered(h: *Harness) anyerror!void {
         if (std.mem.startsWith(u8, got, "Kawkab Mono")) break;
     }
     try h.expect(std.mem.startsWith(u8, got, "Kawkab Mono"), "font regular: {s} (expected Kawkab Mono, from {s})", .{ got, path });
+}
+
+/// A GPU driver reset (roadmap 6.3): a robust context loses itself, and
+/// the renderer releases what it made there and builds everything again
+/// (shaders, the frames' targets and atlases) in a new context. Faked here
+/// (dump wparam 19), since a real reset would reset the owner's GPU for
+/// every program: the frame drawn after it must be the frame drawn before.
+fn glReset(h: *Harness) anyerror!void {
+    try glResetCase(h, "gl-reset", "cursor-style-blink = false\n");
+    // With a background image, whose texture went with the lost context
+    // and is read from its file again (an 8x8 PNG, all #C81E3C).
+    const png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x08\x00\x00\x00\x08\x08\x06\x00\x00\x00\xc4\x0f\xbe\x8b\x00\x00\x00\x12\x49\x44\x41\x54\x78\xda\x63\x38\x21\x67\xf3\x1f\x1f\x66\x18\x19\x0a\x00\x2d\xc2\x88\x41\xd8\xdb\xb3\x05\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\gl-reset-bg.png", .{h.temp_dir});
+    defer h.alloc.free(path);
+    try h.writeFileAt(path, png);
+    defer h.deleteFile(path);
+    const config = try std.fmt.allocPrint(h.alloc, "cursor-style-blink = false\nbackground-image = {s}\nbackground-image-fit = stretch\n", .{path});
+    defer h.alloc.free(config);
+    try glResetCase(h, "gl-reset-image", config);
+}
+
+fn glResetCase(h: *Harness, name: []const u8, extra: []const u8) !void {
+    const image = std.mem.indexOf(u8, extra, "background-image") != null;
+    var g = try start(h, name, extra, ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    try h.typeText(surf, "echo murrtty-gl-reset");
+    try h.waitText(&g, "murrtty-gl-reset", 1, 5000);
+    w.Sleep(300);
+
+    const before = blk: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const pane = (d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{}))[0];
+        try h.expect(pane.gl_robust, "{s}: the context reports driver resets (robust)", .{name});
+        break :blk .{ pane.gl_contexts, pane.frames orelse 0 };
+    };
+    try h.saveFrames(&g);
+    var first = try h.loadPicture(&g, "frame-0.bmp");
+    defer first.deinit();
+    // The image draws the background (near its middle, below the text).
+    const mid = first.rgb(first.width / 2, first.height * 3 / 4);
+    if (image) try h.expect(mid == 0xC81E3C, "{s}: the background image draws (#{x:0>6})", .{ name, mid });
+
+    try h.fakeContextLoss(&g);
+    var made = false;
+    var frames: u32 = 0;
+    for (0..50) |_| {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const pane = (d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{}))[0];
+        frames = pane.frames orelse 0;
+        if (pane.gl_contexts == before[0] + 1 and frames > before[1]) {
+            made = true;
+            break;
+        }
+        w.Sleep(100);
+    }
+    try h.expect(made, "{s}: a new context was made and drawn with ({d} frames)", .{ name, frames });
+
+    try h.saveFrames(&g);
+    var second = try h.loadPicture(&g, "frame-0.bmp");
+    defer second.deinit();
+    var differ: usize = 0;
+    if (first.width == second.width and first.height == second.height) {
+        for (first.pixels, second.pixels) |a, b| {
+            if (a & 0xFFFFFF != b & 0xFFFFFF) differ += 1;
+        }
+    } else differ = std.math.maxInt(usize);
+    try h.expect(differ == 0, "{s}: the frame after the reset is the frame before it ({d} pixels differ)", .{ name, differ });
+
+    // And it goes on drawing what comes.
+    try h.typeText(surf, " again");
+    try h.waitText(&g, "murrtty-gl-reset again", 1, 5000);
+}
+
+/// Without OpenGL 4.3, murrtty's start says why and what to do (roadmap
+/// 6.3), from what Windows says of the session, the display adapter and
+/// its OpenGL. The failure is asked for (GHOSTTY_WIN32_TEST_WGL) and the
+/// machines it isn't run on stood in for (GHOSTTY_WIN32_TEST_GL_DIAG).
+fn glMissing(h: *Harness) anyerror!void {
+    const cases = [_]struct { name: []const u8, fail: []const u8, diag: []const u8, body: []const u8 }{
+        .{ .name = "gl-missing-remote", .fail = "extensions", .diag = "remote", .body = "This Remote Desktop session's display offers no OpenGL 4.3 (GDI Generic 1.1.0)." },
+        .{ .name = "gl-missing-basic", .fail = "extensions", .diag = "basic", .body = "Windows is using its Microsoft Basic Display Adapter" },
+        .{ .name = "gl-missing-generic", .fail = "extensions", .diag = "generic", .body = "The graphics driver offers no OpenGL; only Windows' fallback (GDI Generic 1.1.0) is there." },
+        .{ .name = "gl-missing-old", .fail = "context", .diag = "old", .body = "The graphics driver offers OpenGL 3.3.0 Example 1.0 (Example GPU), and murrtty needs 4.3." },
+        // This machine's own OpenGL is fine: no diagnosis, the error.
+        .{ .name = "gl-missing-unknown", .fail = "context", .diag = "", .body = "murrtty couldn't set up OpenGL (ContextCreateFailed)." },
+    };
+    for (cases) |case| {
+        var env: [2][2][]const u8 = .{ .{ "GHOSTTY_WIN32_TEST_WGL", case.fail }, .{ "GHOSTTY_WIN32_TEST_GL_DIAG", case.diag } };
+        var g = try h.launchWith(case.name, base_config, .{ .env = if (case.diag.len > 0) &env else env[0..1], .wait_window = false });
+        defer g.deinit();
+        try h.waitAnswering(&g, 10000);
+        const dlg = try h.waitDialog(&g, 10000);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const dl = d.value.dialog;
+            try h.expect(std.mem.eql(u8, dl.heading, "murrtty can't draw: it needs OpenGL 4.3") and std.mem.startsWith(u8, dl.body, case.body), "{s}: the dialog says '{s}' / '{s}'", .{ case.name, dl.heading, dl.body });
+        }
+        h.answer(&g, dlg, w.IDCLOSE);
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? != 0, "{s}: murrtty then exits with an error (exit {?d})", .{ case.name, code });
+    }
+}
+
+/// MURRTTY_OPENGL names the opengl32.dll to load by full path, for a
+/// software OpenGL (roadmap 6.3): Windows' own named so draws as without
+/// it; one that can't load, or a path that isn't a full one, is said so
+/// at start.
+fn glLibrary(h: *Harness) anyerror!void {
+    {
+        var g = try h.launchWith("gl-library-system", base_config, .{ .env = &.{.{ "MURRTTY_OPENGL", "C:\\Windows\\System32\\opengl32.dll" }} });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        var drew = false;
+        for (0..50) |_| {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const pane = (d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{}))[0];
+            if ((pane.frames orelse 0) > 0) {
+                drew = true;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(drew, "with Windows' opengl32.dll named, murrtty draws", .{});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+    const missing = [_]struct { name: []const u8, value: []const u8 }{
+        .{ .name = "gl-library-missing", .value = "C:\\murrtty-no-such-folder\\opengl32.dll" },
+        .{ .name = "gl-library-relative", .value = "opengl32.dll" },
+        // A DLL that loads, but that gdi32 wouldn't find by opengl32's name.
+        .{ .name = "gl-library-name", .value = "C:\\Windows\\System32\\glu32.dll" },
+    };
+    for (missing) |case| {
+        var g = try h.launchWith(case.name, base_config, .{ .env = &.{.{ "MURRTTY_OPENGL", case.value }}, .wait_window = false });
+        defer g.deinit();
+        try h.waitAnswering(&g, 10000);
+        const dlg = try h.waitDialog(&g, 10000);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const want = try std.fmt.allocPrint(h.alloc, "The OpenGL that MURRTTY_OPENGL names couldn't be loaded: {s}", .{case.value});
+            defer h.alloc.free(want);
+            try h.expect(std.mem.startsWith(u8, d.value.dialog.body, want), "{s}: the dialog says '{s}'", .{ case.name, d.value.dialog.body });
+        }
+        h.answer(&g, dlg, w.IDCLOSE);
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? != 0, "{s}: murrtty then exits with an error (exit {?d})", .{ case.name, code });
+    }
 }
 
 /// Output that arrives with no key pressed must reach the screen: the

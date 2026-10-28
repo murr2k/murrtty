@@ -343,6 +343,17 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         }
     };
     if (wparam == 11) saveFrames(app);
+    // A GPU driver reset (roadmap 6.3), faked for each pane: its renderer
+    // takes its context as lost at the next frame and builds itself again
+    // in a new one, as after a real reset.
+    if (wparam == 19) for (app.windows.items) |w| {
+        var it = w.panes();
+        while (it.next()) |s| {
+            if (!s.core_initialized) continue;
+            s.core_surface.renderer.api.wgl_state.fake_reset.store(true, .release);
+            redraw(s);
+        }
+    };
     if (wparam == 12) saveChrome(app);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
@@ -858,6 +869,13 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             const grid = s.core_surface.size.grid();
             const wgl_state = &s.core_surface.renderer.api.wgl_state;
             // Whether text is selected (hasSelection takes the terminal's lock).
+            // The OpenGL contexts its renderer made (a new one after a
+            // driver reset, roadmap 6.3) and whether its context reports
+            // resets (robust).
+            try out.print(alloc, ",\"gl_contexts\":{d},\"gl_robust\":{}", .{
+                wgl_state.contexts.load(.monotonic),
+                wgl_state.robust,
+            });
             try out.print(alloc, ",\"core_focused\":{},\"selection\":{},\"frames\":{d},\"probe\":{d},\"frame_ready\":{},\"shade\":{d:.3},\"keys\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
                 s.core_surface.focused,
                 s.core_surface.hasSelection(),

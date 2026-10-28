@@ -339,6 +339,12 @@ hosted Windows runner and then the unit tests.
   takes, not the taskbar showing it.
 - Clicking a notification's toast or icon: the tests click through the
   icon's message, and check that Windows takes a real one.
+- Surviving a graphics driver reset (Windows restarting a hung GPU):
+  murrtty draws again in a new OpenGL context, and shows the renderer's
+  failure panel until it can. The tests fake the reset.
+- `MURRTTY_OPENGL`: the full path of another opengl32.dll to draw with, a
+  software OpenGL such as Mesa's llvmpipe for machines without OpenGL 4.3.
+  The tests name Windows' own.
 
 **Not implemented yet**
 
@@ -372,7 +378,9 @@ DirectWrite fonts, keyboard layouts and IMEs, OpenGL fallbacks).
   Windows 10 on ARM cannot run x64 programs.
 - A GPU driver with OpenGL 4.3 support. Most GPUs from the last decade have
   it; virtual machines and Remote Desktop sessions often don't. Without it
-  murrtty shows an error message and exits.
+  murrtty says at start what is missing (no graphics driver, Windows' basic
+  display adapter, a Remote Desktop session, an old driver) and what to do,
+  and exits.
 
 To build you also need an internet connection for the first build. Git is
 optional: without it, or in a source tree that isn't a git checkout, the

@@ -28,6 +28,7 @@ const PaneDrag = @import("PaneDrag.zig");
 const Undo = @import("Undo.zig");
 const Inspector = @import("Inspector.zig");
 const wgl = @import("opengl").wgl;
+const gl_diagnosis = @import("gl_diagnosis.zig");
 const taskbar = @import("taskbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -413,12 +414,19 @@ pub fn run(self: *App) !void {
         // when that passes with none (the option's documentation).
         if (self.config.@"quit-after-last-window-closed-delay" != null) self.startQuitTimer();
     } else _ = Window.create(self, null) catch |err| {
-        // A GUI program has no console, so say why it can't start.
+        // A GUI program has no console, so say why it can't start: for
+        // OpenGL, what is missing and what to do (roadmap 6.3).
+        if (gl_diagnosis.isGlError(err)) {
+            // No hand-offs to an instance that can't open a window: a
+            // murrtty started meanwhile opens its own.
+            if (self.ipc_server) |s| s.stop();
+            self.ipc_server = null;
+            gl_diagnosis.show(self, err);
+            return err;
+        }
         const msg = std.fmt.allocPrint(
             self.core_app.alloc,
             "murrtty could not open a window ({t}).\n\n" ++
-                "murrtty needs a graphics driver with OpenGL 4.3. Virtual machines " ++
-                "and Remote Desktop sessions often don't provide it.\n\n" ++
                 "To see the log, start murrtty from a shell with: murrtty.exe 2> murrtty.log",
             .{err},
         ) catch return err;

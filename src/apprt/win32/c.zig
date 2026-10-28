@@ -604,9 +604,6 @@ pub extern "user32" fn GetSystemMetrics(c_int) callconv(.winapi) c_int;
 
 // The inspector's window (roadmap 5.12): GL 1.1's clears, from opengl32
 // itself, and the save dialog for its Terminal IO events.
-pub extern "opengl32" fn glViewport(x: c_int, y: c_int, width: c_int, height: c_int) callconv(.winapi) void;
-pub extern "opengl32" fn glClearColor(r: f32, g: f32, b: f32, a: f32) callconv(.winapi) void;
-pub extern "opengl32" fn glClear(mask: u32) callconv(.winapi) void;
 pub const GL_COLOR_BUFFER_BIT = 0x4000;
 
 pub const OPENFILENAMEW = extern struct {

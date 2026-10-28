@@ -57,6 +57,24 @@ buttons: u8 = 0,
 clipboard: ?[:0]u8 = null,
 /// Frames drawn (the GUI tests' dump).
 frames: u32 = 0,
+/// GL 1.1's own functions, from the opengl32 murrtty loaded (roadmap 6.3:
+/// linked, they would load Windows' at start, whichever MURRTTY_OPENGL
+/// names).
+gl11: ?Gl11 = null,
+
+const Gl11 = struct {
+    viewport: *const fn (c_int, c_int, c_int, c_int) callconv(.winapi) void,
+    clearColor: *const fn (f32, f32, f32, f32) callconv(.winapi) void,
+    clear: *const fn (u32) callconv(.winapi) void,
+
+    fn load() ?Gl11 {
+        return .{
+            .viewport = @ptrCast(wgl.libraryProc("glViewport") orelse return null),
+            .clearColor = @ptrCast(wgl.libraryProc("glClearColor") orelse return null),
+            .clear = @ptrCast(wgl.libraryProc("glClear") orelse return null),
+        };
+    }
+};
 
 pub fn registerClass(instance: c.HINSTANCE) !void {
     const wc: c.WNDCLASSEXW = .{
@@ -104,7 +122,8 @@ pub fn create(surface: *Surface) !*Inspector {
     self.hdc = hdc;
     const whdc: wgl.HDC = @ptrCast(hdc);
     try ext.setPixelFormat(whdc);
-    self.glrc = try ext.createContext(whdc, 4, 3, false);
+    self.glrc = (try ext.createContext(whdc, 4, 3, false)).handle;
+    self.gl11 = Gl11.load();
     if (wgl.wglMakeCurrent(whdc, self.glrc) == 0) return error.MakeCurrentFailed;
     defer _ = wgl.wglMakeCurrent(null, null);
     // No waiting on the display in SwapBuffers: it runs on the UI thread,
@@ -241,9 +260,11 @@ fn render(self: *Inspector) void {
         cimgui.c.ImGui_Render();
     }
 
-    c.glViewport(0, 0, r.right, r.bottom);
-    c.glClearColor(0, 0, 0, 1);
-    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    if (self.gl11) |g| {
+        g.viewport(0, 0, r.right, r.bottom);
+        g.clearColor(0, 0, 0, 1);
+        g.clear(c.GL_COLOR_BUFFER_BIT);
+    }
     cimgui.ImGui_ImplOpenGL3_RenderDrawData(cimgui.c.ImGui_GetDrawData());
     _ = wgl.SwapBuffers(@ptrCast(hdc));
     self.frames +%= 1;

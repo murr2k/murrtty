@@ -1727,6 +1727,11 @@ pub const Dump = struct {
         ime: ?struct { answered: bool, char: [2]i32, line: i32, doc: [4]i32, cand: [3]i32 } = null,
         /// Whether it takes drops (roadmap 5.8).
         drop_target: bool = false,
+        /// The OpenGL contexts its renderer made (one more after each
+        /// driver reset, roadmap 6.3), and whether its context reports
+        /// resets.
+        gl_contexts: u32 = 0,
+        gl_robust: bool = false,
         /// OSC 9;4's progress (roadmap 5.4): its value (-1 while the bar
         /// pulses), error and paused states and the pulsing block's place.
         progress: ?struct { value: i32, err: bool, paused: bool, pulse: f32 } = null,
@@ -1856,6 +1861,14 @@ pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u
 /// the panes window by window, tab by tab, from 0). Ghostty reads them in
 /// Debug builds, so this works on the hidden desktop, where captures read
 /// white.
+/// Fake a GPU driver reset for every pane (dump wparam 19): each renderer
+/// takes its context as lost at its next frame and builds itself again in
+/// a new one.
+pub fn fakeContextLoss(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 19, 0);
+    d.deinit();
+}
+
 pub fn saveFrames(self: *Harness, g: *const Ghostty) !void {
     var d = try self.dumpWith(g, 10, 0);
     d.deinit();

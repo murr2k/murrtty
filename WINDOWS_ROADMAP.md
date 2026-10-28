@@ -2860,6 +2860,53 @@ composition window and the candidate window's place want it most.
 
 Spike S6 informs the ARM64 story.
 
+*Done 2026-10-28:*
+- Diagnosis (`win32/gl_diagnosis.zig`): when murrtty's first window can't
+  have an OpenGL 4.3 context (opengl32 doesn't load; no WGL_ARB_*, as with
+  Windows' own OpenGL 1.1; no pixel format; no 4.3 context), a task dialog
+  says why and what to do, where a general message box was: a Remote
+  Desktop session whose display offers less (the hardware-adapter policy,
+  or the computer itself), Windows' Microsoft Basic Display Adapter
+  (install the card's driver), no OpenGL from the driver (Windows' "GDI
+  Generic" fallback: 3D acceleration in a virtual machine, or the driver),
+  an old driver (its version: update it), else the error. Its details
+  list the display adapter, the OpenGL a legacy context reports, the
+  session and the error. murrtty then exits with an error, its
+  single-instance pipe closed first (a murrtty started meanwhile opens
+  its own window rather than handing it to this one).
+- opengl32 is loaded at run time (`wgl.loadLibrary`, shared code), never
+  linked (the inspector's three GL 1.1 calls were, which made Windows
+  load its own at start): by full path, System32's, or the opengl32.dll
+  `MURRTTY_OPENGL` names by full path (a software OpenGL such as Mesa's
+  llvmpipe; a path that isn't a full one, isn't a file named
+  opengl32.dll, which gdi32 finds by that name for pixel formats and
+  SwapBuffers, or doesn't load is said so at start, never searched for).
+  The executable's import table has no opengl32. Bundling Mesa as the
+  opt-in software renderer is Phase 7's packaging.
+- GPU driver resets: a context is robust where the driver offers
+  WGL_ARB_create_context_robustness (lost on a reset). Each frame asks
+  glGetGraphicsResetStatusARB, and a lost context makes the renderer make
+  a new one current on the same window first, release there what it had
+  made (none of those names exist in the new context, so this deletes
+  nothing), drop the images (the terminal's are prepared again from its
+  storage; the background image is read from its file again), delete the
+  lost context with all it held, and build everything again, as after
+  GTK's realize (`OpenGL.contextLost`, `replaceContext` and
+  `dropLostContext`, and a hook at the start of `drawFrame` in
+  `renderer/generic.zig`, shared code). Some context is always current.
+  Until a new one can be made (tried once a second), nothing is drawn and
+  the pane shows the renderer's failure panel. The inspector's own
+  context isn't rebuilt: reopen it.
+- Scenarios: `gl-reset` (a faked reset: a new context, the frame after it
+  the frame before it pixel for pixel, also with a `background-image`,
+  whose stale texture changed nearly every pixel before its fix, and then
+  what comes drawn),
+  `gl-missing` (each diagnosis, through failures asked for and stand-ins
+  for the machines: GHOSTTY_WIN32_TEST_WGL, GHOSTTY_WIN32_TEST_GL_DIAG),
+  `gl-library` (Windows' opengl32.dll named draws; a missing, relative or
+  wrongly named one is said). A real reset (`dxcap -forcetdr`) isn't run: it resets the
+  GPU for every program on the machine.
+
 **6.4 Accessibility, XL.** A UI Automation text provider (`ITextProvider`,
 `ITextRangeProvider`) so Narrator and NVDA can read the terminal, with
 selection and text-changed events. Windows Terminal's `UiaTextRange` is the
