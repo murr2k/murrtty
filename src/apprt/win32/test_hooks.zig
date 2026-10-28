@@ -328,6 +328,13 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try out.print(alloc, "\"translucent\":{},", .{w.translucent});
         try out.print(alloc, "\"decoration\":\"{t}\",\"captionless\":{},", .{ w.decoration(), w.captionless() });
         try out.print(alloc, "\"active_window\":{},\"floating\":{},\"topmost\":{},", .{ w.active_window, w.floating, w.isTopmost() });
+        // Its taskbar button's progress (roadmap 5.4), shown once ready.
+        try out.print(alloc, "\"taskbar\":{{\"state\":\"{t}\",\"value\":{d},\"ready\":{},\"hr\":{d}}},", .{
+            w.taskbar_progress.state,
+            w.taskbar_progress.value,
+            w.taskbar_ready,
+            w.taskbar_hr,
+        });
         // The blur applied, and the system backdrop DWM reports (-1 when it
         // can't say, before Windows 11 22H2).
         var backdrop: c.DWORD = 0;
@@ -592,7 +599,16 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         _ = c.GetClientRect(s.hwnd, &r);
         var corners = [2]c.POINT{ .{ .x = r.left, .y = r.top }, .{ .x = r.right, .y = r.bottom } };
         _ = c.MapWindowPoints(s.hwnd, tab.hwnd, &corners, 2);
-        try out.print(alloc, "{{\"hwnd\":{d},\"surface_id\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
+        // OSC 9;4's progress (roadmap 5.4): value -1 while it pulses.
+        if (s.progress) |p| {
+            try out.print(alloc, "{{\"progress\":{{\"value\":{d},\"err\":{},\"paused\":{},\"pulse\":{d:.2}}},", .{
+                if (p.value) |v| @as(i32, v) else -1,
+                s.progress_err,
+                p.last == .paused,
+                p.pulse,
+            });
+        } else try out.appendSlice(alloc, "{");
+        try out.print(alloc, "\"hwnd\":{d},\"surface_id\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
             @intFromPtr(s.hwnd),
             if (s.core_initialized) s.core_surface.id else 0,
             corners[0].x,

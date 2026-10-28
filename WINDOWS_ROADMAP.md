@@ -259,6 +259,9 @@ roadmap item behind it.
   drops all of them (`+new-window`) or opens nothing (`+new-tab`). A
   request's command wins over `initial-command`, and `+new-tab` brings its
   window forward; GTK's does neither.
+- **Taskbar progress** (5.4): OSC 9;4 also shows on the window's taskbar
+  button (its active tab's focused pane's), as Windows Terminal shows it;
+  GTK has only the bar over the pane.
 - **Config in a new window** (5.1): `open_config:new_window` runs `$VISUAL`
   or `$EDITOR` itself, its words split as a command's (quotes group) with
   the file as one argument, where GTK runs it through `/bin/sh -c`; with
@@ -277,6 +280,8 @@ roadmap item behind it.
   One with no body shows its title under "murrtty", since Windows shows
   no balloon without text; GTK's shows the title alone. WinRT toasts,
   5.2's second step, are to lift this.
+- **Pulsing progress** (5.4): the bar's block moves a step with each
+  report; GTK's glides between them.
 - **Dragging a tab** (4.5): once out of the strip, nothing follows the
   mouse until the release (libadwaita drags an image of the tab), and
   Escape doesn't cancel the drag.
@@ -2360,6 +2365,27 @@ disables it. Use `ITaskbarList3` only after the registered
 `TaskbarButtonCreated` message arrives, and re-apply state when it arrives
 again after an Explorer restart; an elevated instance must allow the message
 with `ChangeWindowMessageFilterEx`.
+
+*Built 2026-10-27 (`Surface.setProgress`, `win32/taskbar.zig`):* GTK's
+setProgressReport, as a present-pass bar over the pane: libadwaita's
+`osd` bar, 3 px per 96 DPI at the top, in the accent (`#3584e4`) to the
+value (a first report with none, an empty bar), or the error color at
+half opacity after an error report (GTK's `error` class: only a set
+clears it, so it outlasts the bar's removal); with no value a block a
+fifth wide, starting at the left, that moves a tenth a report, bouncing,
+as GtkProgressBar's pulse. It follows the pane's size, and is drawn under
+the dimming and the bars' shade, as GTK's overlays lie. The window's
+taskbar button shows its active tab's focused pane's
+(`Window.syncProgress`, from `syncTitle`, which every change of tab or
+focused pane runs), in the last report's state as Windows Terminal shows
+it: normal, error, paused or indeterminate through `ITaskbarList3`, made
+when a `TaskbarButtonCreated` arrives (allowed through to an elevated
+murrtty; tried again at the next while it can't be made), and shown
+again whenever one does. No report for 15 s removes it;
+`progress-style = false` shows none. The `progress` scenario checks the
+bar's pixels (also after a resize) and what the button would show (the
+hidden desktop has no taskbar); the opt-in `taskbar-shown` checks a real
+button takes it.
 
 **5.5 Global keybinds, M.** `global:` bindings via `RegisterHotKey`, calling
 the core's `performAllChainedAction`. Re-register on config change and

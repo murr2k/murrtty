@@ -1381,6 +1381,10 @@ pub const Dump = struct {
         /// Windows keeps it there.
         floating: bool = false,
         topmost: bool = false,
+        /// Its taskbar button's progress (roadmap 5.4: "none", "normal",
+        /// "error", "paused", "indeterminate"), shown once `ready` (the
+        /// button exists, never on the hidden desktop).
+        taskbar: struct { state: []const u8 = "none", value: u32 = 0, ready: bool = false, hr: i64 = 1 } = .{},
         /// How what shows through is blurred (4.2: "none", "backdrop",
         /// "accent"), and the system backdrop DWM reports (-1 if it can't).
         blur: []const u8 = "none",
@@ -1505,6 +1509,9 @@ pub const Dump = struct {
     };
 
     pub const Pane = struct {
+        /// OSC 9;4's progress (roadmap 5.4): its value (-1 while the bar
+        /// pulses), error and paused states and the pulsing block's place.
+        progress: ?struct { value: i32, err: bool, paused: bool, pulse: f32 } = null,
         hwnd: u64,
         /// The core surface's id (GHOSTTY_SURFACE_ID), 0 before it exists.
         surface_id: u64 = 0,

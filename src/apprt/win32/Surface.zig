@@ -24,6 +24,7 @@ const Banner = @import("Banner.zig");
 const ClipboardDialog = @import("ClipboardDialog.zig");
 const draw = @import("draw.zig");
 const ipc = @import("ipc.zig");
+const taskbar_mod = @import("taskbar.zig");
 const KeyState = @import("KeyState.zig");
 const Overlay = @import("Overlay.zig");
 const Scrollbar = @import("Scrollbar.zig");
@@ -144,6 +145,13 @@ has_focus: bool = false,
 /// command to finish notifies whatever notify-on-command-finish says, then
 /// this clears.
 notify_next_command: bool = false,
+
+/// OSC 9;4's progress (roadmap 5.4), as GTK's bar over the pane shows it,
+/// or null with none.
+progress: ?Progress = null,
+/// The bar is in the error color: set by an error report and cleared only
+/// by a set, so it outlasts the bar's removal (GTK's `error` class).
+progress_err: bool = false,
 core_focus: bool = true,
 focus_posted: bool = false,
 /// A WM_FORCE_FRAME is queued.
@@ -311,9 +319,11 @@ pub fn setShade(self: *Surface, shade: draw.Shade) void {
 pub fn updateOverlay(self: *Surface) void {
     if (!self.core_initialized) return;
     const api = &self.core_surface.renderer.api;
-    const Shapes = @TypeOf(api.*).Overlay;
     var rects: [Shapes.max]Shapes.Rect = undefined;
     var n = self.scrollbar.rects(self, rects[0..2]);
+    // Under the dimming and the bars' shade, as GTK's unfocused-split
+    // overlay and header bar lie over its progress bar.
+    n += self.progressRects(rects[n..]);
     if (self.dim_color) |col| {
         // The whole window, whatever its size later.
         rects[n] = .{
@@ -345,6 +355,123 @@ pub fn updateOverlay(self: *Surface) void {
     api.setOverlay(rects[0..n]);
     self.postFrame();
 }
+
+/// What GTK's progress bar shows (roadmap 5.4).
+pub const Progress = struct {
+    /// 0 to 100 (a first report with none is an empty bar, GTK's fraction
+    /// 0), or null for a block that moves with each report (GTK's bar
+    /// pulses).
+    value: ?u8 = 0,
+    /// The last report's kind, which the taskbar button shows, as Windows
+    /// Terminal does.
+    last: enum { normal, err, paused, pulse } = .normal,
+    /// The moving block's left edge, as a fraction of the width, and its
+    /// direction.
+    pulse: f32 = 0,
+    forward: bool = true,
+
+    /// GtkProgressBar's: a fifth of the width, a tenth a step.
+    const block = 0.2;
+    const step = 0.1;
+
+    fn advance(self: *Progress) void {
+        // Entering the pulse starts the block at the left, as GTK's
+        // act_mode_enter does.
+        if (self.value != null) {
+            self.value = null;
+            self.pulse = 0;
+            self.forward = true;
+            return;
+        }
+        if (self.forward) self.pulse += step else self.pulse -= step;
+        if (self.pulse >= 1.0 - block) {
+            self.pulse = 1.0 - block;
+            self.forward = false;
+        } else if (self.pulse <= 0) {
+            self.pulse = 0;
+            self.forward = true;
+        }
+    }
+
+    /// What the window's taskbar button shows for it.
+    pub fn taskbar(self: Progress) taskbar_mod.Progress {
+        return switch (self.last) {
+            .err => .{ .state = .@"error", .value = self.value orelse 100 },
+            .paused => .{ .state = .paused, .value = self.value orelse 100 },
+            .pulse => .{ .state = .indeterminate },
+            .normal => if (self.value) |v| .{ .state = .normal, .value = v } else .{ .state = .indeterminate },
+        };
+    }
+};
+
+/// The progress report that removes a stalled program's bar goes after
+/// this, as GTK's.
+const progress_timer_id = 0x5404;
+const progress_timeout_ms = 15000;
+
+/// OSC 9;4 (roadmap 5.4): GTK's setProgressReport, for the bar over the
+/// pane and the window's taskbar button. progress-style = false shows
+/// none.
+pub fn setProgress(self: *Surface, report: terminal.osc.Command.ProgressReport) void {
+    _ = c.KillTimer(self.hwnd, progress_timer_id);
+    if (!self.app.config.@"progress-style" or report.state == .remove) {
+        self.progress = null;
+    } else {
+        var p = self.progress orelse Progress{};
+        switch (report.state) {
+            .set, .@"error" => {
+                const err = report.state == .@"error";
+                self.progress_err = err;
+                p.last = if (err) .err else .normal;
+                if (report.progress) |v| p.value = @min(v, 100) else p.advance();
+            },
+            .indeterminate => {
+                p.last = .pulse;
+                p.advance();
+            },
+            .pause => {
+                p.last = .paused;
+                if (report.progress) |v| p.value = @min(v, 100);
+            },
+            .remove => unreachable,
+        }
+        self.progress = p;
+        _ = c.SetTimer(self.hwnd, progress_timer_id, progress_timeout_ms, null);
+    }
+    self.updateOverlay();
+    self.window.syncProgress();
+}
+
+/// The progress bar's rectangle at the pane's top (none without progress):
+/// libadwaita's `osd` bar, 3 px per 96 DPI over a clear trough, in the
+/// accent, or the error color at half opacity as GTK's CSS mixes it.
+fn progressRects(self: *const Surface, out: []Shapes.Rect) usize {
+    const p = self.progress orelse return 0;
+    if (out.len == 0) return 0;
+    const width: f32 = @floatFromInt(self.size.width);
+    const height = draw.scale(c.GetDpiForWindow(self.hwnd), 3);
+    const left: f32, const span: f32 = if (p.value) |v|
+        .{ 0, width * @as(f32, @floatFromInt(v)) / 100.0 }
+    else
+        .{ width * p.pulse, width * Progress.block };
+    const dark = self.window.chromeTheme().dark;
+    const color: [4]f32 = if (self.progress_err)
+        // libadwaita's error_bg_color, mixed half with transparent.
+        if (dark) .{ 0xc0.0 / 255.0, 0x1c.0 / 255.0, 0x28.0 / 255.0, 0.5 } else .{ 0xe0.0 / 255.0, 0x1b.0 / 255.0, 0x24.0 / 255.0, 0.5 }
+    else
+        // accent_bg_color.
+        .{ 0x35.0 / 255.0, 0x84.0 / 255.0, 0xe4.0 / 255.0, 1 };
+    out[0] = .{
+        .x = @intFromFloat(@round(left)),
+        .y = 0,
+        .width = @intFromFloat(@round(span)),
+        .height = height,
+        .color = color,
+    };
+    return 1;
+}
+
+const Shapes = renderer.OpenGL.Overlay;
 
 /// Present the frame with its own alpha (the window is translucent,
 /// roadmap 4.1) or over the opaque background, from the next frame.
@@ -1126,8 +1253,9 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                     log.warn("error in size callback err={}", .{err});
                 };
                 self.showResizeOverlay();
-                // The thumb follows the pane's height.
-                if (self.scrollbar.visible()) self.updateOverlay();
+                // The thumb follows the pane's height, the progress bar its
+                // width (and the DPI that came with it).
+                if (self.scrollbar.visible() or self.progress != null) self.updateOverlay();
             }
             self.search.layout();
             self.layoutOverlays();
@@ -1136,6 +1264,8 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
 
         c.WM_TIMER => {
             if (wparam == Scrollbar.timer_id) self.scrollbar.tick(self);
+            // No report for 15 s: a program that stalled, or left.
+            if (wparam == progress_timer_id) self.setProgress(.{ .state = .remove });
             return 0;
         },
 

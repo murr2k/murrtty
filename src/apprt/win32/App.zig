@@ -22,6 +22,7 @@ const draw = @import("draw.zig");
 const ipc = @import("ipc.zig");
 const Notifications = @import("Notifications.zig");
 const Overlay = @import("Overlay.zig");
+const taskbar = @import("taskbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
@@ -216,6 +217,11 @@ ipc_launch: bool = false,
 /// Desktop notifications (roadmap 5.2), set up in init.
 notifications: Notifications = undefined,
 
+/// The taskbar's message that a window's button exists, and its list for
+/// progress on the buttons (roadmap 5.4), made at such a message.
+taskbar_button_msg: c.UINT = 0,
+taskbar_list: ?*taskbar.List = null,
+
 /// The GUI test harness's state dump (Debug builds only; see test_hooks).
 test_state: test_hooks.State = .{},
 
@@ -313,6 +319,7 @@ pub fn init(
     // Before any menu shows.
     self.syncMenuTheme();
     self.notifications.init(self);
+    self.taskbar_button_msg = c.RegisterWindowMessageW(c.L("TaskbarButtonCreated"));
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
 
@@ -385,6 +392,8 @@ pub fn terminate(self: *App) void {
     self.windows.deinit(self.core_app.alloc);
     // Its icon goes with murrtty.
     self.notifications.deinit();
+    if (self.taskbar_list) |list| list.release();
+    self.taskbar_list = null;
     for (self.requests.items) |req| req.deinit(self.core_app.alloc);
     self.requests.deinit(self.core_app.alloc);
     _ = c.DestroyWindow(self.wakeup_hwnd);
@@ -444,6 +453,19 @@ fn windowsBuild() u32 {
     var info: c.OSVERSIONINFOW = .{};
     if (c.RtlGetVersion(&info) != 0) return 0;
     return info.dwBuildNumber;
+}
+
+/// The taskbar's list for progress on window buttons (roadmap 5.4), made
+/// when a button exists (`taskbarButtonCreated`); null until then, or
+/// where COM or Explorer gives none.
+pub fn taskbarList(self: *App) ?*taskbar.List {
+    return self.taskbar_list;
+}
+
+/// A window's taskbar button exists: make the list if there isn't one yet
+/// (Explorer may still have been starting at the last try).
+pub fn taskbarButtonCreated(self: *App) void {
+    if (self.taskbar_list == null) self.taskbar_list = taskbar.List.create();
 }
 
 /// Whether a client started this murrtty for its request (ipc.launch_env),
@@ -1680,6 +1702,13 @@ pub fn performAction(
             window.ringBell();
             // bell-features title (roadmap 3.7a).
             if (surfaceFromTarget(target)) |s| s.ringBell();
+        },
+
+        // OSC 9;4 (roadmap 5.4): the pane's bar and its window's taskbar
+        // button.
+        .progress_report => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            surface.setProgress(value);
         },
 
         // OSC 9 and OSC 777 (roadmap 5.2); the core has checked

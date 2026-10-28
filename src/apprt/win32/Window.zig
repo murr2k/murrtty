@@ -11,6 +11,7 @@ const CoreSurface = @import("../../Surface.zig");
 const c = @import("c.zig");
 const draw = @import("draw.zig");
 const split_layout = @import("split_layout.zig");
+const taskbar = @import("taskbar.zig");
 const text_util = @import("text.zig");
 const HeaderBar = @import("HeaderBar.zig");
 const App = @import("App.zig");
@@ -87,6 +88,13 @@ captionless_frame: bool = false,
 decoration_override: ?configpkg.WindowDecoration = null,
 /// Asked to stay above other windows (float_window; roadmap 4.6).
 floating: bool = false,
+/// The progress its taskbar button shows, or would once Windows made it
+/// (TaskbarButtonCreated; roadmap 5.4).
+taskbar_progress: taskbar.Progress = .{},
+taskbar_ready: bool = false,
+/// What showing it last returned, for the GUI tests (1, S_FALSE, before
+/// any).
+taskbar_hr: c.HRESULT = 1,
 /// Whether the window is translucent (App.translucent), as last applied
 /// by syncTranslucent.
 translucent: bool = false,
@@ -214,6 +222,25 @@ fn placeAsConfigured(self: *Window) void {
     _ = c.SetWindowPos(self.hwnd, null, x, y, 0, 0, c.SWP_NOSIZE | c.SWP_NOZORDER | c.SWP_NOACTIVATE);
 }
 
+/// The taskbar button shows the active tab's focused pane's progress
+/// (roadmap 5.4).
+pub fn syncProgress(self: *Window) void {
+    const wanted: taskbar.Progress = if (self.activeSurface()) |s|
+        if (s.progress) |p| p.taskbar() else .{}
+    else
+        .{};
+    if (std.meta.eql(wanted, self.taskbar_progress)) return;
+    self.taskbar_progress = wanted;
+    self.showProgress();
+}
+
+/// Put `taskbar_progress` on the button, once Windows has made it.
+fn showProgress(self: *Window) void {
+    if (!self.taskbar_ready) return;
+    const list = self.app.taskbarList() orelse return;
+    self.taskbar_hr = list.show(self.hwnd, self.taskbar_progress);
+}
+
 /// float_window (toggle_window_float_on_top): kept above other windows, or
 /// not, as macOS's floating level (GTK lacks it).
 pub fn setFloat(self: *Window, mode: apprt.action.FloatWindow) void {
@@ -304,6 +331,9 @@ fn createEmpty(app: *App) !*Window {
     };
     // WM_NCCALCSIZE gave the new window its frame by captionless().
     self.captionless_frame = self.captionless();
+    // Explorer runs below an elevated murrtty, whose windows would refuse
+    // its TaskbarButtonCreated.
+    if (app.taskbar_button_msg != 0) _ = c.ChangeWindowMessageFilterEx(self.hwnd, app.taskbar_button_msg, c.MSGFLT_ALLOW, null);
     self.syncBars();
     errdefer {
         _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
@@ -966,6 +996,8 @@ pub fn setTitleOverride(self: *Window, name: ?[]const u8) void {
 /// The caption: the user's name for the window, else its active tab's
 /// title (GTK's).
 pub fn syncTitle(self: *Window) void {
+    // The taskbar button's progress follows the same pane.
+    self.syncProgress();
     const alloc = self.app.core_app.alloc;
     // The active tab's label: its bell and zoom marks as on its tab (GTK
     // marks both).
@@ -2382,6 +2414,16 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             return 0;
         },
 
-        else => return c.DefWindowProcW(hwnd, msg, wparam, lparam),
+        else => {
+            // The taskbar made the window's button (again, after Explorer
+            // restarted): ITaskbarList3 can show progress on it now.
+            if (msg == self.app.taskbar_button_msg and msg != 0) {
+                self.taskbar_ready = true;
+                self.app.taskbarButtonCreated();
+                self.showProgress();
+                return 0;
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
     }
 }

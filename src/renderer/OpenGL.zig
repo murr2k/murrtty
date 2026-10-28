@@ -110,8 +110,8 @@ const Wgl = struct {
 /// Solid rectangles the Windows present pass draws over the frame, blending
 /// in the stored (sRGB) values as GTK's CSS overlays do.
 pub const Overlay = struct {
-    /// Room for the scrollbar, the dimming and the top bars' shade (a rect
-    /// per row, 6 per 96 DPI).
+    /// Room for the scrollbar, the progress bar, the dimming and the top
+    /// bars' shade (a rect per row, 6 per 96 DPI).
     pub const max = 48;
 
     rects: [max]Rect = undefined,

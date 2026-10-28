@@ -247,6 +247,11 @@ hosted Windows runner and then the unit tests.
   a click brings the terminal forward, and a notification goes once its
   terminal has the keyboard (`desktop-notifications = false` turns them
   off). One at a time stands for them all, for now.
+- Progress from programs (OSC 9;4, as `winget` and PowerShell modules
+  write it): a thin bar over the terminal as in Ghostty's GTK app (red
+  after an error, a moving block while indeterminate), and on the window's
+  taskbar button for its active tab; it goes after 15 s without a report
+  (`progress-style = false` turns it off).
 - Command-finished notices, as in Ghostty's GTK app: with shell
   integration (PowerShell), a command that ran longer than
   `notify-on-command-finish-after` notifies "Command Succeeded" or

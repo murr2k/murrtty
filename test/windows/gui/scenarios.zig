@@ -75,6 +75,7 @@ pub const all = [_]Scenario{
     .{ .name = "ipc-launch", .about = "+new-window with no murrtty running starts one for it, which serves the next; one started for a request that never comes quits", .run = ipcLaunch },
     .{ .name = "single-instance", .about = "gtk-single-instance hands a launch's window to the running murrtty; a separate one takes the pipe over when the first quits", .run = singleInstance },
     .{ .name = "open-config-window", .about = "open_config:new_window runs $EDITOR on the config in a new window; without one it opens the file as open_config does", .run = openConfigWindow },
+    .{ .name = "progress", .about = "OSC 9;4: GTK's bar over the pane (accent, error tint, pulsing, paused) and the window's taskbar progress, the active tab's; gone after 15 s without a report; progress-style = false", .run = progressScenario },
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
@@ -82,6 +83,7 @@ pub const all = [_]Scenario{
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
     .{ .name = "blur-display", .about = "background-blur blurs a striped backdrop seen through the background ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = blurDisplay },
+    .{ .name = "taskbar-shown", .about = "OSC 9;4 on a real taskbar button: the button is made (TaskbarButtonCreated) and ITaskbarList3 takes the progress, off-screen on the user's desktop (GHOSTTY_GUI_ONSCREEN=1: a button shows on the taskbar)", .run = taskbarShown },
     .{ .name = "notify-shown", .about = "an OSC 9 notification really shows: Windows takes the icon and its balloon, then it is taken back; a toast appears ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = notifyShown },
 };
 
@@ -7540,5 +7542,230 @@ fn commandFinishedScenario(h: *Harness) anyerror!void {
         try runForStatus(h, &g, surf, "Start-Sleep 2", 0);
         w.Sleep(500);
         try h.expect((try notifyState(h, &g)).count == 1, "only the next one", .{});
+    }
+}
+
+//---------------------------------------------------------------
+// Progress (roadmap 5.4)
+
+/// The first window's progress as the dump has it: the active tab's first
+/// pane's bar (value -1 while it pulses, -2 for none) and the taskbar
+/// button's.
+const ProgressState = struct {
+    value: i32 = -2,
+    err: bool = false,
+    paused: bool = false,
+    pulse: f32 = 0,
+    taskbar: [16]u8 = undefined,
+    taskbar_len: usize = 0,
+    taskbar_value: u32 = 0,
+    width: i32 = 0,
+
+    fn taskbarState(self: *const ProgressState) []const u8 {
+        return self.taskbar[0..self.taskbar_len];
+    }
+};
+
+fn progressState(h: *Harness, g: *Harness.Ghostty) !ProgressState {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const win = d.value.windows[0];
+    var s: ProgressState = .{ .taskbar_value = win.taskbar.value };
+    s.taskbar_len = @min(win.taskbar.state.len, s.taskbar.len);
+    @memcpy(s.taskbar[0..s.taskbar_len], win.taskbar.state[0..s.taskbar_len]);
+    const panes = win.tabs[win.active].panes orelse return s;
+    if (panes.len == 0) return s;
+    s.width = panes[0].rect[2] - panes[0].rect[0];
+    if (panes[0].progress) |p| {
+        s.value = p.value;
+        s.err = p.err;
+        s.paused = p.paused;
+        s.pulse = p.pulse;
+    }
+    return s;
+}
+
+/// Write OSC 9;4 `params` from PowerShell in `surf` and wait until the bar
+/// has `value` (-1 pulsing, -2 none).
+fn sendProgress(h: *Harness, g: *Harness.Ghostty, surf: w.HWND, params: []const u8, value: i32) !ProgressState {
+    const osc = try std.fmt.allocPrint(h.alloc, "]9;4;{s}", .{params});
+    defer h.alloc.free(osc);
+    const cmd = try oscCommand(h, "0", osc);
+    defer h.alloc.free(cmd);
+    try h.typeText(surf, cmd);
+    h.enter(surf);
+    return waitProgress(h, g, value, params);
+}
+
+fn waitProgress(h: *Harness, g: *Harness.Ghostty, value: i32, what: []const u8) !ProgressState {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 200) {
+        const s = try progressState(h, g);
+        if (s.value == value) return s;
+        w.Sleep(200);
+    }
+    return h.fail("OSC 9;4;{s}: the bar never had {d}", .{ what, value });
+}
+
+fn bluish(px: u32) bool {
+    const r = px >> 16 & 0xFF;
+    const b = px & 0xFF;
+    return b > 0x90 and b > r + 0x50;
+}
+
+fn reddish(px: u32) bool {
+    const r = px >> 16 & 0xFF;
+    const g = px >> 8 & 0xFF;
+    return r > g + 0x30;
+}
+
+/// OSC 9;4 (roadmap 5.4), as GTK's bar shows it over the pane: the accent
+/// to the value, the error color at half opacity, a pulsing block, paused;
+/// the window's taskbar button shows the active tab's (recorded: the
+/// hidden desktop has no taskbar). A bar with no report for 15 s goes;
+/// progress-style = false shows none.
+fn progressScenario(h: *Harness) anyerror!void {
+    const ps = base_config ++ "command = powershell.exe -NoLogo -NoProfile\n";
+    var g = try h.launchWith("progress", ps, .{});
+    defer g.deinit();
+    try h.waitText(&g, "PS ", 1, 20000);
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+
+    var s = try sendProgress(h, &g, surf, "1;50", 50);
+    try h.expect(!s.err and std.mem.eql(u8, s.taskbarState(), "normal") and s.taskbar_value == 50, "set 50: the bar and the taskbar at 50 ({s} {d})", .{ s.taskbarState(), s.taskbar_value });
+    {
+        const quarter: u32 = @intCast(@divTrunc(s.width, 4));
+        const inside = try h.probePane(&g, 0, quarter, 1);
+        const outside = try h.probePane(&g, 0, quarter * 3, 1);
+        try h.expect(bluish(inside) and !bluish(outside), "the accent runs to the middle (#{x:0>6} at a quarter, #{x:0>6} at three quarters)", .{ inside, outside });
+        const below = try h.probePane(&g, 0, quarter, 12);
+        try h.expect(!bluish(below), "3 px tall: no accent below it (#{x:0>6})", .{below});
+    }
+
+    // The bar follows the pane's width: halved, a stale bar would cover it.
+    {
+        const old = s.width;
+        try h.dragResize(&g, @intCast(-@divTrunc(old, 2)), 0);
+        var waited: u32 = 0;
+        while (s.width > old - @divTrunc(old, 4) and waited < 5000) : (waited += 100) {
+            w.Sleep(100);
+            s = try progressState(h, &g);
+        }
+        const quarter: u32 = @intCast(@divTrunc(s.width, 4));
+        const inside = try h.probePane(&g, 0, quarter, 1);
+        const outside = try h.probePane(&g, 0, quarter * 3, 1);
+        try h.expect(s.width < old and bluish(inside) and !bluish(outside), "after a resize to {d} px it still runs to the middle (#{x:0>6}, #{x:0>6})", .{ s.width, inside, outside });
+    }
+
+    s = try sendProgress(h, &g, surf, "2;80", 80);
+    try h.expect(s.err and std.mem.eql(u8, s.taskbarState(), "error") and s.taskbar_value == 80, "error 80: the error color, and on the taskbar ({s} {d})", .{ s.taskbarState(), s.taskbar_value });
+    {
+        const px = try h.probePane(&g, 0, @intCast(@divTrunc(s.width, 4)), 1);
+        try h.expect(reddish(px), "the bar is the error color at half opacity (#{x:0>6})", .{px});
+    }
+    // A pulse after an error keeps its color, as GTK's `error` class stays;
+    // entering the pulse starts the block at the left; the taskbar shows
+    // the last report's state.
+    s = try sendProgress(h, &g, surf, "3", -1);
+    try h.expect(s.err and s.pulse == 0 and std.mem.eql(u8, s.taskbarState(), "indeterminate"), "indeterminate after an error: the error color, the block at the left ({d:.1}), indeterminate on the taskbar ({s})", .{ s.pulse, s.taskbarState() });
+    {
+        // Still pulsing (-1) when it lands: wait for the block to move.
+        _ = try sendProgress(h, &g, surf, "3", -1);
+        var waited: u32 = 0;
+        while (s.pulse < 0.05 and waited < 10000) : (waited += 200) {
+            w.Sleep(200);
+            s = try progressState(h, &g);
+        }
+        try h.expect(s.pulse > 0.05 and s.pulse < 0.15, "the next one moves it a tenth ({d:.2})", .{s.pulse});
+    }
+    // ConEmu's set with no value is 0; it clears the error.
+    s = try sendProgress(h, &g, surf, "1", 0);
+    try h.expect(!s.err and std.mem.eql(u8, s.taskbarState(), "normal") and s.taskbar_value == 0, "set with no value: 0, no longer an error ({s} {d})", .{ s.taskbarState(), s.taskbar_value });
+    s = try sendProgress(h, &g, surf, "4;30", 30);
+    try h.expect(s.paused and std.mem.eql(u8, s.taskbarState(), "paused") and s.taskbar_value == 30, "pause 30 ({s} {d})", .{ s.taskbarState(), s.taskbar_value });
+    s = try sendProgress(h, &g, surf, "2;10", 10);
+    s = try sendProgress(h, &g, surf, "4;20", 20);
+    try h.expect(s.err and std.mem.eql(u8, s.taskbarState(), "paused") and s.taskbar_value == 20, "paused after an error: still red, paused on the taskbar ({s} {d})", .{ s.taskbarState(), s.taskbar_value });
+    s = try sendProgress(h, &g, surf, "0", -2);
+    try h.expect(std.mem.eql(u8, s.taskbarState(), "none"), "remove: no bar, nothing on the taskbar ({s})", .{s.taskbarState()});
+    s = try sendProgress(h, &g, surf, "3", -1);
+    try h.expect(s.err, "the error color outlasts the removal, as GTK's class does", .{});
+    s = try sendProgress(h, &g, surf, "0", -2);
+
+    // The taskbar shows the active tab's.
+    s = try sendProgress(h, &g, surf, "1;40", 40);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    s = try waitProgress(h, &g, -2, "1;40 in the other tab");
+    try h.expect(std.mem.eql(u8, s.taskbarState(), "none"), "a new tab without progress: nothing on the taskbar ({s})", .{s.taskbarState()});
+    const back = try h.surface(&g, win);
+    h.key(back, .{ .ctrl = true }, 0x09);
+    s = try waitProgress(h, &g, 40, "1;40 back in its tab");
+    try h.expect(std.mem.eql(u8, s.taskbarState(), "normal") and s.taskbar_value == 40, "back in its tab: 40 on the taskbar ({s} {d})", .{ s.taskbarState(), s.taskbar_value });
+
+    // No report for 15 s, timed from a fresh one: gone.
+    s = try sendProgress(h, &g, try h.surface(&g, win), "1;45", 45);
+    const started = w.GetTickCount64();
+    while (w.GetTickCount64() - started < 20000) {
+        s = try progressState(h, &g);
+        if (s.value == -2) break;
+        w.Sleep(250);
+    }
+    const took = w.GetTickCount64() - started;
+    try h.expect(s.value == -2 and took >= 13500 and took <= 17500 and std.mem.eql(u8, s.taskbarState(), "none"), "without a report it goes after 15 s (after {d} ms, taskbar {s})", .{ took, s.taskbarState() });
+
+    var off = try h.launchWith("progress-off", ps ++ "progress-style = false\n", .{});
+    defer off.deinit();
+    try h.waitText(&off, "PS ", 1, 20000);
+    const off_surf = try h.surface(&off, try h.mainWindow(&off));
+    {
+        const cmd = try oscCommand(h, "0", "]9;4;1;50");
+        defer h.alloc.free(cmd);
+        try h.typeText(off_surf, cmd);
+        h.enter(off_surf);
+    }
+    try h.waitText(&off, "9;4;1;50' + [char]7)", 1, 10000);
+    w.Sleep(1000);
+    s = try progressState(h, &off);
+    try h.expect(s.value == -2 and std.mem.eql(u8, s.taskbarState(), "none"), "progress-style = false: no bar", .{});
+}
+
+/// OSC 9;4 on a real taskbar button: off-screen on the user's desktop the
+/// window gets one (TaskbarButtonCreated), and ITaskbarList3 takes its
+/// progress (S_OK). Its button shows on the taskbar meanwhile, so only with
+/// GHOSTTY_GUI_ONSCREEN=1.
+fn taskbarShown(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
+        return h.skip("its button shows on the taskbar; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    }
+    const Ctx = struct { h: *Harness, err: ?anyerror = null };
+    var ctx: Ctx = .{ .h = h };
+    h.runOnUserDesktop(&ctx, struct {
+        fn run(cx: *Ctx) void {
+            taskbarShownOffscreen(cx.h) catch |err| {
+                cx.err = err;
+            };
+        }
+    }.run);
+    if (ctx.err) |err| return err;
+}
+
+fn taskbarShownOffscreen(h: *Harness) !void {
+    var g = try h.launchWith("taskbar-shown", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n", .{ .where = .offscreen });
+    defer g.deinit();
+    try h.waitText(&g, "PS ", 1, 20000);
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    for ([_]struct { []const u8, i32, []const u8 }{
+        // Each a value of its own, which the wait looks for.
+        .{ "1;60", 60, "normal" },
+        .{ "2;70", 70, "error" },
+        .{ "0", -2, "none" },
+    }) |case| {
+        _ = try sendProgress(h, &g, surf, case[0], case[1]);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].taskbar;
+        try h.expect(t.ready and std.mem.eql(u8, t.state, case[2]) and t.hr == 0, "9;4;{s}: the button shows {s} (ready {}, hr {d})", .{ case[0], case[2], t.ready, t.hr });
     }
 }
