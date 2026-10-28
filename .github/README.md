@@ -139,6 +139,10 @@ hosted Windows runner and then the unit tests.
   (`unfocused-split-opacity`, `unfocused-split-fill`), and
   `focus-follows-mouse` focuses the pane under the mouse. New panes and
   tabs open in the shell's current directory (see shell integration above).
+  Panes move by the drag handle along their top, which shows under the
+  mouse in a split tab (`drag-handle`): dropped on another pane, in any tab
+  or window, a pane takes the half nearest the pointer; held over a tab,
+  that tab comes forward; Esc cancels.
 - Close confirmations. With shell integration, closing a tab, pane or
   window at an idle prompt doesn't ask and a running command does. Without
   it (another shell, or PowerShell started with a command) murrtty can't
@@ -322,7 +326,6 @@ hosted Windows runner and then the unit tests.
 **Not implemented yet**
 
 - Terminal inspector.
-- Dragging panes to rearrange splits.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
 continuing with desktop integration (Phase 5: session restore, undo of

@@ -11,6 +11,7 @@ const SplitTree = @import("../../datastruct/split_tree.zig").SplitTree;
 const c = @import("c.zig");
 const draw = @import("draw.zig");
 const split_layout = @import("split_layout.zig");
+const PaneDrag = @import("PaneDrag.zig");
 const Window = @import("Window.zig");
 const Surface = @import("Surface.zig");
 
@@ -135,6 +136,8 @@ pub fn create(
 pub fn destroy(self: *Tab, destroy_window: bool) void {
     const alloc = self.window.app.core_app.alloc;
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+    // A pane's drag of or over these panes, while the tree is whole.
+    PaneDrag.tabGoing(self.window.app, self);
 
     // Take the panes out of the tree before freeing them.
     var freeing: std.ArrayList(*Surface) = .empty;
@@ -146,6 +149,8 @@ pub fn destroy(self: *Tab, destroy_window: bool) void {
         alloc.destroy(entry.view);
     };
     self.tree.deinit();
+    // Lookups while the panes go (App.findSurface) find none here.
+    self.tree = .empty;
     for (freeing.items) |s| {
         s.deinit();
         alloc.destroy(s);
@@ -394,6 +399,75 @@ fn newPaneRect(self: *Tab, at: Tree.Node.Handle, dir: Tree.Split.Direction) !c.R
     // SplitTree.split puts the inserted tree right after the old nodes.
     for (layout.panes) |p| if (p.handle.idx() == self.tree.nodes.len) return toRect(p.rect);
     return error.PaneNotFound;
+}
+
+/// Move pane `source` (of this tab or another, in any window) next to
+/// `target`, `dir` of it, still running, as GTK's SplitTree.moveSplit. The
+/// tab keeps its focused pane (GTK's tree restores its last focused); the
+/// old tab's moves on if it was `source`, as a close would; a tab it leaves
+/// empty goes (Window.discardTab).
+pub fn movePane(self: *Tab, source: *Surface, target: *Surface, dir: Tree.Split.Direction) !void {
+    if (source == target) return;
+    const alloc = self.window.app.core_app.alloc;
+    const from_window = source.window;
+    const from = from_window.tabs.items[from_window.tabIndexOf(source) orelse return error.PaneNotFound];
+    // Handles change under a zoom's feet.
+    _ = self.unzoom();
+    if (from != self) _ = from.unzoom();
+
+    const target_handle = self.tree.locate(target) orelse return error.PaneNotFound;
+    var single = try Tree.init(alloc, source);
+    defer single.deinit();
+    var after = try self.tree.split(alloc, target_handle, dir, 0.5, &single);
+    errdefer after.deinit();
+
+    if (from == self) {
+        // The old handle still names it: split adds nodes after the old.
+        const old = self.tree.locate(source) orelse return error.PaneNotFound;
+        const moved = try after.remove(alloc, old);
+        after.deinit();
+        self.tree.deinit();
+        self.tree = moved;
+        self.generation +%= 1;
+        self.layoutPanes();
+        self.window.tabChanged(self);
+        return;
+    }
+
+    // Out of its own tab: unless it was the last, that tab's tree without
+    // it, and its focus on as after a close.
+    const handle = from.tree.locate(source) orelse return error.PaneNotFound;
+    const last = !from.tree.isSplit();
+    var rest: Tree = .empty;
+    errdefer rest.deinit();
+    var focus = from.focused;
+    if (!last) {
+        if (from.focused == source) focus = (try Layout.focusAfterClose(alloc, &from.tree, handle)) orelse return error.LastPane;
+        rest = try from.tree.remove(alloc, handle);
+    }
+
+    // Into this tab's container (before its old one can go) and window.
+    _ = c.SetParent(source.hwnd, self.hwnd);
+    source.window = self.window;
+    self.tree.deinit();
+    self.tree = after;
+    self.generation +%= 1;
+    if (from_window != self.window) {
+        source.dpiChanged();
+        source.setTranslucent(self.window.translucent);
+    }
+    if (last) {
+        from_window.discardTab(from);
+    } else {
+        from.tree.deinit();
+        from.tree = rest;
+        from.focused = focus;
+        from.generation +%= 1;
+        from.layoutPanes();
+        from_window.tabChanged(from);
+    }
+    self.layoutPanes();
+    self.window.tabChanged(self);
 }
 
 /// Remove pane `surface` from the tab (never its last pane) and free it.

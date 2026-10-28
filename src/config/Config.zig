@@ -2367,8 +2367,8 @@ keybind: Keybinds = .{},
 ///
 ///    Automatically show and hide the drag handle.
 ///
-///    On Linux, the handle is only shown when there are two or
-///    more splits present.
+///    On Linux and Windows, the handle is only shown when there are two
+///    or more splits present.
 ///
 ///    On macOS, the handle is only hidden when there's one split
 ///    in **fullscreen** mode, otherwise it's shown when hovered.

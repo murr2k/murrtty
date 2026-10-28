@@ -24,6 +24,7 @@ const GlobalKeys = @import("GlobalKeys.zig");
 const ipc = @import("ipc.zig");
 const Notifications = @import("Notifications.zig");
 const Overlay = @import("Overlay.zig");
+const PaneDrag = @import("PaneDrag.zig");
 const taskbar = @import("taskbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -240,6 +241,8 @@ quit_timer: enum { off, active, expired } = .off,
 requested_window: bool = false,
 /// closeAllWindows is closing them: no hidden quick terminal comes back.
 closing_all: bool = false,
+/// A pane being dragged (roadmap 1.10).
+pane_drag: ?PaneDrag = null,
 /// murrtty's selection clipboard (roadmap 5.9): Windows has no primary
 /// selection, so copy-on-select, middle-click paste and
 /// paste_from_selection share this, between murrtty's panes only.

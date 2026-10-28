@@ -26,6 +26,7 @@ test {
     _ = @import("win32/QuickTerminal.zig");
     _ = @import("win32/Notifications.zig");
     _ = @import("win32/Overlay.zig");
+    _ = @import("win32/PaneDrag.zig");
     _ = @import("win32/key.zig");
     _ = @import("win32/split_layout.zig");
     _ = @import("win32/TabBar.zig");

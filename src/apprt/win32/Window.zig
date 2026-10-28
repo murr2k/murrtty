@@ -18,6 +18,7 @@ const App = @import("App.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Overlay = @import("Overlay.zig");
+const PaneDrag = @import("PaneDrag.zig");
 const QuickTerminal = @import("QuickTerminal.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
@@ -799,6 +800,48 @@ fn moveTabTo(self: *Window, index: usize, target: *Window, at: usize) !void {
     target.adoptTab(tab, at);
 }
 
+/// Take out `tab`, whose last pane moved to another tab (roadmap 1.10), and
+/// free it, no pane left in it. A window left with no tab closes through
+/// the request queue, hidden meanwhile.
+pub fn discardTab(self: *Window, tab: *Tab) void {
+    const index = std.mem.indexOfScalar(*Tab, self.tabs.items, tab) orelse return;
+    _ = self.tabs.orderedRemove(index);
+    self.setHover(.none);
+    tab.tree.deinit();
+    tab.tree = .empty;
+    tab.destroy(true);
+    if (self.tabs.items.len == 0) {
+        _ = c.ShowWindow(self.hwnd, c.SW_HIDE);
+        self.app.request(.{ .close_window = self.id });
+        return;
+    }
+    if (self.active > index or self.active >= self.tabs.items.len) self.active -|= 1;
+    self.select(self.active);
+}
+
+/// A pane moved into or out of `tab` (roadmap 1.10): its dimming, and the
+/// title, colors and strip, which follow its focused pane and lose a zoom.
+pub fn tabChanged(self: *Window, tab: *Tab) void {
+    const index = std.mem.indexOfScalar(*Tab, self.tabs.items, tab) orelse return;
+    tab.syncDim();
+    if (index == self.active) {
+        self.syncTitle();
+        self.applyChrome();
+    }
+    self.invalidateTabBar();
+    _ = c.InvalidateRect(tab.hwnd, null, c.FALSE);
+}
+
+/// The tab of the tab row at `screen`, if the row shows and a tab is there.
+pub fn tabAtScreen(self: *const Window, screen: c.POINT) ?usize {
+    var pt = screen;
+    _ = c.ScreenToClient(self.hwnd, &pt);
+    return switch (self.chromeHit(pt.x, pt.y)) {
+        .tab, .close => |i| i,
+        else => null,
+    };
+}
+
 /// Take in `tab` from another window at `at` (or the end) and select it;
 /// room for it is the caller's to make.
 fn adoptTab(self: *Window, tab: *Tab, at: usize) void {
@@ -957,7 +1000,9 @@ pub const PaneIterator = struct {
 /// closing a tab in a background window (its process exited, say) used to
 /// pull that window in front of the one in use. A background window
 /// focuses its tab when it is activated (WM_ACTIVATE).
-fn focusActive(self: *Window) void {
+/// Give the keyboard to the active tab's focused pane, if this is the
+/// active window.
+pub fn focusActive(self: *Window) void {
     if (c.GetActiveWindow() != self.hwnd) return;
     self.focusActiveNow();
 }
@@ -980,6 +1025,9 @@ pub fn destroy(self: *Window) void {
 fn onDestroy(self: *Window) void {
     const alloc = self.app.core_app.alloc;
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+    // A pane's drag of or over its panes, while every tab's tree is whole:
+    // the tabs go one by one below, freed but still listed.
+    PaneDrag.windowGoing(self.app, self);
     // Destroyed inside its system menu's loop (closes wait for it, but
     // another program can destroy a window): end the scope while the
     // panes it resumes are still here.

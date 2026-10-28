@@ -651,6 +651,16 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     // murrtty's selection clipboard (roadmap 5.9).
     try out.appendSlice(alloc, ",\"selection\":");
     try writeString(alloc, out, app.selection orelse "");
+    // A pane's drag (roadmap 1.10): its pane, the one under the pointer and
+    // the side it would take.
+    if (app.pane_drag) |d| {
+        try out.print(alloc, ",\"pane_drag\":{{\"active\":true,\"dragging\":{},\"source\":{d},\"target\":{d},\"dir\":\"{s}\"}}", .{
+            d.dragging,
+            d.source,
+            d.target orelse 0,
+            if (d.target != null) @tagName(d.dir) else "",
+        });
+    }
     try out.append(alloc, '}');
 }
 
@@ -691,6 +701,12 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                 p.pulse,
             });
         } else try out.appendSlice(alloc, "{");
+        try out.print(alloc, "\"handle\":{{\"shown\":{},\"hover\":{}}},\"drop\":\"{s}\",\"dimmed\":{},", .{
+            s.handleShown(),
+            s.handle_hover,
+            if (s.drop_dir) |dir| @tagName(dir) else "",
+            s.dim_color != null,
+        });
         try out.print(alloc, "\"drop_target\":{},\"hwnd\":{d},\"surface_id\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
             s.drop_target != null,
             @intFromPtr(s.hwnd),

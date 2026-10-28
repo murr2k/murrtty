@@ -1438,6 +1438,9 @@ pub const Dump = struct {
     drop_effect: i32 = -1,
     /// murrtty's selection clipboard (roadmap 5.9).
     selection: []const u8 = "",
+    /// A pane's drag (roadmap 1.10): past the drag distance, the pane
+    /// dragged, the pane under the pointer and the side ("" for none).
+    pane_drag: struct { active: bool = false, dragging: bool = false, source: u64 = 0, target: u64 = 0, dir: []const u8 = "" } = .{},
 
     /// The quick terminal's state (roadmap 5.7): shown (also while it
     /// slides in), sliding, and the work area and DPI it chose.
@@ -1633,6 +1636,12 @@ pub const Dump = struct {
     };
 
     pub const Pane = struct {
+        /// Its drag handle (roadmap 1.10): there (drag-handle), and showing
+        /// under the mouse; the side a dragged pane would take ("" none).
+        handle: struct { shown: bool = false, hover: bool = false } = .{},
+        drop: []const u8 = "",
+        /// Dimmed as an unfocused pane of its tab (unfocused-split-*).
+        dimmed: bool = false,
         /// Whether it takes drops (roadmap 5.8).
         drop_target: bool = false,
         /// OSC 9;4's progress (roadmap 5.4): its value (-1 while the bar

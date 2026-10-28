@@ -28,6 +28,7 @@ const taskbar_mod = @import("taskbar.zig");
 const KeyState = @import("KeyState.zig");
 const DropTarget = @import("DropTarget.zig");
 const Overlay = @import("Overlay.zig");
+const PaneDrag = @import("PaneDrag.zig");
 const Scrollbar = @import("Scrollbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Window = @import("Window.zig");
@@ -164,6 +165,13 @@ frame_posted: bool = false,
 clipboard_pending: std.ArrayList(PendingClipboard) = .empty,
 /// Files and text dropped on the pane (roadmap 5.8); null if OLE refused.
 drop_target: ?*DropTarget = null,
+/// The mouse is over its drag handle (roadmap 1.10), which shows then.
+handle_hover: bool = false,
+/// A dragged pane would go to this side of it (GTK's drop overlay).
+drop_dir: ?PaneDrag.Direction = null,
+/// The left release after this pane's drag lost the mouse goes nowhere:
+/// the terminal never saw its press.
+drag_release: bool = false,
 
 pub const Colors = struct {
     bg: configpkg.Config.Color,
@@ -340,6 +348,7 @@ pub fn updateOverlay(self: *Surface) void {
         };
         n += 1;
     }
+    n += self.dragRects(rects[n..]);
     const ink = self.shade.color();
     var row: u32 = 0;
     while (row < self.shade.rows(self.shade_dpi) and n < rects.len) : (row += 1) {
@@ -478,6 +487,79 @@ fn progressRects(self: *const Surface, out: []Shapes.Rect) usize {
 
 const Shapes = renderer.OpenGL.Overlay;
 
+/// The drag handle's band (roadmap 1.10): GTK's, a CenterBox holding a 16
+/// px icon along the pane's top.
+const handle_dip = 16;
+
+/// Whether the pane has a drag handle: drag-handle `always`, or `auto` while
+/// its tab is split (GTK's is-split).
+pub fn handleShown(self: *const Surface) bool {
+    return switch (self.app.config.@"drag-handle") {
+        .always => true,
+        .never => false,
+        .auto => if (self.window.tabIndexOf(self)) |i| self.window.tabs.items[i].tree.isSplit() else false,
+    };
+}
+
+fn handleHeight(self: *const Surface) i32 {
+    return draw.scale(c.GetDpiForWindow(self.hwnd), handle_dip);
+}
+
+/// Whether the client point (`x`, `y`) is on the drag handle.
+fn inHandle(self: *const Surface, x: i32, y: i32) bool {
+    if (!self.handleShown() or y < 0 or y >= self.handleHeight() or x < 0) return false;
+    return x < @as(i32, @intCast(self.size.width)) and !self.scrollbar.takesMouse(self, x);
+}
+
+/// Show (or hide) where a dragged pane would go.
+pub fn setDropOverlay(self: *Surface, dir: ?PaneDrag.Direction) void {
+    if (std.meta.eql(self.drop_dir, dir)) return;
+    self.drop_dir = dir;
+    self.updateOverlay();
+}
+
+pub fn setHandleHover(self: *Surface, hover: bool) void {
+    if (self.handle_hover == hover) return;
+    self.handle_hover = hover;
+    self.updateOverlay();
+}
+
+/// The drag handle while the mouse is on it, GTK's: a band of black at 15%
+/// with the three dots of view-more-horizontal-symbolic centered in the
+/// window's text color (libadwaita's); and over the half a dragged pane
+/// would take, the accent at half opacity (GTK's drop overlay).
+fn dragRects(self: *const Surface, out: []Shapes.Rect) usize {
+    var n: usize = 0;
+    const dpi = c.GetDpiForWindow(self.hwnd);
+    if (self.handle_hover and self.handleShown() and out.len >= 4) {
+        const band = self.handleHeight();
+        out[0] = .{ .x = 0, .y = 0, .width = std.math.maxInt(i16), .height = band, .color = .{ 0, 0, 0, 0.15 } };
+        const dot = draw.scale(dpi, 3);
+        const gap = draw.scale(dpi, 5);
+        const cx: i32 = @divTrunc(@as(i32, @intCast(self.size.width)), 2);
+        const fg = self.app.chromeTheme().fg;
+        const ink: [4]f32 = .{ @as(f32, @floatFromInt(fg.r)) / 255.0, @as(f32, @floatFromInt(fg.g)) / 255.0, @as(f32, @floatFromInt(fg.b)) / 255.0, 1 };
+        for (0..3) |i| {
+            const offset: i32 = (@as(i32, @intCast(i)) - 1) * gap;
+            out[1 + i] = .{ .x = cx + offset - @divTrunc(dot, 2), .y = @divTrunc(band - dot, 2), .width = dot, .height = dot, .color = ink };
+        }
+        n = 4;
+    }
+    if (self.drop_dir) |dir| if (n < out.len) {
+        const w: i32 = @intCast(self.size.width);
+        const h: i32 = @intCast(self.size.height);
+        const accent: [4]f32 = .{ 0x35.0 / 255.0, 0x84.0 / 255.0, 0xe4.0 / 255.0, 0.5 };
+        out[n] = switch (dir) {
+            .left => .{ .x = 0, .y = 0, .width = @divTrunc(w, 2), .height = h, .color = accent },
+            .right => .{ .x = @divTrunc(w, 2), .y = 0, .width = w - @divTrunc(w, 2), .height = h, .color = accent },
+            .up => .{ .x = 0, .y = 0, .width = w, .height = @divTrunc(h, 2), .color = accent },
+            .down => .{ .x = 0, .y = @divTrunc(h, 2), .width = w, .height = h - @divTrunc(h, 2), .color = accent },
+        };
+        n += 1;
+    };
+    return n;
+}
+
 /// Present the frame with its own alpha (the window is translucent,
 /// roadmap 4.1) or over the opaque background, from the next frame.
 pub fn setTranslucent(self: *Surface, on: bool) void {
@@ -596,6 +678,7 @@ fn scaledPadding(points: u32, scale: f32) u32 {
 /// with its parent.
 pub fn deinit(self: *Surface) void {
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+    if (self.core_initialized) PaneDrag.surfaceGone(self.app, self.core_surface.id);
     if (self.drop_target) |d| d.revoke(self.hwnd);
     self.drop_target = null;
 
@@ -1308,6 +1391,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
 
         c.WM_TIMER => {
             if (wparam == Scrollbar.timer_id) self.scrollbar.tick(self);
+            if (wparam == PaneDrag.timer_id) PaneDrag.tick(self.app);
             // No report for 15 s: a program that stalled, or left.
             if (wparam == progress_timer_id) self.setProgress(.{ .state = .remove });
             return 0;
@@ -1357,6 +1441,11 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
                     _ = c.SetCursor(c.LoadCursorW(null, c.IDC_ARROW));
                     return 1;
                 }
+                // The drag handle's (GTK's "grab").
+                if (self.inHandle(pt[0].x, pt[0].y)) {
+                    _ = c.SetCursor(c.LoadCursorW(null, c.IDC_SIZEALL));
+                    return 1;
+                }
                 _ = c.SetCursor(if (self.mouse_hidden) null else self.cursor);
                 return 1;
             }
@@ -1378,6 +1467,13 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         },
 
         c.WM_KEYDOWN, c.WM_SYSKEYDOWN, c.WM_KEYUP, c.WM_SYSKEYUP => {
+            // Escape cancels a pane's drag; its repeats and release go
+            // nowhere, as a divider drag's.
+            if (wparam == c.VK_ESCAPE and msg == c.WM_KEYDOWN) if (self.app.pane_drag) |d| if (d.dragging and !d.cancelled) {
+                PaneDrag.cancel(self.app);
+                self.escape_taken = true;
+                return 0;
+            };
             if (wparam == c.VK_ESCAPE and self.escapeTaken(msg, lparam)) return 0;
             return self.handleKey(msg, wparam, lparam);
         },
@@ -1426,6 +1522,23 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             }
             const x = c.xParam(lparam);
             const y = c.yParam(lparam);
+            // A pane's drag (this pane holds the mouse).
+            if (self.app.pane_drag != null) {
+                var pt: c.POINT = .{ .x = x, .y = y };
+                _ = c.ClientToScreen(self.hwnd, &pt);
+                PaneDrag.move(self.app, pt);
+                return 0;
+            }
+            // Over the drag handle, which takes the mouse there, as GTK's
+            // (its terminal sees the mouse leave, and focus-follows-mouse
+            // waits; the move is still recorded for App.syncMouse).
+            const on_handle = self.buttons_down == 0 and self.inHandle(x, y);
+            self.setHandleHover(on_handle);
+            if (on_handle) {
+                _ = self.app.mouseMoved(self.hwnd, x, y);
+                self.cursorPosCallback(-1, -1);
+                return 0;
+            }
             self.followMouse(x, y, wparam);
             // The scrollbar takes moves over its band and its drags, unless
             // the terminal is in a drag of its own (a selection).
@@ -1448,6 +1561,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         c.WM_MOUSELEAVE => {
             self.tracking_leave = false;
             if (comptime test_hooks.enabled) if (self.app.test_state.pin_mouse) return 0;
+            self.setHandleHover(false);
             self.scrollbar.mouseLeave(self);
             // Keep reporting while a button is held and we have capture.
             if (self.buttons_down == 0) self.cursorPosCallback(-1, -1);
@@ -1455,10 +1569,26 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         },
 
         c.WM_LBUTTONDOWN => {
+            self.drag_release = false;
             if (self.buttons_down == 0 and self.scrollbar.mouseDown(self, c.xParam(lparam), c.yParam(lparam))) return 0;
+            // The drag handle: a pane's drag (roadmap 1.10).
+            if (self.buttons_down == 0 and self.inHandle(c.xParam(lparam), c.yParam(lparam))) {
+                var pt: c.POINT = .{ .x = c.xParam(lparam), .y = c.yParam(lparam) };
+                _ = c.ClientToScreen(self.hwnd, &pt);
+                PaneDrag.begin(self.app, self, pt);
+                return 0;
+            }
             return self.mouseButton(.press, .left, lparam);
         },
         c.WM_LBUTTONUP => {
+            if (self.app.pane_drag != null) {
+                PaneDrag.finish(self.app);
+                return 0;
+            }
+            if (self.drag_release) {
+                self.drag_release = false;
+                return 0;
+            }
             if (self.scrollbar.mouseUp(self, c.xParam(lparam))) return 0;
             return self.mouseButton(.release, .left, lparam);
         },
@@ -1473,6 +1603,10 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         },
 
         c.WM_CAPTURECHANGED => {
+            if (self.app.pane_drag) |d| if (self.core_initialized and d.source == self.core_surface.id) {
+                PaneDrag.abort(self.app);
+                self.drag_release = true;
+            };
             self.buttons_down = 0;
             self.scrollbar.captureLost(self);
             return 0;

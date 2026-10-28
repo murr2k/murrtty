@@ -334,6 +334,10 @@ roadmap item behind it.
 - **Dragging a tab** (4.5): once out of the strip, nothing follows the
   mouse until the release (libadwaita drags an image of the tab), and
   Escape doesn't cancel the drag.
+- **Dragging a pane** (1.10): no image of the pane follows the mouse
+  (GTK's drag carries a snapshot at a fifth of its size); the pointer shows
+  a move cursor over a pane it can drop on and a no-drop cursor elsewhere.
+  The handle's dots are small squares, where GTK draws its symbolic icon.
 - **Toasts** (3.6): the latest replaces the one showing, for 3 seconds;
   GTK queues them, each with a close button.
 - **Read-only badge** (3.6): shown at once; GTK fades it in over 500 ms.
@@ -939,7 +943,7 @@ pane adds under 40 MB of commit.
 ## Phase 1: Splits (about 2.5 weeks, plus 1.10 in M2)
 
 The full design is below; the steps land one at a time. Steps 1.1 to 1.9 are
-done (2026-10-25); 1.10 is part of M2. Upstream's generic
+done (2026-10-25), and 1.10, part of M2 (2026-10-27). Upstream's generic
 split tree (`src/datastruct/split_tree.zig`) already compiles for Windows and
 provides every operation (split, remove, equalize, resize, in-place ratio
 drag, zoom, wrapped and spatial navigation), so the work is in the Win32
@@ -1014,7 +1018,7 @@ runtime plus the WGL present path (1.7).
 | 1.7 | Renderer: a rectangle list drawn in 0.3's present pass, written by the UI thread and read by the render thread. The dim overlay is its first user; 3.0's shape overlays reuse it. *Done 2026-10-25:* `OpenGL.setOverlay` (up to 16 rectangles, under a mutex) and a solid-color pass after the frame, premultiplied, with sRGB writes off; a pane that changes its dimming forces a frame (as the tests' probe does). `Tab.syncDim` runs whenever the focused pane, the panes, the colors or the config change. The `split-dim` scenario reads back a dimmed pane's background (half red over `#282c34`, within one step) and the focused pane's, before and after a click moves the focus. | M |
 | 1.8 | `focus-follows-mouse`, deduplicated on screen position so a relayout under a still cursor does not move focus. *Done 2026-10-25:* a pane's `WM_MOUSEMOVE` maps its own client point to the screen and compares it with the last one seen over any pane (not `GetCursorPos`, so posted test moves count as moves); it focuses the pane only in the active window and with no button held. The `focus-follows-mouse` scenario checks moves focusing each pane, a divider moving the pane under a still cursor (no focus change), and a pane of an inactive window (neither focused nor activated). | S |
 | 1.9 | Defaults and docs: check whether the Windows shell or graphics-driver hotkeys intercept the defaults (`ctrl+super+[`, `super+ctrl+shift+arrows`, and `ctrl+alt+arrows`, which some Intel drivers use for screen rotation) and add fallbacks if so; record decision 2; update the README. *Done 2026-10-25:* checked with `RegisterHotKey` on the Windows 11 desktop, which fails for a combination another program holds (Explorer's `Win+E` as the control): `Win+Ctrl+[` and `]` are held (alongside Explorer's `Win+Ctrl` digits, `C`, `D`, `O`, `V`), so Windows gets `Ctrl+Shift+[`/`]` for `goto_split:previous`/`next` (kitty's keys) in addition to upstream's, performable as those are. `Win+Ctrl+Shift+arrows`, `Ctrl+Alt+arrows` and Ghostty's other split keys are free there. Intel's rotation hotkeys could not be checked (no Intel GPU); the README says how to turn them off. A probe only sees hotkeys registered with `RegisterHotKey`, not keyboard hooks, and no real key presses were sent (they would reach the owner's foreground window). | S |
-| 1.10 | In M2: drag panes between drop zones and between tabs, with the per-pane handle from `drag-handle` (default `auto`: shown when the tab is split, as on GTK; macOS shows it on hover instead). M1 ships without it. | L |
+| 1.10 | In M2: drag panes between drop zones and between tabs, with the per-pane handle from `drag-handle` (default `auto`: shown when the tab is split, as on GTK; macOS shows it on hover instead). M1 ships without it. *Done 2026-10-27:* GTK's handle, a band 16 DIP high along the pane's top that shows under the mouse (black at 15% with three dots in the window's text color), drawn in the present pass and taking the mouse there (the terminal sees it leave, focus-follows-mouse waits). A press starts `PaneDrag`, which holds the mouse in the source pane; past the system's drag distance the pane under the pointer (any window) marks the half nearest it in the accent at 50% (GTK's `calcDropDirection`), and the release moves the pane there with `Tab.movePane`, GTK's `moveSplit`: in its tab, into another tab, or into another window (reparented, its DPI and translucency redone), still running; a tab it leaves empty goes (`Window.discardTab`), and a window with it. A tab of the tab row held under the pointer for 500 ms comes forward, as libadwaita's tab bar does during a drag. Escape cancels (its release and the button's go nowhere); losing the mouse ends the drag. A pane closing ends a drag of it, and one over it goes on over nothing. The keyboard stays where it was and no window comes forward, as GTK's, and the dimming follows each tab's focused pane. The `pane-drag` scenario checks the handle's states, a move within a tab, Escape, a hovered tab coming forward (the pane keeping the mouse) and the drop into it with the dimming after, a move into another window, which closes, and windows closing mid-drag (the review found the drag then looked panes up in a closing window's freed tabs). | L |
 
 New-split working-directory inheritance needs 2.1 plus a source of reports:
 the 2.2 or 2.3 integration, or the 2.4 fallback. Stock PowerShell and cmd send

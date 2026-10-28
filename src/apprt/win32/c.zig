@@ -582,6 +582,7 @@ pub const HWND_MESSAGE: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))))
 pub extern "user32" fn FindWindowExW(?HWND, ?HWND, ?LPCWSTR, ?LPCWSTR) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.winapi) DWORD;
 pub extern "user32" fn SetParent(HWND, ?HWND) callconv(.winapi) ?HWND;
+pub extern "user32" fn GetSystemMetrics(c_int) callconv(.winapi) c_int;
 pub const SM_CXDRAG = 68;
 pub const SM_CYDRAG = 69;
 pub extern "user32" fn GetCursorPos(*POINT) callconv(.winapi) BOOL;

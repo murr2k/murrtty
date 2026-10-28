@@ -62,6 +62,7 @@ pub const all = [_]Scenario{
     .{ .name = "window-options", .about = "window-position-x/-y for each window, toggle_window_float_on_top, reset_window_size, window-step-resize", .run = windowOptions },
     .{ .name = "tab-drag-close", .about = "a tab closing while another is dragged: the drag goes on with the tab pressed", .run = tabDragClose },
     .{ .name = "tab-drag", .about = "tabs reorder live as they are dragged, tear off into a new window, move onto another window's bar (an emptied window closes); move_tab_to_new_window", .run = tabDrag },
+    .{ .name = "pane-drag", .about = "panes move by their drag handle onto a half of another pane, in the tab, into a hovered tab, into another window (an emptied window closes); Escape cancels", .run = paneDrag },
     .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
     .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
@@ -5356,6 +5357,305 @@ fn tabDrag(h: *Harness) anyerror!void {
     defer h.alloc.free(wins);
     try h.expect(wins.len == 2, "and does nothing for a window's only tab", .{});
     try quit(h, &g, torn);
+}
+
+/// Dragging panes (roadmap 1.10), GTK's: with drag-handle auto a lone pane
+/// has no handle and a split tab's panes do, showing under the mouse.
+/// Pressed and dragged onto another pane, the half nearest the pointer is
+/// marked (never over the pane itself) and the release moves the pane
+/// there, running, the keyboard staying where it was; Escape cancels a
+/// drag. Held over
+/// another tab of the tab row, that tab comes forward (the pane keeps the
+/// mouse) and the pane drops into it. With drag-handle always a lone pane
+/// has one, and dragged into another window it leaves its own, which
+/// closes.
+fn paneDrag(h: *Harness) anyerror!void {
+    {
+        var g = try start(h, "pane-drag", "", ">");
+        defer g.deinit();
+        // Posted moves on the hidden desktop are followed by a real
+        // WM_MOUSELEAVE, which would hide the handle at once.
+        try h.pinMouse(&g, true);
+        const win = try h.mainWindow(&g);
+        const a = try h.surface(&g, win);
+        try waitPaneState(h, &g, a, .{ .shown = false }, "a lone pane has no drag handle (drag-handle auto)");
+        try splitPane(h, &g, 0, 'O');
+        const b = try paneHwnd(h, &g, 1);
+        try waitPaneState(h, &g, a, .{ .shown = true, .hover = false }, "a split tab's panes have one");
+        try waitPaneState(h, &g, b, .{ .shown = true }, "each of them");
+
+        // Under the mouse it shows; below it, it hides.
+        const as = clientSize(a);
+        h.move(a, @divTrunc(as[0], 2), 4, false);
+        try waitPaneState(h, &g, a, .{ .hover = true }, "the handle shows under the mouse");
+        h.move(a, @divTrunc(as[0], 2), @divTrunc(as[1], 2), false);
+        try waitPaneState(h, &g, a, .{ .hover = false }, "and hides when the mouse moves on");
+
+        // Onto the other pane's bottom half: the first pane goes below it.
+        h.press(a, @divTrunc(as[0], 2), 4);
+        h.move(a, @divTrunc(as[0], 2) + 20, 24, true);
+        h.sync(a);
+        try expectPaneDrag(h, &g, true, 0, "", "past the drag distance, a drag; over its own pane, nothing marked");
+        const bs = clientSize(b);
+        const below = mapPoint(b, a, .{ @divTrunc(bs[0], 2), bs[1] - 20 });
+        h.move(a, below[0], below[1], true);
+        try waitPaneState(h, &g, b, .{ .drop = "down" }, "over the other pane's bottom, its bottom half is marked");
+        try expectPaneDrag(h, &g, true, try surfaceIdOf(h, &g, b), "down", "the drag's target");
+        h.release(a, below[0], below[1]);
+        try waitPaneState(h, &g, b, .{ .drop = "" }, "the mark goes with the release");
+        try expectPaneOrder(h, &g, &.{ b, a }, true, "the pane moved below the other");
+        try expectPaneDrag(h, &g, false, 0, "", "the drag is over");
+        try waitKeyboard(h, win, b, "the keyboard stays with the pane that had it");
+        // The moved pane runs on: clicked, it takes typing. Its terminal
+        // takes its new size 25 ms after the pane does (termio coalesces
+        // resizes), and a click at a column it doesn't have yet trips the
+        // core's Debug assertion.
+        w.Sleep(200);
+        const am = clientSize(a);
+        h.click(a, @divTrunc(am[0], 2), @divTrunc(am[1], 2), .left);
+        try waitKeyboard(h, win, a, "a click gives the moved pane the keyboard");
+        try h.typeText(a, "echo moved-pane");
+        h.enter(a);
+        try h.waitText(&g, "moved-pane", 2, 10000);
+
+        // Escape cancels: the mark goes, later moves mark nothing, and the
+        // release (which the terminal never sees) moves nothing.
+        const bs2 = clientSize(b);
+        h.press(b, @divTrunc(bs2[0], 2), 4);
+        h.move(b, @divTrunc(bs2[0], 2) + 20, 24, true);
+        const as2 = clientSize(a);
+        const low = mapPoint(a, b, .{ @divTrunc(as2[0], 2), as2[1] - 10 });
+        h.move(b, low[0], low[1], true);
+        try waitPaneState(h, &g, a, .{ .drop = "down" }, "the top pane dragged over the bottom one marks it");
+        const keys = try paneKeys(h, &g, b);
+        h.key(b, .{}, w.VK_ESCAPE);
+        try waitPaneState(h, &g, a, .{ .drop = "" }, "Escape takes the mark away");
+        h.move(b, low[0] + 10, low[1], true);
+        h.sync(b);
+        try waitPaneState(h, &g, a, .{ .drop = "" }, "and a move after it marks nothing");
+        h.release(b, low[0], low[1]);
+        h.sync(b);
+        try expectPaneDrag(h, &g, false, 0, "", "the release ends the cancelled drag");
+        try expectPaneOrder(h, &g, &.{ b, a }, true, "nothing moved");
+        try h.expect(try paneKeys(h, &g, b) == keys, "Escape's press and release never reached the terminal", .{});
+
+        // Over another tab: it comes forward, and the pane drops into it.
+        h.key(a, .{ .ctrl = true, .shift = true }, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        try waitActiveTab(h, &g, win, 1);
+        const other = try paneHwnd(h, &g, 0);
+        const t0 = try tabMid(h, &g, 0, 0);
+        h.press(win, t0[0], t0[1]);
+        h.release(win, t0[0], t0[1]);
+        try waitActiveTab(h, &g, win, 0);
+        try waitPaneState(h, &g, b, .{ .dimmed = true }, "the pane beside the focused one is dimmed");
+        const as3 = clientSize(a);
+        h.press(a, @divTrunc(as3[0], 2), 4);
+        h.move(a, @divTrunc(as3[0], 2) + 20, 24, true);
+        const t1 = try tabMid(h, &g, 0, 1);
+        const over = mapPoint(win, a, .{ t1[0], t1[1] });
+        h.move(a, over[0], over[1], true);
+        try waitActiveTab(h, &g, win, 1);
+        try expectPaneDrag(h, &g, true, 0, "", "the drag goes on with the tab come forward");
+        try h.expect(captureOf(a) == a, "the dragged pane keeps the mouse, its tab behind", .{});
+        const os = clientSize(other);
+        const right = mapPoint(other, a, .{ os[0] - 20, @divTrunc(os[1], 2) });
+        h.move(a, right[0], right[1], true);
+        try waitPaneState(h, &g, other, .{ .drop = "right" }, "over the other tab's pane, its right half is marked");
+        h.release(a, right[0], right[1]);
+        try expectPaneOrder(h, &g, &.{ other, a }, false, "the pane joined the other tab, on the right");
+        try expectTabPanes(h, &g, 0, &.{ @intFromPtr(b), @intFromPtr(other) }, "its old tab keeps the pane left behind");
+        try waitPaneState(h, &g, b, .{ .dimmed = false }, "left alone, that pane is dimmed no more");
+        try waitPaneState(h, &g, a, .{ .dimmed = true }, "the moved pane is, its new tab's focus elsewhere");
+        try waitPaneState(h, &g, other, .{ .dimmed = false }, "and that focused pane isn't");
+        try waitKeyboard(h, win, other, "the new tab's pane keeps the keyboard");
+        try quit(h, &g, a);
+    }
+    {
+        var g = try start(h, "pane-drag-window", "drag-handle = always\n", ">");
+        defer g.deinit();
+        try h.pinMouse(&g, true);
+        const win = try h.mainWindow(&g);
+        const a = try h.surface(&g, win);
+        try waitPaneState(h, &g, a, .{ .shown = true }, "with drag-handle always, a lone pane has a handle");
+        h.key(a, .{ .ctrl = true, .shift = true }, 'N');
+        try waitWindowCount(h, &g, 2);
+        const win2 = try windowOf(h, &g, 1);
+        const moved = hwndOf((try tabPanes(h, &g, 1)).at(0));
+        // Side by side, so the first window's pane is under the drop.
+        var r1: w.RECT = .{};
+        _ = w.GetWindowRect(win, &r1);
+        _ = w.SetWindowPos(win2, null, r1.right + 40, r1.top, 0, 0, w.SWP_NOSIZE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+        h.sync(win2);
+        const ms = clientSize(moved);
+        h.press(moved, @divTrunc(ms[0], 2), 4);
+        h.move(moved, @divTrunc(ms[0], 2) + 20, 24, true);
+        const as = clientSize(a);
+        const left = mapPoint(a, moved, .{ 20, @divTrunc(as[1], 2) });
+        h.move(moved, left[0], left[1], true);
+        try waitPaneState(h, &g, a, .{ .drop = "left" }, "over the other window's pane, its left half is marked");
+        h.release(moved, left[0], left[1]);
+        try waitWindowGone(h, &g, win2);
+        try expectPaneOrder(h, &g, &.{ moved, a }, false, "the pane moved into the first window, on the left");
+        w.Sleep(200);
+        const mm = clientSize(moved);
+        h.click(moved, @divTrunc(mm[0], 2), @divTrunc(mm[1], 2), .left);
+        try waitKeyboard(h, win, moved, "a click gives the moved pane the keyboard");
+        try h.typeText(moved, "echo moved-window");
+        h.enter(moved);
+        try h.waitText(&g, "moved-window", 2, 10000);
+        try quit(h, &g, a);
+    }
+    {
+        // Windows closing mid-drag (1.10's review): the target's leaves the
+        // drag over nothing; the source's, here its second tab, ends it.
+        // The window frees its tabs one by one, and the drag once looked
+        // panes up in the freed ones.
+        var g = try start(h, "pane-drag-close", "drag-handle = always\nconfirm-close-surface = false\n", ">");
+        defer g.deinit();
+        try h.pinMouse(&g, true);
+        const win = try h.mainWindow(&g);
+        const a = try h.surface(&g, win);
+        const target = try sideWindow(h, &g, win, a);
+        const as = clientSize(a);
+        h.press(a, @divTrunc(as[0], 2), 4);
+        h.move(a, @divTrunc(as[0], 2) + 20, 24, true);
+        const ts = clientSize(target.pane);
+        const over = mapPoint(target.pane, a, .{ 20, @divTrunc(ts[1], 2) });
+        h.move(a, over[0], over[1], true);
+        try waitPaneState(h, &g, target.pane, .{ .drop = "left" }, "dragged over the other window's pane");
+        _ = w.PostMessageW(target.window, w.WM_CLOSE, 0, 0);
+        try waitWindowCount(h, &g, 1);
+        try expectPaneDrag(h, &g, true, 0, "", "its window closed, the drag goes on over nothing");
+        h.release(a, over[0], over[1]);
+        try expectPaneDrag(h, &g, false, 0, "", "and the release ends it");
+
+        const source = try sideWindow(h, &g, win, a);
+        h.key(source.pane, .{ .ctrl = true, .shift = true }, 'T');
+        try waitWindowTabs(h, &g, source.window, 2);
+        const second = hwndOf((try tabPanes(h, &g, 1)).at(1));
+        const ss = clientSize(second);
+        h.press(second, @divTrunc(ss[0], 2), 4);
+        h.move(second, @divTrunc(ss[0], 2) + 20, 24, true);
+        const onto = mapPoint(a, second, .{ 20, @divTrunc(as[1], 2) });
+        h.move(second, onto[0], onto[1], true);
+        try waitPaneState(h, &g, a, .{ .drop = "left" }, "the second window's second tab's pane dragged over the first window's");
+        _ = w.PostMessageW(source.window, w.WM_CLOSE, 0, 0);
+        try waitWindowCount(h, &g, 1);
+        try expectPaneDrag(h, &g, false, 0, "", "its window closed, the drag is over");
+        try waitPaneState(h, &g, a, .{ .drop = "" }, "and its mark gone");
+        h.key(a, .{ .ctrl = true, .shift = true }, 'Q');
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "exits with code 0 after quit (got {?d})", .{code});
+    }
+}
+
+/// A new window (Ctrl+Shift+N from `from`) moved to the right of `win`, so
+/// neither covers the other, and its pane.
+fn sideWindow(h: *Harness, g: *Harness.Ghostty, win: w.HWND, from: w.HWND) !struct { window: w.HWND, pane: w.HWND } {
+    h.key(from, .{ .ctrl = true, .shift = true }, 'N');
+    try waitWindowCount(h, g, 2);
+    const window = try windowOf(h, g, 1);
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(win, &r);
+    _ = w.SetWindowPos(window, null, r.right + 40, r.top, 0, 0, w.SWP_NOSIZE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+    h.sync(window);
+    return .{ .window = window, .pane = hwndOf((try tabPanes(h, g, 1)).at(0)) };
+}
+
+/// The key events `pane` has passed to its terminal.
+fn paneKeys(h: *Harness, g: *Harness.Ghostty, pane: w.HWND) !u32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const p = findPane(d.value, pane) orelse return h.fail("no such pane", .{});
+    return p.keys orelse 0;
+}
+
+const PaneWant = struct { shown: ?bool = null, hover: ?bool = null, drop: ?[]const u8 = null, dimmed: ?bool = null };
+
+fn findPane(d: Harness.Dump, pane: w.HWND) ?Harness.Dump.Pane {
+    for (d.windows) |win| for (win.tabs) |t| if (t.panes) |ps| for (ps) |p| {
+        if (hwndOf(p.hwnd) == pane) return p;
+    };
+    return null;
+}
+
+/// Wait until `pane`'s drag handle and drop mark are as `want` says.
+fn waitPaneState(h: *Harness, g: *Harness.Ghostty, pane: w.HWND, want: PaneWant, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const p = findPane(d.value, pane) orelse return h.fail(what ++ ": no such pane", .{});
+        const ok = (want.shown == null or want.shown.? == p.handle.shown) and
+            (want.hover == null or want.hover.? == p.handle.hover) and
+            (want.drop == null or std.mem.eql(u8, want.drop.?, p.drop)) and
+            (want.dimmed == null or want.dimmed.? == p.dimmed);
+        if (ok) return h.expect(true, what, .{});
+        if (waited >= 3000) return h.fail(what ++ ": handle shown {}, hover {}, drop \"{s}\", dimmed {}", .{ p.handle.shown, p.handle.hover, p.drop, p.dimmed });
+        w.Sleep(100);
+    }
+}
+
+/// Wait until a pane's drag is `active` (or not), with `target` (a surface
+/// id, 0 for none) and `dir` while it is.
+fn expectPaneDrag(h: *Harness, g: *Harness.Ghostty, active: bool, target: u64, dir: []const u8, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const pd = d.value.pane_drag;
+        const ok = pd.active == active and (!active or (pd.dragging and pd.target == target and std.mem.eql(u8, pd.dir, dir)));
+        if (ok) return h.expect(true, what, .{});
+        if (waited >= 3000) return h.fail(what ++ ": active {}, dragging {}, target {d}, dir \"{s}\"", .{ pd.active, pd.dragging, pd.target, pd.dir });
+        w.Sleep(100);
+    }
+}
+
+/// Wait until the first window's active tab has the panes `want`, in
+/// layout order, side by side (or one above the other when `vertical`).
+fn expectPaneOrder(h: *Harness, g: *Harness.Ghostty, want: []const w.HWND, vertical: bool, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const dw = d.value.windows[0];
+        const ps = dw.tabs[dw.active].panes orelse &.{};
+        const same = ps.len == want.len and for (ps, want) |p, v| {
+            if (hwndOf(p.hwnd) != v) break false;
+        } else true;
+        const placed = same and for (ps[1..], ps[0 .. ps.len - 1]) |p, prev| {
+            if (if (vertical) p.rect[1] < prev.rect[3] else p.rect[0] < prev.rect[2]) break false;
+        } else true;
+        if (placed) return h.expect(true, what, .{});
+        if (waited >= 3000) {
+            var got: [8]u64 = undefined;
+            const n = @min(ps.len, got.len);
+            for (ps[0..n], 0..) |p, i| got[i] = p.hwnd;
+            return h.fail(what ++ ": the tab's panes are {any} (in order: {}), not {any}", .{ got[0..n], same, want });
+        }
+        w.Sleep(100);
+    }
+}
+
+fn surfaceIdOf(h: *Harness, g: *Harness.Ghostty, pane: w.HWND) !u64 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const p = findPane(d.value, pane) orelse return h.fail("no such pane", .{});
+    return p.surface_id;
+}
+
+fn clientSize(hwnd: w.HWND) [2]i32 {
+    var r: w.RECT = .{};
+    _ = w.GetClientRect(hwnd, &r);
+    return .{ r.right, r.bottom };
+}
+
+/// The window holding the mouse in `hwnd`'s thread.
+fn captureOf(hwnd: w.HWND) ?w.HWND {
+    var info: w.GUITHREADINFO = .{};
+    if (w.GetGUIThreadInfo(w.GetWindowThreadProcessId(hwnd, null), &info) == 0) return null;
+    return info.hwndCapture;
 }
 
 /// Window options macOS has and GTK lacks (roadmap 4.6): window-position-x
