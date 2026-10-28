@@ -2470,8 +2470,10 @@ Ghostty terminals (Windows has no primary selection).
   since a crash gives no exit hook; `RegisterApplicationRestart` only
   relaunches the process.
 - The owner built session restore on a Linux Ghostty fork of their own
-  (noted 2026-10-27): read it first and follow its design (what is saved,
-  the state format, the restore policy) where Windows allows.
+  (noted 2026-10-27). That fork is internal to their employer and can't be
+  read or copied: before starting, ask the owner to describe its design
+  (what is saved, the state format, the restore policy) and follow it
+  where Windows allows.
 
 **5.11 Undo and redo of closes, L.** Keep closed panes, tabs and windows
 parked (hidden, process running) until `undo-timeout`. Undo and redo enter
