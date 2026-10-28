@@ -392,7 +392,10 @@ DirectWrite fonts, keyboard layouts and IMEs, OpenGL fallbacks).
 
 - Windows 10 version 1809 or newer, or Windows 11, on x64. Windows 11 on ARM64
   should run the x64 build under emulation, but this has not been tested.
-  Windows 10 on ARM cannot run x64 programs.
+  Windows 10 on ARM cannot run x64 programs. A native ARM64 build
+  (`-Target aarch64-windows-gnu`, also with `-Package`) builds, but has not
+  been run: it needs OpenGL 4.3, which on ARM64 GPUs comes from Microsoft's
+  OpenGL compatibility pack.
 - A GPU driver with OpenGL 4.3 support. Most GPUs from the last decade have
   it; virtual machines and Remote Desktop sessions often don't. Without it
   murrtty says at start what is missing (no graphics driver, Windows' basic

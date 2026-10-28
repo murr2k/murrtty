@@ -3266,7 +3266,18 @@ which it links to; until then the domain gets only its baseline: no mail
 only.
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
-decided by S6 and 6.3.
+decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build
+-Dtarget=aarch64-windows-gnu` builds and links (five casts of
+`GetProcAddress` results needed `@alignCast`: a function pointer's
+alignment is 4 on ARM64, `*const anyopaque`'s 1), an ARM64 PE that imports
+only Windows' own DLLs, Sentry included. `build-windows.cmd -Package
+-Target aarch64-windows-gnu` makes its zip (18.2 MB) and symbols zip; on a
+machine that can't run the package (ARM64 on x64) the self-check checks
+its entries and says it couldn't start it. Not run: there is no ARM64
+machine here. Running it, S6's questions (what Microsoft's OpenGL
+compatibility pack gives on Snapdragon X: 4.3 core, fragment SSBOs, sRGB
+framebuffers) and the suites on GitHub's Windows ARM runners (7.2, once
+the repository is public) are still to come.
 
 **7.8 Direct3D 11 renderer, XL, future.** A `d3d11` renderer backend with
 HLSL ports of the shaders, WARP for GPU-less machines, and native

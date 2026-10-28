@@ -428,7 +428,7 @@ pub fn monitorDpi(monitor: c.HMONITOR, fallback: c.UINT) c.UINT {
     const shcore = c.LoadLibraryW(c.L("shcore.dll")) orelse return fallback;
     defer _ = c.FreeLibrary(shcore);
     const p = c.GetProcAddress(shcore, "GetDpiForMonitor") orelse return fallback;
-    const getDpi: *const fn (c.HMONITOR, c_int, *c.UINT, *c.UINT) callconv(.winapi) c.HRESULT = @ptrCast(p);
+    const getDpi: *const fn (c.HMONITOR, c_int, *c.UINT, *c.UINT) callconv(.winapi) c.HRESULT = @ptrCast(@alignCast(p));
     var x: c.UINT = 0;
     var y: c.UINT = 0;
     // MDT_EFFECTIVE_DPI.

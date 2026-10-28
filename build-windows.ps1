@@ -637,19 +637,27 @@ function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
         $read.Dispose()
     }
     if ($bad.Count -gt 0) { Fail "The zip has entries outside $name/ or with backslashes: $($bad[0].FullName)" }
-    $check = Join-Path $Work 'check'
-    [IO.Compression.ZipFile]::ExtractToDirectory("$zip.partial", $check)
-    $packed = Join-Path $check "$name\bin\murrtty.exe"
-    $v = Invoke-Packaged $packed @('+version') (Join-Path $Work 'home')
-    if ($v.Code -ne 0 -or -not ($v.Lines -match [regex]::Escape($version))) {
-        Fail "The packaged murrtty.exe +version exited $($v.Code) without naming $version."
+    # A package for another architecture than this machine runs (ARM64 on
+    # an x64 PC) can't be started here: its entries are checked, not it.
+    $targetArch = $Target.Split('-')[0]
+    $canRun = ($targetArch -eq $zigHost) -or ($zigHost -eq 'aarch64' -and $targetArch -eq 'x86_64' -and $osBuild -ge 22000)
+    if ($canRun) {
+        $check = Join-Path $Work 'check'
+        [IO.Compression.ZipFile]::ExtractToDirectory("$zip.partial", $check)
+        $packed = Join-Path $check "$name\bin\murrtty.exe"
+        $v = Invoke-Packaged $packed @('+version') (Join-Path $Work 'home')
+        if ($v.Code -ne 0 -or -not ($v.Lines -match [regex]::Escape($version))) {
+            Fail "The packaged murrtty.exe +version exited $($v.Code) without naming $version."
+        }
+        $themes = Invoke-Packaged $packed @('+list-themes', '--plain') (Join-Path $Work 'home')
+        $found = @($themes.Lines | Where-Object { $_ -like '*(resources)' }).Count
+        if ($themes.Code -ne 0 -or $found -lt 100) {
+            Fail "The packaged murrtty.exe found $found themes in its share folder (exit $($themes.Code)); its resources are not where it looks."
+        }
+        Write-Host "    the unpacked murrtty reports $version and finds $found themes"
+    } else {
+        Write-Note "This $targetArch package can't run on this $zigHost machine: its entries were checked, but not the unpacked murrtty."
     }
-    $themes = Invoke-Packaged $packed @('+list-themes', '--plain') (Join-Path $Work 'home')
-    $found = @($themes.Lines | Where-Object { $_ -like '*(resources)' }).Count
-    if ($themes.Code -ne 0 -or $found -lt 100) {
-        Fail "The packaged murrtty.exe found $found themes in its share folder (exit $($themes.Code)); its resources are not where it looks."
-    }
-    Write-Host "    the unpacked murrtty reports $version and finds $found themes"
 
     Move-Item -LiteralPath "$zip.partial" -Destination $zip
     Move-Item -LiteralPath "$symZip.partial" -Destination $symZip

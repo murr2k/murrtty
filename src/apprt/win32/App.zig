@@ -516,7 +516,7 @@ pub fn accentFn() ?c.SetWindowCompositionAttributeFn {
     if (!S.resolved) {
         S.resolved = true;
         if (c.GetModuleHandleW(c.L("user32.dll"))) |lib| {
-            if (c.GetProcAddress(lib, "SetWindowCompositionAttribute")) |p| S.func = @ptrCast(p);
+            if (c.GetProcAddress(lib, "SetWindowCompositionAttribute")) |p| S.func = @ptrCast(@alignCast(p));
         }
         if (S.func == null) log.warn("SetWindowCompositionAttribute unavailable, no blur before Windows 11 22H2", .{});
     }
@@ -1139,7 +1139,7 @@ fn resolveTaskDialog() ?c.TaskDialogIndirectFn {
         // The activation context from the exe's manifest makes this load
         // version 6.
         if (c.LoadLibraryW(c.L("comctl32.dll"))) |lib| {
-            if (c.GetProcAddress(lib, "TaskDialogIndirect")) |p| S.func = @ptrCast(p);
+            if (c.GetProcAddress(lib, "TaskDialogIndirect")) |p| S.func = @ptrCast(@alignCast(p));
         }
         if (S.func == null) log.warn("TaskDialogIndirect unavailable (comctl32 v6 not loaded)", .{});
     }
@@ -2497,11 +2497,11 @@ pub fn chromeTheme(self: *const App) draw.Theme {
 fn syncMenuTheme(self: *const App) void {
     const uxtheme = c.LoadLibraryW(c.L("uxtheme.dll")) orelse return;
     if (c.GetProcAddress(uxtheme, @ptrFromInt(135))) |p| {
-        const setMode: *const fn (c_int) callconv(.winapi) c_int = @ptrCast(p);
+        const setMode: *const fn (c_int) callconv(.winapi) c_int = @ptrCast(@alignCast(p));
         _ = setMode(if (self.chromeTheme().dark) 2 else 3);
     }
     if (c.GetProcAddress(uxtheme, @ptrFromInt(136))) |p| {
-        const flush: *const fn () callconv(.winapi) void = @ptrCast(p);
+        const flush: *const fn () callconv(.winapi) void = @ptrCast(@alignCast(p));
         flush();
     }
 }
