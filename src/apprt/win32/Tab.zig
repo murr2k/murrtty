@@ -475,7 +475,26 @@ pub fn movePane(self: *Tab, source: *Surface, target: *Surface, dir: Tree.Split.
 /// it, becomes focused. Returns whether the focused pane changed.
 pub fn closePane(self: *Tab, surface: *Surface) !bool {
     const alloc = self.window.app.core_app.alloc;
-    const handle = self.tree.locate(surface) orelse return false;
+    if (self.tree.locate(surface) == null) return false;
+    const refocus = try self.detach(surface);
+
+    // Its renderer stops before its window goes. Destroying a window with
+    // the focus moves it to the container, which hands it to the tab's
+    // focused pane.
+    const hwnd = surface.hwnd;
+    surface.deinit();
+    alloc.destroy(surface);
+    _ = c.DestroyWindow(hwnd);
+    self.layoutPanes();
+    return refocus;
+}
+
+/// Take pane `surface` (never the last) out of the tree, its window left
+/// as it is; the focus moves on, as a close would, if it was the focused
+/// one (then true). The caller lays the tab out.
+pub fn detach(self: *Tab, surface: *Surface) !bool {
+    const alloc = self.window.app.core_app.alloc;
+    const handle = self.tree.locate(surface) orelse return error.PaneNotFound;
     const refocus = self.focused == surface;
     const focus = if (refocus)
         (try Layout.focusAfterClose(alloc, &self.tree, handle)) orelse return error.LastPane
@@ -490,15 +509,73 @@ pub fn closePane(self: *Tab, surface: *Surface) !bool {
     if (!self.tree.isSplit()) self.tree.zoomed = null;
     self.focused = focus;
     self.generation +%= 1;
-
-    // Its renderer stops before its window goes. Destroying a window with
-    // the focus moves it to the container, which hands it to `focus`.
-    const hwnd = surface.hwnd;
-    surface.deinit();
-    alloc.destroy(surface);
-    _ = c.DestroyWindow(hwnd);
-    self.layoutPanes();
     return refocus;
+}
+
+/// A tab in `window` with no pane yet, hidden, for a pane put in with
+/// `hold` (the shelf's, roadmap 5.11).
+pub fn createEmpty(window: *Window) !*Tab {
+    const app = window.app;
+    const alloc = app.core_app.alloc;
+    const self = try alloc.create(Tab);
+    errdefer alloc.destroy(self);
+    self.* = .{ .window = window, .hwnd = undefined, .focused = undefined, .visible = false };
+    self.hwnd = c.CreateWindowExW(
+        0,
+        class_name,
+        c.L(""),
+        c.WS_CHILD | c.WS_CLIPSIBLINGS | c.WS_CLIPCHILDREN,
+        0,
+        0,
+        1,
+        1,
+        window.hwnd,
+        null,
+        app.instance,
+        self,
+    ) orelse return error.CreateWindowFailed;
+    return self;
+}
+
+/// Put `surface`, out of its own tab, in this empty one as `tree` (it
+/// alone), at its size: laid out smaller, its terminal would reflow.
+pub fn hold(self: *Tab, surface: *Surface, tree: Tree) void {
+    var r: c.RECT = .{};
+    _ = c.GetClientRect(surface.hwnd, &r);
+    _ = c.SetWindowPos(self.hwnd, null, 0, 0, r.right, r.bottom, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+    _ = c.SetParent(surface.hwnd, self.hwnd);
+    surface.window = self.window;
+    self.tree = tree;
+    self.focused = surface;
+    self.syncPaneVisibility();
+}
+
+/// Make `tree`, this tab's panes and `surface` from elsewhere (the shelf),
+/// the tab's: a closed pane back where it was (roadmap 5.11). Takes `tree`.
+pub fn takeTree(self: *Tab, surface: *Surface, tree: Tree) void {
+    _ = c.SetParent(surface.hwnd, self.hwnd);
+    if (surface.window != self.window) {
+        surface.window = self.window;
+        surface.dpiChanged();
+        surface.setTranslucent(self.window.translucent);
+    }
+    self.tree.deinit();
+    self.tree = tree;
+    self.tree.zoomed = null;
+    self.generation +%= 1;
+    self.layoutPanes();
+    self.syncPaneVisibility();
+    self.window.tabChanged(self);
+}
+
+/// Put `surface` from elsewhere (the shelf) `dir` of pane `next_to`.
+pub fn insertPane(self: *Tab, surface: *Surface, next_to: *Surface, dir: Tree.Split.Direction) !void {
+    const alloc = self.window.app.core_app.alloc;
+    const handle = self.tree.locate(next_to) orelse return error.PaneNotFound;
+    var single = try Tree.init(alloc, surface);
+    defer single.deinit();
+    const after = try self.tree.split(alloc, handle, dir, 0.5, &single);
+    self.takeTree(surface, after);
 }
 
 /// Lay out the panes' windows in the container, all in one step, and

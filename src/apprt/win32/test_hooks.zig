@@ -651,6 +651,12 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     // murrtty's selection clipboard (roadmap 5.9).
     try out.appendSlice(alloc, ",\"selection\":");
     try writeString(alloc, out, app.selection orelse "");
+    // Undo's history (roadmap 5.11), oldest first, and the tabs parked.
+    try out.appendSlice(alloc, ",\"undo\":{\"undo\":[");
+    for (app.undo.entries(.undo), 0..) |e, i| try out.print(alloc, "{s}\"{s}\"", .{ if (i > 0) "," else "", @tagName(e.name) });
+    try out.appendSlice(alloc, "],\"redo\":[");
+    for (app.undo.entries(.redo), 0..) |e, i| try out.print(alloc, "{s}\"{s}\"", .{ if (i > 0) "," else "", @tagName(e.name) });
+    try out.print(alloc, "],\"parked\":{d}}}", .{app.undo.parkedCount()});
     // A pane's drag (roadmap 1.10): its pane, the one under the pointer and
     // the side it would take.
     if (app.pane_drag) |d| {

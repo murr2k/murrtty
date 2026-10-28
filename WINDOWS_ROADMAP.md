@@ -272,6 +272,12 @@ roadmap item behind it.
   murrtty in front it hides every window, otherwise it brings murrtty
   forward with the windows it hid, as they were; only while a global
   binding or the tray (5.6) can bring them back. GTK doesn't implement it.
+- **Undo of closes** (5.11): `undo` and `redo` bring back a closed pane,
+  tab or window, its programs still running, within `undo-timeout`, and
+  close it again, as macOS's; GTK has no undo. Only closes (macOS also
+  undoes new windows, tabs and splits, and pane moves), and no default
+  keys (macOS's Cmd+Z; Ctrl+Z is the terminal's here). A close caused by
+  its program ending isn't kept, where macOS keeps it.
 - **Selection clipboard** (5.9): murrtty's own, shared by the terminals
   of one murrtty only (Windows has no primary selection); GTK's is the
   desktop's primary selection, shared with every program.
@@ -2644,6 +2650,30 @@ the buffer, the untouched system clipboard, and both pastes.
 parked (hidden, process running) until `undo-timeout`. Undo and redo enter
 the request queue. This is macOS-only upstream and needs care with the close
 invariant.
+
+*Built 2026-10-28 (`win32/Undo.zig`):* macOS's model: one app-wide
+history (its `AppDelegate.undoManager`), each entry holding what a close
+took away with its processes running, for `undo-timeout` (5 s by
+default). A closed pane, tab or window is parked in the shelf, a window
+never shown and not among `App.windows`, as tabs of its own (a pane in a
+tab of its own, sized as it was so its terminal doesn't reflow, its
+renderer paused as a hidden tab's is). Undo brings back the latest: a
+pane into its tab as the tab's tree had it if the tab still holds just the
+others (else beside its focused pane, or a tab of its own when the tab is
+gone), a tab at its place in its window (or a new window), a window where
+it was with its tabs, maximized if it was; redo closes it again at once,
+as macOS's. close_tab:other and :right and close_all_windows are one
+entry each. A close caused by its program ending isn't kept, and a parked
+pane whose program ends is dropped. Parked panes get no window actions:
+bells, notifications and command notices from their programs go nowhere,
+clipboard requests are denied without a dialog, and an `all:` binding
+passes them by. Quitting with the last window
+(`quit-after-last-window-closed`) drops the history first, so the core's
+quit timer runs as before. `undo` and `redo` have no default binding on
+Windows (Ctrl+Z is the terminal's); the palette lists them. The `undo`
+scenario checks a pane back in place and running, redo, a tab, closed tabs
+together, a window where it was, a pane whose program ended, a parked
+pane's program ending, expiry, and quitting with the last window.
 
 **5.12 Terminal inspector, L.**
 - An inspector window with its own WGL context and the Dear ImGui OpenGL 3

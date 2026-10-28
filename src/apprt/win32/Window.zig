@@ -142,6 +142,9 @@ menu_modal: ?App.Modal = null,
 /// topmost, no taskbar button or header bar, placed by its config and
 /// never resized otherwise.
 quick: ?QuickTerminal = null,
+/// The shelf (roadmap 5.11): never shown, not among App.windows; its tabs
+/// are the panes, tabs and windows closed but kept for undo.
+shelf: bool = false,
 
 const TabDrag = struct {
     /// The tab pressed, found again on each move: tabs can close or move
@@ -336,14 +339,14 @@ fn stepResize(self: *Window, rect: *c.RECT, edge: c.WPARAM) void {
 
 /// A new window, not yet shown, with no tab: for create to add one to, or
 /// for a tab moved out of another window (tearOff); or the quick terminal.
-fn createEmpty(app: *App, kind: enum { normal, quick }) !*Window {
+fn createEmpty(app: *App, kind: enum { normal, quick, shelf }) !*Window {
     const alloc = app.core_app.alloc;
     const self = try alloc.create(Window);
     errdefer alloc.destroy(self);
-    self.* = .{ .app = app, .hwnd = undefined, .id = app.next_window_id };
+    self.* = .{ .app = app, .hwnd = undefined, .id = app.next_window_id, .shelf = kind == .shelf };
     app.next_window_id += 1;
     // Closing the last window may now quit (App.checkQuit).
-    app.requested_window = true;
+    if (kind != .shelf) app.requested_window = true;
 
     // The quick terminal: a topmost popup tool window (no frame, no
     // taskbar button), made (hidden) where it shows, so its pane opens at
@@ -356,10 +359,14 @@ fn createEmpty(app: *App, kind: enum { normal, quick }) !*Window {
         at = .{ .left = shown.left, .top = shown.top, .right = shown.right - shown.left, .bottom = shown.bottom - shown.top };
     }
     self.hwnd = c.CreateWindowExW(
-        if (kind == .quick) c.WS_EX_TOOLWINDOW | c.WS_EX_TOPMOST else c.WS_EX_APPWINDOW,
+        switch (kind) {
+            .quick => c.WS_EX_TOOLWINDOW | c.WS_EX_TOPMOST,
+            .shelf => c.WS_EX_TOOLWINDOW,
+            .normal => c.WS_EX_APPWINDOW,
+        },
         class_name,
         c.L("murrtty"),
-        if (kind == .quick) c.WS_POPUP | c.WS_CLIPCHILDREN else c.WS_OVERLAPPEDWINDOW | c.WS_CLIPCHILDREN,
+        if (kind == .normal) c.WS_OVERLAPPEDWINDOW | c.WS_CLIPCHILDREN else c.WS_POPUP | c.WS_CLIPCHILDREN,
         at.left,
         at.top,
         at.right,
@@ -405,8 +412,62 @@ fn createEmpty(app: *App, kind: enum { normal, quick }) !*Window {
     // Before the first pane, which takes it up.
     self.syncTranslucent();
 
-    try app.windows.append(alloc, self);
+    if (kind != .shelf) try app.windows.append(alloc, self);
     return self;
+}
+
+/// The shelf (roadmap 5.11): a window never shown, outside App.windows,
+/// whose tabs are the closes kept for undo.
+pub fn createShelf(app: *App) !*Window {
+    return createEmpty(app, .shelf);
+}
+
+/// Keep `tab`, closed for undo, in this shelf: hidden, its panes running.
+/// Room for it is the caller's to make.
+pub fn shelve(self: *Window, tab: *Tab) void {
+    tab.setVisible(false);
+    tab.window = self;
+    var it = tab.panes();
+    while (it.next()) |entry| entry.view.window = self;
+    _ = c.SetParent(tab.hwnd, self.hwnd);
+    self.tabs.appendAssumeCapacity(tab);
+}
+
+/// A window for what undo brings back (roadmap 5.11): `tabs` in order,
+/// `active` selected, where `placement` had the closed one (else where a
+/// new window goes), shown in front, maximized if it was.
+pub fn createRestored(app: *App, placement: ?c.WINDOWPLACEMENT, tabs: []const *Tab, active: usize) !*Window {
+    const self = try createEmpty(app, .normal);
+    errdefer self.discard();
+    try self.tabs.ensureUnusedCapacity(app.core_app.alloc, tabs.len);
+    var show_cmd: c_int = c.SW_SHOWNORMAL;
+    if (placement) |p| {
+        var at = p;
+        const maximized = at.showCmd == c.SW_SHOWMAXIMIZED or
+            (at.showCmd == c.SW_SHOWMINIMIZED and at.flags & c.WPF_RESTORETOMAXIMIZED != 0);
+        if (maximized) show_cmd = c.SW_SHOWMAXIMIZED;
+        at.showCmd = c.SW_HIDE;
+        // Twice: moving to its monitor can change the DPI, whose suggested
+        // rect rescales the window; on that monitor now, the second keeps
+        // the size it had.
+        _ = c.SetWindowPlacement(self.hwnd, &at);
+        _ = c.SetWindowPlacement(self.hwnd, &at);
+    } else self.placeAsConfigured();
+    for (tabs, 0..) |t, i| self.adoptTab(t, i);
+    self.select(@min(active, tabs.len -| 1));
+    app.showWindows();
+    _ = c.ShowWindow(self.hwnd, show_cmd);
+    _ = c.SetForegroundWindow(self.hwnd);
+    self.focusActive();
+    return self;
+}
+
+/// Put back `tab`, closed for undo (roadmap 5.11), at `at`, selected, the
+/// window in front.
+pub fn restoreTab(self: *Window, tab: *Tab, at: usize) !void {
+    try self.tabs.ensureUnusedCapacity(self.app.core_app.alloc, 1);
+    self.adoptTab(tab, at);
+    self.present();
 }
 
 /// Undo createEmpty for a window that got no tab (its first failed).
@@ -481,14 +542,18 @@ pub fn closeSurface(self: *Window, surface: *Surface, confirm: bool) void {
 
     const index = self.tabIndexOf(surface) orelse return;
     const tab = self.tabs.items[index];
+    // Kept for undo (roadmap 5.11), unless its program ended: nothing would
+    // come back.
+    const park = self.app.undo.enabled() and !surface.programEnded();
     if (!tab.tree.isSplit()) {
-        _ = self.removeTab(index);
+        _ = self.removeTab(index, park);
         return;
     }
 
     // Closing a background pane leaves the focus alone; the focused pane's
     // passes to its neighbor.
-    const refocus = tab.closePane(surface) catch |err| {
+    const parked: ?bool = if (park) self.app.undo.parkPane(tab, surface) else null;
+    const refocus = if (parked) |r| r else tab.closePane(surface) catch |err| {
         log.err("error closing pane err={}", .{err});
         return;
     };
@@ -628,40 +693,63 @@ pub fn invalidateTabBar(self: *Window) void {
 /// action, confirming first if a process is running in any of them.
 pub fn closeTabs(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMode) void {
     const index = self.tabIndexOf(surface) orelse return;
+    var count: usize = 0;
+    var confirm = false;
+    for (self.tabs.items, 0..) |t, i| if (closesTab(mode, i, index)) {
+        count += 1;
+        confirm = confirm or self.tabNeedsConfirm(t);
+    };
+    if (count == 0) return;
+    // One question for them all (GTK asks for each tab in turn).
+    if (confirm and !self.app.confirmClose(self.hwnd, if (count > 1) .tabs else .tab)) return;
+    self.closeTabsNow(surface, mode);
+}
+
+fn closesTab(mode: apprt.action.CloseTabMode, i: usize, index: usize) bool {
+    return switch (mode) {
+        .this => i == index,
+        .other => i != index,
+        .right => i > index,
+    };
+}
+
+/// close_tab without asking (closeTabs asked; redo's, roadmap 5.11): kept
+/// for undo as one close.
+pub fn closeTabsNow(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMode) void {
+    const index = self.tabIndexOf(surface) orelse return;
     const alloc = self.app.core_app.alloc;
     var targets: std.ArrayList(*Tab) = .empty;
     defer targets.deinit(alloc);
-    for (self.tabs.items, 0..) |t, i| {
-        const close = switch (mode) {
-            .this => i == index,
-            .other => i != index,
-            .right => i > index,
-        };
-        if (close) targets.append(alloc, t) catch return;
-    }
+    for (self.tabs.items, 0..) |t, i| if (closesTab(mode, i, index)) {
+        targets.append(alloc, t) catch return;
+    };
     if (targets.items.len == 0) return;
 
-    var confirm = false;
-    for (targets.items) |t| confirm = confirm or self.tabNeedsConfirm(t);
-    // One question for them all (GTK asks for each tab in turn).
-    if (confirm and !self.app.confirmClose(self.hwnd, if (targets.items.len > 1) .tabs else .tab)) return;
-
+    // The app's, which outlives a window the last of them closes.
+    const undo = &self.app.undo;
+    undo.begin(if (targets.items.len > 1) .close_tabs else .close_tab);
+    defer undo.end();
+    const park = undo.enabled();
     for (targets.items) |t| {
         const i = std.mem.indexOfScalar(*Tab, self.tabs.items, t) orelse continue;
-        if (self.removeTab(i) == .window_destroyed) return;
+        if (self.removeTab(i, park) == .window_destroyed) return;
     }
 }
 
-/// Remove tab `index` and free its panes. Removing the last tab destroys
-/// the window, which frees `self`: callers must return at once.
-fn removeTab(self: *Window, index: usize) enum { removed, window_destroyed } {
+/// Remove tab `index`: kept for undo if `park` (roadmap 5.11), else freed
+/// with its panes. Removing the last tab closes the window, which frees
+/// `self`: callers must return at once.
+fn removeTab(self: *Window, index: usize, park: bool) enum { removed, window_destroyed } {
     if (self.tabs.items.len == 1) {
+        if (park) self.app.undo.parkWindow(self);
         self.destroy();
         return .window_destroyed;
     }
 
-    const tab = self.tabs.orderedRemove(index);
-    tab.destroy(true);
+    if (!(park and self.app.undo.parkTab(self, index))) {
+        const tab = self.tabs.orderedRemove(index);
+        tab.destroy(true);
+    }
 
     if (self.active > index or self.active >= self.tabs.items.len) {
         self.active -|= 1;
@@ -1047,7 +1135,7 @@ fn onDestroy(self: *Window) void {
         _ = c.DestroyIcon(i);
     };
 
-    self.app.windowDestroyed(self);
+    if (!self.shelf) self.app.windowDestroyed(self);
     alloc.destroy(self);
 }
 
@@ -1058,6 +1146,13 @@ pub fn requestClose(self: *Window) void {
     var it = self.panes();
     while (it.next()) |s| confirm = confirm or self.needsConfirm(s);
     if (confirm and !self.app.confirmClose(self.hwnd, .window)) return;
+    self.closeNow();
+}
+
+/// Close the window without asking (requestClose asked; redo's), kept for
+/// undo (roadmap 5.11).
+pub fn closeNow(self: *Window) void {
+    if (self.app.undo.enabled()) self.app.undo.parkWindow(self);
     self.destroy();
 }
 
@@ -2133,6 +2228,15 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
     }
 
     const self = fromHwnd(hwnd) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+    // The shelf (roadmap 5.11), never shown, only goes: what a top-level
+    // window does on a DPI or size change (laying its tabs out at its own
+    // size), a settings change (app-wide work again) or the taskbar's
+    // messages would resize the parked panes or show them.
+    if (self.shelf) {
+        if (msg != c.WM_DESTROY) return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        self.onDestroy();
+        return 0;
+    }
     switch (msg) {
         c.WM_ERASEBKGND => return 1,
 

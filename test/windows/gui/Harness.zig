@@ -1441,6 +1441,9 @@ pub const Dump = struct {
     /// A pane's drag (roadmap 1.10): past the drag distance, the pane
     /// dragged, the pane under the pointer and the side ("" for none).
     pane_drag: struct { active: bool = false, dragging: bool = false, source: u64 = 0, target: u64 = 0, dir: []const u8 = "" } = .{},
+    /// Undo's history (roadmap 5.11): the entries' names, oldest first, and
+    /// how many tabs are parked.
+    undo: struct { undo: []const []const u8 = &.{}, redo: []const []const u8 = &.{}, parked: u32 = 0 } = .{},
 
     /// The quick terminal's state (roadmap 5.7): shown (also while it
     /// slides in), sliding, and the work area and DPI it chose.

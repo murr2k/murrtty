@@ -63,6 +63,7 @@ pub const all = [_]Scenario{
     .{ .name = "window-options", .about = "window-position-x/-y for each window, toggle_window_float_on_top, reset_window_size, window-step-resize", .run = windowOptions },
     .{ .name = "tab-drag-close", .about = "a tab closing while another is dragged: the drag goes on with the tab pressed", .run = tabDragClose },
     .{ .name = "tab-drag", .about = "tabs reorder live as they are dragged, tear off into a new window, move onto another window's bar (an emptied window closes); move_tab_to_new_window", .run = tabDrag },
+    .{ .name = "undo", .about = "undo and redo of closes (macOS's): a pane back where it was, still running, a tab, closed tabs together, a window where it was; not a pane whose program ended; a parked pane's program ending; expiry; quitting with the last window", .run = undoCloses },
     .{ .name = "pane-drag", .about = "panes move by their drag handle onto a half of another pane, in the tab, into a hovered tab, into another window (an emptied window closes); Escape cancels", .run = paneDrag },
     .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
     .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
@@ -5381,6 +5382,185 @@ fn tabDrag(h: *Harness) anyerror!void {
     defer h.alloc.free(wins);
     try h.expect(wins.len == 2, "and does nothing for a window's only tab", .{});
     try quit(h, &g, torn);
+}
+
+const undo_binds = "keybind = ctrl+shift+f11=undo\nkeybind = ctrl+shift+f12=redo\n" ++
+    "keybind = ctrl+shift+f6=close_surface\nkeybind = ctrl+shift+f9=close_window\n" ++
+    "keybind = ctrl+shift+f8=close_tab:other\nkeybind = ctrl+shift+f7=close_all_windows\n" ++
+    "confirm-close-surface = false\n";
+
+/// Undo and redo of closes (roadmap 5.11), macOS's: a closed pane comes
+/// back where it was, the same terminal still running, and redo closes it
+/// again; a closed tab comes back at its place, and the tabs close_tab:other
+/// closed come back together; a closed window comes back where it was.
+/// A pane whose program ended closes for good, and a parked pane whose
+/// program ends is dropped. Entries go after undo-timeout, with their
+/// panes. The last window closing still quits at once, through
+/// close_all_windows or the close of its only tab too (each records its
+/// closes as one entry, still open as the window goes), leaking nothing.
+fn undoCloses(h: *Harness) anyerror!void {
+    const undo_key = w.VK_F11;
+    const redo_key = w.VK_F12;
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    {
+        var g = try start(h, "undo", "undo-timeout = 60s\n" ++ undo_binds, ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const a = try h.surface(&g, win);
+        try splitPane(h, &g, 0, 'O');
+        const b = try paneHwnd(h, &g, 1);
+        try h.typeText(b, "echo undo-marker");
+        h.enter(b);
+        try h.waitText(&g, "undo-marker", 2, 10000);
+
+        // A pane: closed, back where it was, the same terminal, running.
+        h.key(b, cs, w.VK_F6);
+        try waitPanes(h, &g, 1);
+        try expectUndo(h, &g, &.{"close_terminal"}, &.{}, 1, "the closed pane is kept for undo");
+        h.key(a, cs, undo_key);
+        try expectPaneOrder(h, &g, &.{ a, b }, false, "undo brings the pane back on the right, the same window");
+        try expectUndo(h, &g, &.{}, &.{"close_terminal"}, 0, "and redo can close it again");
+        try waitPaneText(h, &g, 1, "undo-marker", 2);
+        w.Sleep(200);
+        const bs = clientSize(b);
+        h.click(b, @divTrunc(bs[0], 2), @divTrunc(bs[1], 2), .left);
+        try waitKeyboard(h, win, b, "the pane back takes a click");
+        try h.typeText(b, "echo still-running");
+        h.enter(b);
+        try h.waitText(&g, "still-running", 2, 10000);
+        h.key(b, cs, redo_key);
+        try waitPanes(h, &g, 1);
+        try expectUndo(h, &g, &.{"close_terminal"}, &.{}, 1, "redo closes it again, for undo once more");
+        h.key(a, cs, undo_key);
+        try expectPaneOrder(h, &g, &.{ a, b }, false, "and undo brings it back again");
+
+        // A tab: back at its place, selected.
+        h.key(a, cs, 'T');
+        try waitWindowTabs(h, &g, win, 2);
+        const c_pane = try paneHwnd(h, &g, 0);
+        h.key(c_pane, cs, 'W');
+        try waitWindowTabs(h, &g, win, 1);
+        try expectUndo(h, &g, &.{"close_tab"}, &.{}, 1, "the closed tab is kept");
+        h.key(a, cs, undo_key);
+        try waitWindowTabs(h, &g, win, 2);
+        try waitActiveTab(h, &g, win, 1);
+        try expectTabPanes(h, &g, 0, &.{ @intFromPtr(a), @intFromPtr(c_pane) }, "undo brings the tab back second, its pane the same");
+
+        // close_tab:other: the tabs come back together, in their places.
+        h.key(c_pane, cs, 'T');
+        try waitWindowTabs(h, &g, win, 3);
+        const d_pane = try paneHwnd(h, &g, 0);
+        h.key(d_pane, cs, w.VK_F8);
+        try waitWindowTabs(h, &g, win, 1);
+        try expectUndo(h, &g, &.{"close_tabs"}, &.{}, 2, "one entry for the tabs close_tab:other closed");
+        h.key(d_pane, cs, undo_key);
+        try waitWindowTabs(h, &g, win, 3);
+        try expectTabPanes(h, &g, 0, &.{ @intFromPtr(a), @intFromPtr(c_pane), @intFromPtr(d_pane) }, "undo brings both back in their places");
+
+        // A window: back where it was, its pane the same.
+        const second = try sideWindow(h, &g, win, d_pane);
+        var before: w.RECT = .{};
+        _ = w.GetWindowRect(second.window, &before);
+        h.key(second.pane, cs, w.VK_F9);
+        try waitWindowCount(h, &g, 1);
+        try expectUndo(h, &g, &.{"close_window"}, &.{}, 1, "the closed window's tab is kept");
+        h.key(d_pane, cs, undo_key);
+        try waitWindowCount(h, &g, 2);
+        const back = try windowOf(h, &g, 1);
+        try h.expect(hwndOf((try tabPanes(h, &g, 1)).at(0)) == second.pane, "undo brings the window back with its pane", .{});
+        var after: w.RECT = .{};
+        _ = w.GetWindowRect(back, &after);
+        try h.expect(std.meta.eql(before, after), "where it was ({d},{d}-{d},{d}, was {d},{d}-{d},{d})", .{
+            after.left, after.top, after.right, after.bottom, before.left, before.top, before.right, before.bottom,
+        });
+
+        // Its program ending closes the window for good.
+        try h.typeText(second.pane, "exit");
+        h.enter(second.pane);
+        try waitWindowCount(h, &g, 1);
+        try expectUndo(h, &g, &.{}, &.{"close_window"}, 0, "a pane whose program ended isn't kept");
+
+        // A parked pane's program ending drops it.
+        try splitPane(h, &g, 0, 'O');
+        const e = try paneHwnd(h, &g, 1);
+        try h.typeText(e, "ping -n 3 127.0.0.1 > nul & exit");
+        h.enter(e);
+        h.key(e, cs, w.VK_F6);
+        try expectUndo(h, &g, &.{"close_terminal"}, &.{}, 1, "a pane closed while its command runs is kept");
+        try expectUndoWithin(h, &g, &.{}, 0, 10000, "and dropped when its program ends");
+
+        // close_all_windows with the last window quits at once, what undo
+        // keeps freed.
+        try splitPane(h, &g, 0, 'O');
+        h.key(try paneHwnd(h, &g, 1), cs, w.VK_F6);
+        try expectUndo(h, &g, &.{"close_terminal"}, &.{}, 1, "a pane kept before quitting");
+        h.key(a, cs, w.VK_F7);
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "close_all_windows quits (exit code {?d})", .{code});
+        try expectNoLeaks(h, &g, "and leaks nothing it kept");
+    }
+    {
+        // Entries go after undo-timeout, and their panes with them.
+        var g = try start(h, "undo-expiry", "undo-timeout = 1s\n" ++ undo_binds, ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const a = try h.surface(&g, win);
+        try splitPane(h, &g, 0, 'O');
+        h.key(try paneHwnd(h, &g, 1), cs, w.VK_F6);
+        try waitPanes(h, &g, 1);
+        try expectUndoWithin(h, &g, &.{}, 0, 5000, "after undo-timeout the close can't be undone, and the pane is freed");
+        h.key(a, cs, undo_key);
+        h.sync(a);
+        w.Sleep(300);
+        try h.expect(try paneCount(h, &g) == 1, "undo then brings nothing back", .{});
+        // Closing the last window's only tab quits, leaking nothing.
+        h.key(a, cs, 'W');
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "closing the only tab quits (exit code {?d})", .{code});
+        try expectNoLeaks(h, &g, "and leaks nothing it kept");
+    }
+}
+
+/// After murrtty exited: its Debug allocator reported no leak in its log.
+fn expectNoLeaks(h: *Harness, g: *Harness.Ghostty, comptime what: []const u8) !void {
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty.log", .{g.dir});
+    defer h.alloc.free(path);
+    const log_text = h.readFileOrNull(path) orelse return h.fail(what ++ ": no log at {s}", .{path});
+    defer h.alloc.free(log_text);
+    try h.expect(std.mem.indexOf(u8, log_text, "leaked") == null, what, .{});
+}
+
+/// Wait until undo's history is `undos` and `redos` (names, oldest first)
+/// with `parked` tabs parked.
+fn expectUndo(h: *Harness, g: *Harness.Ghostty, undos: []const []const u8, redos: []const []const u8, parked: u32, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const u = d.value.undo;
+        if (namesEql(u.undo, undos) and namesEql(u.redo, redos) and u.parked == parked) return h.expect(true, what, .{});
+        if (waited >= 5000) return h.fail(what ++ ": undo {any}, redo {any}, parked {d}", .{ u.undo, u.redo, u.parked });
+        w.Sleep(100);
+    }
+}
+
+/// Wait up to `ms` until the undo history is `undos` with `parked` parked.
+fn expectUndoWithin(h: *Harness, g: *Harness.Ghostty, undos: []const []const u8, parked: u32, ms: u32, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const u = d.value.undo;
+        if (namesEql(u.undo, undos) and u.parked == parked) return h.expect(true, what, .{});
+        if (waited >= ms) return h.fail(what ++ ": undo {any}, parked {d}", .{ u.undo, u.parked });
+        w.Sleep(100);
+    }
+}
+
+fn namesEql(a: []const []const u8, b: []const []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| if (!std.mem.eql(u8, x, y)) return false;
+    return true;
 }
 
 /// Dragging panes (roadmap 1.10), GTK's: with drag-handle auto a lone pane

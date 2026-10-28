@@ -263,6 +263,11 @@ hosted Windows runner and then the unit tests.
   and `initial-window = false` starts it there. A click on its icon brings
   it forward (or opens a window); its menu has New Window, Quick
   Terminal, Config and Quit.
+- Undo and redo of closes, as on macOS: a closed pane, tab or window
+  comes back where it was, its programs still running, within
+  `undo-timeout` (5 seconds by default). They have no default keys (Ctrl+Z
+  belongs to the terminal); bind them, e.g. `keybind = ctrl+shift+z=undo`,
+  or run Undo from the command palette.
 - A selection clipboard of murrtty's own (Windows has no primary
   selection): selecting text copies it there (`copy-on-select = primary`,
   the default, as in Ghostty's GTK app), without touching the system

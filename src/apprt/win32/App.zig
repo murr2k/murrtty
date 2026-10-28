@@ -25,6 +25,7 @@ const ipc = @import("ipc.zig");
 const Notifications = @import("Notifications.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
+const Undo = @import("Undo.zig");
 const taskbar = @import("taskbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -81,6 +82,9 @@ pub const Request = union(enum) {
     ipc: *ipc.Received,
     /// A notification's pane, by core id, once its toast was clicked.
     present_surface: u64,
+    /// Undo or redo a close (roadmap 5.11).
+    undo,
+    redo,
 
     fn deinit(self: Request, alloc: Allocator) void {
         switch (self) {
@@ -223,6 +227,8 @@ notifications: Notifications = undefined,
 
 /// `global:` bindings as hot keys (roadmap 5.5), set up in init.
 global_keys: GlobalKeys = undefined,
+/// Undo and redo of closes (roadmap 5.11), set up in init.
+undo: Undo = undefined,
 /// toggle_visibility hid the windows: the ids of those it hid, and of the
 /// one in front then, to show them as they were.
 windows_hidden: bool = false,
@@ -355,6 +361,7 @@ pub fn init(
     self.syncMenuTheme();
     self.notifications.init(self);
     self.global_keys = .{ .app = self };
+    self.undo = .{ .app = self };
     self.taskbar_button_msg = c.RegisterWindowMessageW(c.L("TaskbarButtonCreated"));
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
@@ -433,6 +440,8 @@ pub fn terminate(self: *App) void {
         _ = c.DestroyWindow(self.windows.items[self.windows.items.len - 1].hwnd);
     }
     self.windows.deinit(self.core_app.alloc);
+    // What undo kept, and the shelf.
+    self.undo.deinit();
     // After the windows, whose teardown can still ask for a refresh.
     self.global_keys.deinit();
     self.hidden_windows.deinit(self.core_app.alloc);
@@ -705,10 +714,11 @@ fn runRequests(self: *App) void {
     while (self.modal_depth == 0 and self.requests.items.len > 0) {
         const req = self.requests.orderedRemove(0);
         switch (req) {
-            .close_surface => |v| if (self.findSurface(v.id)) |s| s.window.closeSurface(s, v.process_active),
+            // Not in a window: parked for undo, its program ended.
+            .close_surface => |v| if (self.findSurface(v.id)) |s| s.window.closeSurface(s, v.process_active) else self.undo.surfaceExited(v.id),
             .close_tabs => |v| if (self.findSurface(v.id)) |s| s.window.closeTabs(s, v.mode),
             .close_window => |id| if (self.findWindow(id)) |w| w.requestClose(),
-            .close_all_windows => if (self.confirmCloseAll(.all_windows)) self.closeAllWindows(),
+            .close_all_windows => if (self.confirmCloseAll(.all_windows)) self.closeAllWindows(true),
             .quit => self.quit(),
             .open_config => {
                 // The shell can show dialogs of its own.
@@ -730,6 +740,8 @@ fn runRequests(self: *App) void {
                 self.runIpc(v.message);
             },
             .present_surface => |id| if (self.findSurface(id)) |s| s.window.presentSurface(s),
+            .undo => self.undo.runUndo(),
+            .redo => self.undo.runRedo(),
         }
     }
 }
@@ -1157,7 +1169,7 @@ pub fn postRaiseModal(self: *App) void {
     _ = c.PostMessageW(self.wakeup_hwnd, WM_RAISE_MODAL, 0, 0);
 }
 
-fn findWindow(self: *App, id: u64) ?*Window {
+pub fn findWindow(self: *App, id: u64) ?*Window {
     for (self.windows.items) |w| {
         if (w.id == id) return w;
     }
@@ -1243,6 +1255,7 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                     self.checkQuit();
                 },
                 GlobalKeys.retry_timer => self.global_keys.retry(),
+                Undo.timer_id => self.undo.tick(),
                 else => {},
             }
             return 0;
@@ -1277,6 +1290,9 @@ pub fn windowDestroyed(self: *App, window: *Window) void {
     }
     self.rescueQuick();
 
+    // Quitting with the last window: what undo keeps goes first, so the
+    // core sees its last surface go (and its quit timer starts).
+    if (self.windows.items.len == 0 and self.config.@"quit-after-last-window-closed") self.undo.clear();
     self.checkQuit();
 }
 
@@ -1453,15 +1469,21 @@ fn confirmCloseAll(self: *App, target: CloseTarget) bool {
 
 fn quit(self: *App) void {
     if (!self.confirmCloseAll(.app)) return;
-    self.closeAllWindows();
+    self.closeAllWindows(false);
     self.quitNow();
 }
 
-fn closeAllWindows(self: *App) void {
+/// Close every window, kept for undo as one close if `park` (roadmap 5.11;
+/// not when quitting).
+fn closeAllWindows(self: *App, park: bool) void {
     self.closing_all = true;
     defer self.closing_all = false;
+    self.undo.begin(.close_all_windows);
+    defer self.undo.end();
     while (self.windows.items.len > 0) {
-        self.windows.items[self.windows.items.len - 1].destroy();
+        const w = self.windows.items[self.windows.items.len - 1];
+        if (park and self.undo.enabled()) self.undo.parkWindow(w);
+        w.destroy();
     }
 }
 
@@ -1793,10 +1815,57 @@ pub fn performAction(
     comptime action: apprt.Action.Key,
     value: apprt.Action.Value(action),
 ) !bool {
+    // A pane parked for undo (roadmap 5.11) has no window to act on or to
+    // show anything in: what its program asks for goes nowhere, and an
+    // `all:` binding (the core's loop visits every pane) passes it by.
+    if (surfaceFromTarget(target)) |s| if (s.parked()) switch (action) {
+        // Handled: open_url's false would have the core open the link
+        // itself (an `all:write_screen_file:open`, say).
+        .ring_bell, .desktop_notification, .command_finished, .open_url => return true,
+        .new_window,
+        .new_tab,
+        .new_split,
+        .close_tab,
+        .close_window,
+        .goto_tab,
+        .goto_split,
+        .goto_window,
+        .move_tab,
+        .move_tab_to_new_window,
+        .resize_split,
+        .equalize_splits,
+        .toggle_split_zoom,
+        .toggle_fullscreen,
+        .toggle_maximize,
+        .toggle_window_decorations,
+        .toggle_background_opacity,
+        .toggle_tab_overview,
+        .toggle_command_palette,
+        .float_window,
+        .present_terminal,
+        .reset_window_size,
+        .prompt_title,
+        .start_search,
+        => return false,
+        else => {},
+    };
+
     switch (action) {
         // Closing runs from the message loop: the core is still using
         // the surface that triggered these (see Request).
         .quit => self.request(.quit),
+
+        // Undo and redo of closes (roadmap 5.11), from the message loop:
+        // what they bring back or close the core may be using now. False
+        // with nothing to do, so a performable binding's key goes on.
+        .undo => {
+            if (!self.undo.canUndo()) return false;
+            self.request(.undo);
+        },
+        .redo => {
+            if (!self.undo.canRedo()) return false;
+            self.request(.redo);
+        },
 
         .new_window => {
             const parent: ?*CoreSurface = switch (target) {
@@ -2349,8 +2418,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         .show_on_screen_keyboard,
         .toggle_secure_input,
         .check_for_updates,
-        .undo,
-        .redo,
         => false,
 
         // Only from a global binding (roadmap 5.5), which can also bring

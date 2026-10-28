@@ -288,6 +288,16 @@ pub fn init(
     self.queueFocus();
 }
 
+/// Closed but kept for undo (roadmap 5.11): its window is the shelf.
+pub fn parked(self: *const Surface) bool {
+    return self.window.shelf;
+}
+
+/// Its program has ended.
+pub fn programEnded(self: *const Surface) bool {
+    return self.core_initialized and self.core_surface.child_exited;
+}
+
 /// The view interface of the tabs' split trees (Tab.Tree). References do
 /// nothing: panes are freed only by the close queue (see Tab.tree).
 pub fn ref(self: *Surface) *Surface {
@@ -1022,6 +1032,8 @@ fn runClipboardConfirms(self: *Surface) void {
 /// A remembered answer holds for this split until the configuration is
 /// reloaded (the core rebuilds its config then), as GTK's does.
 fn askClipboard(self: *Surface, kind: ClipboardDialog.Kind, text: []const u8, can_remember: bool) ClipboardDialog.Answer {
+    // Parked for undo (roadmap 5.11): no window to ask over, so no.
+    if (self.parked()) return .{};
     var modal = self.app.beginModal(self.window.hwnd, .{});
     defer modal.end();
     return ClipboardDialog.ask(self.app.core_app.alloc, self.window.hwnd, kind, text, can_remember, self.app.chromeTheme().dark);
