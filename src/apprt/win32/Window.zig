@@ -315,6 +315,8 @@ fn createEmpty(app: *App) !*Window {
     errdefer alloc.destroy(self);
     self.* = .{ .app = app, .hwnd = undefined, .id = app.next_window_id };
     app.next_window_id += 1;
+    // Closing the last window may now quit (App.checkQuit).
+    app.requested_window = true;
 
     self.hwnd = c.CreateWindowExW(
         c.WS_EX_APPWINDOW,

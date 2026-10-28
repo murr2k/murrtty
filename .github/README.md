@@ -164,7 +164,8 @@ hosted Windows runner and then the unit tests.
   `file://` links that name this computer (as `ls --hyperlink` writes them)
   open like local paths.
 - Resizing, the initial size from `window-width`/`window-height`, closing
-  windows and tabs cleanly, quitting when the last window closes.
+  windows and tabs cleanly, quitting when the last window closes (after
+  `quit-after-last-window-closed-delay`, if set).
 - The resize overlay: a pane shows its grid size ("120 x 34") while it
   resizes (`resize-overlay`, `resize-overlay-position`,
   `resize-overlay-duration`).
@@ -252,7 +253,12 @@ hosted Windows runner and then the unit tests.
   be had (Windows or another program uses it, say) is reported by a
   notification. `toggle_visibility` hides every window while murrtty is
   in front and brings them back otherwise, as on macOS, when a global
-  binding can show them again.
+  binding or the tray can show them again.
+- Running in the background: with `quit-after-last-window-closed = false`
+  murrtty stays in the notification area after its last window closes,
+  and `initial-window = false` starts it there. A click on its icon brings
+  it forward (or opens a window); its menu has New Window, Config and
+  Quit.
 - Progress from programs (OSC 9;4, as `winget` and PowerShell modules
   write it): a thin bar over the terminal as in Ghostty's GTK app (red
   after an error, a moving block while indeterminate), and on the window's
@@ -417,9 +423,7 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   besides the missing features listed above. Among them:
   `window-position-x`/`-y`, `window-save-state`, and the `audio` and
   `border` bell features (`system`, `attention` and
-  `title` work). murrtty always opens a window at startup and
-  always exits when its last window closes, whatever `initial-window` and
-  `quit-after-last-window-closed` say.
+  `title` work).
 - **Shell.** The default is PowerShell 7 (`pwsh.exe -NoLogo`) when it is
   installed, else `cmd.exe` (`%COMSPEC%`); `command` picks another. Shell
   integration is automatic for PowerShell 7, Windows PowerShell and `cmd`

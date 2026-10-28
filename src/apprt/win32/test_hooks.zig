@@ -580,9 +580,16 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try writeString(alloc, out, n.body);
         try out.append(alloc, '}');
     }
-    try out.print(alloc, "],\"notify_icon\":{},\"notify_surface\":{d}", .{
+    try out.print(alloc, "],\"notify_icon\":{},\"notify_pending\":{},\"notify_surface\":{d}", .{
         app.notifications.shown,
+        app.notifications.pending,
         app.notifications.surface orelse 0,
+    });
+    // The tray and what keeps murrtty running (roadmap 5.6).
+    try out.print(alloc, ",\"tray\":{},\"quit_timer\":\"{t}\",\"requested_window\":{}", .{
+        app.notifications.tray,
+        app.quit_timer,
+        app.requested_window,
     });
     // Global bindings' hot keys (roadmap 5.5): each trigger as menus write
     // it, with the MOD_* and virtual key WM_HOTKEY reports it by; whether

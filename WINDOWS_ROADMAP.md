@@ -60,7 +60,10 @@ These change the work. Each has a recommendation.
 4. **Last window closed.** `quit-after-last-window-closed` defaults to false
    off Linux (`Config.zig:2637`). Honoring that without a tray icon would leave
    an invisible process. *Recommended: keep quitting on the last window until
-   the tray (5.6) exists, then honor the option.*
+   the tray (5.6) exists, then honor the option.* *Decided 2026-10-27 by
+   the owner, with 5.6: honored, and the default on Windows is `true`
+   (GTK's): murrtty quits when its last terminal closes, and stays in the
+   tray only when told to.*
 5. **Identifiers.** The AppUserModelID, pipe names, winget package ID and the
    installer's mutex should be fork-specific, not `com.mitchellh.ghostty`, and
    picked before the first release: changing an AppUserModelID later breaks
@@ -268,7 +271,17 @@ roadmap item behind it.
 - **Toggle visibility** (5.5): `toggle_visibility` as on macOS: with
   murrtty in front it hides every window, otherwise it brings murrtty
   forward with the windows it hid, as they were; only while a global
-  binding can bring them back. GTK doesn't implement it.
+  binding or the tray (5.6) can bring them back. GTK doesn't implement it.
+- **Tray** (5.6): while murrtty can run with no window
+  (`quit-after-last-window-closed = false` or `initial-window = false`),
+  its icon stays in the notification area: a click brings murrtty forward
+  (a new window when there is none, as macOS's dock icon), its menu offers
+  New Window, Config and Quit, and notifications show on it. GTK has no
+  tray; its windowless instance is reached by launching it again.
+- **Quit delay with no window** (5.6): with `initial-window = false`,
+  murrtty quits once `quit-after-last-window-closed-delay` passes without
+  a window, as the option's documentation says; GTK's code starts the
+  delay only when a last window closes, so it waits for one first.
 - **Taskbar progress** (5.4): OSC 9;4 also shows on the window's taskbar
   button (its active tab's focused pane's), as Windows Terminal shows it;
   GTK has only the bar over the pane.
@@ -281,7 +294,8 @@ roadmap item behind it.
 - **Notifications** (5.2): balloons of a notification-area icon, which
   Windows shows as toasts, with the icon in the notification area while
   one is pending (GTK's have none). The icon stands for them all: a click
-  presents the latest's pane, and they all go when that pane gets the
+  on the toast (on the icon too, unless it is the tray, 5.6) presents the
+  latest's pane, and they all go when that pane gets the
   keyboard or closes, or 3 s after the latest if its pane had the
   keyboard; an earlier one's pane taking the keyboard takes nothing back.
   GTK's go each with its own pane, and one the same as a pane's earlier
@@ -295,9 +309,6 @@ roadmap item behind it.
 - **Dragging a tab** (4.5): once out of the strip, nothing follows the
   mouse until the release (libadwaita drags an image of the tab), and
   Escape doesn't cancel the drag.
-- **Last window** (decision 4): murrtty always opens a window at start and
-  quits with its last window, whatever `initial-window` and
-  `quit-after-last-window-closed` say, until the tray (5.6) exists.
 - **Toasts** (3.6): the latest replaces the one showing, for 3 seconds;
   GTK queues them, each with a close button.
 - **Read-only badge** (3.6): shown at once; GTK fades it in over 500 ms.
@@ -2430,8 +2441,8 @@ brings murrtty forward, showing those windows as they were, all above
 other programs with the one that was in front first. Presenting a window
 (a notification's click, the pipe's request), opening one, maximizing or
 restoring one shows them too, as unhiding does on macOS.
-It hides only while a global binding with `toggle_visibility` exists, and
-the windows come back when a config change leaves none; menus and the
+It hides only while a global binding with `toggle_visibility` or the tray
+(5.6) exists, and the windows come back when a config change leaves none; menus and the
 palette don't offer it. The `global-keys` scenario posts `WM_HOTKEY` with
 the dump's modifiers and key (no real key reaches the user's foreground),
 holds a combination itself to see the refusal, and fakes murrtty being in
@@ -2442,6 +2453,38 @@ is always the user desktop's.
 Quick Terminal, Configuration, Quit), reusing 5.2's notification-area icon,
 that makes `quit-after-last-window-closed`, its delay, and
 `initial-window = false` safe to honor (decision 4).
+
+*Built 2026-10-27 (`win32/Notifications.zig`, `App.checkQuit`):* the tray
+is 5.2's notification-area icon kept there while murrtty can run with no
+window (`quit-after-last-window-closed = false` or `initial-window =
+false`; no config option of its own, since GTK has none). A click brings
+murrtty forward: the windows `toggle_visibility` hid, or murrtty's windows
+above other programs, or a new window when there is none. Its menu (the
+popover look of murrtty's other menus at the DPI of the monitor it opens
+on, `ContextMenu.trackTray`) offers New Window, the Config submenu and
+Quit, run as app actions through the core; 5.7 adds Quick Terminal. A
+notification's balloon shows on it; taking one back deletes the icon and
+adds it again at once, since deleting is what takes the toast out of the
+notification center (an empty balloon only hides one showing). Quitting
+follows GTK's loop: the core's `quit_timer` starts when the last surface
+goes and runs for `quit-after-last-window-closed-delay` (at least 1 s), or
+has expired at once without one; murrtty quits when it expires, or (with
+no delay) once the last window has closed, and with
+`quit-after-last-window-closed = false` not at all on its own. Nothing
+quits before the first window or the tray is up (the color scheme's
+reload at start, on a dark system, reaches the config change first); a
+reload that takes the tray away with no window starts the timer as a last
+window's closing would. `quit-after-last-window-closed` defaults to
+`true` on Windows, GTK's default (a shared-config change; the owner's
+decision, decision 4); with `false` murrtty outlives its last window in
+the tray. `initial-window = false`
+starts in the tray, opens no window, and (with a delay) quits once it
+passes with none; a second such launch, with gtk-single-instance, just
+ends, as GTK's, once it has checked that a murrtty really serves the pipe
+(as a request would, sending nothing). `toggle_visibility` may hide with the tray, which shows
+the windows again. The `tray` scenario drives the icon as Explorer does
+(posting its NOTIFYICON_VERSION_4 messages) and the menu from outside;
+the opt-in `tray-shown` checks Windows takes a real icon.
 
 **5.7 Quick terminal, L.** Needs 5.5 and 5.6. A topmost, borderless window
 with no taskbar button:

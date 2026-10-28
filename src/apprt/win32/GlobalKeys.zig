@@ -77,7 +77,8 @@ pub fn start(self: *GlobalKeys) void {
 /// Register the config's global bindings afresh: after the config changes,
 /// and when the keyboard layout does (a character's key may move). A
 /// failure is told after a config change, not again after a layout change.
-/// With no binding left to show hidden windows, they come back.
+/// With nothing left to show hidden windows (no binding, no tray), they
+/// come back.
 pub fn refresh(self: *GlobalKeys, why: enum { config, layout }) void {
     if (!self.active) return;
     if (comptime test_hooks.enabled) self.app.test_state.global_refreshes += 1;
@@ -93,7 +94,7 @@ pub fn refresh(self: *GlobalKeys, why: enum { config, layout }) void {
         if (global) self.register(alloc, entry.key_ptr.*);
     }
     self.syncRetry();
-    if (self.app.windows_hidden and !self.canShow()) self.app.showWindows();
+    if (self.app.windows_hidden and !self.app.canShowHidden()) self.app.showWindows();
 }
 
 /// Try the bindings another murrtty held again (the retry timer).

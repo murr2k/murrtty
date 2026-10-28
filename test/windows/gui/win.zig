@@ -118,6 +118,7 @@ pub extern "user32" fn GetMenuState(HMENU, UINT, UINT) callconv(.winapi) UINT;
 pub const WM_MBUTTONDOWN = 0x0207;
 pub const WM_MBUTTONUP = 0x0208;
 pub const WM_USER = 0x0400;
+pub const WM_APP = 0x8000;
 pub const TDM_CLICK_BUTTON = WM_USER + 102;
 pub const MK_LBUTTON = 0x0001;
 pub const WM_LBUTTONDBLCLK = 0x0203;

@@ -76,6 +76,7 @@ pub const all = [_]Scenario{
     .{ .name = "single-instance", .about = "gtk-single-instance hands a launch's window to the running murrtty; a separate one takes the pipe over when the first quits", .run = singleInstance },
     .{ .name = "open-config-window", .about = "open_config:new_window runs $EDITOR on the config in a new window; without one it opens the file as open_config does", .run = openConfigWindow },
     .{ .name = "global-keys", .about = "global: bindings as hot keys: registered, one runs its binding on WM_HOTKEY (new_window) and waits for a dialog, toggle_visibility hides every window in front and shows them, a binding that can't be had is told once as GTK's notification, a config with none brings hidden windows back", .run = globalKeysScenario },
+    .{ .name = "tray", .about = "quit-after-last-window-closed = false: the tray icon stays and murrtty outlives its last window; a click opens a window or shows hidden ones, its menu has New Window, Config and Quit, a notification comes and goes on it; initial-window = false starts in the tray; a delay quits once it passes", .run = trayScenario },
     .{ .name = "progress", .about = "OSC 9;4: GTK's bar over the pane (accent, error tint, pulsing, paused) and the window's taskbar progress, the active tab's; gone after 15 s without a report; progress-style = false", .run = progressScenario },
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
@@ -86,6 +87,7 @@ pub const all = [_]Scenario{
     .{ .name = "blur-display", .about = "background-blur blurs a striped backdrop seen through the background ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = blurDisplay },
     .{ .name = "taskbar-shown", .about = "OSC 9;4 on a real taskbar button: the button is made (TaskbarButtonCreated) and ITaskbarList3 takes the progress, off-screen on the user's desktop (GHOSTTY_GUI_ONSCREEN=1: a button shows on the taskbar)", .run = taskbarShown },
     .{ .name = "notify-shown", .about = "an OSC 9 notification really shows: Windows takes the icon and its balloon, then it is taken back; a toast appears ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = notifyShown },
+    .{ .name = "tray-shown", .about = "the tray's icon really in the notification area (Shell_NotifyIconW takes it), gone as murrtty quits, off-screen on the user's desktop (GHOSTTY_GUI_ONSCREEN=1: the icon shows for a moment)", .run = trayShown },
 };
 
 /// Home as the working directory: the harness's launches count as from a
@@ -7482,6 +7484,62 @@ fn notifyShownOffscreen(h: *Harness) !void {
     try waitIconGone(h, &g, 2000, "and it is taken back");
 }
 
+/// The tray really shown (roadmap 5.6): Windows takes its icon (the dump's
+/// `notify_icon` counts it there only if Shell_NotifyIconW took it), and
+/// it goes as murrtty quits. Off-screen on the user's desktop, whose
+/// notification area it needs; the icon shows for a moment, so only with
+/// GHOSTTY_GUI_ONSCREEN=1. It quits without a dialog, which would show on
+/// screen.
+fn trayShown(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
+        return h.skip("its icon shows in the notification area; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    }
+    const Ctx = struct { h: *Harness, err: ?anyerror = null };
+    var ctx: Ctx = .{ .h = h };
+    h.runOnUserDesktop(&ctx, struct {
+        fn run(cx: *Ctx) void {
+            trayShownOffscreen(cx.h) catch |err| {
+                cx.err = err;
+            };
+        }
+    }.run);
+    if (ctx.err) |err| return err;
+}
+
+fn trayShownOffscreen(h: *Harness) !void {
+    var g = try h.launchWith("tray-shown", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n" ++
+        "quit-after-last-window-closed = false\nconfirm-close-surface = false\n", .{
+        .where = .offscreen,
+        .env = &.{.{ "GHOSTTY_WIN32_TEST_NOTIFY", "1" }},
+    });
+    defer g.deinit();
+    try h.waitText(&g, "PS ", 1, 20000);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.tray and d.value.notify_icon, "Windows took the tray's icon", .{});
+    }
+    // A notification on it, taken back: the icon is deleted (its toast with
+    // it) and comes straight back.
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    {
+        const cmd = try oscCommand(h, "0", "]9;murrtty tray test");
+        defer h.alloc.free(cmd);
+        try h.typeText(surf, cmd);
+        h.enter(surf);
+    }
+    _ = try waitNotifications(h, &g, 1);
+    try h.withdrawNotification(&g);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!d.value.notify_pending and d.value.notify_icon and d.value.tray, "a notification taken back leaves the tray's icon there", .{});
+    }
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'Q');
+    const code = g.waitExit(10000);
+    try h.expect(code != null and code.? == 0, "and murrtty quits (exit code {?d})", .{code});
+}
+
 /// Whether the terminal menu's Notify on Next Command Finish is checked,
 /// the menu closed again with Escape.
 fn notifyNextChecked(h: *Harness, g: *Harness.Ghostty, surf: w.HWND) !bool {
@@ -7989,5 +8047,215 @@ fn globalKeysScenario(h: *Harness) anyerror!void {
         var d = try h.dump(&second);
         defer d.deinit();
         try h.expect(d.value.globals.len == 1 and d.value.globals_waiting == 0 and d.value.notifications.len == 0, "and takes it once the first quits ({d} ms)", .{waited});
+    }
+}
+
+//---------------------------------------------------------------
+// The tray and background mode (roadmap 5.6)
+
+/// Close the window `win` with the `close_window` binding (Ctrl+Shift+F8
+/// in these configs), answering its confirmation, and wait until murrtty
+/// has no window left (or has quit with it).
+fn closeLastWindow(h: *Harness, g: *Harness.Ghostty, win: w.HWND) !void {
+    h.key(try h.surface(g, win), .{ .ctrl = true, .shift = true }, 0x77);
+    h.answer(g, try h.waitDialog(g, 5000), w.IDYES);
+    // No dump here: murrtty may be quitting with its window, its wakeup
+    // window already gone.
+    var waited: u32 = 0;
+    while (waited < 10000) : (waited += 100) {
+        if (g.waitExit(100) != null or try visibleWindows(h, g) == 0) return;
+    }
+    return h.fail("the window didn't close", .{});
+}
+
+/// The dump, once murrtty answers (no window to wait for).
+fn waitDump(h: *Harness, g: *Harness.Ghostty) !std.json.Parsed(Harness.Dump) {
+    try h.waitAnswering(g, 15000);
+    return h.dump(g);
+}
+
+/// With quit-after-last-window-closed = false the tray's icon stays and
+/// murrtty outlives its last window; a click on the icon opens a window or
+/// shows those toggle_visibility hid (no global binding needed then); its
+/// menu offers New Window, Config and Quit; a notification's balloon comes
+/// and goes on it. initial-window = false starts in the tray. A delay
+/// keeps murrtty, trayless, until it passes.
+fn trayScenario(h: *Harness) anyerror!void {
+    // A dark start: the color scheme's reload reaches the config change
+    // before the first window, which must not quit.
+    {
+        var g = try start(h, "tray-dark", "window-theme = dark\n", ">");
+        defer g.deinit();
+        try h.expect(g.waitExit(1500) == null, "a dark start doesn't quit", .{});
+    }
+    {
+        var g = try h.launchWith("tray", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n" ++
+            "quit-after-last-window-closed = false\n" ++
+            "keybind = ctrl+shift+f8=close_window\n" ++
+            "keybind = ctrl+shift+f9=toggle_visibility\n", .{});
+        defer g.deinit();
+        try h.waitText(&g, "PS ", 1, 20000);
+        const win = try h.mainWindow(&g);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(d.value.tray and d.value.notify_icon and !d.value.notify_pending, "the tray's icon is there", .{});
+        }
+
+        // A notification on it, from the pane with the keyboard: it goes
+        // after 3 s, the icon stays.
+        {
+            const cmd = try oscCommand(h, "0", "]9;tray test");
+            defer h.alloc.free(cmd);
+            const surf = try h.surface(&g, win);
+            try h.typeText(surf, cmd);
+            h.enter(surf);
+        }
+        _ = try waitNotifications(h, &g, 1);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(d.value.notify_pending and d.value.notify_icon, "a notification stands on it", .{});
+        }
+        var waited: u32 = 0;
+        while (waited < 6000) : (waited += 200) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (!d.value.notify_pending) break;
+            w.Sleep(200);
+        }
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(!d.value.notify_pending and d.value.notify_icon and d.value.tray, "and goes, leaving the tray's icon", .{});
+        }
+
+        // Hidden without a global binding: the tray shows them again.
+        try h.setInFront(&g, .yes);
+        h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 0x78);
+        try waitHidden(h, &g);
+        try h.expect(try visibleWindows(h, &g) == 0, "with the tray, toggle_visibility hides without a global binding", .{});
+        try h.trayEvent(&g, .select, 0, 0);
+        try waitWindowCount(h, &g, 1);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(!d.value.windows_hidden, "and a click on the icon shows them", .{});
+        }
+        try h.setInFront(&g, .real);
+
+        // The last window closed: murrtty stays in the tray.
+        try closeLastWindow(h, &g, win);
+        try h.expect(g.waitExit(1500) == null, "murrtty outlives its last window", .{});
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(d.value.tray and std.mem.eql(u8, d.value.quit_timer, "off"), "in the tray, with no quit timer ({s})", .{d.value.quit_timer});
+        }
+        // A click opens a window.
+        try h.trayEvent(&g, .select, 0, 0);
+        try waitWindowCount(h, &g, 1);
+        try h.expect(true, "a click on the icon opens a window", .{});
+
+        // Hidden, then its shell exits: nothing stays hidden, and one click
+        // opens a window again.
+        {
+            try h.waitText(&g, "PS ", 1, 20000);
+            const surf = try h.surface(&g, try h.mainWindow(&g));
+            try h.setInFront(&g, .yes);
+            h.key(surf, .{ .ctrl = true, .shift = true }, 0x78);
+            try waitHidden(h, &g);
+            try h.typeText(surf, "exit");
+            h.enter(surf);
+            var gone: u32 = 0;
+            while (gone < 10000) : (gone += 200) {
+                var d = try h.dump(&g);
+                defer d.deinit();
+                if (d.value.windows.len == 0) break;
+                w.Sleep(200);
+            }
+            {
+                var d = try h.dump(&g);
+                defer d.deinit();
+                try h.expect(d.value.windows.len == 0 and !d.value.windows_hidden and d.value.hidden_windows.len == 0, "a hidden window whose shell exits leaves nothing hidden", .{});
+            }
+            try h.setInFront(&g, .real);
+            try h.trayEvent(&g, .select, 0, 0);
+            try waitWindowCount(h, &g, 1);
+            try h.expect(true, "and one click opens a window", .{});
+        }
+
+        // The menu: New Window, Config, Quit.
+        try h.trayEvent(&g, .menu, 200, 200);
+        {
+            const menu = try h.waitMenu(&g, 1, 5000);
+            const items = try h.menuItems(menu);
+            defer h.freeMenuItems(items);
+            var labels: [8][]const u8 = undefined;
+            var n: usize = 0;
+            for (items) |it| if (!it.separator and n < labels.len) {
+                labels[n] = it.text;
+                n += 1;
+            };
+            const ok = n == 3 and std.mem.startsWith(u8, labels[0], "New &Window") and
+                std.mem.eql(u8, labels[1], "C&onfig") and std.mem.startsWith(u8, labels[2], "&Quit");
+            try h.expect(ok and items[2].submenu, "the menu: New Window, Config, Quit ({d} items)", .{n});
+            h.menuKey(menu, 'w');
+        }
+        try waitWindowCount(h, &g, 2);
+        try h.expect(true, "its New Window opens one", .{});
+        try h.trayEvent(&g, .menu, 200, 200);
+        h.menuKey(try h.waitMenu(&g, 1, 5000), 'q');
+        h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "its Quit quits (exit code {?d})", .{code});
+    }
+
+    // initial-window = false: in the tray with no window; a second such
+    // launch just ends, as GTK's; a click opens a window, and
+    // (quit-after-last-window-closed being true) closing it quits.
+    {
+        const class = try ipcClass(h, "tray");
+        defer h.alloc.free(class);
+        const cfg = try std.fmt.allocPrint(h.alloc, "{s}initial-window = false\ngtk-single-instance = true\nclass = {s}\n" ++
+            "keybind = ctrl+shift+f8=close_window\n", .{ base_config, class });
+        defer h.alloc.free(cfg);
+        var g = try h.launchWith("tray-initial", cfg, .{ .wait_window = false });
+        defer g.deinit();
+        {
+            var d = try waitDump(h, &g);
+            defer d.deinit();
+            try h.expect(d.value.tray and d.value.windows.len == 0 and !d.value.requested_window, "initial-window = false starts in the tray, with no window", .{});
+        }
+        h.alloc.free(try waitListening(h, &g, 10000));
+        try h.expect(g.waitExit(1000) == null, "and stays", .{});
+        {
+            var second = try h.launchWith("tray-initial-2", cfg, .{ .wait_window = false });
+            defer second.deinit();
+            const code = second.waitExit(10000);
+            try h.expect(code != null and code.? == 0, "a second launch with no initial window ends: one already runs (exit code {?d})", .{code});
+        }
+        try h.trayEvent(&g, .select, 0, 0);
+        try waitWindowCount(h, &g, 1);
+        try h.waitText(&g, ">", 1, 20000);
+        try closeLastWindow(h, &g, try h.mainWindow(&g));
+        const code = g.waitExit(5000);
+        try h.expect(code != null and code.? == 0, "its window closed, it quits (exit code {?d})", .{code});
+    }
+
+    // A delay: no tray, and murrtty outlives its last window by it.
+    {
+        var g = try start(h, "tray-delay", "quit-after-last-window-closed-delay = 3s\n" ++
+            "keybind = ctrl+shift+f8=close_window\n", ">");
+        defer g.deinit();
+        try closeLastWindow(h, &g, try h.mainWindow(&g));
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(!d.value.tray and std.mem.eql(u8, d.value.quit_timer, "active"), "with a delay the quit timer runs, with no tray ({s})", .{d.value.quit_timer});
+        }
+        try h.expect(g.waitExit(1000) == null, "murrtty waits for it", .{});
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "and quits once it passes (exit code {?d})", .{code});
     }
 }

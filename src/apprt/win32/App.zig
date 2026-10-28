@@ -18,6 +18,7 @@ const c = @import("c.zig");
 const Banner = @import("Banner.zig");
 const AlertDialog = @import("AlertDialog.zig");
 const CommandPalette = @import("CommandPalette.zig");
+const ContextMenu = @import("ContextMenu.zig");
 const draw = @import("draw.zig");
 const GlobalKeys = @import("GlobalKeys.zig");
 const ipc = @import("ipc.zig");
@@ -50,6 +51,8 @@ const WM_IPC = c.WM_APP + 4;
 /// The wakeup window's timer for a murrtty started for an IPC request
 /// (`ipc_launch`).
 const ipc_launch_timer = 1;
+/// GTK's quit timer (quit-after-last-window-closed-delay).
+const quit_timer_id = 2;
 
 /// A request that closes tabs or windows, or opens a link. These never run
 /// inside a callback from the core or while a modal dialog is open: the
@@ -228,6 +231,18 @@ hidden_front: ?u64 = null,
 /// brings forward.
 last_window: ?u64 = null,
 
+/// GTK's quit timer (roadmap 5.6): started when the core says the last
+/// surface went, with quit-after-last-window-closed; it runs for
+/// quit-after-last-window-closed-delay, or has expired at once without one.
+quit_timer: enum { off, active, expired } = .off,
+/// A window was opened (GTK's requested_window): with no delay, closing the
+/// last window quits only once one was, so initial-window = false waits.
+requested_window: bool = false,
+/// run() has opened the first window or the tray. Before, nothing quits:
+/// the color scheme's soft reload at start (a dark system) reaches the
+/// config change, with no window yet.
+started: bool = false,
+
 /// The taskbar's message that a window's button exists, and its list for
 /// progress on the buttons (roadmap 5.4), made at such a message.
 taskbar_button_msg: c.UINT = 0,
@@ -342,31 +357,36 @@ pub fn run(self: *App) !void {
         log.warn("error setting initial color scheme err={}", .{err});
     };
 
-    // No tray icon (roadmap 5.6) would show that a murrtty without a
-    // window runs, and the app exits with its last window, so starting
-    // without one would leave an invisible process behind. (The option is
-    // documented as Linux and macOS only.)
-    if (!self.config.@"initial-window") {
-        log.warn("initial-window = false is not supported on Windows, ignoring it", .{});
-    }
-
     // The pipe first: it is claimed at once if free, so of two launches
     // together one holds it. Then gtk-single-instance (roadmap 5.1): the
     // window goes to the murrtty holding it, as GTK's application hands
-    // it over.
+    // it over. Without an initial window there is nothing to hand over,
+    // and GTK's second instance just ends: the first already runs.
     self.startIpc();
     const holding = if (self.ipc_server) |s| s.listening.load(.acquire) else false;
-    if (!self.ipc_launch and !holding and self.config.@"gtk-single-instance" == .true and
-        ipc.handOff(self.core_app.alloc, self.ipcClass()))
-    {
-        log.info("handed the window to the running murrtty", .{});
-        return;
+    if (!self.ipc_launch and !holding and self.config.@"gtk-single-instance" == .true) {
+        if (!self.config.@"initial-window") {
+            // Only if one really does (not a pipe squatted, or one going).
+            if (ipc.serverRunning(self.core_app.alloc, self.ipcClass())) {
+                log.info("murrtty already runs, and there is no initial window to hand it", .{});
+                return;
+            }
+        } else if (ipc.handOff(self.core_app.alloc, self.ipcClass())) {
+            log.info("handed the window to the running murrtty", .{});
+            return;
+        }
     }
     self.global_keys.start();
+    // The tray (roadmap 5.6) before any window: murrtty may run without.
+    self.syncTray();
 
     if (self.ipc_launch) {
         // The request brings the window; without it, don't linger.
         _ = c.SetTimer(self.wakeup_hwnd, ipc_launch_timer, ipc.launch_timeout_ms, null);
+    } else if (!self.config.@"initial-window") {
+        // In the tray, until a window is asked for. With a delay it quits
+        // when that passes with none (the option's documentation).
+        if (self.config.@"quit-after-last-window-closed-delay" != null) self.startQuitTimer();
     } else _ = Window.create(self, null) catch |err| {
         // A GUI program has no console, so say why it can't start.
         const msg = std.fmt.allocPrint(
@@ -384,6 +404,7 @@ pub fn run(self: *App) !void {
 
     // A GUI program's log goes nowhere, so show any config errors.
     self.queueConfigErrors();
+    self.started = true;
 
     var msg: c.MSG = undefined;
     while (true) {
@@ -1186,6 +1207,11 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                         self.quitNow();
                     }
                 },
+                quit_timer_id => {
+                    _ = c.KillTimer(hwnd, quit_timer_id);
+                    self.quit_timer = .expired;
+                    self.checkQuit();
+                },
                 GlobalKeys.retry_timer => self.global_keys.retry(),
                 else => {},
             }
@@ -1212,10 +1238,89 @@ pub fn windowDestroyed(self: *App, window: *Window) void {
             break;
         }
     }
+    // A window toggle_visibility hid is gone (its shell exited): once all
+    // are, nothing is hidden, and a tray click opens a window again.
+    if (std.mem.indexOfScalar(u64, self.hidden_windows.items, window.id)) |i| {
+        _ = self.hidden_windows.orderedRemove(i);
+        if (self.hidden_front == window.id) self.hidden_front = null;
+        if (self.hidden_windows.items.len == 0) self.windows_hidden = false;
+    }
 
-    // There is no dock or tray to reopen a window from, so the app
-    // exits with its last window.
-    if (self.windows.items.len == 0) self.quitNow();
+    self.checkQuit();
+}
+
+/// Quit once nothing keeps murrtty running, as GTK's loop decides (roadmap
+/// 5.6): with quit-after-last-window-closed, when the quit timer has
+/// expired, or (with no delay) once the last window has closed; and with no
+/// window and no tray to reach murrtty by, unless a delay runs. Not before
+/// run() has opened the first window or the tray.
+fn checkQuit(self: *App) void {
+    if (!self.started or self.quitting or self.windows.items.len > 0) return;
+    // Started for a request: its own timer decides.
+    if (self.ipc_launch and !self.requested_window) return;
+    const config = &self.config;
+    if (config.@"quit-after-last-window-closed") {
+        if (self.quit_timer == .expired) return self.quitNow();
+        if (config.@"quit-after-last-window-closed-delay" == null and self.requested_window) return self.quitNow();
+    }
+    if (!self.notifications.tray and self.quit_timer != .active) self.quitNow();
+}
+
+fn startQuitTimer(self: *App) void {
+    self.stopQuitTimer();
+    const config = &self.config;
+    if (!config.@"quit-after-last-window-closed") return;
+    if (config.@"quit-after-last-window-closed-delay") |delay| {
+        // At least 1 s, as documented; SetTimer's longest is about 24 days.
+        const ms = std.math.clamp(delay.asMilliseconds(), 1000, 0x7FFF_FFFF);
+        _ = c.SetTimer(self.wakeup_hwnd, quit_timer_id, ms, null);
+        self.quit_timer = .active;
+    } else self.quit_timer = .expired;
+}
+
+fn stopQuitTimer(self: *App) void {
+    if (self.quit_timer == .active) _ = c.KillTimer(self.wakeup_hwnd, quit_timer_id);
+    self.quit_timer = .off;
+}
+
+/// The tray (roadmap 5.6), while murrtty can run with no window:
+/// quit-after-last-window-closed = false or initial-window = false.
+fn syncTray(self: *App) void {
+    const config = &self.config;
+    self.notifications.setTray(!config.@"quit-after-last-window-closed" or !config.@"initial-window");
+}
+
+/// A click on the tray icon: the hidden windows back, murrtty's windows
+/// forward, or a new window when there is none, as a click on macOS's dock
+/// icon reopens one. With a dialog open, the dialog.
+pub fn trayActivate(self: *App) void {
+    if (self.modal_depth > 0) return self.raiseModal();
+    if (self.windows_hidden) return self.showWindows();
+    const last = if (self.last_window) |id| self.findWindow(id) else null;
+    const front = last orelse
+        (if (self.windows.items.len > 0) self.windows.items[self.windows.items.len - 1] else null);
+    if (front) |w| self.raiseWindows(w) else self.runAppAction(.new_window);
+}
+
+/// The tray icon's menu at `at` (owned by its window, `owner`), then the
+/// action chosen. One dialog or menu at a time.
+pub fn trayMenu(self: *App, owner: c.HWND, at: c.POINT) void {
+    if (self.modal_depth > 0) return self.raiseModal();
+    const action = ContextMenu.trackTray(self, owner, at) orelse return;
+    self.runAppAction(action);
+}
+
+fn runAppAction(self: *App, action: input.Binding.Action) void {
+    const scoped = action.scoped(.app) orelse return;
+    self.core_app.performAction(self, scoped) catch |err| {
+        log.warn("error running {s} err={}", .{ @tagName(action), err });
+    };
+}
+
+/// Whether windows toggle_visibility hides can come back: through a global
+/// binding with it, or the tray's click.
+pub fn canShowHidden(self: *const App) bool {
+    return self.global_keys.canShow() or self.notifications.tray;
 }
 
 fn quitNow(self: *App) void {
@@ -1813,9 +1918,17 @@ pub fn performAction(
                 // window-theme may now force a different scheme.
                 self.reportColorScheme();
                 self.queueConfigErrors();
-                // The global bindings may have changed (with none left to
-                // show hidden windows, they come back).
+                // The tray and the global bindings may have changed (with
+                // nothing left to show hidden windows, they come back), and
+                // with them what keeps murrtty running.
+                self.syncTray();
                 self.global_keys.refresh(.config);
+                if (self.windows_hidden and !self.canShowHidden()) self.showWindows();
+                // The tray gone with no window: as if the last had just
+                // closed (a delay still applies).
+                if (self.started and self.windows.items.len == 0 and !self.notifications.tray and
+                    self.quit_timer == .off) self.startQuitTimer();
+                self.checkQuit();
             },
         },
 
@@ -1833,8 +1946,11 @@ pub fn performAction(
         },
 
         .quit_timer => switch (value) {
-            .start => if (self.windows.items.len == 0) self.quitNow(),
-            .stop => {},
+            .start => {
+                self.startQuitTimer();
+                self.checkQuit();
+            },
+            .stop => self.stopQuitTimer(),
         },
 
         // The status overlays (roadmap 3.6).
@@ -1944,9 +2060,9 @@ pub fn performAction(
 
 /// toggle_visibility, macOS's (GTK lacks it): with murrtty in front, hide
 /// every window; otherwise bring murrtty forward, the hidden windows as
-/// they were. Hiding needs a global binding that can show them again
-/// (roadmap 5.5; the tray, 5.6, will be another way): hidden with no way
-/// back, the process would be out of reach.
+/// they were. Hiding needs a way to show them again (roadmap 5.5): a
+/// global binding with it, or the tray (5.6); hidden with no way back, the
+/// process would be out of reach.
 fn toggleVisibility(self: *App) bool {
     if (comptime test_hooks.enabled) self.test_state.toggles += 1;
     if (self.windows_hidden) {
@@ -1960,7 +2076,7 @@ fn toggleVisibility(self: *App) bool {
         self.raiseWindows(front);
         return true;
     }
-    if (!self.global_keys.canShow()) return false;
+    if (!self.canShowHidden()) return false;
     const alloc = self.core_app.alloc;
     self.hidden_windows.clearRetainingCapacity();
     self.hidden_front = null;

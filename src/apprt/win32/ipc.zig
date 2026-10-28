@@ -770,12 +770,46 @@ pub const Sent = union(enum) {
 /// `wait_ms` if it isn't there yet (a murrtty just started for it).
 fn send(alloc: Allocator, class: ?[]const u8, msg: Message, wait_ms: u32) SendError!Sent {
     const own = Identity.current() catch return error.Io;
-    var name_buf: [320]u8 = undefined;
-    const name = pipeName(&name_buf, class, &own) catch return error.Io;
-    const name16 = try widen(alloc, name);
-    defer alloc.free(name16);
     const bytes = try encode(alloc, msg);
     defer alloc.free(bytes);
+    const opened = try open(alloc, class, &own, wait_ms) orelse return .none;
+    const pipe = opened.pipe;
+    defer _ = c.CloseHandle(pipe);
+    // So that the window it opens can come forward.
+    _ = c.AllowSetForegroundWindow(opened.pid);
+    var mode: c.DWORD = c.PIPE_READMODE_MESSAGE;
+    if (c.SetNamedPipeHandleState(pipe, &mode, null, null) == 0) return error.Io;
+
+    const event = c.CreateEventW(null, c.TRUE, c.FALSE, null) orelse return error.Io;
+    defer _ = c.CloseHandle(event);
+    var ov: c.OVERLAPPED = .{ .hEvent = event };
+    if (!writeAll(pipe, &ov, bytes, null)) return error.Io;
+    const reply = readMessage(alloc, pipe, &ov, null) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.TooLong, error.Io => error.Io,
+    };
+    defer alloc.free(reply);
+    if (reply.len != 1) return error.Io;
+    return .{ .reply = @enumFromInt(reply[0]) };
+}
+
+/// Whether a murrtty serves `class`: its pipe opens and passes the same
+/// checks as for a request (verifyServer). Nothing is sent; the server
+/// drops a client that closes without a request.
+pub fn serverRunning(alloc: Allocator, class: ?[]const u8) bool {
+    const own = Identity.current() catch return false;
+    const opened = (open(alloc, class, &own, 0) catch return false) orelse return false;
+    _ = c.CloseHandle(opened.pipe);
+    return true;
+}
+
+/// Open the pipe of the murrtty serving `class`, within `wait_ms` if it
+/// isn't there yet, and check it and its server; null if none holds it.
+fn open(alloc: Allocator, class: ?[]const u8, own: *const Identity, wait_ms: u32) SendError!?struct { pipe: c.HANDLE, pid: u32 } {
+    var name_buf: [320]u8 = undefined;
+    const name = pipeName(&name_buf, class, own) catch return error.Io;
+    const name16 = try widen(alloc, name);
+    defer alloc.free(name16);
 
     const deadline = c.GetTickCount64() + connect_timeout_ms;
     const appear_deadline = c.GetTickCount64() + wait_ms;
@@ -792,7 +826,7 @@ fn send(alloc: Allocator, class: ?[]const u8, msg: Message, wait_ms: u32) SendEr
         if (h != c.INVALID_HANDLE_VALUE) break h;
         switch (c.GetLastError()) {
             c.ERROR_FILE_NOT_FOUND => {
-                if (c.GetTickCount64() >= appear_deadline) return .none;
+                if (c.GetTickCount64() >= appear_deadline) return null;
                 c.Sleep(50);
             },
             c.ERROR_PIPE_BUSY => {
@@ -805,25 +839,9 @@ fn send(alloc: Allocator, class: ?[]const u8, msg: Message, wait_ms: u32) SendEr
             },
         }
     };
-    defer _ = c.CloseHandle(pipe);
-
-    const pid = try verifyServer(pipe, &own);
-    // So that the window it opens can come forward.
-    _ = c.AllowSetForegroundWindow(pid);
-    var mode: c.DWORD = c.PIPE_READMODE_MESSAGE;
-    if (c.SetNamedPipeHandleState(pipe, &mode, null, null) == 0) return error.Io;
-
-    const event = c.CreateEventW(null, c.TRUE, c.FALSE, null) orelse return error.Io;
-    defer _ = c.CloseHandle(event);
-    var ov: c.OVERLAPPED = .{ .hEvent = event };
-    if (!writeAll(pipe, &ov, bytes, null)) return error.Io;
-    const reply = readMessage(alloc, pipe, &ov, null) catch |err| return switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        error.TooLong, error.Io => error.Io,
-    };
-    defer alloc.free(reply);
-    if (reply.len != 1) return error.Io;
-    return .{ .reply = @enumFromInt(reply[0]) };
+    errdefer _ = c.CloseHandle(pipe);
+    const pid = try verifyServer(pipe, own);
+    return .{ .pipe = pipe, .pid = pid };
 }
 
 /// The process serving `pipe`, if the pipe is the caller's own: owned by

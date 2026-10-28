@@ -3,7 +3,8 @@
 //! Config submenus. Each item shows its key binding, and is grayed when its
 //! action can't run here (App.supportsAction) or now (Copy with no
 //! selection, Paste with no text on the clipboard). Also the tab strip's
-//! right-click menu (roadmap 3.8, trackTab).
+//! right-click menu (roadmap 3.8, trackTab), and the tray icon's (roadmap
+//! 5.6, trackTray).
 //!
 //! They look like libadwaita's popover menus (roadmap 4.3b, measured on
 //! GTK's): owner-drawn rows 32 DIP tall in the popover's colors and
@@ -44,6 +45,17 @@ pub const Choice = union(enum) {
     about,
     /// Toggle the pane's Notify on Next Command Finish.
     notify_next,
+};
+
+/// Whom a menu is for: a pane's menus act on their pane, the tray's on the
+/// app.
+const Ctx = struct {
+    app: *App,
+    surface: ?*Surface,
+
+    fn of(surface: *Surface) Ctx {
+        return .{ .app = surface.app, .surface = surface };
+    }
 };
 
 fn act(label: []const u8, action: Action) Item {
@@ -156,6 +168,15 @@ const system_items = [_]Item{
     act("&Quit", .quit),
 };
 
+/// The tray icon's menu (roadmap 5.6): what needs no window.
+const tray_items = [_]Item{
+    act("New &Window", .new_window),
+    .separator,
+    .{ .submenu = .{ .label = "C&onfig", .items = &config_submenu } },
+    .separator,
+    act("&Quit", .quit),
+};
+
 /// The access keys of the system menu's own items in English: Restore,
 /// Move, Size, Minimize, Maximize, Close.
 const system_keys = "rmsnxc";
@@ -211,9 +232,8 @@ const Look = struct {
     font: ?c.HFONT,
     brush: ?c.HBRUSH,
 
-    fn init(surface: *Surface, owner: c.HWND) Look {
-        const dpi = c.GetDpiForWindow(owner);
-        const pal = draw.menuPalette(surface.window.chromeTheme());
+    fn init(app: *const App, dpi: c.UINT) Look {
+        const pal = draw.menuPalette(app.chromeTheme());
         return .{
             .dpi = dpi,
             .pal = pal,
@@ -379,25 +399,31 @@ pub fn menuChar(wparam: c.WPARAM, lparam: c.LPARAM) ?c.LRESULT {
 /// Show the menu at `screen` (screen pixels) over `surface` and return the
 /// action chosen, if any. The caller performs it, after the menu is gone.
 pub fn track(surface: *Surface, screen: c.POINT) ?Choice {
-    return show(surface, &items, null, surface.hwnd, screen, .left);
+    return show(.of(surface), &items, null, surface.hwnd, screen, .left);
 }
 
 /// Show the tab strip's menu for the tab at `place`, whose focused pane is
 /// `surface`, and return the action chosen for that pane, if any. The
 /// window owns the menu: a background tab's pane is hidden.
 pub fn trackTab(surface: *Surface, place: TabPlace, screen: c.POINT) ?Action {
-    return actionOf(show(surface, &tab_items, place, surface.window.hwnd, screen, .left));
+    return actionOf(show(.of(surface), &tab_items, place, surface.window.hwnd, screen, .left));
 }
 
 /// The menu on the arrow beside "+", its top left at `screen`.
 pub fn trackSplit(surface: *Surface, screen: c.POINT) ?Action {
-    return actionOf(show(surface, &split_items, null, surface.window.hwnd, screen, .left));
+    return actionOf(show(.of(surface), &split_items, null, surface.window.hwnd, screen, .left));
 }
 
 /// The main menu, its top right at `screen` (under the button at the
 /// strip's right end).
 pub fn trackMain(surface: *Surface, screen: c.POINT) ?Choice {
-    return show(surface, &main_items, null, surface.window.hwnd, screen, .right);
+    return show(.of(surface), &main_items, null, surface.window.hwnd, screen, .right);
+}
+
+/// The tray icon's menu, owned by its window `owner`, at `screen`; the
+/// app-wide action chosen, if any.
+pub fn trackTray(app: *App, owner: c.HWND, screen: c.POINT) ?Action {
+    return actionOf(show(.{ .app = app, .surface = null }, &tray_items, null, owner, screen, .left));
 }
 
 fn actionOf(choice: ?Choice) ?Action {
@@ -408,18 +434,21 @@ fn actionOf(choice: ?Choice) ?Action {
 }
 
 fn show(
-    surface: *Surface,
+    ctx: Ctx,
     list: []const Item,
     place: ?TabPlace,
     owner: c.HWND,
     screen: c.POINT,
     edge: enum { left, right },
 ) ?Choice {
-    const app = surface.app;
+    const app = ctx.app;
     const alloc = app.core_app.alloc;
-    var built: Built = .{ .look = Look.init(surface, owner) };
+    // The tray's opens by the taskbar, which may be on a monitor of another
+    // DPI than its hidden owner window's.
+    const dpi = if (ctx.surface == null) dpiAt(screen, c.GetDpiForWindow(owner)) else c.GetDpiForWindow(owner);
+    var built: Built = .{ .look = Look.init(app, dpi) };
     defer built.deinit(alloc);
-    const menu = build(surface, &built, list, place) catch |err| {
+    const menu = build(ctx, &built, list, place) catch |err| {
         log.warn("context menu not built err={}", .{err});
         return null;
     };
@@ -429,9 +458,12 @@ fn show(
 
     // A nested modal loop: close requests wait until it ends. Other
     // windows stay enabled; a click on one just closes the menu.
-    var modal = app.beginModal(surface.window.hwnd, .{ .disable_others = false });
+    var modal = app.beginModal(if (ctx.surface) |s| s.window.hwnd else null, .{ .disable_others = false });
     defer modal.end();
     if (comptime @import("test_hooks.zig").enabled) app.test_state.menus_shown += 1;
+    // A notification-area icon's menu closes on a click elsewhere only if
+    // its owner has the foreground (which the icon's click granted).
+    if (ctx.surface == null) _ = c.SetForegroundWindow(owner);
     const flags: c.UINT = c.TPM_RETURNCMD | c.TPM_RIGHTBUTTON | c.TPM_NONOTIFY |
         @as(c.UINT, if (edge == .right) c.TPM_RIGHTALIGN else 0);
     const id = c.TrackPopupMenuEx(menu, flags, screen.x, screen.y, owner, null);
@@ -441,29 +473,44 @@ fn show(
     return built.choices.items[@intCast(id - 1)];
 }
 
+/// The DPI of the monitor at `screen`, else `fallback` (GetDpiForMonitor,
+/// loaded from shcore.dll as murrtty links no import library for it).
+fn dpiAt(screen: c.POINT, fallback: c.UINT) c.UINT {
+    const monitor = c.MonitorFromPoint(screen, c.MONITOR_DEFAULTTONEAREST) orelse return fallback;
+    const shcore = c.LoadLibraryW(c.L("shcore.dll")) orelse return fallback;
+    defer _ = c.FreeLibrary(shcore);
+    const p = c.GetProcAddress(shcore, "GetDpiForMonitor") orelse return fallback;
+    const getDpi: *const fn (c.HMONITOR, c_int, *c.UINT, *c.UINT) callconv(.winapi) c.HRESULT = @ptrCast(p);
+    var x: c.UINT = 0;
+    var y: c.UINT = 0;
+    // MDT_EFFECTIVE_DPI.
+    if (getDpi(monitor, 0, &x, &y) != 0 or x == 0) return fallback;
+    return x;
+}
+
 const BuildError = error{ CreateMenuFailed, OutOfMemory, InvalidUtf8 };
 
-fn build(surface: *Surface, built: *Built, list: []const Item, place: ?TabPlace) BuildError!c.HMENU {
+fn build(ctx: Ctx, built: *Built, list: []const Item, place: ?TabPlace) BuildError!c.HMENU {
     const menu = c.CreatePopupMenu() orelse return error.CreateMenuFailed;
     errdefer _ = c.DestroyMenu(menu);
     if (built.look) |look| {
         const info: c.MENUINFO = .{ .fMask = c.MIM_BACKGROUND, .hbrBack = look.brush };
         _ = c.SetMenuInfo(menu, &info);
     }
-    try fill(surface, built, menu, list, place, null);
+    try fill(ctx, built, menu, list, place, null);
     return menu;
 }
 
 /// Append `list`'s items to `menu`, without access keys in `taken`.
 fn fill(
-    surface: *Surface,
+    ctx: Ctx,
     built: *Built,
     menu: c.HMENU,
     list: []const Item,
     place: ?TabPlace,
     taken: ?*const Taken,
 ) BuildError!void {
-    const alloc = surface.app.core_app.alloc;
+    const alloc = ctx.app.core_app.alloc;
     const first = built.draws.items.len;
     var toggles = false;
     for (list) |item| switch (item) {
@@ -474,6 +521,7 @@ fn fill(
             try append(alloc, built, menu, .item, text, 0, true, null);
         },
         .notify_next => |label| {
+            const surface = ctx.surface orelse continue;
             toggles = true;
             var free: [64]u8 = undefined;
             const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
@@ -485,10 +533,10 @@ fn fill(
         .action => |a| {
             var free: [64]u8 = undefined;
             var buf: [96]u8 = undefined;
-            const label = labelWithBinding(surface.app, freeAccessKey(a.label, taken, &free), a.action, &buf);
+            const label = labelWithBinding(ctx.app, freeAccessKey(a.label, taken, &free), a.action, &buf);
             const text = try addString(alloc, built, label);
             try built.choices.append(alloc, .{ .action = a.action });
-            try append(alloc, built, menu, .item, text, built.nextId(), !enabled(surface, a.action, place), null);
+            try append(alloc, built, menu, .item, text, built.nextId(), !enabled(ctx, a.action, place), null);
         },
         .about => |label| {
             var free: [64]u8 = undefined;
@@ -498,7 +546,7 @@ fn fill(
         },
         .submenu => |s| {
             // A submenu's access keys are its own.
-            const sub = try build(surface, built, s.items, place);
+            const sub = try build(ctx, built, s.items, place);
             errdefer _ = c.DestroyMenu(sub);
             var free: [64]u8 = undefined;
             const text = try addString(alloc, built, freeAccessKey(s.label, taken, &free));
@@ -597,7 +645,7 @@ pub const SystemMenu = struct {
         var built: Built = .{ .shift = 4 };
         defer built.deinit(alloc);
         _ = c.AppendMenuW(menu, c.MF_SEPARATOR, 0, null);
-        fill(surface, &built, menu, &system_items, null, &taken) catch |err| {
+        fill(.of(surface), &built, menu, &system_items, null, &taken) catch |err| {
             log.warn("system menu items not added err={}", .{err});
         };
         // Built.deinit frees the old list.
@@ -657,10 +705,10 @@ fn addString(alloc: Allocator, built: *Built, s: []const u8) BuildError![:0]u16 
     return text;
 }
 
-fn enabled(surface: *Surface, action: Action, place: ?TabPlace) bool {
+fn enabled(ctx: Ctx, action: Action, place: ?TabPlace) bool {
     if (!App.supportsAction(action)) return false;
     return switch (action) {
-        .copy_to_clipboard => surface.core_initialized and surface.core_surface.hasSelection(),
+        .copy_to_clipboard => if (ctx.surface) |surface| surface.core_initialized and surface.core_surface.hasSelection() else false,
         .paste_from_clipboard => c.IsClipboardFormatAvailable(c.CF_UNICODETEXT) != 0,
         // In the tab menu, only when there are tabs to close.
         .close_tab => |mode| if (place) |p| switch (mode) {

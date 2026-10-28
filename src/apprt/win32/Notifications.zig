@@ -5,14 +5,17 @@
 //! so here the icon stands for the latest notification: it comes with it
 //! and goes when that one's pane gets the keyboard or closes, when its 3 s
 //! pass, or when it is clicked, which takes the toast out of the
-//! notification center too. Until the tray (5.6), the icon is there only
-//! while a notification is.
+//! notification center too. Without the tray the icon is there only while
+//! a notification is; as the tray (roadmap 5.6) it stays, a click on it
+//! brings murrtty forward and its menu offers New Window, Config and Quit,
+//! and a notification's balloon comes and goes on it.
 const Notifications = @This();
 
 const std = @import("std");
 
 const c = @import("c.zig");
 const App = @import("App.zig");
+const ContextMenu = @import("ContextMenu.zig");
 const test_hooks = @import("test_hooks.zig");
 const text_util = @import("text.zig");
 
@@ -38,6 +41,10 @@ big_icon: ?c.HICON = null,
 taskbar_created: c.UINT = 0,
 /// Whether the icon is in the notification area.
 shown: bool = false,
+/// Whether it is the tray, there whether or not a notification is.
+tray: bool = false,
+/// Whether a notification is pending (the latest stands until it goes).
+pending: bool = false,
 /// The latest notification's pane, by core id; null for one of the app's.
 surface: ?u64 = null,
 /// Inside a call to Explorer, which runs the messages sent meanwhile: a
@@ -147,6 +154,27 @@ fn place(self: *Notifications, data: *c.NOTIFYICONDATAW) bool {
     return !self.shown and self.shell(c.NIM_MODIFY, data);
 }
 
+/// Keep the icon in the notification area as the tray, or not. Without its
+/// window nothing changes, and `tray` stays false.
+pub fn setTray(self: *Notifications, on: bool) void {
+    if (self.hwnd == null or on == self.tray) return;
+    self.tray = on;
+    if (on) {
+        var data = self.iconOnly();
+        // Without a notification area yet (Explorer starting), it comes
+        // with TaskbarCreated.
+        if (self.place(&data)) {
+            self.shown = true;
+        } else log.warn("the tray icon could not be added yet err={}", .{c.GetLastError()});
+    } else if (!self.pending) self.remove();
+}
+
+fn remove(self: *Notifications) void {
+    var data = self.iconData();
+    _ = self.shell(c.NIM_DELETE, &data);
+    self.shown = false;
+}
+
 /// Show a notification from the pane `surface` (null: the app's own),
 /// `focused` if that pane has the keyboard. With no title it is murrtty's,
 /// as GTK's is Ghostty's; with no body the title says it under murrtty's
@@ -174,34 +202,40 @@ pub fn send(self: *Notifications, surface: ?u64, focused: bool, title: []const u
         return;
     }
     self.shown = true;
+    self.pending = true;
     self.surface = surface;
     test_hooks.recordNotification(&self.app.test_state, self.app.core_app.alloc, surface, shown_title, shown_body);
     _ = c.KillTimer(hwnd, focused_timer);
     if (focused) _ = c.SetTimer(hwnd, focused_timer, focused_timeout_ms, null);
 }
 
-/// Take the notification back: the icon goes, and its toasts with it.
+/// Take the notification back: the icon goes, and its toasts with it. The
+/// tray's comes straight back: deleting the icon is what takes a toast out
+/// of the notification center (an empty balloon only hides one showing).
 pub fn withdraw(self: *Notifications) void {
     const hwnd = self.hwnd orelse return;
     _ = c.KillTimer(hwnd, focused_timer);
-    if (!self.shown) return;
-    self.shown = false;
+    if (!self.pending) return;
+    self.pending = false;
     self.surface = null;
-    var data = self.iconData();
-    _ = self.shell(c.NIM_DELETE, &data);
+    self.remove();
+    if (self.tray) {
+        var data = self.iconOnly();
+        if (self.place(&data)) self.shown = true;
+    }
 }
 
 /// The pane `id` got the keyboard, or closes: its notification goes, as
 /// GTK's do.
 pub fn surfaceDone(self: *Notifications, id: u64) void {
-    if (self.shown and self.surface == id) self.withdraw();
+    if (self.pending and self.surface == id) self.withdraw();
 }
 
 /// The toast or the icon was clicked: the notification goes, and its pane
 /// comes forward from the message loop once no dialog is open (one of the
 /// app's own presents nothing, as GTK's).
 pub fn clicked(self: *Notifications) void {
-    if (!self.shown) return;
+    if (!self.pending) return;
     const id = self.surface;
     self.withdraw();
     if (id) |v| self.app.request(.{ .present_surface = v });
@@ -215,30 +249,55 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         WM_ICON => {
             const event: c.UINT = @intCast(@as(usize, @bitCast(lparam)) & 0xFFFF);
             switch (event) {
+                c.NIN_BALLOONUSERCLICK, c.NIN_SELECT, c.NIN_KEYSELECT, c.WM_CONTEXTMENU => if (self.busy) {
+                    _ = c.PostMessageW(hwnd, msg, wparam, lparam);
+                    return 0;
+                },
+                else => return 0,
+            }
+            switch (event) {
                 // A toast that times out stays in the notification center,
                 // and the icon with it.
-                c.NIN_BALLOONUSERCLICK, c.NIN_SELECT, c.NIN_KEYSELECT => {
-                    if (self.busy) {
-                        _ = c.PostMessageW(hwnd, msg, wparam, lparam);
-                    } else self.clicked();
-                },
+                c.NIN_BALLOONUSERCLICK => self.clicked(),
+                // The icon itself: the tray's brings murrtty forward, a
+                // notification's stands for it.
+                c.NIN_SELECT, c.NIN_KEYSELECT => if (self.tray) self.app.trayActivate() else self.clicked(),
+                // Its anchor in wparam (NOTIFYICON_VERSION_4).
+                c.WM_CONTEXTMENU => if (self.tray) self.app.trayMenu(hwnd, .{ .x = c.xParam(@bitCast(wparam)), .y = c.yParam(@bitCast(wparam)) }),
                 else => {},
             }
             return 0;
+        },
+        // The tray's menu is owner-drawn (ContextMenu).
+        c.WM_MEASUREITEM => {
+            if (ContextMenu.measureItem(lparam)) return 1;
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_DRAWITEM => {
+            if (ContextMenu.drawItem(lparam)) return 1;
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        c.WM_MENUCHAR => {
+            if (ContextMenu.menuChar(wparam, lparam)) |r| return r;
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_TIMER => {
             if (wparam == focused_timer) self.withdraw();
             return 0;
         },
         else => {
-            // Explorer restarted, or rebuilt the taskbar: the icon at its
-            // DPI again, if a notification is pending (its toast is gone).
+            // Explorer started, restarted or rebuilt the taskbar: the icon
+            // at its DPI again, for the tray or a pending notification (its
+            // toast is gone).
             if (msg == self.taskbar_created and self.taskbar_created != 0) {
                 self.loadIcons();
-                if (self.shown) {
+                if (self.shown or self.tray) {
                     var data = self.iconOnly();
-                    if (!self.shell(c.NIM_ADD, &data) and !self.shell(c.NIM_MODIFY, &data)) {
-                        self.shown = false;
+                    self.shown = false;
+                    if (self.place(&data)) {
+                        self.shown = true;
+                    } else {
+                        self.pending = false;
                         self.surface = null;
                     }
                 }

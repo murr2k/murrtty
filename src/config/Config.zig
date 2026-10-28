@@ -2633,13 +2633,20 @@ keybind: Keybinds = .{},
 /// Whether or not to quit after the last surface is closed.
 ///
 /// This defaults to `false` on macOS since that is standard behavior for
-/// a macOS application. On Linux, this defaults to `true` since that is
-/// generally expected behavior.
+/// a macOS application. On Linux and Windows, this defaults to `true` since
+/// that is generally expected behavior.
 ///
-/// On Linux, if this is `true`, Ghostty can delay quitting fully until a
-/// configurable amount of time has passed after the last window is closed.
-/// See the documentation of `quit-after-last-window-closed-delay`.
-@"quit-after-last-window-closed": bool = builtin.target.os.tag == .linux,
+/// On Linux and Windows, if this is `true`, Ghostty can delay quitting
+/// fully until a configurable amount of time has passed after the last
+/// window is closed. See the documentation of
+/// `quit-after-last-window-closed-delay`.
+///
+/// On Windows, while this is `false` (or `initial-window` is), an icon in
+/// the notification area keeps the app within reach with no window open.
+@"quit-after-last-window-closed": bool = switch (builtin.target.os.tag) {
+    .linux, .windows => true,
+    else => false,
+},
 
 /// Controls how long Ghostty will stay running after the last open surface has
 /// been closed. This only has an effect if `quit-after-last-window-closed` is
@@ -2679,14 +2686,14 @@ keybind: Keybinds = .{},
 /// Ghostty will quit immediately after the last window is closed if
 /// `quit-after-last-window-closed` is `true`.
 ///
-/// Only implemented on Linux.
+/// Only implemented on Linux and Windows.
 @"quit-after-last-window-closed-delay": ?Duration = null,
 
 /// This controls whether an initial window is created when Ghostty
 /// is run. Note that if `quit-after-last-window-closed` is `true` and
 /// `quit-after-last-window-closed-delay` is set, setting `initial-window` to
 /// `false` will mean that Ghostty will quit after the configured delay if no
-/// window is ever created. Only implemented on Linux and macOS.
+/// window is ever created. Only implemented on Linux, macOS and Windows.
 @"initial-window": bool = true,
 
 /// The duration that undo operations remain available. After this

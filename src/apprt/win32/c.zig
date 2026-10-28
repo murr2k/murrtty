@@ -604,6 +604,7 @@ pub extern "user32" fn GetDpiForWindow(HWND) callconv(.winapi) UINT;
 pub extern "user32" fn AdjustWindowRectExForDpi(*RECT, DWORD, BOOL, DWORD, UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn SetProcessDpiAwarenessContext(isize) callconv(.winapi) BOOL;
 pub extern "user32" fn MonitorFromWindow(HWND, DWORD) callconv(.winapi) ?HMONITOR;
+pub extern "user32" fn MonitorFromPoint(POINT, DWORD) callconv(.winapi) ?HMONITOR;
 pub extern "user32" fn MonitorFromRect(*const RECT, DWORD) callconv(.winapi) ?HMONITOR;
 pub extern "user32" fn GetMonitorInfoW(HMONITOR, *MONITORINFO) callconv(.winapi) BOOL;
 pub extern "user32" fn GetWindowPlacement(HWND, *WINDOWPLACEMENT) callconv(.winapi) BOOL;
@@ -971,6 +972,7 @@ pub extern "gdi32" fn CreateFontIndirectW(*const LOGFONTW) callconv(.winapi) ?HF
 // kernel32
 pub extern "kernel32" fn GetModuleHandleW(?LPCWSTR) callconv(.winapi) ?HINSTANCE;
 pub extern "kernel32" fn LoadLibraryW(LPCWSTR) callconv(.winapi) ?HINSTANCE;
+pub extern "kernel32" fn FreeLibrary(HINSTANCE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetEnvironmentVariableW(LPCWSTR, ?[*]u16, DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateFileW(
     LPCWSTR,

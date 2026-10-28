@@ -241,6 +241,9 @@ pub const LaunchOptions = struct {
     /// Also write this as Ghostty's own configuration, which murrtty reads
     /// when it has none of its own.
     ghostty_config: ?[]const u8 = null,
+    /// Wait for murrtty's first window (none comes with initial-window =
+    /// false).
+    wait_window: bool = true,
 };
 
 pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: LaunchOptions) !Ghostty {
@@ -364,7 +367,16 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
         .dir = dir,
         .dump_path = dump_path,
     };
-    errdefer g.deinit();
+    // Not g.deinit: the errdefers above free `dir` and `dump_path`.
+    errdefer {
+        if (g.exitCode() == null) {
+            _ = w.TerminateProcess(g.proc, 1);
+            _ = w.WaitForSingleObject(g.proc, 5000);
+        }
+        _ = w.CloseHandle(g.proc);
+        if (g.thread) |t| _ = w.CloseHandle(t);
+    }
+    if (!opts.wait_window) return g;
     _ = self.waitFor(&g, 15000, struct {
         fn ready(h: *Harness, gg: *Ghostty) bool {
             const wins = h.windows(gg, "MurrttyWindow") catch return false;
@@ -1095,6 +1107,47 @@ pub fn setInFront(self: *Harness, g: *const Ghostty, state: enum { real, yes, no
     d.deinit();
 }
 
+/// What Explorer sends for murrtty's tray icon (roadmap 5.6), posted to
+/// its notification-area window as Explorer does (NOTIFYICON_VERSION_4:
+/// the event in lParam's low word, the anchor in wParam): `.select` a
+/// click, `.menu` the menu, at (x, y) in screen pixels.
+pub fn trayEvent(self: *Harness, g: *const Ghostty, event: enum { select, menu }, x: i16, y: i16) !void {
+    const hwnd = notifyWindow(g.pid) orelse return self.fail("no notification-area window", .{});
+    const anchor: usize = @as(usize, @as(u16, @bitCast(x))) | (@as(usize, @as(u16, @bitCast(y))) << 16);
+    const code: usize = switch (event) {
+        .select => w.WM_USER,
+        .menu => w.WM_CONTEXTMENU,
+    };
+    _ = w.PostMessageW(hwnd, w.WM_APP + 1, anchor, @bitCast(code));
+    // A click runs before the wakeup window's sync (the same thread); a
+    // menu's loop would keep it waiting.
+    if (event == .select) if (wakeupWindow(g.pid)) |wake| self.sync(wake);
+}
+
+/// Wait until murrtty `g` takes the test hooks' messages (its wakeup
+/// window exists), for a launch with no window to wait for.
+pub fn waitAnswering(self: *Harness, g: *const Ghostty, ms: u32) !void {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        if (wakeupWindow(g.pid) != null) return;
+        if (g.exitCode()) |code| return self.fail("murrtty exited ({d})", .{code});
+        w.Sleep(100);
+    }
+    return self.fail("murrtty never answered", .{});
+}
+
+/// The hidden window murrtty `pid`'s notification-area icon reports to.
+fn notifyWindow(pid: w.DWORD) ?w.HWND {
+    var prev: ?w.HWND = null;
+    while (w.FindWindowExW(null, prev, w.L("MurrttyNotify"), null)) |cand| {
+        var cand_pid: w.DWORD = 0;
+        _ = w.GetWindowThreadProcessId(cand, &cand_pid);
+        if (cand_pid == pid) return cand;
+        prev = cand;
+    }
+    return null;
+}
+
 /// The message-only wakeup window of the Ghostty process `pid`, which
 /// takes the test hooks' messages (Debug builds).
 fn wakeupWindow(pid: w.DWORD) ?w.HWND {
@@ -1357,7 +1410,14 @@ pub const Dump = struct {
     /// whose it is.
     notifications: []const struct { surface: u64, title: []const u8, body: []const u8 } = &.{},
     notify_icon: bool = false,
+    /// Whether a notification stands (the icon may stay as the tray).
+    notify_pending: bool = false,
     notify_surface: u64 = 0,
+    /// The tray (roadmap 5.6); GTK's quit timer ("off", "active",
+    /// "expired"); whether a window was ever opened.
+    tray: bool = false,
+    quit_timer: []const u8 = "",
+    requested_window: bool = false,
     /// The global bindings' hot keys (roadmap 5.5); whether
     /// toggle_visibility hid the windows, their ids and the one that was
     /// in front (0 for none); the window last activated; hot keys waiting
