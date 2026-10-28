@@ -23,6 +23,7 @@ const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Banner = @import("Banner.zig");
 const ClipboardDialog = @import("ClipboardDialog.zig");
+const cf_html = @import("cf_html.zig");
 const draw = @import("draw.zig");
 const ipc = @import("ipc.zig");
 const taskbar_mod = @import("taskbar.zig");
@@ -31,6 +32,7 @@ const DropTarget = @import("DropTarget.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
 const Inspector = @import("Inspector.zig");
+const input_pane = @import("input_pane.zig");
 const Uia = @import("Uia.zig");
 const Scrollbar = @import("Scrollbar.zig");
 const SearchBox = @import("SearchBox.zig");
@@ -1089,10 +1091,13 @@ fn confirmClipboardRead(
     unsafe: bool,
 ) void {
     // What the box shows: the clipboard's text, or what a Kitty write
-    // would put there.
+    // would put there: its text, or without any its HTML, since an allowed
+    // write puts what the program offered (HTML too, roadmap 6.5).
     const shown: []const u8 = text orelse switch (req) {
         .kitty_write => |k| for (k.contents) |content| {
             if (std.mem.eql(u8, content.mime, "text/plain")) break content.data;
+        } else for (k.contents) |content| {
+            if (std.mem.eql(u8, content.mime, "text/html")) break content.data;
         } else "",
         else => "",
     };
@@ -1125,36 +1130,73 @@ pub fn setClipboard(
     contents: []const apprt.ClipboardContent,
     confirm: bool,
 ) !void {
-    const text: [:0]const u8 = for (contents) |content| {
-        if (std.mem.eql(u8, content.mime, "text/plain")) break content.data;
-    } else return;
+    // Text and HTML (copy_to_clipboard's mixed and html; roadmap 6.5).
+    var text: ?[:0]const u8 = null;
+    var html: ?[:0]const u8 = null;
+    for (contents) |content| {
+        if (text == null and std.mem.eql(u8, content.mime, "text/plain")) text = content.data;
+        if (html == null and std.mem.eql(u8, content.mime, "text/html")) html = content.data;
+    }
 
     const alloc = self.app.core_app.alloc;
     if (confirm) {
-        // Confirm from the message loop, not inside the core callback.
-        self.queueClipboardConfirm(.{ .request = null, .text = try alloc.dupe(u8, text), .target = clipboard_type });
+        // Confirm from the message loop, not inside the core callback. The
+        // dialog shows the text, and an allowed write puts only that, as
+        // GTK and macOS do.
+        const t = text orelse return;
+        self.queueClipboardConfirm(.{ .request = null, .text = try alloc.dupe(u8, t), .target = clipboard_type });
         return;
     }
 
-    try self.writeTo(clipboard_type, text);
+    if (text == null and html == null) return;
+    try self.writeTo(clipboard_type, text, html);
 }
 
-/// Write `text` to the system clipboard, with GTK's toast, or to murrtty's
-/// selection clipboard (roadmap 5.9), quietly: GTK's toast is for the
-/// system clipboard.
-fn writeTo(self: *Surface, clipboard_type: apprt.Clipboard, text: []const u8) !void {
-    if (clipboard_type != .standard) return self.app.setSelection(text);
-    try writeClipboardText(self.app.core_app.alloc, self.hwnd, text);
-    self.clipboardWritten(text);
+/// Write `text`, `html` or both to the system clipboard, with GTK's toast,
+/// or the text to murrtty's selection clipboard (roadmap 5.9), quietly:
+/// GTK's toast is for the system clipboard.
+fn writeTo(self: *Surface, clipboard_type: apprt.Clipboard, text: ?[]const u8, html: ?[]const u8) !void {
+    if (clipboard_type != .standard) {
+        if (text) |t| return self.app.setSelection(t);
+        return;
+    }
+    try writeClipboard(self.app.core_app.alloc, self.hwnd, text, html);
+    self.clipboardWritten(if (text) |t| t.len > 0 else html != null);
 }
 
 /// GTK's toast for a write to the clipboard (app-notifications's
 /// clipboard-copy): "Copied to clipboard", or for nothing, "Cleared
 /// clipboard". In the pane's window, whether or not it is in front (a
 /// program's OSC 52 write too).
-fn clipboardWritten(self: *Surface, text: []const u8) void {
+fn clipboardWritten(self: *Surface, copied: bool) void {
     if (!self.app.config.@"app-notifications".@"clipboard-copy") return;
-    self.window.showToast(if (text.len > 0) "Copied to clipboard" else "Cleared clipboard");
+    self.window.showToast(if (copied) "Copied to clipboard" else "Cleared clipboard");
+}
+
+/// show_on_screen_keyboard (roadmap 6.5): Windows' touch keyboard, for
+/// the pane's window, as GTK asks its input method. Whether it showed.
+/// With the test hooks on, the window's input pane is only looked up
+/// (GHOSTTY_WIN32_TEST_OSK asks for real).
+pub fn showOnScreenKeyboard(self: *Surface) bool {
+    const ask: input_pane.Ask = if (test_hooks.recordsOsk(&self.app.test_state)) .none else .show;
+    const result = input_pane.request(self.window.hwnd, ask);
+    test_hooks.recordOsk(&self.app.test_state, result.hr, result.done);
+    if (result.hr < 0) log.warn("no touch keyboard hr=0x{x}", .{@as(u32, @bitCast(result.hr))});
+    return if (ask == .none) result.hr >= 0 else result.done;
+}
+
+/// Windows' "lines to scroll at a time" (the mouse settings): the rows a
+/// wheel notch scrolls, at most a page ("one screen at a time" is
+/// WHEEL_PAGESCROLL), none for 0.
+fn wheelLines(self: *Surface) f64 {
+    var lines: c.UINT = 3;
+    if (test_hooks.wheelLines()) |l| {
+        lines = l;
+    } else if (c.SystemParametersInfoW(c.SPI_GETWHEELSCROLLLINES, 0, &lines, 0) == 0) {
+        lines = 3;
+    }
+    const page: c.UINT = self.core_surface.size.grid().rows;
+    return @floatFromInt(@min(lines, page));
 }
 
 /// An OSC 52 write the configuration says to ask about (clipboard-write =
@@ -1164,7 +1206,7 @@ fn confirmClipboardWrite(self: *Surface, text: []const u8, target: apprt.Clipboa
     if (answer.remember) self.core_surface.config.clipboard_write = if (answer.allow) .allow else .deny;
     if (!answer.allow) return;
 
-    self.writeTo(target, text) catch |err| {
+    self.writeTo(target, text, null) catch |err| {
         log.warn("error writing clipboard err={}", .{err});
     };
 }
@@ -1685,14 +1727,20 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             // Precision touchpads deliver fractions of a notch.
             const precision = @rem(delta, c.WHEEL_DELTA) != 0;
             const ticks = @as(f64, @floatFromInt(delta)) / c.WHEEL_DELTA;
-            const amount: f64 = if (precision)
-                ticks * @as(f64, @floatFromInt(self.core_surface.size.cell.height))
-            else
-                ticks;
-            const xoff: f64, const yoff: f64 = if (msg == c.WM_MOUSEWHEEL)
-                .{ 0, amount }
-            else
-                .{ -amount, 0 };
+            const cell_height: f64 = @floatFromInt(self.core_surface.size.cell.height);
+            const xoff: f64, const yoff: f64 = if (msg == c.WM_MOUSEWHEEL) vertical: {
+                // A notch scrolls Windows' "lines to scroll at a time" at
+                // mouse-scroll-multiplier's defaults (3 a notch, 1 a
+                // touchpad's pixel), which scale it (roadmap 6.5). The
+                // core multiplies again and truncates to rows, so a third
+                // of the lines could come back a hair under a whole row
+                // (1 or 4 lines lost one at some cell heights): nudge it,
+                // by far less than a row.
+                const lines = self.wheelLines();
+                if (lines == 0) return 0;
+                const amount = if (precision) ticks * lines * cell_height else ticks * lines / 3;
+                break :vertical .{ 0, amount * (1 + 1e-9) };
+            } else .{ -(if (precision) ticks * cell_height else ticks), 0 };
             self.core_surface.scrollCallback(xoff, yoff, .{ .precision = precision }) catch |err| {
                 log.warn("error in scroll callback err={}", .{err});
             };
@@ -2258,30 +2306,45 @@ pub fn readClipboardText(alloc: Allocator, hwnd: c.HWND) !?[]u8 {
 }
 
 pub fn writeClipboardText(alloc: Allocator, hwnd: c.HWND, text: []const u8) !void {
-    const utf16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, text);
-    defer alloc.free(utf16);
+    return writeClipboard(alloc, hwnd, text, null);
+}
 
-    const bytes = (utf16.len + 1) * 2;
-    const handle = c.GlobalAlloc(c.GMEM_MOVEABLE, bytes) orelse return error.OutOfMemory;
-    {
-        const dst: [*]u16 = @ptrCast(@alignCast(c.GlobalLock(handle) orelse {
-            _ = c.GlobalFree(handle);
-            return error.OutOfMemory;
-        }));
-        @memcpy(dst[0 .. utf16.len + 1], utf16[0 .. utf16.len + 1]);
-        _ = c.GlobalUnlock(handle);
+/// Put `text` (CF_UNICODETEXT), `html` (Windows' "HTML Format",
+/// cf_html.zig) or both on the clipboard, in place of what it held.
+pub fn writeClipboard(alloc: Allocator, hwnd: c.HWND, text: ?[]const u8, html: ?[]const u8) !void {
+    var text_mem: ?c.HGLOBAL = null;
+    defer if (text_mem) |m| {
+        _ = c.GlobalFree(m);
+    };
+    if (text) |t| {
+        const utf16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, t);
+        defer alloc.free(utf16);
+        text_mem = try globalCopy(std.mem.sliceAsBytes(utf16[0 .. utf16.len + 1]));
+    }
+    var html_mem: ?c.HGLOBAL = null;
+    defer if (html_mem) |m| {
+        _ = c.GlobalFree(m);
+    };
+    var html_format: c.UINT = 0;
+    if (html) |h| {
+        html_format = c.RegisterClipboardFormatW(c.L("HTML Format"));
+        if (html_format == 0) return error.ClipboardWriteFailed;
+        const data = try cf_html.encode(alloc, h);
+        defer alloc.free(data);
+        html_mem = try globalCopy(data[0 .. data.len + 1]);
     }
 
-    if (!openClipboard(hwnd)) {
-        _ = c.GlobalFree(handle);
-        return error.ClipboardOpenFailed;
-    }
+    if (!openClipboard(hwnd)) return error.ClipboardOpenFailed;
     defer _ = c.CloseClipboard();
     _ = c.EmptyClipboard();
     // On success the system owns the memory.
-    if (c.SetClipboardData(c.CF_UNICODETEXT, handle) == null) {
-        _ = c.GlobalFree(handle);
-        return error.ClipboardWriteFailed;
+    if (text_mem) |m| {
+        if (c.SetClipboardData(c.CF_UNICODETEXT, m) == null) return error.ClipboardWriteFailed;
+        text_mem = null;
+    }
+    if (html_mem) |m| {
+        if (c.SetClipboardData(html_format, m) == null) return error.ClipboardWriteFailed;
+        html_mem = null;
     }
 
     // Under the GUI tests, keep what they make us copy out of the user's
@@ -2292,6 +2355,18 @@ pub fn writeClipboardText(alloc: Allocator, hwnd: c.HWND, text: []const u8) !voi
             if (c.SetClipboardData(format, marker) == null) _ = c.GlobalFree(marker);
         };
     }
+}
+
+/// `bytes` in moveable global memory, as the clipboard takes it.
+fn globalCopy(bytes: []const u8) !c.HGLOBAL {
+    const handle = c.GlobalAlloc(c.GMEM_MOVEABLE, bytes.len) orelse return error.OutOfMemory;
+    const dst: [*]u8 = @ptrCast(c.GlobalLock(handle) orelse {
+        _ = c.GlobalFree(handle);
+        return error.OutOfMemory;
+    });
+    @memcpy(dst[0..bytes.len], bytes);
+    _ = c.GlobalUnlock(handle);
+    return handle;
 }
 
 /// Show a message box. Returns true for OK/Yes.

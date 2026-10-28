@@ -76,6 +76,13 @@ pub const State = if (enabled) struct {
     /// The last test drop's effect (dump wparam 17; roadmap 5.8): 1 a
     /// copy, 0 refused, -1 none made.
     drop_effect: i32 = -1,
+    /// show_on_screen_keyboard's requests (roadmap 6.5), and the last
+    /// one's result. The window's input pane is only looked up unless
+    /// GHOSTTY_WIN32_TEST_OSK is set.
+    osk_asks: u32 = 0,
+    osk_hr: i32 = 0,
+    osk_done: bool = false,
+    record_osk: bool = true,
 } else struct {};
 
 pub const Notified = struct {
@@ -88,6 +95,40 @@ pub const Notified = struct {
 
 /// Whether the hooks are on, for code with no App at hand.
 var on = false;
+
+/// The rows a wheel notch scrolls in place of Windows' setting
+/// (GHOSTTY_WIN32_TEST_WHEEL_LINES: a number, or "page"; roadmap 6.5).
+var wheel_lines: ?u32 = null;
+
+pub fn wheelLines() ?u32 {
+    if (comptime !enabled) return null;
+    return wheel_lines;
+}
+
+fn wheelLinesFromEnv() ?u32 {
+    var buf: [16]u16 = undefined;
+    const n = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_WHEEL_LINES"), &buf, buf.len);
+    if (n == 0 or n >= buf.len) return null;
+    var ascii: [16]u8 = undefined;
+    for (buf[0..n], ascii[0..n]) |unit, *a| a.* = if (unit < 0x80) @intCast(unit) else '?';
+    if (std.mem.eql(u8, ascii[0..n], "page")) return c.WHEEL_PAGESCROLL;
+    return std.fmt.parseInt(u32, ascii[0..n], 10) catch null;
+}
+
+/// Whether show_on_screen_keyboard only looks the input pane up.
+pub fn recordsOsk(state: *const State) bool {
+    if (comptime !enabled) return false;
+    return state.msg != 0 and state.record_osk;
+}
+
+/// Record a show_on_screen_keyboard request's result.
+pub fn recordOsk(state: *State, hr: i32, done: bool) void {
+    if (comptime !enabled) return;
+    if (state.msg == 0) return;
+    state.osk_asks += 1;
+    state.osk_hr = hr;
+    state.osk_done = done;
+}
 
 pub fn active() bool {
     if (comptime !enabled) return false;
@@ -107,11 +148,13 @@ pub fn init(alloc: Allocator) State {
     }
     log.warn("test hooks enabled", .{});
     on = true;
+    wheel_lines = wheelLinesFromEnv();
     return .{
         .msg = c.RegisterWindowMessageW(c.L("GhosttyWin32TestDump")),
         .path = path,
         .record_launches = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_LAUNCH"), null, 0) == 0,
         .record_notifications = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_NOTIFY"), null, 0) == 0,
+        .record_osk = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_OSK"), null, 0) == 0,
     };
 }
 
@@ -269,6 +312,12 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         for (app.windows.items) |w| w.syncBlur();
     }
     if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));
+    // Hide the touch keyboard for the first window (roadmap 6.5), after a
+    // test asked for it.
+    if (wparam == 20) if (app.windows.items.len > 0) {
+        const r = @import("input_pane.zig").request(app.windows.items[0].hwnd, .hide);
+        recordOsk(&app.test_state, r.hr, r.done);
+    };
     if (wparam == 17) {
         app.test_state.drop_effect = -1;
         if (app.windows.items.len > 0) if (app.windows.items[0].activeSurface()) |s| if (s.drop_target) |d| {
@@ -683,6 +732,12 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         app.test_state.global_refreshes,
     });
     try out.print(alloc, ",\"drop_effect\":{d}", .{app.test_state.drop_effect});
+    try out.print(alloc, ",\"osk\":{{\"asks\":{d},\"hr\":{d},\"done\":{}}},\"click_interval\":{d}", .{
+        app.test_state.osk_asks,
+        app.test_state.osk_hr,
+        app.test_state.osk_done,
+        app.config.@"click-repeat-interval",
+    });
     // murrtty's selection clipboard (roadmap 5.9).
     try out.appendSlice(alloc, ",\"selection\":");
     try writeString(alloc, out, app.selection orelse "");

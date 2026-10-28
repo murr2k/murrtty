@@ -308,8 +308,19 @@ hosted Windows runner and then the unit tests.
   "Command Failed" and/or rings the bell (`notify-on-command-finish`,
   `notify-on-command-finish-action`); the terminal menu's Notify on Next
   Command Finish does it for the next command.
+- Copying puts HTML on the clipboard beside the text (Windows' HTML
+  Format, for rich editors), and `copy_to_clipboard:html` the HTML alone.
+  The tests read the clipboard's formats; pasting into a rich editor
+  hasn't been tried.
+- The wheel scrolls Windows' "lines to scroll at a time" a notch (a page
+  for "one screen at a time"), which `mouse-scroll-multiplier` scales, and
+  a double click is Windows' double-click time.
 
 **Implemented but not yet tested**
+
+- `show_on_screen_keyboard` asks Windows for its touch keyboard. On the
+  test machine (a keyboard attached, no touch screen) Windows declines to
+  show it, so it hasn't been seen.
 
 - Background blur (`background-blur`) behind a translucent background:
   Acrylic in the active window on Windows 11 22H2 and later, otherwise a

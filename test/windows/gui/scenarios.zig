@@ -58,6 +58,10 @@ pub const all = [_]Scenario{
     .{ .name = "gl-library", .about = "MURRTTY_OPENGL names the opengl32.dll to use; one that can't load is said so", .run = glLibrary },
     .{ .name = "ime-place", .about = "an IME asking where text is (WM_IME_REQUEST) is told the cursor's cell, and follows typing", .run = imePlace },
     .{ .name = "intl-keys", .about = "AltGr and Ctrl+Alt characters, and Alt+Numpad codes, reach a console program as Windows types them", .run = intlKeys },
+    .{ .name = "mouse-settings", .about = "Windows' double-click time; a wheel notch scrolls its lines to scroll at a time (a page), which mouse-scroll-multiplier scales; a touchpad's part of a notch its part", .run = mouseSettings },
+    .{ .name = "clipboard-html", .about = "a copy puts the text and HTML Format (offsets that find the copy); copy_to_clipboard:html the HTML alone, :plain the text alone", .run = clipboardHtml },
+    .{ .name = "on-screen-keyboard", .about = "show_on_screen_keyboard gets Windows' input pane for the window (the hooks stop short of showing it)", .run = onScreenKeyboard },
+    .{ .name = "osk-shown", .about = "show_on_screen_keyboard asks Windows to show the touch keyboard for real, then hides it; it may show ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = oskShown },
     .{ .name = "font-registered", .about = "a font installed for the user from a folder with a non-ASCII name is found and opened", .run = fontRegistered },
     .{ .name = "output-frames", .about = "output that arrives with no key pressed is drawn", .run = outputFrames },
     .{ .name = "background-close", .about = "a tab closing in a background window leaves the active window active", .run = backgroundClose },
@@ -1887,7 +1891,7 @@ fn commandPalette(h: *Harness) anyerror!void {
     try h.expect(p.has("Toggle Inspector"), "Toggle Inspector is, since 5.12", .{});
     try h.expect(p.has("Move Tab to New Window"), "Move Tab to New Window is, since 4.5", .{});
     try h.expect(p.has("Change Tab Title\u{2026}"), "the title prompts are (roadmap 3.5)", .{});
-    try h.expect(!p.has("Copy Selection as HTML to Clipboard"), "nor ones whose argument it can't honor", .{});
+    try h.expect(p.has("Copy Selection as HTML to Clipboard") and p.has("Show On-Screen Keyboard"), "the HTML copy and the touch keyboard are, since 6.5", .{});
     try h.expect(p.has("Paste from Selection"), "Paste from Selection is, since 5.9", .{});
 
     // The app's config changes while it is open, again and again (the app
@@ -3979,6 +3983,17 @@ fn cli(h: *Harness) anyerror!void {
         var r = try h.runCli("cli", &.{"+version"});
         defer r.deinit();
         try h.expect(r.code == 0 and std.mem.indexOf(u8, r.out, "murrtty") != null, "+version exits 0 and names murrtty (exit {d})", .{r.code});
+
+        // The version Explorer shows is +version's (roadmap 6.5).
+        const marker = "based on Ghostty ";
+        const at = std.mem.indexOf(u8, r.out, marker) orelse return h.fail("+version names no Ghostty version: '{s}'", .{r.out});
+        const rest = r.out[at + marker.len ..];
+        const printed = std.mem.trim(u8, rest[0 .. std.mem.indexOfAny(u8, rest, "\r\n") orelse rest.len], " ");
+        const v = try h.exeVersion();
+        defer h.alloc.free(v.text);
+        try h.expect(std.mem.eql(u8, v.text, printed), "the version resource's FileVersion is +version's ('{s}', +version '{s}')", .{ v.text, printed });
+        const sem = std.SemanticVersion.parse(printed) catch return h.fail("+version's '{s}' isn't a version", .{printed});
+        try h.expect(v.numbers[0] == sem.major and v.numbers[1] == sem.minor and v.numbers[2] == sem.patch and v.numbers[3] == 0, "and its file version is {d}.{d}.{d}.{d}", .{ v.numbers[0], v.numbers[1], v.numbers[2], v.numbers[3] });
     }
     {
         const arg = try std.fmt.allocPrint(h.alloc, "--config-file={s}", .{valid});
@@ -3994,6 +4009,256 @@ fn cli(h: *Harness) anyerror!void {
         defer r.deinit();
         try h.expect(r.code == 1 and std.mem.indexOf(u8, r.out, "no-such-option") != null, "+validate-config: an invalid file exits 1, naming the problem (exit {d}, '{s}')", .{ r.code, std.mem.trim(u8, r.out, " \r\n") });
     }
+}
+
+/// Roadmap 6.5: murrtty takes the mouse settings' double-click time, and a
+/// wheel notch scrolls their "lines to scroll at a time" (a page for "one
+/// screen at a time"), which mouse-scroll-multiplier scales (its default,
+/// 3, stands for the setting's lines); a touchpad's part of a notch
+/// scrolls its part. The setting is faked (GHOSTTY_WIN32_TEST_WHEEL_LINES)
+/// but for the first case, which reads the owner's own.
+fn mouseSettings(h: *Harness) anyerror!void {
+    var system: w.UINT = 3;
+    if (w.SystemParametersInfoW(w.SPI_GETWHEELSCROLLLINES, 0, &system, 0) == 0) system = 3;
+    const Case = struct {
+        name: []const u8,
+        lines: ?[]const u8 = null,
+        extra: []const u8 = "",
+        /// Rows a notch scrolls; null for a page.
+        notch: ?u32,
+        /// Rows three thirds of a notch from a touchpad scroll, if checked.
+        touchpad: ?u32 = null,
+    };
+    const cases = [_]Case{
+        .{ .name = "mouse-settings", .notch = if (system == w.WHEEL_PAGESCROLL) null else system },
+        .{ .name = "mouse-settings-6", .lines = "6", .notch = 6, .touchpad = 6 },
+        .{ .name = "mouse-settings-page", .lines = "page", .notch = null },
+        .{ .name = "mouse-settings-x1", .lines = "6", .extra = "mouse-scroll-multiplier = discrete:1\n", .notch = 2, .touchpad = 6 },
+        // Not multiples of 3: a third of them came back a hair under a row
+        // at cell heights of 14, 25, 28 and 31 px, among others (at 125%
+        // this size makes 28; the base config's makes 26, which was
+        // exact).
+        .{ .name = "mouse-settings-1", .lines = "1", .extra = "font-size = 12.5\n", .notch = 1 },
+        .{ .name = "mouse-settings-4", .lines = "4", .extra = "font-size = 12.5\n", .notch = 4 },
+        // More than a page is a page; none is none.
+        .{ .name = "mouse-settings-huge", .lines = "100000", .notch = null },
+        .{ .name = "mouse-settings-0", .lines = "0", .notch = 0 },
+    };
+    // Windows' default double-click time is also murrtty's fallback, 500
+    // ms, so the first launch has it 17 ms longer (for the session, not
+    // saved; too little to notice), put back once murrtty has read it.
+    const click_time = w.GetDoubleClickTime();
+    const bump: w.UINT = if (click_time + 17 == 500) 27 else 17;
+    var click_moved = w.SetDoubleClickTime(click_time + bump) != 0;
+    const moved_at_launch = click_moved;
+    defer if (click_moved) {
+        _ = w.SetDoubleClickTime(click_time);
+    };
+    for (cases, 0..) |case, i| {
+        const config = try std.mem.concat(h.alloc, u8, &.{ base_config, case.extra });
+        defer h.alloc.free(config);
+        var g = if (case.lines) |l|
+            try h.launchWith(case.name, config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_WHEEL_LINES", l }} })
+        else
+            try h.launch(case.name, config);
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        if (i == 0) {
+            const want = w.GetDoubleClickTime();
+            if (click_moved) {
+                _ = w.SetDoubleClickTime(click_time);
+                click_moved = false;
+            }
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(d.value.click_interval == want and (want != 500 or !moved_at_launch), "click-repeat-interval is Windows' double-click time ({d} ms; Windows {d})", .{ d.value.click_interval, want });
+        }
+        if (case.notch == 0 and case.lines == null) {
+            h.log("the wheel is set to scroll nothing here; not checked", .{});
+            try quit(h, &g, surf);
+            continue;
+        }
+        try h.typeText(surf, "for /L %i in (1,1,200) do @echo row %i");
+        h.enter(surf);
+        try h.waitText(&g, "row 200", 1, 20000);
+        const bottom = try waitScroll(h, &g, ScrollState.atBottom, "to the bottom", 5000);
+        var rect: w.RECT = undefined;
+        _ = w.GetClientRect(surf, &rect);
+        const cx = @divTrunc(rect.right, 2);
+        const cy = @divTrunc(rect.bottom, 2);
+
+        h.wheel(surf, cx, cy, 1);
+        if (case.notch == 0) {
+            h.sync(surf);
+            w.Sleep(300);
+            const still = try scrollState(h, &g);
+            try h.expect(still.offset == bottom.offset, "{s}: a notch scrolls nothing (moved {d})", .{ case.name, rowsUp(bottom, still) });
+            try quit(h, &g, surf);
+            continue;
+        }
+        const one = try waitScrolled(h, &g, bottom.offset);
+        const want = case.notch orelse bottom.len;
+        const moved = rowsUp(bottom, one);
+        const cell_h = cell: {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const cell = d.value.windows[0].tabs[0].cell orelse break :cell 0;
+            break :cell cell[1];
+        };
+        try h.expect(moved == want, "{s}: a notch scrolls {d} rows (moved {d}; cells {d} px high)", .{ case.name, want, moved, cell_h });
+
+        if (case.touchpad) |t| {
+            for (0..3) |_| h.wheelDelta(surf, cx, cy, 40);
+            const three = try waitScrolled(h, &g, one.offset);
+            const touch = rowsUp(one, three);
+            try h.expect(touch == t, "{s}: three thirds of a notch from a touchpad scroll {d} rows (moved {d})", .{ case.name, t, touch });
+        }
+        try quit(h, &g, surf);
+    }
+}
+
+/// Rows the viewport moved up from `a` to `b`.
+fn rowsUp(a: ScrollState, b: ScrollState) i64 {
+    return @as(i64, @intCast(a.offset)) - @as(i64, @intCast(b.offset));
+}
+
+/// The scrollbar once the viewport has moved from `offset` and settled.
+fn waitScrolled(h: *Harness, g: *Harness.Ghostty, offset: u64) !ScrollState {
+    var last = try scrollState(h, g);
+    var waited: u32 = 0;
+    while (last.offset == offset and waited < 5000) : (waited += 50) {
+        w.Sleep(50);
+        last = try scrollState(h, g);
+    }
+    w.Sleep(300);
+    return try scrollState(h, g);
+}
+
+/// Roadmap 6.5: a copy (copy_to_clipboard's default, mixed) puts the text
+/// and the HTML on the clipboard, the HTML as Windows' "HTML Format" with
+/// offsets that find the document and the copy; copy_to_clipboard:html
+/// the HTML alone, :plain the text alone.
+fn clipboardHtml(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    var g = try start(h, "clipboard-html", "keybind = ctrl+shift+f5=copy_to_clipboard:html\nkeybind = ctrl+shift+f6=copy_to_clipboard:plain\n", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    const word = "html-copy-word";
+    try h.typeText(surf, "echo " ++ word);
+    h.enter(surf);
+    try waitOutputSettled(h, &g, word);
+    const at = try cellPoint(h, &g, word);
+
+    const Way = enum { mixed, html, plain };
+    for (std.enums.values(Way)) |way| {
+        try h.setClipboard("stale");
+        // Two clicks, as a real double click reaches a pane.
+        h.click(surf, at.x, at.y, .left);
+        h.click(surf, at.x, at.y, .left);
+        h.sync(surf);
+        switch (way) {
+            .mixed => h.key(surf, .{ .ctrl = true, .shift = true }, 'C'),
+            .html => h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F5),
+            .plain => h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F6),
+        }
+        h.sync(surf);
+        const text = try h.getClipboard();
+        defer if (text) |t| h.alloc.free(t);
+        const html = try h.getClipboardFormat(w.L("HTML Format"));
+        defer if (html) |x| h.alloc.free(x);
+        switch (way) {
+            .mixed, .plain => try h.expect(text != null and std.mem.eql(u8, text.?, word), "{s}: the text is the word ('{s}')", .{ @tagName(way), text orelse "(none)" }),
+            .html => try h.expect(!h.clipboardHasText(), "html: no text", .{}),
+        }
+        if (way == .plain) {
+            try h.expect(html == null, "plain: no HTML", .{});
+            continue;
+        }
+        const data = html orelse return h.fail("{s}: no HTML Format on the clipboard", .{@tagName(way)});
+        try h.expect(std.mem.startsWith(u8, data, "Version:0.9\r\n"), "{s}: the HTML starts with CF_HTML's header", .{@tagName(way)});
+        const start_html = cfHtmlField(data, "StartHTML") orelse return h.fail("no StartHTML", .{});
+        const end_html = cfHtmlField(data, "EndHTML") orelse return h.fail("no EndHTML", .{});
+        const start_fragment = cfHtmlField(data, "StartFragment") orelse return h.fail("no StartFragment", .{});
+        const end_fragment = cfHtmlField(data, "EndFragment") orelse return h.fail("no EndFragment", .{});
+        const fits = start_html < start_fragment and start_fragment <= end_fragment and end_fragment <= end_html and end_html == data.len;
+        try h.expect(fits, "{s}: the offsets lie in order within the data ({d} {d} {d} {d}, {d} bytes)", .{ @tagName(way), start_html, start_fragment, end_fragment, end_html, data.len });
+        if (!fits) continue;
+        const fragment = data[start_fragment..end_fragment];
+        try h.expect(std.mem.startsWith(u8, data[start_html..], "<html>") and std.mem.endsWith(u8, data[0..start_fragment], "<!--StartFragment-->") and std.mem.startsWith(u8, data[end_fragment..], "<!--EndFragment-->"), "{s}: StartHTML finds the document, the fragment's offsets its comments", .{@tagName(way)});
+        try h.expect(std.mem.startsWith(u8, fragment, "<") and std.mem.indexOf(u8, fragment, word) != null, "{s}: the fragment is the core's HTML for the word ('{s}')", .{ @tagName(way), fragment });
+    }
+    try quit(h, &g, surf);
+}
+
+/// The value of header field `name` in CF_HTML `data`.
+fn cfHtmlField(data: []const u8, name: []const u8) ?usize {
+    var lines = std.mem.splitSequence(u8, data, "\r\n");
+    while (lines.next()) |line| {
+        if (line.len > name.len and std.mem.startsWith(u8, line, name) and line[name.len] == ':')
+            return std.fmt.parseInt(usize, line[name.len + 1 ..], 10) catch null;
+    }
+    return null;
+}
+
+/// Roadmap 6.5: show_on_screen_keyboard gets Windows' input pane for the
+/// pane's window (IInputPaneInterop, then IInputPane2); with the test
+/// hooks on it stops short of showing the keyboard (osk-shown shows it).
+fn onScreenKeyboard(h: *Harness) anyerror!void {
+    var g = try start(h, "on-screen-keyboard", "keybind = ctrl+shift+f7=show_on_screen_keyboard\n", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F7);
+    h.sync(surf);
+    var d = try h.dump(&g);
+    defer d.deinit();
+    const osk = d.value.osk;
+    try h.expect(osk.asks == 1 and osk.hr >= 0, "the binding got the window's input pane (asks {d}, hr 0x{x})", .{ osk.asks, @as(u32, @bitCast(osk.hr)) });
+    try quit(h, &g, surf);
+}
+
+/// Roadmap 6.5: show_on_screen_keyboard really asks Windows (TryShow),
+/// then the hooks hide it (TryHide). Windows may decline to show it (with
+/// a keyboard attached, by default); the calls must still succeed.
+fn oskShown(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
+        return h.skip("it may show the touch keyboard on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    }
+    const Ctx = struct { h: *Harness, err: ?anyerror = null };
+    var ctx: Ctx = .{ .h = h };
+    h.runOnUserDesktop(&ctx, struct {
+        fn run(cx: *Ctx) void {
+            oskShownOffscreen(cx.h) catch |err| {
+                cx.err = err;
+            };
+        }
+    }.run);
+    if (ctx.err) |err| return err;
+}
+
+fn oskShownOffscreen(h: *Harness) !void {
+    var g = try h.launchWith("osk-shown", base_config ++ "keybind = ctrl+shift+f7=show_on_screen_keyboard\n", .{
+        .where = .offscreen,
+        .env = &.{.{ "GHOSTTY_WIN32_TEST_OSK", "1" }},
+    });
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F7);
+    h.sync(surf);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const osk = d.value.osk;
+        try h.expect(osk.asks == 1 and osk.hr >= 0, "TryShow succeeded (hr 0x{x}; Windows showed it: {})", .{ @as(u32, @bitCast(osk.hr)), osk.done });
+    }
+    try h.hideOnScreenKeyboard(&g);
+    var d = try h.dump(&g);
+    defer d.deinit();
+    const osk = d.value.osk;
+    try h.expect(osk.asks == 2 and osk.hr >= 0, "and TryHide (hr 0x{x})", .{@as(u32, @bitCast(osk.hr))});
+    // deinit ends it: no dialog on the user's desktop.
 }
 
 /// With font-family set, bold and italic text use the family's own Bold

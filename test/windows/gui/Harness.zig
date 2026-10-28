@@ -463,6 +463,36 @@ pub fn runCliWith(self: *Harness, name: []const u8, args: []const []const u8, ex
     return self.runExe(self.exe, name, args, extra_env, .default);
 }
 
+/// The version resource of the murrtty under test (roadmap 6.5): its
+/// fixed file version (major, minor, build, private) and its FileVersion
+/// string, which the caller frees.
+pub const ExeVersion = struct { numbers: [4]u16, text: []u8 };
+
+pub fn exeVersion(self: *Harness) !ExeVersion {
+    const size = w.GetFileVersionInfoSizeW(self.exe, null);
+    if (size == 0) return self.fail("murrtty has no version resource", .{});
+    const data = try self.alloc.alloc(u8, size);
+    defer self.alloc.free(data);
+    if (w.GetFileVersionInfoW(self.exe, 0, size, data.ptr) == 0) return self.fail("murrtty's version resource couldn't be read", .{});
+    var p: ?*anyopaque = null;
+    var len: w.UINT = 0;
+    if (w.VerQueryValueW(data.ptr, w.L("\\"), &p, &len) == 0 or len < @sizeOf(w.VS_FIXEDFILEINFO))
+        return self.fail("murrtty's version resource has no fixed file info", .{});
+    const fixed: *align(1) const w.VS_FIXEDFILEINFO = @ptrCast(p.?);
+    const numbers: [4]u16 = .{
+        @truncate(fixed.dwFileVersionMS >> 16), @truncate(fixed.dwFileVersionMS),
+        @truncate(fixed.dwFileVersionLS >> 16), @truncate(fixed.dwFileVersionLS),
+    };
+    if (w.VerQueryValueW(data.ptr, w.L("\\StringFileInfo\\040904b0\\FileVersion"), &p, &len) == 0 or len == 0)
+        return self.fail("murrtty's version resource has no FileVersion", .{});
+    const units: [*]align(1) const u16 = @ptrCast(p.?);
+    const copy = try self.alloc.alloc(u16, len);
+    defer self.alloc.free(copy);
+    for (copy, 0..) |*u, i| u.* = units[i];
+    const text = try std.unicode.utf16LeToUtf8Alloc(self.alloc, std.mem.sliceTo(copy, 0));
+    return .{ .numbers = numbers, .text = text };
+}
+
 /// Run a test helper installed beside the harness (helperPath) as runCli
 /// runs murrtty: on the hidden desktop (`.offscreen`: the user's, beside
 /// a murrtty launched there), its stdout on a pipe.
@@ -1521,6 +1551,10 @@ pub const Dump = struct {
     /// The last test drop's effect (dropClipboard; roadmap 5.8): 1 a
     /// copy, 0 refused, -1 none made.
     drop_effect: i32 = -1,
+    /// show_on_screen_keyboard's requests and the last one's result
+    /// (roadmap 6.5), and click-repeat-interval as murrtty has it.
+    osk: struct { asks: u32 = 0, hr: i32 = 0, done: bool = false } = .{},
+    click_interval: u32 = 0,
     /// murrtty's selection clipboard (roadmap 5.9).
     selection: []const u8 = "",
     /// A pane's drag (roadmap 1.10): past the drag distance, the pane
@@ -2285,6 +2319,26 @@ pub fn getClipboard(self: *Harness) !?[]u8 {
     return try std.unicode.utf16LeToUtf8Alloc(self.alloc, std.mem.span(s));
 }
 
+/// The clipboard's data in the registered format `name`, up to its first
+/// NUL, or null if it holds none.
+pub fn getClipboardFormat(self: *Harness, name: w.LPCWSTR) !?[]u8 {
+    const format = w.RegisterClipboardFormatW(name);
+    if (format == 0) return null;
+    try openClipboard();
+    defer _ = w.CloseClipboard();
+    const h = w.GetClipboardData(format) orelse return null;
+    const p: [*]const u8 = @ptrCast(w.GlobalLock(h) orelse return null);
+    defer _ = w.GlobalUnlock(h);
+    return try self.alloc.dupe(u8, std.mem.sliceTo(p[0..w.GlobalSize(h)], 0));
+}
+
+/// Whether the clipboard holds text (CF_UNICODETEXT, or text Windows makes
+/// it from).
+pub fn clipboardHasText(self: *Harness) bool {
+    _ = self;
+    return w.IsClipboardFormatAvailable(w.CF_UNICODETEXT) != 0;
+}
+
 /// Put `paths` on the clipboard as Explorer's copy does (CF_HDROP: a
 /// DROPFILES header, then the paths in UTF-16, double-NUL-terminated).
 pub fn setClipboardFiles(self: *Harness, paths: []const []const u8) !void {
@@ -2322,6 +2376,13 @@ pub fn clearClipboard(self: *Harness) !void {
 /// the core's export_terminal_io action (dump wparam 18).
 pub fn exportTerminalIo(self: *Harness, g: *const Ghostty) !void {
     var d = try self.dumpWith(g, 18, 0);
+    d.deinit();
+}
+
+/// Have murrtty hide the touch keyboard for its first window (dump wparam
+/// 20), after a test had it shown (roadmap 6.5).
+pub fn hideOnScreenKeyboard(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 20, 0);
     d.deinit();
 }
 

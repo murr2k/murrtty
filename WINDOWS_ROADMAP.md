@@ -199,6 +199,13 @@ roadmap item behind it.
   Narrator, NVDA and JAWS read (its text, caret, selection; changes
   announced), as the macOS app gives VoiceOver the terminal's text; GTK's
   app gives assistive technology no terminal text yet.
+- **Mouse settings** (6.5): the double-click time and the wheel's "lines
+  to scroll at a time" are Windows' (a notch scrolls that many rows at
+  `mouse-scroll-multiplier`'s default, which scales it), as macOS takes
+  its double-click time; GTK's uses 500 ms and 3 rows a notch.
+- **HTML alone on the clipboard** (6.5): `copy_to_clipboard:html`, or a
+  program's kitty clipboard write (OSC 5522) offering only HTML, puts the
+  HTML on the clipboard, as macOS does; GTK's writes nothing without text.
 - **Links** (0.1): untrusted links (OSC 8, unknown kinds) are vetted. Web
   and mail links open; a file opens only if it is inert (code runners are
   blocked, symbolic links are not followed); anything else asks first. GTK
@@ -2957,13 +2964,64 @@ do: announcing new output (UI Automation's notification events, as
 Windows Terminal does for Narrator), and trying Narrator, NVDA and JAWS
 themselves.
 
-**6.5 Small fidelity items, S each.**
-- The system double-click time and wheel-scroll lines.
-- HTML on the clipboard for `copy_to_clipboard` mixed and html.
-- `show_on_screen_keyboard`.
-- A `secure_input` badge.
+**6.5 Small fidelity items, S each.** *Done 2026-10-28.*
+- The system double-click time and wheel-scroll lines. *Done:*
+  `click-repeat-interval`'s platform default asks Windows
+  (`GetDoubleClickTime`, in `os/mouse.zig`, a shared-code change, as macOS
+  asks AppKit; GTK's stays 500 ms). A wheel notch scrolls the mouse
+  settings' "lines to scroll at a time" at `mouse-scroll-multiplier`'s
+  defaults, at most a page (as "one screen at a time" does), nothing for
+  0, and the multiplier scales it (discrete: lines times the multiplier
+  over 3); a touchpad's part of a notch scrolls its part of the lines, as
+  Windows' own programs scroll (before, a touchpad went a third as far).
+  The setting is read at each notch. The core's interval is now worked
+  out in u64 (a shared-code change): Windows' double-click time can reach
+  5000 ms, and in u32 nanoseconds anything over 4294 ms overflowed. The
+  review found the core's truncation losing a row of a third of the lines
+  (1 or 4 lines at some cell heights, some page sizes): the amount is
+  nudged up by a billionth. The core still drops what is left of a row
+  after each scroll (upstream's, on every platform), so a touchpad's
+  thirds of a notch scroll whole rows only when the lines are a multiple
+  of 3. Scenario `mouse-settings`: Windows'
+  double-click time moved 17 ms for one launch (the default equals the
+  fallback), the lines faked (`GHOSTTY_WIN32_TEST_WHEEL_LINES`): 6, a
+  page, a multiplier of 1, 1, 4, more than a page and 0, and a
+  touchpad's thirds. Each part failed with its change reverted.
+- HTML on the clipboard for `copy_to_clipboard` mixed and html. *Done:*
+  the HTML goes on as Windows' "HTML Format" (`win32/cf_html.zig`: a
+  header of byte offsets, the copy between StartFragment and EndFragment
+  comments in a document), beside the text for mixed (the default, so
+  `Ctrl+Shift+C` carries it to rich editors) and alone for html, as macOS
+  writes them; GTK's writes nothing for html alone, having no text.
+  `copy_to_clipboard:html` is no longer hidden from menus and the
+  palette. An OSC 52 write is text only; a program's kitty clipboard
+  write (OSC 5522) puts what it offered, text and HTML, its confirmation
+  (`clipboard-write = ask`) showing the text, or the HTML when it offers
+  none (GTK's writes the HTML only beside text). Scenario
+  `clipboard-html` (mixed, html, plain), which failed with the HTML left
+  out.
+- `show_on_screen_keyboard`. *Done:* Windows' touch keyboard through the
+  pane's window's InputPane (`win32/input_pane.zig`: `IInputPaneInterop`,
+  then `IInputPane2.TryShow`), as GTK asks its input method. Windows
+  declines while its settings show the touch keyboard only without a
+  hardware one, the default on a desktop. Scenario `on-screen-keyboard`
+  (the window's pane, stopping short of showing it) and the opt-in
+  `osk-shown` (TryShow and TryHide for real: both succeeded on
+  2026-10-28, Windows declining to show it here).
+- A `secure_input` badge. *Dropped 2026-10-28:* macOS's badge says secure
+  keyboard entry is on, which keeps other programs from reading the keys.
+  Windows has nothing like it (a low-level keyboard hook sees every key on
+  the desktop), and the core's password-prompt detection reads the pty's
+  termios, which ConPTY doesn't have. A badge would promise protection
+  murrtty can't give, so `secure_input` and `toggle_secure_input` stay
+  unhandled, as on GTK.
 - Version numbers: fill in `FILEVERSION`, `PRODUCTVERSION` and `FileVersion`
-  in the existing version resource (`dist/windows/ghostty.rc`).
+  in the existing version resource (`dist/windows/ghostty.rc`). *Done:*
+  the build passes its version to `dist/windows/murrtty.rc` (`/d`
+  defines from `GhosttyExe.zig`): the numbers major.minor.patch.0, and
+  `FileVersion` and `ProductVersion` the version as `+version` prints it
+  (murrtty's is Ghostty's until releases, 7.4, give it its own). The
+  `cli` scenario compares them with `+version`.
 - `+validate-config` exited 1 and printed nothing for a valid config when
   its output was a pipe (PowerShell capturing it), and likely a console
   (not checked); into a file it exited 0. *Found and fixed 2026-10-26.* It ended its output with
@@ -3175,7 +3233,7 @@ Win32 runtime handles 26, 8 of them partly, and 44 fall through to the
 | undo, redo | 5.11 |
 | inspector, render_inspector, export_terminal_io | 5.12 |
 | selection_changed | 6.4 |
-| show_on_screen_keyboard, secure_input | 6.5 |
+| show_on_screen_keyboard; secure_input (dropped: no Windows API) | 6.5 |
 | check_for_updates | 7.6 |
 | show_gtk_inspector | none: GTK-only, keeps returning false |
 

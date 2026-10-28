@@ -997,6 +997,12 @@ palette: Palette = .{},
 /// and you're likely to have a bad experience if you set either extreme.
 ///
 /// The default value is "3" for discrete devices and "1" for precision devices.
+///
+/// On Windows, a wheel notch at the default discrete multiplier scrolls the
+/// mouse settings' "lines to scroll at a time" (at most a page, which "one
+/// screen at a time" is), and the multiplier scales that: the lines times
+/// the multiplier, divided by 3. A touchpad's scrolling follows those lines
+/// too.
 @"mouse-scroll-multiplier": MouseScrollMultiplier = .default,
 
 /// The opacity level (opposite of transparency) of the background. A value of
@@ -2578,8 +2584,8 @@ keybind: Keybinds = .{},
 
 /// The time in milliseconds between clicks to consider a click a repeat
 /// (double, triple, etc.) or an entirely new single click. A value of zero will
-/// use a platform-specific default. The default on macOS is determined by the
-/// OS settings. On every other platform it is 500ms.
+/// use a platform-specific default. The default on macOS and Windows is
+/// determined by the OS settings. On every other platform it is 500ms.
 @"click-repeat-interval": u32 = 0,
 
 /// Additional configuration files to read. This configuration can be repeated

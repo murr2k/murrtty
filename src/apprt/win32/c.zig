@@ -268,6 +268,8 @@ pub const MK_XBUTTON1 = 0x0020;
 pub const MK_XBUTTON2 = 0x0040;
 pub const XBUTTON1 = 0x0001;
 pub const WHEEL_DELTA = 120;
+pub const WHEEL_PAGESCROLL = 0xFFFFFFFF;
+pub const SPI_GETWHEELSCROLLLINES = 0x0068;
 
 pub const TME_LEAVE = 0x00000002;
 
@@ -989,6 +991,7 @@ pub extern "user32" fn InvalidateRect(?HWND, ?*const RECT, BOOL) callconv(.winap
 pub extern "user32" fn FillRect(HDC, *const RECT, HBRUSH) callconv(.winapi) c_int;
 pub extern "user32" fn DrawTextW(HDC, [*]const u16, c_int, *RECT, UINT) callconv(.winapi) c_int;
 pub extern "user32" fn SystemParametersInfoForDpi(UINT, UINT, ?*anyopaque, UINT, UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn SystemParametersInfoW(UINT, UINT, ?*anyopaque, UINT) callconv(.winapi) BOOL;
 pub extern "gdi32" fn CreateCompatibleDC(?HDC) callconv(.winapi) ?HDC;
 pub extern "gdi32" fn AddFontMemResourceEx(*anyopaque, DWORD, ?*anyopaque, *DWORD) callconv(.winapi) ?HANDLE;
 pub extern "gdi32" fn RemoveFontMemResourceEx(HANDLE) callconv(.winapi) BOOL;

@@ -1920,6 +1920,7 @@ pub fn performAction(
         .reset_window_size,
         .prompt_title,
         .start_search,
+        .show_on_screen_keyboard,
         => return false,
         else => {},
     };
@@ -2243,6 +2244,10 @@ pub fn performAction(
             const surface = surfaceFromTarget(target) orelse return false;
             @import("Uia.zig").selectionChanged(surface);
         },
+        .show_on_screen_keyboard => {
+            const surface = surfaceFromTarget(target) orelse return false;
+            return surface.showOnScreenKeyboard();
+        },
         .mouse_over_link => {
             const surface = surfaceFromTarget(target) orelse return false;
             surface.setLinkPreview(value.url);
@@ -2507,9 +2512,9 @@ fn syncMenuTheme(self: *const App) void {
 /// actions it doesn't (roadmap 3.0). Kept in step with performAction.
 pub fn supportsAction(action: input.Binding.Action) bool {
     return switch (action) {
-        // Runtime actions not implemented yet.
+        // Runtime actions not implemented (Windows has nothing secure
+        // input could use; roadmap 6.5), or not yet.
         .show_gtk_inspector,
-        .show_on_screen_keyboard,
         .toggle_secure_input,
         .check_for_updates,
         => false,
@@ -2517,11 +2522,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         // Only from a global binding (roadmap 5.5), which can also bring
         // the windows back: menus and the palette don't offer it.
         .toggle_visibility => false,
-
-        // Arguments the runtime can't honor yet. HTML alone is all
-        // `copy_to_clipboard:html` gives, and setClipboard writes text only
-        // (it would copy nothing, yet clear the selection).
-        .copy_to_clipboard => |format| format != .html,
 
         else => true,
     };

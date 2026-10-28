@@ -49,8 +49,15 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
     switch (cfg.target.result.os.tag) {
         .windows => {
             exe.subsystem = .windows;
+            const v = cfg.version;
             exe.root_module.addWin32ResourceFile(.{
                 .file = b.path("dist/windows/murrtty.rc"),
+                // The version Explorer shows: the build's, as +version
+                // prints it (roadmap 6.5).
+                .flags = &.{
+                    b.fmt("/dMURRTTY_VERSION={d},{d},{d},0", .{ v.major, v.minor, v.patch }),
+                    b.fmt("/dMURRTTY_VERSION_STRING=\"{s}\"", .{rcString(b, b.fmt("{f}", .{v}))}),
+                },
             });
         },
 
@@ -61,6 +68,17 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
         .exe = exe,
         .install_step = install_step,
     };
+}
+
+/// `s` safe in a resource script's string and a `/d` define: a branch name
+/// in a version can hold a quote, an equals sign (where the define's value
+/// would be cut) or characters outside the script's code page.
+fn rcString(b: *std.Build, s: []const u8) []const u8 {
+    const out = b.allocator.dupe(u8, s) catch @panic("OOM");
+    for (out) |*ch| {
+        if (ch.* < 0x20 or ch.* > 0x7e or ch.* == '"' or ch.* == '\\' or ch.* == '=') ch.* = '_';
+    }
+    return out;
 }
 
 /// Add the ghostty exe to the install target.

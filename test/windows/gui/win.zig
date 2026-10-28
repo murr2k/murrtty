@@ -338,6 +338,30 @@ pub extern "kernel32" fn GlobalLock(HANDLE) callconv(.winapi) ?*anyopaque;
 pub extern "kernel32" fn GlobalUnlock(HANDLE) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GlobalFree(HANDLE) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn GlobalSize(HANDLE) callconv(.winapi) usize;
+pub extern "user32" fn IsClipboardFormatAvailable(UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn SystemParametersInfoW(UINT, UINT, ?*anyopaque, UINT) callconv(.winapi) BOOL;
+pub const SPI_GETWHEELSCROLLLINES = 0x0068;
+pub const WHEEL_PAGESCROLL = 0xFFFFFFFF;
+pub extern "user32" fn GetDoubleClickTime() callconv(.winapi) UINT;
+pub extern "user32" fn SetDoubleClickTime(UINT) callconv(.winapi) BOOL;
+pub extern "version" fn GetFileVersionInfoSizeW(LPCWSTR, ?*DWORD) callconv(.winapi) DWORD;
+pub extern "version" fn GetFileVersionInfoW(LPCWSTR, DWORD, DWORD, *anyopaque) callconv(.winapi) BOOL;
+pub extern "version" fn VerQueryValueW(*const anyopaque, LPCWSTR, *?*anyopaque, *UINT) callconv(.winapi) BOOL;
+pub const VS_FIXEDFILEINFO = extern struct {
+    dwSignature: DWORD,
+    dwStrucVersion: DWORD,
+    dwFileVersionMS: DWORD,
+    dwFileVersionLS: DWORD,
+    dwProductVersionMS: DWORD,
+    dwProductVersionLS: DWORD,
+    dwFileFlagsMask: DWORD,
+    dwFileFlags: DWORD,
+    dwFileOS: DWORD,
+    dwFileType: DWORD,
+    dwFileSubtype: DWORD,
+    dwFileDateMS: DWORD,
+    dwFileDateLS: DWORD,
+};
 
 // shell32
 pub extern "shell32" fn CommandLineToArgvW(LPCWSTR, *c_int) callconv(.winapi) ?[*]LPWSTR;
