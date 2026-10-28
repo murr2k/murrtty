@@ -959,7 +959,18 @@ ConPTY's own echo, 10 to 20 ms at times), average frame 1.4 ms (3.3).
 Open: the terminal-core unit tests are very slow on Windows (10 to 34 s
 each for some `Terminal`, `Screen` and search tests, 10 minutes for the
 suite), likely the Debug testing allocator; that is CI time, not app
-speed, and is worth a look before 7.2.
+speed, and is worth a look before 7.2. *Measured 2026-10-28: not
+Windows' doing, nor the allocator's.* Timed one by one, 102 tests over a
+second take 555 of the suite's 588 s, in steps of about 4.4 s: one for
+each page a test fills a line at a time (a 10-column terminal's page
+holds thousands of rows). One of them spent 8.86 of its 8.97 s in user
+mode and 0.09 s in the kernel, with 4,843 page faults, and samples of it
+fall in upstream's `Page.verifyIntegrity` and its hash maps, with no
+allocator or stack-capture frames: the page check that Debug builds
+(`slow_runtime_safety`) run after every page operation. Upstream's CI
+runs the same Debug tests, so this is the check's price everywhere;
+nothing is changed. For 7.2 the answer is CI time, or a ReleaseSafe unit
+run beside the Debug one, which turns that check off.
 
 **0.15 Thread stack commit, S.** *Found 2026-10-24 in S4; done
 2026-10-28.* Every pane (and so every tab) starts four threads: the renderer,
@@ -3187,7 +3198,16 @@ free-inside-callback bug.
 - winget: a portable zip, with the folder added to PATH. *Waits for R4:*
   the manifest needs a public download.
 - A per-user Inno Setup installer: Start menu shortcut with an AppUserModelID,
-  "Open Ghostty here", and a `.ghostty` file association.
+  "Open Ghostty here", and a `.ghostty` file association. *Planned
+  2026-10-28:* Inno Setup 7.1.0 (11 weeks old; checked by its SHA-256, its
+  Authenticode signer Pyrsys B.V. and GitHub's release attestation). The
+  shortcut carries `murrtty.murrtty` and `--gtk-single-instance=true`, as
+  GTK's desktop file does; "Open in murrtty" (Nautilus's wording) on
+  folders, folder backgrounds and drives runs `+new-window
+  --working-directory`, as Dolphin's action does. No `.ghostty`
+  association: neither GTK nor macOS opens `.ghostty` files (macOS opens
+  folders and scripts). Waits for Inno Setup here: running its installer,
+  even portably into `tools\`, is the owner's to allow.
 - Authenticode signing; SmartScreen reputation takes time. Sign release
   tags (perhaps tip builds too), not every push, in a GitHub-hosted
   release job of the public repository (7.2), never on the desktop runner.
