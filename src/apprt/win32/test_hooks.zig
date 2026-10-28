@@ -648,6 +648,9 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         app.test_state.global_refreshes,
     });
     try out.print(alloc, ",\"drop_effect\":{d}", .{app.test_state.drop_effect});
+    // murrtty's selection clipboard (roadmap 5.9).
+    try out.appendSlice(alloc, ",\"selection\":");
+    try writeString(alloc, out, app.selection orelse "");
     try out.append(alloc, '}');
 }
 

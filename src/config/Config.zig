@@ -2532,21 +2532,23 @@ keybind: Keybinds = .{},
 ///
 /// * `none` - Do not copy selected text automatically.
 ///
-/// * `primary` - On Linux, copy to the selection clipboard only. This has no
-///   effect on macOS. (Available since: 1.4.0)
+/// * `primary` - On Linux, copy to the selection clipboard only. On Windows,
+///   which has none, to the app's own selection clipboard, shared by its
+///   terminals. This has no effect on macOS. (Available since: 1.4.0)
 ///
 /// * `clipboard` - Copy text to the system clipboard only.
 ///
-/// * `both` - Copy to both clipboards on Linux, and only the system clipboard
-///   on macOS. (Available since: 1.4.0)
+/// * `both` - Copy to both clipboards on Linux and Windows (there, the system
+///   clipboard and the app's own), and only the system clipboard on macOS.
+///   (Available since: 1.4.0)
 ///
 /// For backward compatibility and convenience, a value of `true` is the same as
-/// `primary` on Linux and `clipboard` on macOS, and `false` is an alias for
-/// `none`.
+/// `primary` on Linux and `clipboard` on macOS and Windows, and `false` is an
+/// alias for `none`.
 ///
-/// The default value is `primary` on Linux and `none` otherwise.
+/// The default value is `primary` on Linux and Windows and `none` otherwise.
 @"copy-on-select": CopyOnSelect = switch (builtin.target.os.tag) {
-    .linux => .primary,
+    .linux, .windows => .primary,
     else => .none,
 },
 
@@ -2566,8 +2568,8 @@ keybind: Keybinds = .{},
 /// The action to take when the user middle-clicks on the terminal surface.
 ///
 /// Valid values:
-///   * `primary-paste` - Paste from the selection clipboard on Linux.
-///      Does nothing on macOS.
+///   * `primary-paste` - Paste from the selection clipboard on Linux (on
+///      Windows, the app's own). Does nothing on macOS.
 ///   * `clipboard-paste` - Paste from the system clipboard.
 ///   * `ignore` - Do nothing, ignore the middle click.
 ///
@@ -7109,9 +7111,10 @@ pub const Keybinds = struct {
                 .{ .select_all = {} },
             );
 
-            // Selection clipboard paste. Windows has no selection
-            // clipboard, so there shift+insert keeps the standard
-            // paste_from_clipboard binding set above.
+            // Selection clipboard paste. On Windows shift+insert keeps the
+            // standard paste_from_clipboard binding set above, Windows'
+            // convention; its selection clipboard (the app's own) is a
+            // middle click's.
             if (comptime builtin.target.os.tag != .windows) {
                 try self.set.put(
                     alloc,
@@ -8923,7 +8926,7 @@ pub const CopyOnSelect = enum {
 
     /// Copy on select is enabled, but goes to the selection clipboard.
     /// This is not supported on platforms such as macOS. This is the default
-    /// on Linux.
+    /// on Linux and Windows (whose selection clipboard is the app's own).
     primary,
 
     /// Copy on select is enabled and goes to the system clipboard.

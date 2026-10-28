@@ -259,6 +259,13 @@ hosted Windows runner and then the unit tests.
   and `initial-window = false` starts it there. A click on its icon brings
   it forward (or opens a window); its menu has New Window, Quick
   Terminal, Config and Quit.
+- A selection clipboard of murrtty's own (Windows has no primary
+  selection): selecting text copies it there (`copy-on-select = primary`,
+  the default, as in Ghostty's GTK app), without touching the system
+  clipboard, and a middle click or `paste_from_selection` pastes it in any
+  terminal of the same murrtty (one started from a shell, or with its own
+  `--class`, keeps its own). `Shift+Insert` pastes the system clipboard, as
+  in other Windows programs.
 - Drag and drop: files dropped on a terminal paste as their paths, quoted
   for its shell (single quotes for PowerShell, where nothing in them
   expands; double quotes for cmd), and dropped text pastes, as a paste
@@ -318,8 +325,8 @@ hosted Windows runner and then the unit tests.
 - Dragging panes to rearrange splits.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with desktop integration (Phase 5: the selection clipboard,
-session restore, undo of closes).
+continuing with desktop integration (Phase 5: session restore, undo of
+closes, the terminal inspector).
 
 **Known issues**
 
@@ -454,10 +461,10 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   murrtty. Some Intel graphics drivers rotate the screen on
   `Ctrl+Alt+arrows`; if yours does, turn its hotkeys off in Intel Graphics
   Command Center (System, Hotkeys) or bind `goto_split` to other keys.
-- **Mouse.** Middle-click doesn't paste by default: the default
-  `middle-click-action = primary-paste` uses the selection clipboard of Linux,
-  which Windows doesn't have. Set `middle-click-action = clipboard-paste` to
-  paste the clipboard instead. For the right button, see `right-click-action`
+- **Mouse.** Middle-click pastes murrtty's own selection clipboard, what
+  you last selected in this murrtty (the default `middle-click-action =
+  primary-paste`). Set `middle-click-action = clipboard-paste` to paste the
+  system clipboard instead. For the right button, see `right-click-action`
   above.
 - **Logs.** `murrtty.exe` is a GUI program, so it has no console. To see its
   log, start it from a shell with stderr redirected:

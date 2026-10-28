@@ -791,8 +791,12 @@ pub fn getCursorPos(self: *const Surface) !apprt.CursorPos {
 
 pub fn supportsClipboard(self: *const Surface, clipboard_type: apprt.Clipboard) bool {
     _ = self;
-    // Windows has a single system clipboard.
-    return clipboard_type == .standard;
+    // The system clipboard, and murrtty's own selection clipboard (roadmap
+    // 5.9; Windows has no primary selection), for both of the core's
+    // selection kinds, as GTK takes both for its primary clipboard.
+    return switch (clipboard_type) {
+        .standard, .selection, .primary => true,
+    };
 }
 
 pub fn clipboardRequest(
@@ -808,11 +812,18 @@ pub fn clipboardRequest(
         return .started;
     }
 
+    // An empty selection clipboard has nothing to disclose or paste: a
+    // binding with `performable:` passes its key on, as GTK's does.
+    if (clipboard_type != .standard and self.app.selection == null) return .unavailable;
+
     const alloc = self.app.core_app.alloc;
-    const text = readClipboardText(alloc, self.hwnd) catch |err| {
-        log.warn("error reading clipboard err={}", .{err});
-        return .unavailable;
-    };
+    const text = if (clipboard_type != .standard)
+        (if (self.app.selection) |s| try alloc.dupe(u8, s) else null)
+    else
+        readClipboardText(alloc, self.hwnd) catch |err| {
+            log.warn("error reading clipboard err={}", .{err});
+            return .unavailable;
+        };
     defer if (text) |t| alloc.free(t);
 
     const contents: []const terminal.clipboard.Content = if (text) |t|
@@ -875,6 +886,8 @@ const PendingClipboard = struct {
     /// The clipboard text (read) or the text to write (write).
     text: ?[]u8,
     unsafe: bool = false,
+    /// The clipboard a write goes to.
+    target: apprt.Clipboard = .standard,
 };
 
 fn queueClipboardConfirm(self: *Surface, pending: PendingClipboard) void {
@@ -917,7 +930,7 @@ fn runClipboardConfirms(self: *Surface) void {
         if (pending.request) |req| {
             self.confirmClipboardRead(req, pending.text, pending.unsafe);
         } else if (pending.text) |t| {
-            self.confirmClipboardWrite(t);
+            self.confirmClipboardWrite(t, pending.target);
         }
     }
 }
@@ -974,8 +987,6 @@ pub fn setClipboard(
     contents: []const apprt.ClipboardContent,
     confirm: bool,
 ) !void {
-    if (clipboard_type != .standard) return;
-
     const text: [:0]const u8 = for (contents) |content| {
         if (std.mem.eql(u8, content.mime, "text/plain")) break content.data;
     } else return;
@@ -983,11 +994,19 @@ pub fn setClipboard(
     const alloc = self.app.core_app.alloc;
     if (confirm) {
         // Confirm from the message loop, not inside the core callback.
-        self.queueClipboardConfirm(.{ .request = null, .text = try alloc.dupe(u8, text) });
+        self.queueClipboardConfirm(.{ .request = null, .text = try alloc.dupe(u8, text), .target = clipboard_type });
         return;
     }
 
-    try writeClipboardText(alloc, self.hwnd, text);
+    try self.writeTo(clipboard_type, text);
+}
+
+/// Write `text` to the system clipboard, with GTK's toast, or to murrtty's
+/// selection clipboard (roadmap 5.9), quietly: GTK's toast is for the
+/// system clipboard.
+fn writeTo(self: *Surface, clipboard_type: apprt.Clipboard, text: []const u8) !void {
+    if (clipboard_type != .standard) return self.app.setSelection(text);
+    try writeClipboardText(self.app.core_app.alloc, self.hwnd, text);
     self.clipboardWritten(text);
 }
 
@@ -1002,16 +1021,14 @@ fn clipboardWritten(self: *Surface, text: []const u8) void {
 
 /// An OSC 52 write the configuration says to ask about (clipboard-write =
 /// ask).
-fn confirmClipboardWrite(self: *Surface, text: []const u8) void {
+fn confirmClipboardWrite(self: *Surface, text: []const u8, target: apprt.Clipboard) void {
     const answer = self.askClipboard(.write, text, true);
     if (answer.remember) self.core_surface.config.clipboard_write = if (answer.allow) .allow else .deny;
     if (!answer.allow) return;
 
-    writeClipboardText(self.app.core_app.alloc, self.hwnd, text) catch |err| {
+    self.writeTo(target, text) catch |err| {
         log.warn("error writing clipboard err={}", .{err});
-        return;
     };
-    self.clipboardWritten(text);
 }
 
 pub fn defaultTermioEnv(self: *Surface) !std.process.Environ.Map {

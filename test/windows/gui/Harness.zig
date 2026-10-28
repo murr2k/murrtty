@@ -1436,6 +1436,8 @@ pub const Dump = struct {
     /// The last test drop's effect (dropClipboard; roadmap 5.8): 1 a
     /// copy, 0 refused, -1 none made.
     drop_effect: i32 = -1,
+    /// murrtty's selection clipboard (roadmap 5.9).
+    selection: []const u8 = "",
 
     /// The quick terminal's state (roadmap 5.7): shown (also while it
     /// slides in), sliding, and the work area and DPI it chose.

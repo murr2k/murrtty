@@ -19,6 +19,7 @@ pub const all = [_]Scenario{
     .{ .name = "tabs", .about = "new, switch, close button, middle-click, tab bar auto-hide", .run = tabs },
     .{ .name = "clipboard", .about = "Ctrl+Shift+V, Shift+Insert, Ctrl+Shift+A/C", .run = clipboard },
     .{ .name = "drop", .about = "files dropped on a pane paste as their paths, quoted where a shell would split them; text pastes as it is; through the pane's drop target", .run = dropScenario },
+    .{ .name = "selection", .about = "murrtty's own selection clipboard: copy-on-select = primary (the default) fills it, not the system clipboard; a middle click and paste_from_selection paste it", .run = selectionScenario },
     .{ .name = "copy-keys", .about = "a word selected by a double click is copied 10 times each by Ctrl+Insert, the numpad's Ctrl+Ins (NumLock off) and Ctrl+Shift+C; the numpad's Left moves, its Shift+Ins pastes", .run = copyKeys },
     .{ .name = "alt-f4", .about = "Alt+F4 asks, then closes", .run = altF4 },
     .{ .name = "clipboard-queue", .about = "a burst of OSC 52 writes asks one dialog at a time", .run = clipboardQueue },
@@ -1784,7 +1785,8 @@ fn commandPalette(h: *Harness) anyerror!void {
     try h.expect(!p.has("Toggle Inspector"), "commands this runtime lacks are not", .{});
     try h.expect(p.has("Move Tab to New Window"), "Move Tab to New Window is, since 4.5", .{});
     try h.expect(p.has("Change Tab Title\u{2026}"), "the title prompts are (roadmap 3.5)", .{});
-    try h.expect(!p.has("Copy Selection as HTML to Clipboard") and !p.has("Paste from Selection"), "nor ones whose argument it can't honor", .{});
+    try h.expect(!p.has("Copy Selection as HTML to Clipboard"), "nor ones whose argument it can't honor", .{});
+    try h.expect(p.has("Paste from Selection"), "Paste from Selection is, since 5.9", .{});
 
     // The app's config changes while it is open, again and again (the app
     // is light after the two above, so each switch is a change), each time
@@ -8581,4 +8583,52 @@ fn dropScenario(h: *Harness) anyerror!void {
     try h.expect(pwsh == 1, "files drop on a PowerShell pane (effect {d})", .{pwsh});
     try waitWindowText(h, &p, 0, "C:\\murrtty-drop\\plain.txt 'D:\\a$(Remove-Item x)''s.txt'");
     try h.expect(true, "single-quoted for PowerShell, where nothing expands, its quote doubled", .{});
+}
+
+//---------------------------------------------------------------
+// The selection clipboard (roadmap 5.9)
+
+/// murrtty's own selection clipboard (Windows has no primary selection):
+/// with copy-on-select = primary, the default here as GTK's, a selection
+/// (a double-clicked word) goes to it and not the system clipboard; a
+/// middle click and paste_from_selection paste it.
+fn selectionScenario(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    try h.setClipboard("murrtty-system-clip");
+    var g = try start(h, "selection", "keybind = ctrl+shift+f7=paste_from_selection\n", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    try h.typeText(surf, "echo murrttyselword");
+    h.enter(surf);
+    try waitOutputSettled(h, &g, "murrttyselword");
+
+    // The output's word (after cmd's banner), double-clicked: two presses,
+    // as a pane's class takes no WM_LBUTTONDBLCLK (the core counts them).
+    const at = try cellPoint(h, &g, "murrttyselword");
+    h.click(surf, at.x, at.y, .left);
+    h.click(surf, at.x, at.y, .left);
+    var waited: u32 = 0;
+    while (waited < 3000) : (waited += 100) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        if (d.value.selection.len > 0) break;
+        w.Sleep(100);
+    }
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(std.mem.eql(u8, d.value.selection, "murrttyselword"), "a double-clicked word goes to the selection clipboard ('{s}')", .{d.value.selection});
+    }
+    const system = try h.getClipboard();
+    defer if (system) |s| h.alloc.free(s);
+    try h.expect(system != null and std.mem.eql(u8, system.?, "murrtty-system-clip"), "and not the system clipboard ('{s}')", .{system orelse ""});
+
+    // A middle click pastes it at the prompt; paste_from_selection again.
+    h.click(surf, at.x, at.y, .middle);
+    try waitWindowText(h, &g, 0, ">murrttyselword");
+    try h.expect(true, "a middle click pastes it", .{});
+    h.key(surf, .{ .ctrl = true, .shift = true }, 0x76);
+    try waitWindowText(h, &g, 0, ">murrttyselwordmurrttyselword");
+    try h.expect(true, "and paste_from_selection", .{});
 }

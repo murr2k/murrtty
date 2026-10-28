@@ -272,6 +272,12 @@ roadmap item behind it.
   murrtty in front it hides every window, otherwise it brings murrtty
   forward with the windows it hid, as they were; only while a global
   binding or the tray (5.6) can bring them back. GTK doesn't implement it.
+- **Selection clipboard** (5.9): murrtty's own, shared by the terminals
+  of one murrtty only (Windows has no primary selection); GTK's is the
+  desktop's primary selection, shared with every program.
+  `copy-on-select = primary` (the default, as GTK's) fills it, a middle
+  click and `paste_from_selection` paste it. `Shift+Insert` pastes the
+  system clipboard, Windows' convention; GTK's pastes the selection.
 - **Dropped files** (5.8): they paste as Windows paths separated by
   spaces, quoted for the pane's shell (single quotes for PowerShell, in
   which nothing expands; double quotes for cmd); GTK backslash-escapes
@@ -2588,6 +2594,25 @@ and a refused drag.
 **5.9 Selection clipboard, S.** An in-process selection buffer, so
 `copy-on-select`, middle-click paste and `paste_from_selection` work between
 Ghostty terminals (Windows has no primary selection).
+
+*Built 2026-10-27 (`App.selection`):* the core's selection clipboards
+(`selection` and `primary`, both GTK's primary clipboard) are one buffer
+in the app, shared by every pane of that murrtty (a separate instance
+has its own). A selection's copy (`copy-on-select`), an OSC 52 write to
+it (`p`, `s`, confirmed as any), Kitty's clipboard protocol with
+`loc=primary`, and the core's selection reads (middle-click paste,
+`paste_from_selection`, through paste protection as any paste) use it;
+OSC 52 reads (`p;?`, `s;?`) read the system clipboard, as the core asks
+for it. An empty buffer answers "unavailable", so a `performable:`
+binding passes its key on and a read has nothing to confirm. It never
+touches the system clipboard, and writes to it show no toast (GTK's is
+for the system clipboard). `Shift+Insert` stays the system clipboard's
+paste. `copy-on-select`
+defaults to `primary` on Windows, GTK's default (a shared-config change),
+so a selection fills it and a middle click pastes it, as on Linux.
+The `selection` scenario double-clicks a word (two presses: a pane's
+class takes no double-click message, the core counts presses) and checks
+the buffer, the untouched system clipboard, and both pastes.
 
 **5.10 Session end and restore, S then L.**
 - `WM_QUERYENDSESSION` with a shutdown block reason when sessions are running.

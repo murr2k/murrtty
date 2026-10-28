@@ -240,6 +240,10 @@ quit_timer: enum { off, active, expired } = .off,
 requested_window: bool = false,
 /// closeAllWindows is closing them: no hidden quick terminal comes back.
 closing_all: bool = false,
+/// murrtty's selection clipboard (roadmap 5.9): Windows has no primary
+/// selection, so copy-on-select, middle-click paste and
+/// paste_from_selection share this, between murrtty's panes only.
+selection: ?[]u8 = null,
 /// run() has opened the first window or the tray. Before, nothing quits:
 /// the color scheme's soft reload at start (a dark system) reaches the
 /// config change, with no window yet.
@@ -429,6 +433,8 @@ pub fn terminate(self: *App) void {
     // After the windows, whose teardown can still ask for a refresh.
     self.global_keys.deinit();
     self.hidden_windows.deinit(self.core_app.alloc);
+    if (self.selection) |s| self.core_app.alloc.free(s);
+    self.selection = null;
     // Its icon goes with murrtty.
     self.notifications.deinit();
     if (self.taskbar_list) |list| list.release();
@@ -1361,6 +1367,14 @@ fn toggleQuickTerminal(self: *App, from: enum { binding, ipc }) bool {
     if (!self.canShowQuick()) return false;
     q.hide(w);
     return true;
+}
+
+/// Put `text` in murrtty's selection clipboard (roadmap 5.9).
+pub fn setSelection(self: *App, text: []const u8) !void {
+    const alloc = self.core_app.alloc;
+    const copy = try alloc.dupe(u8, text);
+    if (self.selection) |old| alloc.free(old);
+    self.selection = copy;
 }
 
 /// Whether a hidden quick terminal can come back: a global binding with
@@ -2342,10 +2356,8 @@ pub fn supportsAction(action: input.Binding.Action) bool {
 
         // Arguments the runtime can't honor yet. HTML alone is all
         // `copy_to_clipboard:html` gives, and setClipboard writes text only
-        // (it would copy nothing, yet clear the selection); and there is no
-        // selection clipboard on Windows.
+        // (it would copy nothing, yet clear the selection).
         .copy_to_clipboard => |format| format != .html,
-        .paste_from_selection => false,
 
         else => true,
     };
