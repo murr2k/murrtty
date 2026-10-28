@@ -1,0 +1,397 @@
+{
+  "about": [
+    "What murrtty's Windows release (build-windows.cmd -Package) includes from others,",
+    "and where each license text comes from; the package's THIRD-PARTY-NOTICES.txt is",
+    "written from it. A text's 'from' is 'repo' (this repository), 'zig' (the Zig",
+    "toolchain the build used) or '<zon folder>:<dependency>', a dependency of",
+    "build.zig.zon (folder '') or of pkg/<name>/build.zig.zon, read from zig-pkg/.",
+    "'start' and 'end' (inclusive) or 'until' (exclusive) cut a text to the lines",
+    "between the first ones containing them. A component's 'pinFiles' are repository",
+    "files its version comes from, pinned by SHA-256 in 'filePins'; '{zig}' in a",
+    "version is the Zig version the build used. Packaging fails while any fetched",
+    "dependency (of the repository's build.zig.zon files, or of a covered",
+    "dependency's own, keyed '<its key>/<name>') is neither covered by a component",
+    "nor excluded, while a covered one's hash differs from 'pins' or a pinned file",
+    "changed (check its license and version again, then update the pin), or while a",
+    "key is named that nothing has."
+  ],
+  "components": [
+    {
+      "name": "FreeType",
+      "version": "2.13.2",
+      "use": "font rasterizing, linked into murrtty.exe",
+      "license": "FTL (of FTL OR GPL-2.0-or-later)",
+      "home": "https://freetype.org/",
+      "notice": ["Portions of this software are copyright © 2023 The FreeType Project (www.freetype.org). All rights reserved."],
+      "texts": [
+        { "from": "pkg/freetype:freetype", "path": "docs/FTL.TXT" },
+        { "from": "pkg/freetype:freetype", "path": "src/bdf/README", "title": "BDF driver", "start": "Copyright (C) 2001-2002 by Francesco Zappa Nardelli", "until": "Credits" },
+        { "from": "pkg/freetype:freetype", "path": "src/pcf/README", "title": "PCF driver", "start": "Copyright (C) 2000 by Francesco Zappa Nardelli", "until": "Credits" }
+      ]
+    },
+    {
+      "name": "HarfBuzz",
+      "version": "11.0.0",
+      "use": "text shaping, linked into murrtty.exe",
+      "license": "MIT-Modern-Variant",
+      "home": "https://harfbuzz.github.io/",
+      "texts": [
+        { "from": "pkg/harfbuzz:harfbuzz", "path": "COPYING" },
+        { "from": "pkg/harfbuzz:harfbuzz", "path": "src/ms-use/COPYING", "title": "Universal Shaping Engine data" }
+      ]
+    },
+    {
+      "name": "libpng",
+      "version": "1.6.43",
+      "use": "PNG decoding for FreeType, linked into murrtty.exe",
+      "license": "libpng-2.0",
+      "home": "http://www.libpng.org/pub/png/libpng.html",
+      "texts": [{ "from": "pkg/libpng:libpng", "path": "LICENSE" }]
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.1",
+      "use": "compression, linked into murrtty.exe",
+      "license": "Zlib",
+      "home": "https://zlib.net/",
+      "texts": [{ "from": "pkg/zlib:zlib", "path": "LICENSE" }]
+    },
+    {
+      "name": "Oniguruma",
+      "version": "6.9.9",
+      "use": "regular expressions (link matching), linked into murrtty.exe",
+      "license": "BSD-2-Clause",
+      "home": "https://github.com/kkos/oniguruma",
+      "texts": [{ "from": "pkg/oniguruma:oniguruma", "path": "COPYING" }]
+    },
+    {
+      "name": "glslang",
+      "version": "14.2.0",
+      "use": "shader compiling for custom shaders, linked into murrtty.exe",
+      "license": "BSD-3-Clause AND BSD-2-Clause AND MIT AND Apache-2.0 AND GPL-3.0-or-later WITH Bison-exception-2.2, and NVIDIA's preprocessor license",
+      "home": "https://github.com/KhronosGroup/glslang",
+      "texts": [
+        { "from": "pkg/glslang:glslang", "path": "LICENSE.txt" },
+        { "from": "pkg/glslang:glslang", "path": "glslang/MachineIndependent/preprocessor/Pp.cpp", "title": "the preprocessor (NVIDIA)", "start": "Copyright (c) 2002, NVIDIA Corporation.", "end": "NVIDIA HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE." }
+      ]
+    },
+    {
+      "name": "SPIRV-Cross",
+      "version": "as packaged by Ghostty (13.1.1)",
+      "use": "shader translation for custom shaders, linked into murrtty.exe",
+      "license": "Apache-2.0 (of Apache-2.0 OR MIT); its Khronos headers MIT and the Khronos free-use license",
+      "home": "https://github.com/KhronosGroup/SPIRV-Cross",
+      "notice": [
+        "Copyright 2015-2021 Arm Limited",
+        "Copyright 2016-2021 The Brenwill Workshop Ltd.",
+        "Copyright 2019-2021 Hans-Kristian Arntzen",
+        "Copyright (c) 2014-2020 The Khronos Group Inc. (spirv.hpp)",
+        "Copyright 2014-2016,2021 The Khronos Group, Inc. (GLSL.std.450.h, MIT)"
+      ],
+      "texts": [
+        { "from": "pkg/spirv-cross:spirv_cross", "path": "LICENSE" },
+        { "from": "pkg/spirv-cross:spirv_cross", "path": "LICENSES/LicenseRef-KhronosFreeUse.txt", "title": "spirv.hpp" },
+        { "from": "pkg/spirv-cross:spirv_cross", "path": "LICENSES/MIT.txt", "title": "GLSL.std.450.h (MIT, for the copyright holder named above)" }
+      ]
+    },
+    {
+      "name": "Dear ImGui",
+      "version": "1.92.5 (docking)",
+      "use": "the terminal inspector's interface, linked into murrtty.exe",
+      "license": "MIT; its bundled stb parts MIT OR Unlicense, gl3w public domain, glcorearb MIT, the ProggyClean font MIT",
+      "home": "https://github.com/ocornut/imgui",
+      "notice": [
+        "Copyright 2013-2020 The Khronos Group Inc. (glcorearb, in backends/imgui_impl_opengl3_loader.h; MIT)",
+        "ProggyClean.ttf, embedded as Dear ImGui's default font: Copyright (c) 2004, 2005 Tristan Grimmer (MIT)"
+      ],
+      "texts": [
+        { "from": "pkg/dcimgui:imgui", "path": "LICENSE.txt" },
+        { "from": "pkg/dcimgui:imgui", "path": "backends/imgui_impl_opengl3_loader.h", "title": "OpenGL loader (gl3w)", "start": "This is free and unencumbered software released into the public domain.", "end": "software under copyright law." },
+        { "from": "pkg/dcimgui:imgui", "path": "imgui_draw.cpp", "title": "the ProggyClean font", "start": "// ProggyClean.ttf", "end": "// MIT license" },
+        { "from": "repo", "path": "dist/windows/licenses/MIT.txt", "title": "the MIT license, for the ProggyClean font and glcorearb (copyright holders above)" }
+      ]
+    },
+    {
+      "name": "Dear Bindings",
+      "version": "0.17",
+      "use": "Dear ImGui's C bindings (generated code), linked into murrtty.exe",
+      "license": "MIT",
+      "home": "https://github.com/dearimgui/dear_bindings",
+      "deps": ["pkg/dcimgui:bindings"],
+      "texts": [{ "from": "repo", "path": "dist/windows/licenses/dear-bindings.txt" }]
+    },
+    {
+      "name": "simdutf",
+      "version": "9.0.0",
+      "use": "Unicode conversion, linked into murrtty.exe",
+      "license": "MIT (of Apache-2.0 OR MIT); its CPU detection BSD-3-Clause; its UTF-8 validation Apache-2.0 (from Google Fuchsia)",
+      "home": "https://github.com/simdutf/simdutf",
+      "notice": ["Its scalar UTF-8 validation is based on code from Google Fuchsia, under the Apache License 2.0 (text below)."],
+      "pinFiles": ["pkg/simdutf/vendor/simdutf.h", "pkg/simdutf/vendor/simdutf.cpp"],
+      "texts": [
+        { "from": "repo", "path": "dist/windows/licenses/simdutf-MIT.txt" },
+        { "from": "repo", "path": "pkg/simdutf/vendor/simdutf.h", "title": "isadetection.h (from PyTorch)", "start": "Copyright (c) 2016-     Facebook, Inc", "end": "POSSIBILITY OF SUCH DAMAGE." },
+        { "from": "repo", "path": "dist/windows/licenses/Apache-2.0.txt", "title": "Apache License 2.0 (the Google Fuchsia code)" }
+      ]
+    },
+    {
+      "name": "Highway",
+      "version": "1.2.0",
+      "use": "SIMD, linked into murrtty.exe",
+      "license": "BSD-3-Clause (of Apache-2.0 OR BSD-3-Clause)",
+      "home": "https://github.com/google/highway",
+      "texts": [{ "from": "pkg/highway:highway", "path": "LICENSE-BSD3" }]
+    },
+    {
+      "name": "Wuffs",
+      "version": "0.4.0-alpha.10",
+      "use": "image decoding, linked into murrtty.exe",
+      "license": "MIT (of Apache-2.0 OR MIT)",
+      "home": "https://github.com/google/wuffs",
+      "texts": [{ "from": "pkg/wuffs:wuffs", "path": "LICENSE-MIT" }]
+    },
+    {
+      "name": "glad",
+      "version": "2.0.8",
+      "use": "the OpenGL loader (generated code), linked into murrtty.exe",
+      "license": "(WTFPL OR CC0-1.0) AND Apache-2.0 (the Khronos registry it is generated from); khrplatform.h MIT-style",
+      "home": "https://github.com/Dav1dde/glad",
+      "notice": ["The Khronos OpenGL registry it is generated from: Copyright 2013-2020 The Khronos Group Inc., under the Apache License 2.0."],
+      "pinFiles": ["vendor/glad/src/gl.c"],
+      "texts": [
+        { "from": "repo", "path": "dist/windows/licenses/Apache-2.0.txt", "title": "Apache License 2.0 (the Khronos OpenGL registry)" },
+        { "from": "repo", "path": "vendor/glad/include/KHR/khrplatform.h", "title": "khrplatform.h", "start": "Copyright (c) 2008-2018 The Khronos Group Inc.", "end": "MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS." }
+      ]
+    },
+    {
+      "name": "stb_image and stb_image_resize",
+      "version": "2.28 and 0.97",
+      "use": "image loading and scaling, linked into murrtty.exe",
+      "license": "MIT OR Unlicense",
+      "home": "https://github.com/nothings/stb",
+      "pinFiles": ["src/stb/stb_image.h", "src/stb/stb_image_resize.h"],
+      "texts": [{ "from": "repo", "path": "src/stb/stb_image.h", "start": "This software is available under 2 licenses", "end": "WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE." }]
+    },
+    {
+      "name": "libxev",
+      "version": "0.0.0 (commit 819ffa18)",
+      "use": "the event loop, compiled into murrtty.exe",
+      "license": "MIT",
+      "home": "https://github.com/mitchellh/libxev",
+      "texts": [{ "from": ":libxev", "path": "LICENSE" }]
+    },
+    {
+      "name": "libvaxis",
+      "version": "0.6.0",
+      "use": "terminal UI for some CLI actions, compiled into murrtty.exe",
+      "license": "MIT",
+      "home": "https://github.com/rockorager/libvaxis",
+      "texts": [{ "from": ":vaxis", "path": "LICENSE" }]
+    },
+    {
+      "name": "z2d",
+      "version": "0.13.0",
+      "use": "2D drawing of box and other sprite glyphs, compiled into murrtty.exe",
+      "license": "MPL-2.0, with portions under MIT, BSD-3-Clause and the W3C license (listed in its LICENSE)",
+      "home": "https://github.com/vancluever/z2d",
+      "notice": ["z2d is covered by the Mozilla Public License 2.0: its source code, unmodified, is available from https://github.com/vancluever/z2d (tag v0.13.0, commit 40af3e84a4e15a9f31d126b3f281f23ce6a3dae5) and from the archive named above."],
+      "texts": [
+        { "from": ":z2d", "path": "LICENSE" },
+        { "from": ":z2d", "path": "COPYING" }
+      ]
+    },
+    {
+      "name": "zf",
+      "version": "0.11.0",
+      "use": "fuzzy matching (the command palette), compiled into murrtty.exe",
+      "license": "MIT",
+      "home": "https://github.com/natecraddock/zf",
+      "texts": [{ "from": ":zf", "path": "LICENSE" }]
+    },
+    {
+      "name": "uucode",
+      "version": "0.2.0 (commit ea621497), with Unicode 18.0.0 data",
+      "use": "Unicode properties, compiled into murrtty.exe",
+      "license": "MIT; Unicode data Unicode-3.0; its UTF-8 decoder MIT (Bjoern Hoehrmann)",
+      "home": "https://github.com/jacobsandlund/uucode",
+      "texts": [
+        { "from": ":uucode", "path": "LICENSE.md" },
+        { "from": "repo", "path": "dist/windows/licenses/uucode-Bjoern_Hoehrmann.txt", "title": "UTF-8 decoder" },
+        { "from": "repo", "path": "dist/windows/licenses/uucode-unicode.txt", "title": "Unicode data" }
+      ]
+    },
+    {
+      "name": "translate-c helpers",
+      "version": "2.0.0",
+      "use": "helper code for translated C headers, compiled into murrtty.exe",
+      "license": "MIT",
+      "home": "https://github.com/ziglang/translate-c",
+      "texts": [{ "from": "pkg/translate-c:translate_c", "path": "LICENSE" }]
+    },
+    {
+      "name": "Zig standard library and compiler-rt",
+      "version": "{zig}",
+      "use": "compiled into murrtty.exe",
+      "license": "MIT; compiler-rt's ports from musl MIT, from LLVM Apache-2.0 WITH LLVM-exception",
+      "home": "https://ziglang.org/",
+      "texts": [
+        { "from": "zig", "path": "LICENSE" },
+        { "from": "zig", "path": "lib/libc/musl/COPYRIGHT", "title": "musl" }
+      ]
+    },
+    {
+      "name": "MinGW-w64 runtime",
+      "version": "as bundled with Zig {zig}",
+      "use": "C runtime start-up and helpers, linked into murrtty.exe",
+      "license": "public domain and ZPL-2.1; gdtoa under its own permission notice",
+      "home": "https://www.mingw-w64.org/",
+      "texts": [
+        { "from": "zig", "path": "lib/libc/mingw/COPYING" },
+        { "from": "zig", "path": "lib/libc/mingw/gdtoa/gdtoa.c", "title": "gdtoa", "start": "The author of this software is David M. Gay.", "end": "THIS SOFTWARE." },
+        { "from": "zig", "path": "lib/libc/mingw/gdtoa/strtodg.c", "title": "gdtoa (strtodg.c)", "start": "The author of this software is David M. Gay.", "end": "THIS SOFTWARE." },
+        { "from": "zig", "path": "lib/libc/mingw/gdtoa/hd_init.c", "title": "gdtoa (hd_init.c; hexnan.c the same)", "start": "The author of this software is David M. Gay.", "end": "THIS SOFTWARE." }
+      ]
+    },
+    {
+      "name": "libc++, libc++abi and libunwind (LLVM)",
+      "version": "as bundled with Zig {zig}",
+      "use": "the C++ runtime, linked into murrtty.exe",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "home": "https://llvm.org/",
+      "texts": [{ "from": "zig", "path": "lib/libcxx/LICENSE.TXT", "title": "the same for libc++abi and libunwind" }]
+    },
+    {
+      "name": "JetBrains Mono",
+      "version": "2.304",
+      "use": "the default font, embedded in murrtty.exe",
+      "license": "OFL-1.1",
+      "home": "https://www.jetbrains.com/lp/mono/",
+      "texts": [{ "from": ":jetbrains_mono", "path": "OFL.txt" }]
+    },
+    {
+      "name": "Symbols Nerd Font",
+      "version": "3.4.0 (Nerd Fonts)",
+      "use": "icon glyphs, embedded in murrtty.exe",
+      "license": "MIT; its glyph sets under their own licenses (below)",
+      "home": "https://www.nerdfonts.com/",
+      "texts": [
+        { "from": ":nerd_fonts_symbols_only", "path": "LICENSE" },
+        { "from": "repo", "path": "vendor/nerd-fonts/LICENSE", "title": "Nerd Fonts licensing (the glyph sets)" }
+      ]
+    },
+    {
+      "name": "Noto Color Emoji and Noto Emoji",
+      "version": "2.051 and 3.005",
+      "use": "emoji fonts, embedded in murrtty.exe",
+      "license": "OFL-1.1",
+      "home": "https://github.com/googlefonts/noto-emoji",
+      "notice": ["Copyright 2022 Google Inc. (Noto Color Emoji)", "Copyright 2013 Google LLC (Noto Emoji)"],
+      "pinFiles": ["src/font/res/NotoColorEmoji.ttf", "src/font/res/NotoEmoji-Regular.ttf"],
+      "texts": [{ "from": "repo", "path": "src/font/res/OFL.txt" }]
+    },
+    {
+      "name": "Adwaita Sans",
+      "version": "4.001 (adwaita-fonts 51.0)",
+      "use": "the header bar's and dialogs' font, embedded in murrtty.exe",
+      "license": "OFL-1.1",
+      "home": "https://gitlab.gnome.org/GNOME/adwaita-fonts",
+      "pinFiles": ["src/apprt/win32/res/AdwaitaSans-Regular.ttf"],
+      "texts": [{ "from": "repo", "path": "src/apprt/win32/res/OFL-AdwaitaSans.txt" }]
+    },
+    {
+      "name": "X11 color names (rgb.txt)",
+      "version": "",
+      "use": "color names, compiled into murrtty.exe",
+      "license": "MIT/X11",
+      "home": "https://gitlab.freedesktop.org/xorg/app/rgb",
+      "texts": [{ "from": "repo", "path": "dist/windows/licenses/x11-rgb.txt" }]
+    },
+    {
+      "name": "Chromium DOM key codes",
+      "version": "",
+      "use": "the key code table, compiled into murrtty.exe",
+      "license": "BSD-3-Clause",
+      "home": "https://www.chromium.org/",
+      "texts": [{ "from": "repo", "path": "dist/windows/licenses/chromium.txt" }]
+    },
+    {
+      "name": "iTerm2 Color Schemes",
+      "version": "release 20261019-151001-86a776d",
+      "use": "the themes in share\\ghostty\\themes",
+      "license": "MIT",
+      "home": "https://github.com/mbadolato/iTerm2-Color-Schemes",
+      "deps": [":iterm2_themes"],
+      "texts": [{ "from": "repo", "path": "dist/windows/licenses/iterm2-color-schemes.txt" }]
+    },
+    {
+      "name": "Shell integration from Kitty",
+      "version": "",
+      "use": "share\\ghostty\\shell-integration\\bash\\ghostty.bash and zsh\\ (scripts, in source form)",
+      "license": "GPL-3.0-or-later",
+      "home": "https://github.com/kovidgoyal/kitty",
+      "notice": ["These scripts are based on Kitty's shell integration and are distributed under the GNU General Public License, version 3 or later. They are their own source code."],
+      "texts": [{ "from": "repo", "path": "dist/windows/licenses/GPL-3.0.txt" }]
+    },
+    {
+      "name": "bash-preexec",
+      "version": "0.7.0",
+      "use": "share\\ghostty\\shell-integration\\bash\\bash-preexec.sh",
+      "license": "MIT",
+      "home": "https://github.com/rcaloras/bash-preexec",
+      "pinFiles": ["src/shell-integration/bash/bash-preexec.sh"],
+      "texts": [{ "from": "repo", "path": "dist/windows/licenses/bash-preexec.txt" }]
+    }
+  ],
+  "pins": {
+    ":libxev": "libxev-0.0.0-86vtc8QQFACz0sVc7U-VDiDIgH-XfBuEY5JpABLjHNpn",
+    ":vaxis": "vaxis-0.6.0-BWNV_MafDAAEzkVUvrW9NFUqnnMUoeHqrs2mecnD6D7w",
+    ":z2d": "z2d-0.13.0-j5P_HgsRFABzZDH54gI35P0OSrg7HFyJwS2bXX5uBdU4",
+    ":uucode": "uucode-0.2.0-ZZjBPoGFVgCiflJNFc6Io8xzC67B6PA5bUkk4LT0kCxg",
+    ":zf": "zf-0.11.0-OIRy8XCRAAB6FiMwIrtD6FqlagnFwpI6YyOu7bXeYH5J",
+    ":jetbrains_mono": "N-V-__8AAIC5lwAVPJJzxnCAahSvZTIlG-HhtOvnM1uh-66x",
+    ":nerd_fonts_symbols_only": "N-V-__8AAMVLTABmYkLqhZPLXnMl-KyN38R8UVYqGrxqO26s",
+    ":iterm2_themes": "N-V-__8AAJ3vBQAq1fLMh5J8uWLkeDLS6WAdR2x5KcrmEyz6",
+    "pkg/dcimgui:bindings": "N-V-__8AANT61wB--nJ95Gj_ctmzAtcjloZ__hRqNw5lC1Kr",
+    "pkg/dcimgui:imgui": "N-V-__8AAEbOfQBnvcFcCX2W5z7tDaN8vaNZGamEQtNOe0UI",
+    "pkg/freetype:freetype": "N-V-__8AAKLKpwC4H27Ps_0iL3bPkQb-z6ZVSrB-x_3EEkub",
+    "pkg/glslang:glslang": "N-V-__8AABzkUgISeKGgXAzgtutgJsZc0-kkeqBBscJgMkvy",
+    "pkg/harfbuzz:harfbuzz": "N-V-__8AAG02ugUcWec-Ndp-i7JTsJ0dgF8nnJRUInkGLG7G",
+    "pkg/highway:highway": "N-V-__8AAGmZhABbsPJLfbqrh6JTHsXhY6qCaLAQyx25e0XE",
+    "pkg/libpng:libpng": "N-V-__8AAJrvXQCqAT8Mg9o_tk6m0yf5Fz-gCNEOKLyTSerD",
+    "pkg/oniguruma:oniguruma": "N-V-__8AAHjwMQDBXnLq3Q2QhaivE0kE2aD138vtX2Bq1g7c",
+    "pkg/spirv-cross:spirv_cross": "N-V-__8AANb6pwD7O1WG6L5nvD_rNMvnSc9Cpg1ijSlTYywv",
+    "pkg/translate-c:translate_c": "translate_c-2.0.0-Q_BUWltOBwBYABF84EUL208pIFeUIwbBs29FmVBaafN5",
+    "pkg/wuffs:wuffs": "N-V-__8AAP5JWgCGP_AD0teWpa4krRvE9VPZzvviGdbmN4jI",
+    "pkg/zlib:zlib": "N-V-__8AAB0eQwD-0MdOEBmz7intriBReIsIDNlukNVoNu6o"
+  },
+  "filePins": {
+    "pkg/simdutf/vendor/simdutf.h": "d3501fc2143f0edc5c84e6bb013a7fdb8ccd95514f7fd0816669248e62676301",
+    "pkg/simdutf/vendor/simdutf.cpp": "38dc5481dc4b7eef95cea8056b84d940419288100f317ecaff683bd89f163263",
+    "vendor/glad/src/gl.c": "8ed2dce8bf14ed89ae874cef0df31720aef44e8f52ca3395c2b2bd6f791f5cc8",
+    "src/stb/stb_image.h": "7fb1521970dc268639ed95ab9808ef3b47aa0800fd2d0e9250b1b90be03ee75b",
+    "src/stb/stb_image_resize.h": "6a0e75adbabb48df9031c2e39ccd97437bb226fe31e7d4a01c7bf70a18d32ec6",
+    "src/font/res/NotoColorEmoji.ttf": "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b",
+    "src/font/res/NotoEmoji-Regular.ttf": "cd07743a4c93d8da929afdd28c1d368f11da478a1093146a13610081c2a58440",
+    "src/apprt/win32/res/AdwaitaSans-Regular.ttf": "8381c33b9a44f066f2b99dba3d416a2342891e28c956a35dfd8d16ee2987e6d4",
+    "src/shell-integration/bash/bash-preexec.sh": "539ce1317850120403b85b3835c0bf92ee9b36b886101066c0ef643ac910db48"
+  },
+  "excluded": {
+    ":zig_objc": "macOS only",
+    ":zig_js": "WebAssembly only",
+    ":zig_wayland": "Linux (GTK) only",
+    ":gobject": "Linux (GTK) only",
+    ":wayland": "Linux (GTK) only",
+    ":wayland_protocols": "Linux (GTK) only",
+    ":plasma_wayland_protocols": "Linux (GTK) only",
+    "pkg/gtk4-layer-shell:gtk4_layer_shell": "Linux (GTK) only",
+    "pkg/gtk4-layer-shell:wayland_protocols": "Linux (GTK) only",
+    "pkg/fontconfig:fontconfig": "not used on Windows (fonts come from DirectWrite)",
+    "pkg/libxml2:libxml2": "fontconfig's, not used on Windows",
+    "pkg/libintl:gettext": "translations are off on Windows",
+    "pkg/sentry:sentry": "crash reporting is off on Windows",
+    "pkg/breakpad:breakpad": "crash reporting is off on Windows",
+    "pkg/wuffs:pixels": "test images only",
+    ":vaxis/zigimg": "vaxis's image support, not compiled into murrtty (none of its code is in murrtty's symbols)",
+    "pkg/translate-c:translate_c/aro": "the C translator translate-c uses while building, not compiled into murrtty"
+  }
+}

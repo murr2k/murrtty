@@ -168,6 +168,10 @@ Fork items, ahead of the rest of Phase 3:
   turn Actions off there before the first push (upstream's workflows would
   run otherwise), push `windows-port` as its `main` and nothing else (never
   `perf-trace`, no tags), then push to both repositories from then on.
+  *Decided 2026-10-28 by the owner:* the public repository takes reports
+  as Ghostty's does, in GitHub Discussions (issues opened from them once
+  confirmed), so turn Discussions on with categories for questions, issue
+  triage and feature requests, and point the issue templates there.
 
 ### Differences from Ghostty's GTK app
 
@@ -3109,11 +3113,73 @@ free-inside-callback bug.
 **7.4 Packaging and signing, L.**
 - A zip of `bin` plus `share` (themes, shell integration, terminfo), LICENSE
   and complete third-party notices (FreeType, HarfBuzz and the rest), with
-  symbols in a separate zip.
-- winget: a portable zip, with the folder added to PATH.
+  symbols in a separate zip. *Built 2026-10-28:* `build-windows.cmd
+  -Package` builds ReleaseFast with symbols kept (`-Dstrip=false` barely
+  changes the exe: the symbols go to `murrtty.pdb`, about 77 MB, in a zip
+  of their own) in a work folder of its own (`.zig-cache\murrtty-package`,
+  emptied first), then writes `murrtty-<version>-windows-<arch>.zip`
+  (`bin\murrtty.exe`, `share\` without libghostty-vt's pkg-config files,
+  `LICENSE.txt`, `THIRD-PARTY-NOTICES.txt`) and `-symbols.zip` into
+  `zig-out\package` (or `-Prefix`, where nothing but those two files is
+  touched), with forward slashes in entry names (Windows PowerShell's
+  `CreateFromDirectory` writes backslashes). It unpacks the zip and checks
+  the unpacked murrtty, with `GHOSTTY_RESOURCES_DIR` (set for murrtty's
+  and Ghostty's shells) removed: its `+version`, and `+list-themes`
+  finding the themes in its `share\`. The zips get their names only after
+  the check (`.partial` until then), and earlier ones of the same name go
+  first, so a failed run leaves nothing that looks like a release. Of
+  zig's options it takes only `-Dversion-string=`, `-Dstrip=false`, `-j`
+  and `--verbose`: the notices describe the default Windows build (with
+  `-Dsentry=true` they would miss Sentry). It warns when the tree has
+  uncommitted changes. The notices come from
+  `dist/windows/third-party.json`, written from an inventory of the
+  release exe's sources (its PDB), the build graph and `share\`: 32
+  components, from FreeType to the fonts, the toolchain's runtimes, the
+  themes and the GPL shell integration, each with its license, home,
+  source archive, required notice lines and its license texts, taken
+  from the dependency packages (`zig-pkg\`), the repository or the Zig
+  toolchain, whole or cut between marker lines. Texts no package carries
+  (Dear Bindings, simdutf, bash-preexec, the iTerm2 schemes, Chromium's key
+  codes, X11's `rgb.txt`, uucode's Unicode and Hoehrmann texts, GPL-3.0,
+  and plain MIT and Apache-2.0 texts) are fetched once into
+  `dist/windows/licenses/`, with their provenance. Packaging fails while a
+  fetched dependency is neither covered nor excluded with a reason (the
+  repository's `build.zig.zon` files, and those of each covered package,
+  where zf's vaxis and vaxis's uucode are murrtty's own by hash and
+  vaxis's zigimg and translate-c's aro are excluded), while a covered
+  one's hash differs from its pin or a pinned repository file (vendored
+  simdutf, stb, glad, the fonts, bash-preexec) changed (its license and
+  version checked again first), while a key names nothing, or while a
+  text or a marker is missing; each was checked to fail. The review added
+  what the first inventory missed: glslang's NVIDIA preprocessor license
+  (in its sources' headers, not its LICENSE), Dear ImGui's embedded
+  ProggyClean font, simdutf's Fuchsia-derived code (Apache-2.0) and
+  gdtoa's other two notices.
+- winget: a portable zip, with the folder added to PATH. *Waits for R4:*
+  the manifest needs a public download.
 - A per-user Inno Setup installer: Start menu shortcut with an AppUserModelID,
   "Open Ghostty here", and a `.ghostty` file association.
-- Authenticode signing; SmartScreen reputation takes time.
+- Authenticode signing; SmartScreen reputation takes time. Sign release
+  tags (perhaps tip builds too), not every push, in a GitHub-hosted
+  release job of the public repository (7.2), never on the desktop runner.
+  *Decided 2026-10-28 by the owner:* the SignPath Foundation's free signing
+  for open-source projects rather than a subscription (Azure Artifact
+  Signing was the other candidate), provided murrtty can work with its
+  code of conduct. Its conditions, to meet before applying: an OSI license
+  (MIT), a public repository (R4), release builds on hosted CI it can
+  trace to the source, MFA on every account, a code signing policy page,
+  the credit "Free code signing provided by SignPath.io, certificate by
+  SignPath Foundation", and no malware or undisclosed data collection
+  (murrtty makes no network connections; 7.6's check is opt-in). The
+  publisher Windows shows is SignPath Foundation.
+- MSIX for the Microsoft Store, later (*decided 2026-10-28 by the
+  owner*). The Store signs what it publishes, and a packaged murrtty has a
+  package identity, which WinRT toasts (5.2b) and the AppUserModelID
+  otherwise need registered by hand.
+- murrtty's own version numbers: it reports Ghostty's today (1.4.0 with
+  its branch and commit), and a release tag other than Ghostty's `vX.Y.Z`
+  stops the build (`src/build/Config.zig`), so murrtty's releases need a
+  scheme of their own and that small build change first.
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored
@@ -3129,7 +3195,14 @@ free-inside-callback bug.
 **7.6 Updates, M.** winget is the primary channel. An opt-in check
 (`auto-update = check`) reads a static appcast over WinHTTP; downloads are
 verified with SHA-256 and Authenticode. The `check_for_updates` action runs the
-same check on demand.
+same check on demand. *Hosting, decided 2026-10-28 by the owner:* murrtty's
+site and appcast on the owner's own domain, murraykopit.com, as a subdomain
+(recommended: `murrtty.murraykopit.com`, one DNS record to static hosting
+such as Cloudflare Pages or GitHub Pages, wherever the main site lives) or
+at `murraykopit.com/murrtty`, rather than a new murrtty.org; downloads on
+the public repository's GitHub Releases (winget's usual source). murrtty
+has no server part, so no Fly.io unless one comes (crash reports, 7.5, may
+rather go to a hosted service).
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3.

@@ -55,6 +55,17 @@
     Install the requirements (and clean, with -Clean), then stop without
     building.
 
+.PARAMETER Package
+    Build a release package: ReleaseFast (or the -Optimize given) with
+    symbols kept, then murrtty-<version>-windows-<arch>.zip (bin\murrtty.exe,
+    share\, LICENSE.txt and THIRD-PARTY-NOTICES.txt, written from
+    dist\windows\third-party.json) and a -symbols.zip with murrtty.pdb. The
+    package is unpacked and checked (its version, its themes) before the
+    zips get their names. -Prefix is then where the zips go (default
+    zig-out\package); the build and the check work in
+    .zig-cache\murrtty-package. Of zig's options it takes only
+    -Dversion-string=, -Dstrip=false, -j<N> and --verbose.
+
 .PARAMETER Clean
     Delete .zig-cache, and zig-out when no -Prefix is given, before
     building. A custom -Prefix directory is never deleted, and the
@@ -85,6 +96,10 @@
     Keep debug information in a release build (passed to zig build).
 
 .EXAMPLE
+    .\build-windows.cmd -Package
+    Release zip and symbols zip in zig-out\package.
+
+.EXAMPLE
     .\build-windows.cmd > build.log 2>&1
     Keep a log of the build.
 #>
@@ -101,6 +116,7 @@ param(
     [switch]$Run,
     [switch]$SetupOnly,
     [switch]$Clean,
+    [switch]$Package,
     [switch]$Help,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ZigArgs = @()
@@ -130,7 +146,7 @@ $PinnedZigSha256 = @{
 
 $Root = $PSScriptRoot
 $ToolchainDir = Join-Path $Root '.zig-toolchain'
-$OwnOptions = @('Optimize', 'Prefix', 'Target', 'Run', 'SetupOnly', 'Clean', 'Help')
+$OwnOptions = @('Optimize', 'Prefix', 'Target', 'Run', 'SetupOnly', 'Clean', 'Package', 'Help')
 $OptimizeModes = @('Debug', 'ReleaseSafe', 'ReleaseFast', 'ReleaseSmall')
 
 function Write-Step([string]$Message) {
@@ -188,6 +204,452 @@ function Fail([string]$Message, [int]$Code = 1) {
 # Report any unexpected error the same way as Fail, so a double-clicked
 # window still stays open long enough to read it.
 trap { Fail ("{0} (build-windows.ps1 line {1})" -f $_.Exception.Message, $_.InvocationInfo.ScriptLineNumber) }
+
+#---------------------------------------------------------------------
+# Release package (-Package)
+
+# A property of a JSON object, or $null: strict mode rejects reading one
+# that isn't there.
+function Get-Prop($Object, [string]$Name) {
+    if ($null -eq $Object) { return $null }
+    $p = $Object.PSObject.Properties[$Name]
+    if ($p) { return $p.Value }
+    return $null
+}
+
+# The names of a JSON object's properties.
+function Get-Keys($Object) {
+    if ($null -eq $Object) { return @() }
+    return @($Object.PSObject.Properties | ForEach-Object { $_.Name })
+}
+
+# The text between the brace at $Open and its match.
+function Get-Braced([string]$Text, [int]$Open) {
+    $depth = 0
+    for ($j = $Open; $j -lt $Text.Length; $j++) {
+        if ($Text[$j] -eq '{') { $depth++ }
+        elseif ($Text[$j] -eq '}') {
+            $depth--
+            if ($depth -eq 0) {
+                return [pscustomobject]@{ Text = $Text.Substring($Open + 1, $j - $Open - 1); End = $j }
+            }
+        }
+    }
+    throw "Unbalanced braces in a build.zig.zon."
+}
+
+# The fetched dependencies (those with a hash) of one build.zig.zon, keyed
+# '<prefix><name>' as dist\windows\third-party.json names them.
+function Get-ZonDependencies([string]$ZonPath, [string]$Prefix) {
+    $text = [IO.File]::ReadAllText($ZonPath)
+    # Comments start a line or follow a space; a URL's // follows a colon.
+    $text = [regex]::Replace($text, '(?m)(^|\s)//[^\n]*', '$1')
+    $m = [regex]::Match($text, '\.dependencies\s*=\s*\.\{')
+    if (-not $m.Success) { return @() }
+    $body = (Get-Braced $text ($m.Index + $m.Length - 1)).Text
+    $entry = [regex]'\.(@"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)\s*=\s*\.\{'
+    $deps = @()
+    $i = 0
+    while ($true) {
+        $e = $entry.Match($body, $i)
+        if (-not $e.Success) { break }
+        $inner = Get-Braced $body ($e.Index + $e.Length - 1)
+        $hash = [regex]::Match($inner.Text, '\.hash\s*=\s*"([^"]+)"')
+        $url = [regex]::Match($inner.Text, '\.url\s*=\s*"([^"]+)"')
+        if ($hash.Success) {
+            $deps += [pscustomobject]@{
+                Key = "$Prefix$($e.Groups[1].Value)"
+                Hash = $hash.Groups[1].Value
+                Url = $(if ($url.Success) { $url.Groups[1].Value } else { '' })
+            }
+        }
+        $i = $inner.End + 1
+    }
+    return $deps
+}
+
+# A license file's text: UTF-8, or Windows-1252 for an older file that
+# isn't valid UTF-8.
+function Read-LicenseText([string]$Path) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    try {
+        $s = (New-Object Text.UTF8Encoding($false, $true)).GetString($bytes)
+    } catch {
+        $s = [Text.Encoding]::GetEncoding(1252).GetString($bytes)
+    }
+    return $s.TrimStart([char]0xFEFF)
+}
+
+# The lines of $Text a manifest text entry asks for: all of them, or from
+# the first line containing its start to the first containing its end
+# (inclusive) or before the first containing its until.
+function Get-Excerpt([string]$Text, $Entry, [string]$Where) {
+    $lines = $Text -split "\r?\n"
+    $start = Get-Prop $Entry 'start'
+    $end = Get-Prop $Entry 'end'
+    $until = Get-Prop $Entry 'until'
+    if ($start) {
+        $a = -1
+        for ($k = 0; $k -lt $lines.Count; $k++) {
+            if ($lines[$k].Contains($start)) { $a = $k; break }
+        }
+        if ($a -lt 0) { throw "Third-party notices: '$start' is not in $Where." }
+        $b = $lines.Count - 1
+        if ($end) {
+            $b = -1
+            for ($k = $a; $k -lt $lines.Count; $k++) {
+                if ($lines[$k].Contains($end)) { $b = $k; break }
+            }
+            if ($b -lt 0) { throw "Third-party notices: '$end' doesn't follow '$start' in $Where." }
+        } elseif ($until) {
+            $b = -1
+            for ($k = $a + 1; $k -lt $lines.Count; $k++) {
+                if ($lines[$k].Contains($until)) { $b = $k - 1; break }
+            }
+            if ($b -lt 0) { throw "Third-party notices: '$until' doesn't follow '$start' in $Where." }
+        }
+        $lines = $lines[$a..$b]
+    }
+    return ((@($lines) | ForEach-Object { $_.TrimEnd() }) -join "`r`n").Trim("`r", "`n")
+}
+
+# $Text wrapped at 78 columns, keeping its own indent on the first line and
+# indenting the others by $Indent.
+function Format-Wrapped([string]$Text, [string]$Indent = '') {
+    $lead = [regex]::Match($Text, '^ *').Value
+    $lines = @()
+    $line = $null
+    foreach ($word in ($Text.Substring($lead.Length) -split ' ')) {
+        if ($null -eq $line) {
+            $line = "$lead$word"
+        } elseif (($line.Length + 1 + $word.Length) -gt 78) {
+            $lines += $line
+            $line = "$Indent$word"
+        } else {
+            $line += " $word"
+        }
+    }
+    if ($null -ne $line) { $lines += $line }
+    return ($lines -join "`r`n")
+}
+
+# The folder zig unpacks dependencies into: ZIG_LOCAL_PKG_DIR (relative to
+# the repository, where zig ran) or zig-pkg.
+function Get-PkgDir {
+    if (-not $env:ZIG_LOCAL_PKG_DIR) { return Join-Path $Root 'zig-pkg' }
+    if ([IO.Path]::IsPathRooted($env:ZIG_LOCAL_PKG_DIR)) { return $env:ZIG_LOCAL_PKG_DIR }
+    return Join-Path $Root $env:ZIG_LOCAL_PKG_DIR
+}
+
+# THIRD-PARTY-NOTICES.txt for the package, from dist\windows\third-party.json.
+# Fails while a fetched dependency (of the repository's build.zig.zon files,
+# or of a covered dependency's own) is neither covered nor excluded, while
+# a covered one or a pinned repository file changed since its license was
+# checked, or while a key is named that nothing has.
+function Write-Notices([string]$OutFile, [string]$Version, [string]$ZigDir) {
+    $manifestPath = Join-Path $Root 'dist\windows\third-party.json'
+    $manifest = [IO.File]::ReadAllText($manifestPath) | ConvertFrom-Json
+    $pkgDir = Get-PkgDir
+
+    # Which dependencies the components cover.
+    $covered = @{}
+    foreach ($c in @($manifest.components)) {
+        foreach ($t in @($c.texts)) {
+            if ($t.from -like '*:*') { $covered[$t.from] = $true }
+        }
+        foreach ($d in @(Get-Prop $c 'deps')) { if ($d) { $covered[$d] = $true } }
+    }
+
+    # Every fetched dependency: the repository's, then those of each
+    # covered dependency's own build.zig.zon (keyed '<its key>/<name>').
+    $deps = @{}
+    $queue = New-Object Collections.Queue
+    $zons = @([pscustomobject]@{ Path = (Join-Path $Root 'build.zig.zon'); Prefix = ':' })
+    foreach ($z in @(Get-ChildItem -LiteralPath (Join-Path $Root 'pkg') -Directory)) {
+        $file = Join-Path $z.FullName 'build.zig.zon'
+        if (Test-Path -LiteralPath $file) { $zons += [pscustomobject]@{ Path = $file; Prefix = "pkg/$($z.Name):" } }
+    }
+    foreach ($z in $zons) {
+        foreach ($d in @(Get-ZonDependencies $z.Path $z.Prefix)) { $deps[$d.Key] = $d; $queue.Enqueue($d) }
+    }
+    while ($queue.Count -gt 0) {
+        $d = $queue.Dequeue()
+        if (-not $covered.ContainsKey($d.Key)) { continue }
+        $zon = Join-Path (Join-Path $pkgDir $d.Hash) 'build.zig.zon'
+        if (-not (Test-Path -LiteralPath $zon)) { continue }
+        foreach ($n in @(Get-ZonDependencies $zon "$($d.Key)/")) {
+            if (-not $deps.ContainsKey($n.Key)) { $deps[$n.Key] = $n; $queue.Enqueue($n) }
+        }
+    }
+
+    $problems = @()
+    $excluded = Get-Keys $manifest.excluded
+    $pins = Get-Keys $manifest.pins
+    # A dependency's dependency can be a package already covered (zf's
+    # vaxis is murrtty's own): zig shares a package by its hash.
+    $coveredHashes = @{}
+    foreach ($key in $covered.Keys) { if ($deps.ContainsKey($key)) { $coveredHashes[$deps[$key].Hash] = $key } }
+    foreach ($key in @($deps.Keys | Sort-Object)) {
+        if ($covered.ContainsKey($key)) {
+            $pin = Get-Prop $manifest.pins $key
+            if (-not $pin) {
+                $problems += "$key has no pin."
+            } elseif ($pin -cne $deps[$key].Hash) {
+                $problems += "$key changed (now $($deps[$key].Hash), checked as $pin): check its license and version, then update its component and pin."
+            }
+            if ($excluded -ccontains $key) { $problems += "$key is both covered and excluded." }
+        } elseif ($coveredHashes.ContainsKey($deps[$key].Hash)) {
+            # The same package as a covered one.
+        } elseif ($excluded -cnotcontains $key) {
+            $problems += "$key is a dependency the notices don't cover: add a component for it, or exclude it with the reason it isn't in murrtty."
+        }
+    }
+    foreach ($key in @($covered.Keys | Sort-Object)) {
+        if (-not $deps.ContainsKey($key)) { $problems += "$key is covered, but no build.zig.zon has it." }
+    }
+    foreach ($key in $excluded) {
+        if (-not $deps.ContainsKey($key)) { $problems += "$key is excluded, but no build.zig.zon has it." }
+    }
+    foreach ($key in $pins) {
+        if (-not $covered.ContainsKey($key)) { $problems += "$key is pinned but not covered." }
+    }
+
+    # Repository files a component's version comes from, pinned by SHA-256.
+    $pinnedFiles = @{}
+    foreach ($c in @($manifest.components)) {
+        foreach ($f in @(Get-Prop $c 'pinFiles')) {
+            if (-not $f) { continue }
+            $pinnedFiles[$f] = $true
+            $want = Get-Prop $manifest.filePins $f
+            $path = Join-Path $Root $f
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                $problems += "$f (pinned for $($c.name)) is missing."
+            } elseif (-not $want) {
+                $problems += "$f (pinned for $($c.name)) has no SHA-256 in filePins."
+            } else {
+                $have = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($have -cne $want) {
+                    $problems += "$f changed (SHA-256 now $have): check $($c.name)'s license and version, then update its component and the pin."
+                }
+            }
+        }
+    }
+    foreach ($f in (Get-Keys $manifest.filePins)) {
+        if (-not $pinnedFiles.ContainsKey($f)) { $problems += "$f has a file pin no component uses." }
+    }
+    if ($problems.Count -gt 0) {
+        Fail ("Third-party notices (dist\windows\third-party.json):`n    " + ($problems -join "`n    "))
+    }
+
+    $component = '#' * 78
+    $textRule = '~' * 78
+    $out = New-Object Text.StringBuilder
+    [void]$out.AppendLine('murrtty third-party notices')
+    [void]$out.AppendLine('')
+    [void]$out.AppendLine((Format-Wrapped ('murrtty, a Windows terminal based on Ghostty, is under the MIT license in ' +
+        'LICENSE.txt. It includes the software, fonts and data below, each under its own license, given ' +
+        'in full further down.')))
+    [void]$out.AppendLine('')
+    [void]$out.AppendLine("This package: murrtty $Version")
+    [void]$out.AppendLine('')
+    $versionOf = { param($c) ([string]$c.version).Replace('{zig}', $zigVersion) }
+    foreach ($c in @($manifest.components)) {
+        $v = & $versionOf $c
+        $title = $(if ($v) { "$($c.name) $v" } else { $c.name })
+        [void]$out.AppendLine((Format-Wrapped "  $title - $($c.license)" '      '))
+    }
+    foreach ($c in @($manifest.components)) {
+        $v = & $versionOf $c
+        [void]$out.AppendLine('')
+        [void]$out.AppendLine($component)
+        [void]$out.AppendLine($(if ($v) { "$($c.name) $v" } else { $c.name }))
+        [void]$out.AppendLine((Format-Wrapped "  Use:     $(([string]$c.use).Replace('{zig}', $zigVersion))" '           '))
+        [void]$out.AppendLine((Format-Wrapped "  License: $($c.license)" '           '))
+        [void]$out.AppendLine("  Home:    $($c.home)")
+        $sources = @()
+        foreach ($t in @($c.texts)) { if ($t.from -like '*:*') { $sources += $t.from } }
+        foreach ($d in @(Get-Prop $c 'deps')) { if ($d) { $sources += $d } }
+        foreach ($s in @($sources | Select-Object -Unique)) {
+            if ($deps[$s].Url) { [void]$out.AppendLine("  Source:  $($deps[$s].Url)") }
+        }
+        foreach ($line in @(Get-Prop $c 'notice')) {
+            if ($line) {
+                [void]$out.AppendLine('')
+                [void]$out.AppendLine((Format-Wrapped $line))
+            }
+        }
+        foreach ($t in @($c.texts)) {
+            switch -Wildcard ($t.from) {
+                'repo' { $file = Join-Path $Root $t.path }
+                'zig' { $file = Join-Path $ZigDir $t.path }
+                default { $file = Join-Path (Join-Path $pkgDir $deps[$t.from].Hash) $t.path }
+            }
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                Fail "Third-party notices: $($c.name)'s license text $file is missing (is the dependency fetched? Build once without -Package)."
+            }
+            $title = Get-Prop $t 'title'
+            [void]$out.AppendLine('')
+            [void]$out.AppendLine($textRule)
+            [void]$out.AppendLine($(if ($title) { "$($t.path) - $title" } else { $t.path }))
+            [void]$out.AppendLine($textRule)
+            [void]$out.AppendLine('')
+            [void]$out.AppendLine((Get-Excerpt (Read-LicenseText $file) $t $file))
+        }
+    }
+    $text = ($out.ToString() -replace "\r?\n", "`r`n")
+    [IO.File]::WriteAllText($OutFile, $text, (New-Object Text.UTF8Encoding($true)))
+    return @($manifest.components).Count
+}
+
+# The Zig installation folder (where its LICENSE and lib\ are): zig.exe's
+# own, as Zig's archives lay it out, else what zig env reports.
+function Get-ZigDir {
+    $beside = Split-Path -Parent $zig
+    if (Test-Path -LiteralPath (Join-Path $beside 'lib\std\std.zig')) { return $beside }
+    # zig env prints UTF-8, and may print a path relative to here.
+    $saved = [Console]::OutputEncoding
+    $ErrorActionPreference = 'Continue'
+    try {
+        [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+        $envText = (& $zig env 2>$null) -join "`n"
+        $code = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $saved
+        $ErrorActionPreference = 'Stop'
+    }
+    $m = [regex]::Match($envText, '\.lib_dir\s*=\s*"((?:[^"\\]|\\.)*)"')
+    if ($code -ne 0 -or -not $m.Success) { Fail "zig env didn't report its lib directory (exit $code)." }
+    $libText = $m.Groups[1].Value -replace '\\\\', '\'
+    $lib = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($libText)
+    return Split-Path -Parent $lib
+}
+
+# Run the unpacked package's murrtty.exe with its output in a file (it is a
+# GUI program: PowerShell wouldn't wait for it otherwise), without
+# GHOSTTY_RESOURCES_DIR (which murrtty and Ghostty set for their shells, and
+# which a release build reads before looking beside its exe), for at most
+# a minute.
+function Invoke-Packaged([string]$Exe, [string[]]$Arguments) {
+    $outFile = [IO.Path]::GetTempFileName()
+    $errFile = [IO.Path]::GetTempFileName()
+    $resources = $env:GHOSTTY_RESOURCES_DIR
+    try {
+        $env:GHOSTTY_RESOURCES_DIR = $null
+        $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -RedirectStandardOutput $outFile `
+            -RedirectStandardError $errFile -WindowStyle Hidden -PassThru
+        # Windows PowerShell reports no exit code for a process whose handle
+        # it never opened.
+        $null = $p.Handle
+        if (-not $p.WaitForExit(60000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Fail "The packaged murrtty.exe $($Arguments -join ' ') didn't finish within a minute."
+        }
+        return [pscustomobject]@{ Code = $p.ExitCode; Lines = @(Get-Content -LiteralPath $outFile) }
+    } finally {
+        $env:GHOSTTY_RESOURCES_DIR = $resources
+        Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# A zip of the files under $Folder, under $Base in the archive. Entries are
+# written one by one: Windows PowerShell's ZipFile.CreateFromDirectory
+# names them with backslashes, which the zip format doesn't allow (unzip
+# elsewhere makes files named "bin\murrtty.exe").
+function New-Zip([string]$Folder, [string]$ZipPath, [string]$Base) {
+    $archive = [IO.Compression.ZipFile]::Open($ZipPath, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        $rootLength = $Folder.TrimEnd('\').Length + 1
+        foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Recurse -File -Force | Sort-Object FullName)) {
+            $entry = $f.FullName.Substring($rootLength).Replace('\', '/')
+            if ($Base) { $entry = "$Base/$entry" }
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, $entry,
+                [IO.Compression.CompressionLevel]::Optimal)
+        }
+    } finally {
+        $archive.Dispose()
+    }
+}
+
+# Make the release zip and the symbols zip from the staged install. The
+# tree, the symbols and the check live in $Work (the builder's own, under
+# .zig-cache); only the two zips go to $OutDir, under their names once
+# the check has passed (".partial" until then).
+function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
+    $exe = Join-Path $Stage 'bin\murrtty.exe'
+    $pdb = Join-Path $Stage 'bin\murrtty.pdb'
+    if (-not (Test-Path -LiteralPath $pdb)) {
+        Fail "The build left no murrtty.pdb beside murrtty.exe, so there are no symbols to package."
+    }
+    $version = (Get-Item -LiteralPath $exe).VersionInfo.FileVersion
+    if (-not $version) { Fail "murrtty.exe has no version in its version resource." }
+    $name = "murrtty-$version-windows-$($Target.Split('-')[0])"
+    $zip = Join-Path $OutDir "$name.zip"
+    $symZip = Join-Path $OutDir "$name-symbols.zip"
+    # Never leave an earlier zip of the same name beside a failed run.
+    foreach ($f in @($zip, $symZip, "$zip.partial", "$symZip.partial")) {
+        if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+    }
+
+    Write-Step "Packaging $name"
+    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($git) {
+        $ErrorActionPreference = 'Continue'
+        try { $dirty = @(& $git.Path -C $Root status --porcelain --untracked-files=no 2>$null) } finally { $ErrorActionPreference = 'Stop' }
+        if ($dirty.Count -gt 0) {
+            Write-Note "The working tree has uncommitted changes: this package is named after the last commit but built from them."
+        }
+    }
+    $dir = Join-Path $Work "tree\$name"
+    New-Item -ItemType Directory -Path (Join-Path $dir 'bin') -Force | Out-Null
+    Copy-Item -LiteralPath $exe -Destination (Join-Path $dir 'bin')
+    # share\ as installed, but for libghostty-vt's pkg-config files: the
+    # package has murrtty, not the library.
+    Copy-Item -LiteralPath (Join-Path $Stage 'share') -Destination (Join-Path $dir 'share') -Recurse
+    $pc = Join-Path $dir 'share\pkgconfig'
+    if (Test-Path -LiteralPath $pc) { Remove-Item -LiteralPath $pc -Recurse -Force }
+    Copy-Item -LiteralPath (Join-Path $Root 'LICENSE') -Destination (Join-Path $dir 'LICENSE.txt')
+    $count = Write-Notices (Join-Path $dir 'THIRD-PARTY-NOTICES.txt') $version (Get-ZigDir)
+    Write-Host "    THIRD-PARTY-NOTICES.txt: $count components"
+
+    # ZipArchive and its modes are in System.IO.Compression itself.
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
+    New-Zip $dir "$zip.partial" $name
+    $symDir = Join-Path $Work 'symbols'
+    New-Item -ItemType Directory -Path $symDir -Force | Out-Null
+    Copy-Item -LiteralPath $pdb -Destination $symDir
+    New-Zip $symDir "$symZip.partial" ''
+
+    # Unpack it fresh and ask it: its version, and the themes it finds in
+    # share\ (each listed as "(resources)"), which proves the layout works.
+    Write-Step 'Checking the package'
+    $read = [IO.Compression.ZipFile]::OpenRead("$zip.partial")
+    try {
+        $bad = @($read.Entries | Where-Object { $_.FullName.Contains('\') -or -not $_.FullName.StartsWith("$name/") })
+    } finally {
+        $read.Dispose()
+    }
+    if ($bad.Count -gt 0) { Fail "The zip has entries outside $name/ or with backslashes: $($bad[0].FullName)" }
+    $check = Join-Path $Work 'check'
+    [IO.Compression.ZipFile]::ExtractToDirectory("$zip.partial", $check)
+    $packed = Join-Path $check "$name\bin\murrtty.exe"
+    $v = Invoke-Packaged $packed @('+version')
+    if ($v.Code -ne 0 -or -not ($v.Lines -match [regex]::Escape($version))) {
+        Fail "The packaged murrtty.exe +version exited $($v.Code) without naming $version."
+    }
+    $themes = Invoke-Packaged $packed @('+list-themes', '--plain')
+    $found = @($themes.Lines | Where-Object { $_ -like '*(resources)' }).Count
+    if ($themes.Code -ne 0 -or $found -lt 100) {
+        Fail "The packaged murrtty.exe found $found themes in its share folder (exit $($themes.Code)); its resources are not where it looks."
+    }
+    Write-Host "    the unpacked murrtty reports $version and finds $found themes"
+
+    Move-Item -LiteralPath "$zip.partial" -Destination $zip
+    Move-Item -LiteralPath "$symZip.partial" -Destination $symZip
+    foreach ($f in @($zip, $symZip)) {
+        Write-Host ("    {0} ({1:N1} MB)" -f $f, ((Get-Item -LiteralPath $f).Length / 1MB))
+    }
+}
 
 # PowerShell splits a bare -Dname=value after a dot (-Dversion-string=1.2.3
 # arrives as '-Dversion-string=1' '.2.3') and, when this script is run
@@ -279,6 +741,26 @@ $Prefix = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPat
 # adds around an argument with spaces. Keep it only for a drive root.
 $trimmed = $Prefix.TrimEnd('\', '/')
 if ($trimmed -and $trimmed -notmatch '^[A-Za-z]:$') { $Prefix = $trimmed }
+
+# A package is built, with symbols, into a work folder of the builder's own
+# under .zig-cache (emptied before the build, so nothing an earlier build
+# left reaches the zip); only its two zips go to -Prefix. Its notices
+# describe the default Windows build, so few zig options are taken.
+if ($Package) {
+    if ($Optimize -eq 'Debug') {
+        Fail '-Package builds a release: use -Optimize ReleaseFast (the default), ReleaseSafe or ReleaseSmall.'
+    }
+    if ($SetupOnly) { Fail '-Package and -SetupOnly together leave nothing to package.' }
+    $other = @($ZigArgs | Where-Object { $_ -cnotmatch '^(-Dversion-string=.+|-Dstrip=false|--verbose|-j\d+)$' })
+    if ($other.Count -gt 0) {
+        Fail ("-Package doesn't take '$($other[0])': its notices describe the default Windows build. " +
+            'Besides the builder''s own options it takes -Dversion-string=..., -Dstrip=false, -j<N> and --verbose.')
+    }
+    $PackageDir = $(if ($PSBoundParameters.ContainsKey('Prefix')) { $Prefix } else { Join-Path $Root 'zig-out\package' })
+    $PackageWork = Join-Path $Root '.zig-cache\murrtty-package'
+    $Prefix = Join-Path $PackageWork 'stage'
+    if ($ZigArgs -cnotcontains '-Dstrip=false') { $ZigArgs = @($ZigArgs) + '-Dstrip=false' }
+}
 
 #---------------------------------------------------------------------
 # System checks
@@ -561,8 +1043,10 @@ if ($Clean) {
     Write-Step "Cleaning $cache"
     if (Test-Path -LiteralPath $cache) { Remove-Item -LiteralPath $cache -Recurse -Force }
     # Only the default prefix is ours to delete: a custom one may be a
-    # shared directory that holds other files.
-    if ($Prefix -ieq $defaultPrefix) {
+    # shared directory that holds other files. (A package's work folder is
+    # in .zig-cache.)
+    if ($Package) {
+    } elseif ($Prefix -ieq $defaultPrefix) {
         Write-Step "Cleaning $Prefix"
         if (Test-Path -LiteralPath $Prefix) { Remove-Item -LiteralPath $Prefix -Recurse -Force }
     } else {
@@ -615,6 +1099,9 @@ $noExe = @($ZigArgs | Where-Object {
     ($_ -match '^-Demit-lib-vt(=true)?$' -and -not ($ZigArgs -cmatch '^-Demit-exe(=true)?$')) })
 $installs = ($steps.Count -eq 0 -or $steps -ccontains 'install') -and $printsAndExits.Count -eq 0 -and
     $noExe.Count -eq 0
+if ($Package -and -not $installs) {
+    Fail '-Package needs the install step to build murrtty.exe: name no other step, and leave the exe on.'
+}
 
 $zigArgs = @('build', "-Dtarget=$Target", "-Doptimize=$Optimize", '--prefix', $Prefix) + $ZigArgs
 $shown = ($zigArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
@@ -622,6 +1109,8 @@ Write-Step "zig $shown"
 if (-not (Test-Path -LiteralPath (Join-Path $Root '.zig-cache'))) {
     Write-Host '    The first build downloads dependencies and takes several minutes.'
 }
+
+if ($Package -and (Test-Path -LiteralPath $PackageWork)) { Remove-Item -LiteralPath $PackageWork -Recurse -Force }
 
 $timer = [Diagnostics.Stopwatch]::StartNew()
 Push-Location -LiteralPath $Root
@@ -654,6 +1143,12 @@ if (-not (Test-Path -LiteralPath $exe)) {
 }
 $sizeMb = [Math]::Round((Get-Item -LiteralPath $exe).Length / 1MB, 1)
 Write-Step ("Built {0} ({1} MB) in {2:mm\:ss}" -f $exe, $sizeMb, $timer.Elapsed)
+
+if ($Package) {
+    New-Package $Prefix $PackageWork $PackageDir
+    if ($Run) { Write-Note '-Run ignored with -Package.' }
+    Exit-Script 0
+}
 
 if ($Run) {
     if ($arch -eq 'ARM64' -and $osBuild -lt 22000 -and $Target -like 'x86_64-*') {

@@ -445,6 +445,7 @@ Options:
 | `-Run` | Start murrtty after a successful build |
 | `-SetupOnly` | Install Zig, don't build |
 | `-Clean` | Delete `.zig-cache`, and `zig-out` unless `-Prefix` is given, first (`zig-pkg\` and `.zig-toolchain\` are kept) |
+| `-Package` | Build the release zip and its symbols zip (see below) |
 | `-Help` | Show the help (also `-?` or `/?`) |
 
 Every other argument is passed to `zig build`: `-D` options (written
@@ -461,6 +462,15 @@ comma or a space (`'-Dname=a,b'`). The exceptions:
   abbreviations of them, such as `-Opt`.
 - A bare `--` is rejected. To pass arguments to murrtty, build first and then
   run `zig-out\bin\murrtty.exe` with them.
+
+`.\build-windows.cmd -Package` builds a release package into
+`zig-out\package` (or `-Prefix`): `murrtty-<version>-windows-x86_64.zip`
+holds `bin\murrtty.exe`, `share\`, `LICENSE.txt` and
+`THIRD-PARTY-NOTICES.txt` (the licenses of everything murrtty includes,
+written from `dist\windows\third-party.json`), and `-symbols.zip` holds
+`murrtty.pdb`. It checks the package by unpacking it and asking the
+unpacked murrtty for its version and its themes. It stops when a
+dependency is added or changes until `third-party.json` covers it.
 
 To build by hand with Zig 0.17.0 already installed:
 
