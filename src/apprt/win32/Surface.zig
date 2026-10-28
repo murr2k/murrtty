@@ -26,6 +26,7 @@ const draw = @import("draw.zig");
 const ipc = @import("ipc.zig");
 const taskbar_mod = @import("taskbar.zig");
 const KeyState = @import("KeyState.zig");
+const DropTarget = @import("DropTarget.zig");
 const Overlay = @import("Overlay.zig");
 const Scrollbar = @import("Scrollbar.zig");
 const SearchBox = @import("SearchBox.zig");
@@ -161,6 +162,8 @@ frame_posted: bool = false,
 /// shown from the message loop, never inside a core callback. The surface
 /// owns them, so closing it answers (denies) and frees what is still queued.
 clipboard_pending: std.ArrayList(PendingClipboard) = .empty,
+/// Files and text dropped on the pane (roadmap 5.8); null if OLE refused.
+drop_target: ?*DropTarget = null,
 
 pub const Colors = struct {
     bg: configpkg.Config.Color,
@@ -219,6 +222,8 @@ pub fn init(
         return error.CreateWindowFailed;
     };
     errdefer _ = c.DestroyWindow(self.hwnd);
+    self.drop_target = DropTarget.register(app.core_app.alloc, self);
+    errdefer if (self.drop_target) |d| d.revoke(self.hwnd);
 
     self.updateSize();
     self.updateContentScale();
@@ -591,6 +596,8 @@ fn scaledPadding(points: u32, scale: f32) u32 {
 /// with its parent.
 pub fn deinit(self: *Surface) void {
     _ = c.SetWindowLongPtrW(self.hwnd, c.GWLP_USERDATA, 0);
+    if (self.drop_target) |d| d.revoke(self.hwnd);
+    self.drop_target = null;
 
     // Answer and free confirmations that were never shown.
     for (self.clipboard_pending.items) |p| self.dropClipboardConfirm(p);
@@ -819,6 +826,26 @@ pub fn clipboardRequest(
         .available = available,
     }, text);
     return .started;
+}
+
+/// Whether the pane's shell is cmd: a drop's paths are quoted for it
+/// (roadmap 5.8).
+pub fn shellIsCmd(self: *const Surface) bool {
+    if (!self.core_initialized) return false;
+    return switch (self.core_surface.io.backend) {
+        .exec => |*e| e.shellIsCmd(),
+    };
+}
+
+/// Paste `text` as a paste from the clipboard would (a drop, roadmap 5.8;
+/// GTK's Surface.paste): bracketed paste, and paste protection's
+/// confirmation, queued for the message loop.
+pub fn pasteText(self: *Surface, text: []const u8) void {
+    if (!self.core_initialized or text.len == 0) return;
+    self.completeClipboard(.{ .paste = .standard }, .{
+        .contents = &.{.{ .mime = "text/plain", .data = text }},
+        .available = &.{"text/plain"},
+    }, text);
 }
 
 /// Complete a clipboard request. If the core asks for confirmation the

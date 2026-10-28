@@ -23,6 +23,7 @@ const global = @import("../../global.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Notifications = @import("Notifications.zig");
+const DropTarget = @import("DropTarget.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
 const Window = @import("Window.zig");
@@ -72,6 +73,9 @@ pub const State = if (enabled) struct {
     /// (roadmap 5.5), to tell an action refused from one never run.
     toggles: u32 = 0,
     global_refreshes: u32 = 0,
+    /// The last test drop's effect (dump wparam 17; roadmap 5.8): 1 a
+    /// copy, 0 refused, -1 none made.
+    drop_effect: i32 = -1,
 } else struct {};
 
 pub const Notified = struct {
@@ -206,6 +210,9 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 ///   presenting its pane (1), which would take the foreground.
 /// - 16: toggle_visibility takes murrtty as in front (`lparam` 1), as not
 ///   (2), or asks Windows (0).
+/// - 17: drop what the clipboard holds on the first window's active pane,
+///   through its drop target (DragEnter, then Drop): OLE wraps the
+///   clipboard as the data object a drag would bring (roadmap 5.8).
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -262,6 +269,17 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         for (app.windows.items) |w| w.syncBlur();
     }
     if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));
+    if (wparam == 17) {
+        app.test_state.drop_effect = -1;
+        if (app.windows.items.len > 0) if (app.windows.items[0].activeSurface()) |s| if (s.drop_target) |d| {
+            var obj: ?*anyopaque = null;
+            if (c.OleGetClipboard(&obj) >= 0) if (obj) |o| {
+                const data: *DropTarget.DataObject = @ptrCast(@alignCast(o));
+                defer data.release();
+                app.test_state.drop_effect = @intCast(d.simulate(data));
+            };
+        };
+    }
     if (wparam == 16) app.test_state.in_front = switch (lparam) {
         1 => .yes,
         2 => .no,
@@ -629,6 +647,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         app.test_state.toggles,
         app.test_state.global_refreshes,
     });
+    try out.print(alloc, ",\"drop_effect\":{d}", .{app.test_state.drop_effect});
     try out.append(alloc, '}');
 }
 
@@ -669,7 +688,8 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                 p.pulse,
             });
         } else try out.appendSlice(alloc, "{");
-        try out.print(alloc, "\"hwnd\":{d},\"surface_id\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
+        try out.print(alloc, "\"drop_target\":{},\"hwnd\":{d},\"surface_id\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
+            s.drop_target != null,
             @intFromPtr(s.hwnd),
             if (s.core_initialized) s.core_surface.id else 0,
             corners[0].x,

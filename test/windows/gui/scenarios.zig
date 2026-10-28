@@ -18,6 +18,7 @@ pub const all = [_]Scenario{
     .{ .name = "ctrl-c", .about = "Ctrl+C interrupts a running program", .run = ctrlC },
     .{ .name = "tabs", .about = "new, switch, close button, middle-click, tab bar auto-hide", .run = tabs },
     .{ .name = "clipboard", .about = "Ctrl+Shift+V, Shift+Insert, Ctrl+Shift+A/C", .run = clipboard },
+    .{ .name = "drop", .about = "files dropped on a pane paste as their paths, quoted where a shell would split them; text pastes as it is; through the pane's drop target", .run = dropScenario },
     .{ .name = "copy-keys", .about = "a word selected by a double click is copied 10 times each by Ctrl+Insert, the numpad's Ctrl+Ins (NumLock off) and Ctrl+Shift+C; the numpad's Left moves, its Shift+Ins pastes", .run = copyKeys },
     .{ .name = "alt-f4", .about = "Alt+F4 asks, then closes", .run = altF4 },
     .{ .name = "clipboard-queue", .about = "a burst of OSC 52 writes asks one dialog at a time", .run = clipboardQueue },
@@ -8529,4 +8530,55 @@ fn trayScenario(h: *Harness) anyerror!void {
         const code = g.waitExit(10000);
         try h.expect(code != null and code.? == 0, "and quits once it passes (exit code {?d})", .{code});
     }
+}
+
+//---------------------------------------------------------------
+// Drag and drop onto a terminal (roadmap 5.8)
+
+/// Dropped files paste as their paths, separated by spaces and quoted for
+/// the pane's shell where it would split or expand them (double quotes for
+/// cmd, single quotes for PowerShell), and dropped text as it is, through
+/// the core's paste; a drag with neither is refused. The drop goes through each pane's real drop target (DragEnter,
+/// Drop), with OLE's data object for the clipboard standing in for a drag's
+/// (the hidden desktop has no mouse to drag with).
+fn dropScenario(h: *Harness) anyerror!void {
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    var g = try start(h, "drop", "", ">");
+    defer g.deinit();
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{});
+        try h.expect(panes[0].drop_target, "the pane is a drop target", .{});
+    }
+
+    try h.setClipboardFiles(&.{ "C:\\murrtty-drop\\plain.txt", "C:\\murrtty drop\\with space.txt", "D:\\a&b.log" });
+    const files = try h.dropClipboard(&g);
+    try h.expect(files == 1, "files drop as a copy (effect {d})", .{files});
+    try waitWindowText(h, &g, 0, "C:\\murrtty-drop\\plain.txt \"C:\\murrtty drop\\with space.txt\" \"D:\\a&b.log\"");
+    try h.expect(true, "they paste as their paths, quoted where a shell would split them", .{});
+    // Clear the prompt's line for the next.
+    h.key(try h.surface(&g, try h.mainWindow(&g)), .{}, w.VK_ESCAPE);
+
+    try h.setClipboard("echo murrtty-dropped-text");
+    const text = try h.dropClipboard(&g);
+    try h.expect(text == 1, "text drops as a copy (effect {d})", .{text});
+    try waitWindowText(h, &g, 0, "echo murrtty-dropped-text");
+    try h.expect(true, "and pastes as it is", .{});
+
+    try h.clearClipboard();
+    const nothing = try h.dropClipboard(&g);
+    try h.expect(nothing == 0, "a drag with neither files nor text is refused (effect {d})", .{nothing});
+
+    // PowerShell: single quotes, in which nothing expands, its quotes
+    // doubled; a name that would run code stays a name.
+    var p = try h.launchWith("drop-pwsh", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n", .{});
+    defer p.deinit();
+    try h.waitText(&p, "PS ", 1, 20000);
+    try h.setClipboardFiles(&.{ "C:\\murrtty-drop\\plain.txt", "D:\\a$(Remove-Item x)'s.txt" });
+    const pwsh = try h.dropClipboard(&p);
+    try h.expect(pwsh == 1, "files drop on a PowerShell pane (effect {d})", .{pwsh});
+    try waitWindowText(h, &p, 0, "C:\\murrtty-drop\\plain.txt 'D:\\a$(Remove-Item x)''s.txt'");
+    try h.expect(true, "single-quoted for PowerShell, where nothing expands, its quote doubled", .{});
 }

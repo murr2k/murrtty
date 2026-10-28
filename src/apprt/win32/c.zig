@@ -1347,6 +1347,27 @@ pub const TaskDialogIndirectFn = *const fn (
 
 // ole32
 pub extern "ole32" fn OleInitialize(?*anyopaque) callconv(.winapi) HRESULT;
+
+// Drag and drop onto a pane (roadmap 5.8).
+pub const POINTL = extern struct { x: c_long = 0, y: c_long = 0 };
+pub const FORMATETC = extern struct {
+    cfFormat: u16,
+    ptd: ?*anyopaque,
+    dwAspect: DWORD,
+    lindex: c_long,
+    tymed: DWORD,
+};
+pub const STGMEDIUM = extern struct {
+    tymed: DWORD = 0,
+    /// The union's HGLOBAL member (TYMED_HGLOBAL), the one read here.
+    hGlobal: ?HGLOBAL = null,
+    pUnkForRelease: ?*anyopaque = null,
+};
+pub extern "ole32" fn RegisterDragDrop(HWND, *anyopaque) callconv(.winapi) HRESULT;
+pub extern "ole32" fn RevokeDragDrop(HWND) callconv(.winapi) HRESULT;
+pub extern "ole32" fn ReleaseStgMedium(*STGMEDIUM) callconv(.winapi) void;
+pub extern "ole32" fn OleGetClipboard(*?*anyopaque) callconv(.winapi) HRESULT;
+pub extern "shell32" fn DragQueryFileW(*anyopaque, UINT, ?[*]u16, UINT) callconv(.winapi) UINT;
 pub extern "ole32" fn OleUninitialize() callconv(.winapi) void;
 
 // advapi32

@@ -1352,6 +1352,13 @@ const Subprocess = struct {
     }
 };
 
+/// Whether the shell started is cmd (Windows): what a drop pastes is
+/// quoted for it (roadmap 5.8).
+pub fn shellIsCmd(self: *const Exec) bool {
+    const args = self.subprocess.args;
+    return args.len > 0 and tracksProcessCwd(args[0]);
+}
+
 /// Whether the shell `exe` keeps its process's current directory where its
 /// user is: cmd's cd does. PowerShell's Set-Location doesn't, nor does WSL
 /// or ssh, whose directories aren't this computer's.

@@ -1433,6 +1433,9 @@ pub const Dump = struct {
     globals_waiting: u32 = 0,
     toggles: u32 = 0,
     global_refreshes: u32 = 0,
+    /// The last test drop's effect (dropClipboard; roadmap 5.8): 1 a
+    /// copy, 0 refused, -1 none made.
+    drop_effect: i32 = -1,
 
     /// The quick terminal's state (roadmap 5.7): shown (also while it
     /// slides in), sliding, and the work area and DPI it chose.
@@ -1628,6 +1631,8 @@ pub const Dump = struct {
     };
 
     pub const Pane = struct {
+        /// Whether it takes drops (roadmap 5.8).
+        drop_target: bool = false,
         /// OSC 9;4's progress (roadmap 5.4): its value (-1 while the bar
         /// pulses), error and paused states and the pulsing block's place.
         progress: ?struct { value: i32, err: bool, paused: bool, pulse: f32 } = null,
@@ -2156,6 +2161,44 @@ pub fn getClipboard(self: *Harness) !?[]u8 {
     defer _ = w.GlobalUnlock(h);
     const s: [*:0]const u16 = @ptrCast(@alignCast(p));
     return try std.unicode.utf16LeToUtf8Alloc(self.alloc, std.mem.span(s));
+}
+
+/// Put `paths` on the clipboard as Explorer's copy does (CF_HDROP: a
+/// DROPFILES header, then the paths in UTF-16, double-NUL-terminated).
+pub fn setClipboardFiles(self: *Harness, paths: []const []const u8) !void {
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(self.alloc);
+    // DROPFILES: pFiles (the list's offset), pt, fNC, fWide.
+    const header = [_]u32{ 20, 0, 0, 0, 1 };
+    try data.appendSlice(self.alloc, std.mem.sliceAsBytes(&header));
+    for (paths) |path| {
+        const p16 = try std.unicode.utf8ToUtf16LeAllocZ(self.alloc, path);
+        defer self.alloc.free(p16);
+        try data.appendSlice(self.alloc, std.mem.sliceAsBytes(p16[0 .. p16.len + 1]));
+    }
+    try data.appendSlice(self.alloc, &.{ 0, 0 });
+    try openClipboard();
+    defer _ = w.CloseClipboard();
+    _ = w.EmptyClipboard();
+    setClipboardData(15, data.items);
+    excludeFromHistory();
+}
+
+/// Empty the clipboard.
+pub fn clearClipboard(self: *Harness) !void {
+    _ = self;
+    try openClipboard();
+    defer _ = w.CloseClipboard();
+    _ = w.EmptyClipboard();
+}
+
+/// Drop what the clipboard holds on the first window's active pane,
+/// through its drop target (dump wparam 17); the effect (1 a copy, 0
+/// refused, -1 no drop target).
+pub fn dropClipboard(self: *Harness, g: *const Ghostty) !i32 {
+    var d = try self.dumpWith(g, 17, 0);
+    defer d.deinit();
+    return d.value.drop_effect;
 }
 
 pub fn setClipboard(self: *Harness, text: []const u8) !void {

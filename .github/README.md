@@ -259,6 +259,11 @@ hosted Windows runner and then the unit tests.
   and `initial-window = false` starts it there. A click on its icon brings
   it forward (or opens a window); its menu has New Window, Quick
   Terminal, Config and Quit.
+- Drag and drop: files dropped on a terminal paste as their paths, quoted
+  for its shell (single quotes for PowerShell, where nothing in them
+  expands; double quotes for cmd), and dropped text pastes, as a paste
+  does (bracketed paste, paste protection). Windows doesn't let Explorer
+  drop onto an elevated murrtty.
 - The quick terminal (`toggle_quick_terminal`, or `murrtty
   +toggle-quick-terminal`): a terminal that slides in from an edge of the
   screen and out again, usually on a global key binding such as
@@ -313,8 +318,8 @@ hosted Windows runner and then the unit tests.
 - Dragging panes to rearrange splits.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with desktop integration (Phase 5: drag and drop, the
-selection clipboard, session restore, undo of closes).
+continuing with desktop integration (Phase 5: the selection clipboard,
+session restore, undo of closes).
 
 **Known issues**
 

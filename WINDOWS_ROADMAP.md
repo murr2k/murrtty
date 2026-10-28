@@ -272,6 +272,13 @@ roadmap item behind it.
   murrtty in front it hides every window, otherwise it brings murrtty
   forward with the windows it hid, as they were; only while a global
   binding or the tray (5.6) can bring them back. GTK doesn't implement it.
+- **Dropped files** (5.8): they paste as Windows paths separated by
+  spaces, quoted for the pane's shell (single quotes for PowerShell, in
+  which nothing expands; double quotes for cmd); GTK backslash-escapes
+  POSIX shell characters and ends each path with a newline. Windows
+  Terminal double-quotes paths with spaces only, so a name holding
+  `$(...)` would run in PowerShell; murrtty's single quotes keep it a
+  name.
 - **Quick terminal** (5.7): it slides in and out over
   `quick-terminal-animation-duration`, as macOS's; GTK's appears at once
   (only KDE's Sliding Popups animate it). It hides only while something
@@ -2555,6 +2562,28 @@ and `toggle_visibility`'s hidden windows staying hidden.
 **5.8 Drag and drop onto a terminal, S.** Files from Explorer paste as quoted
 paths, and text pastes, both through the core's paste path (bracketed paste
 applies).
+
+*Built 2026-10-27 (`win32/DropTarget.zig`):* each pane's window is an OLE
+drop target (`RegisterDragDrop`, COM's `IDropTarget`, revoked as the pane
+goes; OLE is initialized at start). A drag holding files (`CF_HDROP`,
+Explorer's) or text (`CF_UNICODETEXT`, a browser's or an editor's) is
+taken as a copy; anything else is refused. Files paste as their paths,
+separated by spaces and quoted for the pane's shell (`Exec.shellIsCmd`):
+for PowerShell, and any other shell, in single quotes, in which nothing
+expands, with its single quotes (and the typographic ones it also takes
+as single quotes) doubled, wherever a character beyond letters, digits
+and `\/:._-` appears; for cmd in double quotes for spaces and its
+metacharacters (`%` still expands there: cmd has no escape for it inside
+quotes). Text pastes as it is. Both go through the core's
+paste as a paste from the clipboard does (`Surface.pasteText`, GTK's
+`Surface.paste`): bracketed paste, and paste protection's confirmation.
+Windows' drag and drop doesn't cross integrity levels, so Explorer can't
+drop onto an elevated murrtty (Windows Terminal has the same limit). The
+`drop` scenario drops through the pane's real drop target (DragEnter,
+Drop), with OLE's data object for the clipboard standing in for a drag's,
+since the hidden desktop has no mouse to drag with: files (cmd's and
+PowerShell's quoting, a name that would run code staying a name), text,
+and a refused drag.
 
 **5.9 Selection clipboard, S.** An in-process selection buffer, so
 `copy-on-select`, middle-click paste and `paste_from_selection` work between
