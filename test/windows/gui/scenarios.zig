@@ -75,6 +75,7 @@ pub const all = [_]Scenario{
     .{ .name = "ipc-launch", .about = "+new-window with no murrtty running starts one for it, which serves the next; one started for a request that never comes quits", .run = ipcLaunch },
     .{ .name = "single-instance", .about = "gtk-single-instance hands a launch's window to the running murrtty; a separate one takes the pipe over when the first quits", .run = singleInstance },
     .{ .name = "open-config-window", .about = "open_config:new_window runs $EDITOR on the config in a new window; without one it opens the file as open_config does", .run = openConfigWindow },
+    .{ .name = "global-keys", .about = "global: bindings as hot keys: registered, one runs its binding on WM_HOTKEY (new_window) and waits for a dialog, toggle_visibility hides every window in front and shows them, a binding that can't be had is told once as GTK's notification, a config with none brings hidden windows back", .run = globalKeysScenario },
     .{ .name = "progress", .about = "OSC 9;4: GTK's bar over the pane (accent, error tint, pulsing, paused) and the window's taskbar progress, the active tab's; gone after 15 s without a report; progress-style = false", .run = progressScenario },
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
@@ -7767,5 +7768,226 @@ fn taskbarShownOffscreen(h: *Harness) !void {
         defer d.deinit();
         const t = d.value.windows[0].taskbar;
         try h.expect(t.ready and std.mem.eql(u8, t.state, case[2]) and t.hr == 0, "9;4;{s}: the button shows {s} (ready {}, hr {d})", .{ case[0], case[2], t.ready, t.hr });
+    }
+}
+
+//---------------------------------------------------------------
+// Global key bindings (roadmap 5.5)
+
+/// murrtty's global binding written `trigger` (its mods and virtual key),
+/// or null.
+fn globalKey(h: *Harness, g: *Harness.Ghostty, trigger: []const u8) !?Harness.Dump.Global {
+    var d = try h.dump(g);
+    defer d.deinit();
+    for (d.value.globals) |k| if (std.mem.eql(u8, k.trigger, trigger)) return .{ .mods = k.mods, .vk = k.vk };
+    return null;
+}
+
+/// How many notifications murrtty sent end with `suffix`.
+fn notifiedEnding(h: *Harness, g: *Harness.Ghostty, suffix: []const u8) !usize {
+    var d = try h.dump(g);
+    defer d.deinit();
+    var n: usize = 0;
+    for (d.value.notifications) |note| {
+        if (std.mem.eql(u8, note.title, "Global keybind unavailable") and std.mem.endsWith(u8, note.body, suffix)) n += 1;
+    }
+    return n;
+}
+
+fn visibleWindows(h: *Harness, g: *Harness.Ghostty) !usize {
+    const wins = try h.windows(g, "MurrttyWindow");
+    defer h.alloc.free(wins);
+    return wins.len;
+}
+
+/// Whether a murrtty other than `pid` runs on this desktop (its wakeup
+/// window): one then holding a key would keep murrtty quiet about it.
+fn otherMurrtty(pid: w.DWORD) bool {
+    var prev: ?w.HWND = null;
+    while (w.FindWindowExW(w.HWND_MESSAGE, prev, w.L("MurrttyWakeup"), null)) |hwnd| {
+        var owner: w.DWORD = 0;
+        _ = w.GetWindowThreadProcessId(hwnd, &owner);
+        if (owner != pid) return true;
+        prev = hwnd;
+    }
+    return false;
+}
+
+fn waitHidden(h: *Harness, g: *Harness.Ghostty) !void {
+    var waited: u32 = 0;
+    while (try visibleWindows(h, g) != 0 and waited < 3000) : (waited += 100) w.Sleep(100);
+}
+
+/// global: bindings as hot keys (roadmap 5.5): registered, a hot key runs
+/// its binding (new_window) and waits for an open dialog, toggle_visibility
+/// hides every window while murrtty is in front, shows them again, and
+/// otherwise brings murrtty forward; one that can't be had is told once, as
+/// GTK's "Global keybind unavailable" notification: another program holds
+/// it, a lock modifier, a keypad key Windows can't tell apart, two of
+/// murrtty's own on the same keys. A config left with no binding to show
+/// hidden windows brings them back. A key another murrtty holds passes to
+/// this one when that one quits. Hot keys are posted, never pressed.
+fn globalKeysScenario(h: *Harness) anyerror!void {
+    const mods = w.MOD_CONTROL | w.MOD_ALT | w.MOD_SHIFT;
+    // F12 and F11 must be free for murrtty; the harness holds F10 itself.
+    for ([_]c_uint{ 0x7B, 0x7A }) |vk| {
+        if (w.RegisterHotKey(null, 0x4D00, mods, vk) == 0) return h.skip("Ctrl+Alt+Shift+F{d} is taken here", .{vk - 0x6F});
+        _ = w.UnregisterHotKey(null, 0x4D00);
+    }
+    // The clash: the character a and the key A's scan code (where this
+    // layout types a there), when Ctrl+Alt+Shift+A is free.
+    const clash = clash: {
+        if (w.MapVirtualKeyW(0x1E, w.MAPVK_VSC_TO_VK) != 'A') break :clash false;
+        if (w.RegisterHotKey(null, 0x4D00, mods, 'A') == 0) break :clash false;
+        _ = w.UnregisterHotKey(null, 0x4D00);
+        break :clash true;
+    };
+    if (w.RegisterHotKey(null, 0x4D01, mods, 0x79) == 0) return h.skip("Ctrl+Alt+Shift+F10 is taken here", .{});
+    defer _ = w.UnregisterHotKey(null, 0x4D01);
+
+    const bindings = "keybind = global:ctrl+alt+shift+f12=new_window\n" ++
+        "keybind = global:ctrl+alt+shift+f11=toggle_visibility\n" ++
+        "keybind = global:ctrl+alt+shift+f10=new_tab\n" ++
+        "keybind = global:ctrl+alt+shift+caps_lock+f9=new_tab\n" ++
+        "keybind = global:ctrl+alt+shift+numpad_enter=new_tab\n";
+    const letters = "keybind = global:ctrl+alt+shift+a=new_tab\n" ++
+        "keybind = global:ctrl+alt+shift+key_a=new_tab\n";
+    var g = try start(h, "global-keys", if (clash) bindings ++ letters else bindings, ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    const new_window = try globalKey(h, &g, "Ctrl+Shift+Alt+F12") orelse return h.fail("Ctrl+Shift+Alt+F12 isn't registered", .{});
+    const toggle = try globalKey(h, &g, "Ctrl+Shift+Alt+F11") orelse return h.fail("Ctrl+Shift+Alt+F11 isn't registered", .{});
+    try h.expect(new_window.mods == mods and new_window.vk == 0x7B, "registered as Ctrl+Alt+Shift and F12's key (mods {d}, vk {d})", .{ new_window.mods, new_window.vk });
+    try h.expect(try globalKey(h, &g, "Ctrl+Shift+Alt+F10") == null, "the held one isn't registered", .{});
+    // With another murrtty here (the owner's, under --visible) it could be
+    // that one's: then murrtty keeps quiet and tries again.
+    const others = otherMurrtty(g.pid);
+    if (others) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.globals_waiting == 1 and try notifiedEnding(h, &g, "Ctrl+Shift+Alt+F10: Windows or another program already uses it.") == 0, "with another murrtty here, the held one waits untold", .{});
+    } else try h.expect(try notifiedEnding(h, &g, "Ctrl+Shift+Alt+F10: Windows or another program already uses it.") == 1, "the held one is told as GTK's", .{});
+    try h.expect(try notifiedEnding(h, &g, ": Caps Lock and Num Lock can't be part of a global binding.") == 1, "a lock modifier is refused and told", .{});
+    try h.expect(try notifiedEnding(h, &g, ": Windows can't tell this key from another one.") == 1, "the keypad's Enter is refused and told", .{});
+    const told: usize = @as(usize, if (clash) 4 else 3) - @intFromBool(others);
+    if (clash) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        var on_a: usize = 0;
+        for (d.value.globals) |k| on_a += @intFromBool(k.vk == 'A');
+        try h.expect(on_a == 1, "of a and key_a, one has Ctrl+Alt+Shift+A ({d})", .{on_a});
+        try h.expect(try notifiedEnding(h, &g, ": Another of murrtty's global bindings uses the same keys.") == 1, "and the other is told", .{});
+    }
+    try h.expect((try notifyState(h, &g)).count == told, "each told once ({d})", .{(try notifyState(h, &g)).count});
+
+    // A keyboard layout change registers them again, telling nothing anew.
+    const refreshes = refreshes: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        break :refreshes d.value.global_refreshes;
+    };
+    _ = w.PostMessageW(win, w.WM_INPUTLANGCHANGE, 0, 0);
+    h.sync(win);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.global_refreshes == refreshes + 1, "a layout change registers them again ({d} after {d})", .{ d.value.global_refreshes, refreshes });
+    }
+    try h.expect(try globalKey(h, &g, "Ctrl+Shift+Alt+F12") != null and (try notifyState(h, &g)).count == told, "and keeps them, telling nothing again", .{});
+
+    try h.hotkey(&g, new_window);
+    try waitWindowCount(h, &g, 2);
+    try h.expect(true, "its hot key runs new_window", .{});
+
+    // In front, toggle_visibility hides both; then shows them.
+    try h.setInFront(&g, .yes);
+    try h.hotkey(&g, toggle);
+    try waitHidden(h, &g);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(try visibleWindows(h, &g) == 0 and d.value.windows_hidden and d.value.hidden_windows.len == 2 and d.value.windows.len == 2, "in front, toggle_visibility hides both windows", .{});
+    }
+    try h.hotkey(&g, toggle);
+    try waitWindowCount(h, &g, 2);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!d.value.windows_hidden and d.value.hidden_windows.len == 0, "and shows them again", .{});
+    }
+    // Not in front, it brings murrtty forward and hides nothing.
+    try h.setInFront(&g, .no);
+    try h.hotkey(&g, toggle);
+    w.Sleep(300);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(try visibleWindows(h, &g) == 2 and !d.value.windows_hidden, "not in front, it hides nothing", .{});
+    }
+
+    // A hot key while a dialog is open waits for it to close.
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'W');
+    const dlg = try h.waitDialog(&g, 5000);
+    try h.hotkey(&g, new_window);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.hotkeys_pending == 1 and d.value.windows.len == 2, "under a dialog the hot key waits ({d} pending, {d} windows)", .{ d.value.hotkeys_pending, d.value.windows.len });
+    }
+    h.answer(&g, dlg, w.IDCANCEL);
+    try waitWindowCount(h, &g, 3);
+    try h.expect(true, "and runs once the dialog closes", .{});
+
+    // Hidden, then a config with no global binding: they come back.
+    try h.setInFront(&g, .yes);
+    try h.hotkey(&g, toggle);
+    try waitHidden(h, &g);
+    try h.expect(try visibleWindows(h, &g) == 0, "hidden again", .{});
+    const cfg_path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\config.ghostty", .{g.dir});
+    defer h.alloc.free(cfg_path);
+    try h.writeFileAt(cfg_path, base_config);
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_OEM_COMMA);
+    try waitWindowCount(h, &g, 3);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!d.value.windows_hidden and d.value.globals.len == 0, "a config with no global binding brings them back", .{});
+    }
+
+    // With no global binding nothing could bring them back: it hides none.
+    {
+        var plain = try start(h, "global-keys-none", "keybind = ctrl+shift+f9=toggle_visibility\n", ">");
+        defer plain.deinit();
+        try h.setInFront(&plain, .yes);
+        h.key(try h.surface(&plain, try h.mainWindow(&plain)), .{ .ctrl = true, .shift = true }, 0x78);
+        w.Sleep(500);
+        var d = try h.dump(&plain);
+        defer d.deinit();
+        try h.expect(d.value.toggles == 1 and try visibleWindows(h, &plain) == 1 and !d.value.windows_hidden, "without a global binding toggle_visibility runs and hides nothing ({d} runs)", .{d.value.toggles});
+    }
+
+    // A key another murrtty holds: kept quiet, and taken once it quits.
+    const f12 = "keybind = global:ctrl+alt+shift+f12=new_window\n";
+    var holder = try start(h, "global-keys-holder", f12, ">");
+    defer holder.deinit();
+    try h.expect(try globalKey(h, &holder, "Ctrl+Shift+Alt+F12") != null, "one murrtty holds Ctrl+Alt+Shift+F12", .{});
+    var second = try start(h, "global-keys-second", f12, ">");
+    defer second.deinit();
+    {
+        var d = try h.dump(&second);
+        defer d.deinit();
+        try h.expect(d.value.globals.len == 0 and d.value.globals_waiting == 1 and d.value.notifications.len == 0, "a second one waits for it, untold", .{});
+    }
+    try quit(h, &holder, try h.surface(&holder, try h.mainWindow(&holder)));
+    var waited: u32 = 0;
+    while (waited < 8000) : (waited += 250) {
+        if (try globalKey(h, &second, "Ctrl+Shift+Alt+F12") != null) break;
+        w.Sleep(250);
+    }
+    {
+        var d = try h.dump(&second);
+        defer d.deinit();
+        try h.expect(d.value.globals.len == 1 and d.value.globals_waiting == 0 and d.value.notifications.len == 0, "and takes it once the first quits ({d} ms)", .{waited});
     }
 }

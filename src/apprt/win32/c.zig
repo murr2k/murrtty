@@ -574,6 +574,11 @@ pub const MONITOR_DEFAULTTONULL = 0;
 pub extern "user32" fn WindowFromPoint(POINT) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetAncestor(HWND, UINT) callconv(.winapi) ?HWND;
 pub const GA_ROOT = 2;
+pub const GA_ROOTOWNER = 3;
+/// The parent for message-only windows.
+pub const HWND_MESSAGE: HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
+pub extern "user32" fn FindWindowExW(?HWND, ?HWND, ?LPCWSTR, ?LPCWSTR) callconv(.winapi) ?HWND;
+pub extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.winapi) DWORD;
 pub extern "user32" fn SetParent(HWND, ?HWND) callconv(.winapi) ?HWND;
 pub const SM_CXDRAG = 68;
 pub const SM_CYDRAG = 69;
@@ -1238,6 +1243,20 @@ pub const NIN_BALLOONUSERCLICK = WM_USER + 5;
 pub extern "shell32" fn Shell_NotifyIconW(DWORD, *NOTIFYICONDATAW) callconv(.winapi) BOOL;
 pub const MSGFLT_ALLOW = 1;
 pub extern "user32" fn ChangeWindowMessageFilterEx(HWND, UINT, DWORD, ?*anyopaque) callconv(.winapi) BOOL;
+
+// Global key bindings as hot keys (roadmap 5.5, GlobalKeys.zig).
+pub const WM_HOTKEY = 0x0312;
+pub const WM_INPUTLANGCHANGE = 0x0051;
+pub const MOD_ALT = 0x0001;
+pub const MOD_CONTROL = 0x0002;
+pub const MOD_SHIFT = 0x0004;
+pub const MOD_WIN = 0x0008;
+pub const MOD_NOREPEAT = 0x4000;
+pub const MAPVK_VSC_TO_VK_EX = 3;
+pub const ERROR_HOTKEY_ALREADY_REGISTERED = 1409;
+pub extern "user32" fn RegisterHotKey(?HWND, c_int, UINT, UINT) callconv(.winapi) BOOL;
+pub extern "user32" fn UnregisterHotKey(?HWND, c_int) callconv(.winapi) BOOL;
+pub extern "user32" fn VkKeyScanW(u16) callconv(.winapi) i16;
 pub extern "shell32" fn ILCreateFromPathW(LPCWSTR) callconv(.winapi) ?*anyopaque;
 pub extern "shell32" fn ILFree(?*anyopaque) callconv(.winapi) void;
 pub extern "shell32" fn SHGetPathFromIDListEx(*const anyopaque, [*]u16, DWORD, c_int) callconv(.winapi) BOOL;

@@ -270,7 +270,11 @@ pub fn isTopmost(self: *const Window) bool {
 /// maximized, nothing fullscreen or minimized. Returns whether it resized.
 pub fn resetSize(self: *Window) bool {
     if (self.fullscreen != null or c.IsIconic(self.hwnd) != 0) return false;
-    if (c.IsZoomed(self.hwnd) != 0) _ = c.ShowWindow(self.hwnd, c.SW_RESTORE);
+    if (c.IsZoomed(self.hwnd) != 0) {
+        // Restoring shows the window: with those toggle_visibility hid.
+        self.app.showWindows();
+        _ = c.ShowWindow(self.hwnd, c.SW_RESTORE);
+    }
     const pane = if (self.activeSurface()) |s| s.initial_size else null;
     const size = pane orelse .{ default_width, default_height };
     self.setClientSize(size[0], size[1]);
@@ -386,6 +390,8 @@ fn discard(self: *Window) void {
 /// front, with the keyboard in its pane.
 fn show(self: *Window) void {
     const config = &self.app.config;
+    // With the windows toggle_visibility hid, behind it.
+    self.app.showWindows();
     _ = c.ShowWindow(self.hwnd, if (config.maximize) c.SW_SHOWMAXIMIZED else c.SW_SHOWNORMAL);
     if (config.fullscreen != .false) self.toggleFullscreen();
     _ = c.SetForegroundWindow(self.hwnd);
@@ -1377,6 +1383,8 @@ pub fn resizeFromTerminal(self: *Window, width: u32, height: u32) bool {
 }
 
 pub fn toggleMaximize(self: *Window) void {
+    // Both show the window: with those toggle_visibility hid.
+    self.app.showWindows();
     _ = c.ShowWindow(self.hwnd, if (c.IsZoomed(self.hwnd) != 0) c.SW_RESTORE else c.SW_MAXIMIZE);
 }
 
@@ -1412,6 +1420,8 @@ pub fn toggleFullscreen(self: *Window) void {
 }
 
 pub fn present(self: *Window) void {
+    // Coming forward brings back what toggle_visibility hid, as on macOS.
+    self.app.showWindows();
     if (c.IsIconic(self.hwnd) != 0) _ = c.ShowWindow(self.hwnd, c.SW_RESTORE);
     _ = c.SetForegroundWindow(self.hwnd);
     // Activating the window is the point here.
@@ -2299,6 +2309,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         // and the blur (Acrylic only while active, syncBlur).
         c.WM_NCACTIVATE => {
             const active = wparam != 0;
+            // The window toggle_visibility brings forward.
+            if (active) self.app.last_window = self.id;
             if (active != self.active_window) {
                 self.active_window = active;
                 self.invalidateTabBar();
@@ -2415,6 +2427,9 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         else => {
+            // The keyboard layout changed: a global binding's character may
+            // be on another key now (roadmap 5.5).
+            if (msg == c.WM_INPUTLANGCHANGE) self.app.global_keys.refresh(.layout);
             // The taskbar made the window's button (again, after Explorer
             // restarted): ITaskbarList3 can show progress on it now.
             if (msg == self.app.taskbar_button_msg and msg != 0) {

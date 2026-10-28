@@ -21,6 +21,7 @@ const c = @import("c.zig");
 const draw = @import("draw.zig");
 const global = @import("../../global.zig");
 const App = @import("App.zig");
+const ContextMenu = @import("ContextMenu.zig");
 const Notifications = @import("Notifications.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
@@ -63,6 +64,14 @@ pub const State = if (enabled) struct {
     /// instead of shown unless GHOSTTY_WIN32_TEST_NOTIFY is set.
     notifications: std.ArrayList(Notified) = .empty,
     record_notifications: bool = true,
+    /// Whether murrtty counts as in front for toggle_visibility (dump
+    /// wparam 16): on the hidden desktop the foreground window is always
+    /// the user desktop's.
+    in_front: enum { real, yes, no } = .real,
+    /// toggle_visibility's runs, and the global bindings' registrations
+    /// (roadmap 5.5), to tell an action refused from one never run.
+    toggles: u32 = 0,
+    global_refreshes: u32 = 0,
 } else struct {};
 
 pub const Notified = struct {
@@ -195,6 +204,8 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 /// - 15: click the latest desktop notification, as its toast's click
 ///   does (NIN_BALLOONUSERCLICK; `lparam` 0), or take it back without
 ///   presenting its pane (1), which would take the foreground.
+/// - 16: toggle_visibility takes murrtty as in front (`lparam` 1), as not
+///   (2), or asks Windows (0).
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -251,6 +262,11 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         for (app.windows.items) |w| w.syncBlur();
     }
     if (wparam == 4) setOverlays(app, std.enums.fromInt(OverlayKind, lparam));
+    if (wparam == 16) app.test_state.in_front = switch (lparam) {
+        1 => .yes,
+        2 => .no,
+        else => .real,
+    };
     if (wparam == 15) if (app.notifications.hwnd) |hwnd| {
         if (lparam == 0) {
             _ = c.SendMessageW(hwnd, Notifications.WM_ICON, 0, c.NIN_BALLOONUSERCLICK);
@@ -567,6 +583,33 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     try out.print(alloc, "],\"notify_icon\":{},\"notify_surface\":{d}", .{
         app.notifications.shown,
         app.notifications.surface orelse 0,
+    });
+    // Global bindings' hot keys (roadmap 5.5): each trigger as menus write
+    // it, with the MOD_* and virtual key WM_HOTKEY reports it by; whether
+    // toggle_visibility hid the windows, and which; hot keys waiting for a
+    // dialog to close.
+    try out.appendSlice(alloc, ",\"globals\":[");
+    for (app.global_keys.bound.items, 0..) |b, i| {
+        if (i > 0) try out.append(alloc, ',');
+        var buf: [96]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        ContextMenu.writeTrigger(&w, b.trigger) catch {};
+        try out.appendSlice(alloc, "{\"trigger\":");
+        try writeString(alloc, out, w.buffered());
+        try out.print(alloc, ",\"mods\":{d},\"vk\":{d}}}", .{ b.mods, b.vk });
+    }
+    try out.print(alloc, "],\"windows_hidden\":{},\"hidden_windows\":[", .{app.windows_hidden});
+    for (app.hidden_windows.items, 0..) |id, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.print(alloc, "{d}", .{id});
+    }
+    try out.print(alloc, "],\"hidden_front\":{d},\"last_window\":{d},\"hotkeys_pending\":{d},\"globals_waiting\":{d},\"toggles\":{d},\"global_refreshes\":{d}", .{
+        app.hidden_front orelse 0,
+        app.last_window orelse 0,
+        app.global_keys.pending.items.len,
+        app.global_keys.waiting.items.len,
+        app.test_state.toggles,
+        app.test_state.global_refreshes,
     });
     try out.append(alloc, '}');
 }

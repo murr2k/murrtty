@@ -1077,6 +1077,24 @@ const Held = struct {
     }
 };
 
+/// Press murrtty's global binding hot key `global` (one of the dump's
+/// `globals`), as Windows reports one: WM_HOTKEY to its wakeup window, the
+/// modifiers and virtual key in lparam. No real key is sent, which would
+/// reach the user's foreground window.
+pub fn hotkey(self: *Harness, g: *const Ghostty, global: Dump.Global) !void {
+    const hwnd = wakeupWindow(g.pid) orelse return self.fail("no wakeup window", .{});
+    _ = w.PostMessageW(hwnd, w.WM_HOTKEY, 1, @intCast(global.mods | (global.vk << 16)));
+    self.sync(hwnd);
+}
+
+/// Make toggle_visibility take murrtty as in front (`.yes`), as not
+/// (`.no`), or ask Windows (`.real`): on the hidden desktop the foreground
+/// window is always the user desktop's.
+pub fn setInFront(self: *Harness, g: *const Ghostty, state: enum { real, yes, no }) !void {
+    var d = try self.dumpWith(g, 16, @intFromEnum(state));
+    d.deinit();
+}
+
 /// The message-only wakeup window of the Ghostty process `pid`, which
 /// takes the test hooks' messages (Debug builds).
 fn wakeupWindow(pid: w.DWORD) ?w.HWND {
@@ -1340,6 +1358,29 @@ pub const Dump = struct {
     notifications: []const struct { surface: u64, title: []const u8, body: []const u8 } = &.{},
     notify_icon: bool = false,
     notify_surface: u64 = 0,
+    /// The global bindings' hot keys (roadmap 5.5); whether
+    /// toggle_visibility hid the windows, their ids and the one that was
+    /// in front (0 for none); the window last activated; hot keys waiting
+    /// for a dialog to close.
+    globals: []const Global = &.{},
+    windows_hidden: bool = false,
+    hidden_windows: []const u64 = &.{},
+    hidden_front: u64 = 0,
+    last_window: u64 = 0,
+    hotkeys_pending: u32 = 0,
+    /// Global bindings another murrtty holds, tried again every 3 s;
+    /// toggle_visibility's runs; the global bindings' registrations.
+    globals_waiting: u32 = 0,
+    toggles: u32 = 0,
+    global_refreshes: u32 = 0,
+
+    pub const Global = struct {
+        /// As menus write it.
+        trigger: []const u8 = "",
+        /// MOD_* and the virtual key, as WM_HOTKEY reports them.
+        mods: u32 = 0,
+        vk: u32 = 0,
+    };
 
     pub const Ipc = struct {
         /// Its name, "" with no server.

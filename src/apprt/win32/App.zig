@@ -19,6 +19,7 @@ const Banner = @import("Banner.zig");
 const AlertDialog = @import("AlertDialog.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const draw = @import("draw.zig");
+const GlobalKeys = @import("GlobalKeys.zig");
 const ipc = @import("ipc.zig");
 const Notifications = @import("Notifications.zig");
 const Overlay = @import("Overlay.zig");
@@ -141,8 +142,7 @@ pub const CloseTarget = enum {
     }
 };
 
-/// HWND_MESSAGE: the parent for message-only windows.
-const HWND_MESSAGE: c.HWND = @ptrFromInt(@as(usize, @bitCast(@as(isize, -3))));
+const HWND_MESSAGE = c.HWND_MESSAGE;
 
 core_app: *CoreApp,
 config: Config,
@@ -216,6 +216,17 @@ ipc_launch: bool = false,
 
 /// Desktop notifications (roadmap 5.2), set up in init.
 notifications: Notifications = undefined,
+
+/// `global:` bindings as hot keys (roadmap 5.5), set up in init.
+global_keys: GlobalKeys = undefined,
+/// toggle_visibility hid the windows: the ids of those it hid, and of the
+/// one in front then, to show them as they were.
+windows_hidden: bool = false,
+hidden_windows: std.ArrayList(u64) = .empty,
+hidden_front: ?u64 = null,
+/// The window last activated (WM_NCACTIVATE), which toggle_visibility
+/// brings forward.
+last_window: ?u64 = null,
 
 /// The taskbar's message that a window's button exists, and its list for
 /// progress on the buttons (roadmap 5.4), made at such a message.
@@ -319,6 +330,7 @@ pub fn init(
     // Before any menu shows.
     self.syncMenuTheme();
     self.notifications.init(self);
+    self.global_keys = .{ .app = self };
     self.taskbar_button_msg = c.RegisterWindowMessageW(c.L("TaskbarButtonCreated"));
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
@@ -350,6 +362,7 @@ pub fn run(self: *App) !void {
         log.info("handed the window to the running murrtty", .{});
         return;
     }
+    self.global_keys.start();
 
     if (self.ipc_launch) {
         // The request brings the window; without it, don't linger.
@@ -390,6 +403,9 @@ pub fn terminate(self: *App) void {
         _ = c.DestroyWindow(self.windows.items[self.windows.items.len - 1].hwnd);
     }
     self.windows.deinit(self.core_app.alloc);
+    // After the windows, whose teardown can still ask for a refresh.
+    self.global_keys.deinit();
+    self.hidden_windows.deinit(self.core_app.alloc);
     // Its icon goes with murrtty.
     self.notifications.deinit();
     if (self.taskbar_list) |list| list.release();
@@ -1052,11 +1068,11 @@ fn utf16Opt(alloc: Allocator, s: []const u8) !?c.LPCWSTR {
     return try text_util.utf16Lossy(alloc, s);
 }
 
-/// Run what waited for a dialog to close: close requests, clipboard
-/// confirmations that need a dialog of their own, and commands chosen in a
-/// command palette.
+/// Run what waited for a dialog to close: close requests, global bindings'
+/// hot keys, clipboard confirmations that need a dialog of their own, and
+/// commands chosen in a command palette.
 fn resumeAfterModal(self: *App) void {
-    if (self.requests.items.len > 0) {
+    if (self.requests.items.len > 0 or self.global_keys.hasPending()) {
         _ = c.PostMessageW(self.wakeup_hwnd, WM_RUN_REQUESTS, 0, 0);
     }
     for (self.windows.items) |w| {
@@ -1077,6 +1093,11 @@ pub fn raiseModal(self: *App) void {
     const popup = c.GetLastActivePopup(owner);
     if (popup == owner or c.IsWindowVisible(popup) == 0) return;
     _ = c.SetForegroundWindow(popup);
+}
+
+/// Run the queued requests and hot keys from the message loop.
+pub fn postRunRequests(self: *App) void {
+    _ = c.PostMessageW(self.wakeup_hwnd, WM_RUN_REQUESTS, 0, 0);
 }
 
 /// raiseModal, from the message loop: for use while handling an
@@ -1122,7 +1143,10 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                         log.err("error in app tick err={}", .{err});
                     };
                 },
-                WM_RUN_REQUESTS => self.runRequests(),
+                WM_RUN_REQUESTS => {
+                    self.runRequests();
+                    self.global_keys.runPending();
+                },
                 else => self.raiseModal(),
             }
             return 0;
@@ -1142,14 +1166,28 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
             }
             return 0;
         },
+        // A global binding's hot key (roadmap 5.5).
+        c.WM_HOTKEY => {
+            const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
+            if (ptr == 0) return 0;
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(ptr)));
+            self.global_keys.hotkey(lparam);
+            return 0;
+        },
         c.WM_TIMER => {
             const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
-            if (ptr == 0 or wparam != ipc_launch_timer) return 0;
+            if (ptr == 0) return 0;
             const self: *App = @ptrFromInt(@as(usize, @bitCast(ptr)));
-            _ = c.KillTimer(hwnd, ipc_launch_timer);
-            if (self.windows.items.len == 0) {
-                log.warn("started for a request that never came, quitting", .{});
-                self.quitNow();
+            switch (wparam) {
+                ipc_launch_timer => {
+                    _ = c.KillTimer(hwnd, ipc_launch_timer);
+                    if (self.windows.items.len == 0) {
+                        log.warn("started for a request that never came, quitting", .{});
+                        self.quitNow();
+                    }
+                },
+                GlobalKeys.retry_timer => self.global_keys.retry(),
+                else => {},
             }
             return 0;
         },
@@ -1704,6 +1742,8 @@ pub fn performAction(
             if (surfaceFromTarget(target)) |s| s.ringBell();
         },
 
+        .toggle_visibility => return self.toggleVisibility(),
+
         // OSC 9;4 (roadmap 5.4): the pane's bar and its window's taskbar
         // button.
         .progress_report => {
@@ -1773,6 +1813,9 @@ pub fn performAction(
                 // window-theme may now force a different scheme.
                 self.reportColorScheme();
                 self.queueConfigErrors();
+                // The global bindings may have changed (with none left to
+                // show hidden windows, they come back).
+                self.global_keys.refresh(.config);
             },
         },
 
@@ -1899,6 +1942,85 @@ pub fn performAction(
     return true;
 }
 
+/// toggle_visibility, macOS's (GTK lacks it): with murrtty in front, hide
+/// every window; otherwise bring murrtty forward, the hidden windows as
+/// they were. Hiding needs a global binding that can show them again
+/// (roadmap 5.5; the tray, 5.6, will be another way): hidden with no way
+/// back, the process would be out of reach.
+fn toggleVisibility(self: *App) bool {
+    if (comptime test_hooks.enabled) self.test_state.toggles += 1;
+    if (self.windows_hidden) {
+        self.showWindows();
+        return true;
+    }
+    if (!self.inFront()) {
+        const last = if (self.last_window) |id| self.findWindow(id) else null;
+        const front = last orelse
+            (if (self.windows.items.len > 0) self.windows.items[self.windows.items.len - 1] else return false);
+        self.raiseWindows(front);
+        return true;
+    }
+    if (!self.global_keys.canShow()) return false;
+    const alloc = self.core_app.alloc;
+    self.hidden_windows.clearRetainingCapacity();
+    self.hidden_front = null;
+    const foreground = c.GetForegroundWindow();
+    const front_root = if (foreground) |f| c.GetAncestor(f, c.GA_ROOTOWNER) else null;
+    for (self.windows.items) |w| {
+        // Windows out of sight already (a tab torn off, not yet shown)
+        // stay so.
+        if (c.IsWindowVisible(w.hwnd) == 0) continue;
+        self.hidden_windows.append(alloc, w.id) catch return false;
+        if (w.hwnd == foreground or w.hwnd == front_root) self.hidden_front = w.id;
+    }
+    self.windows_hidden = true;
+    for (self.hidden_windows.items) |id| if (self.findWindow(id)) |w| {
+        _ = c.ShowWindow(w.hwnd, c.SW_HIDE);
+    };
+    return true;
+}
+
+/// Whether murrtty has the foreground: one of its windows, or a dialog or
+/// menu of its own.
+fn inFront(self: *App) bool {
+    if (comptime test_hooks.enabled) switch (self.test_state.in_front) {
+        .real => {},
+        .yes => return true,
+        .no => return false,
+    };
+    const foreground = c.GetForegroundWindow() orelse return false;
+    var pid: c.DWORD = 0;
+    _ = c.GetWindowThreadProcessId(foreground, &pid);
+    return pid == c.GetCurrentProcessId();
+}
+
+/// Show the windows toggle_visibility hid, the one in front then in front
+/// again: for the binding, for a window brought forward (a notification's
+/// click, the pipe's request, a new window), and once no binding could.
+pub fn showWindows(self: *App) void {
+    if (!self.windows_hidden) return;
+    self.windows_hidden = false;
+    for (self.hidden_windows.items) |id| if (self.findWindow(id)) |w| {
+        _ = c.ShowWindow(w.hwnd, c.SW_SHOWNA);
+    };
+    const front = if (self.hidden_front) |id| self.findWindow(id) else null;
+    const last = if (self.hidden_windows.items.len > 0) self.findWindow(self.hidden_windows.items[self.hidden_windows.items.len - 1]) else null;
+    self.hidden_windows.clearRetainingCapacity();
+    self.hidden_front = null;
+    if (front orelse last) |w| self.raiseWindows(w);
+}
+
+/// Bring `front` forward and murrtty's other windows just behind it, above
+/// other programs, as activating an app does on macOS. The foreground
+/// (which a hot key's press grants) lets the others move up too.
+fn raiseWindows(self: *App, front: *Window) void {
+    front.present();
+    for (self.windows.items) |w| {
+        if (w == front or c.IsWindowVisible(w.hwnd) == 0 or c.IsIconic(w.hwnd) != 0) continue;
+        _ = c.SetWindowPos(w.hwnd, front.hwnd, 0, 0, 0, 0, c.SWP_NOMOVE | c.SWP_NOSIZE | c.SWP_NOACTIVATE);
+    }
+}
+
 /// A command finished in `surface` (shell integration's OSC 133;D after
 /// its 133;C): GTK's commandFinished. The pane's Notify on Next Command
 /// Finish, or notify-on-command-finish (`always`, or `unfocused` while the
@@ -1992,11 +2114,14 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         .show_on_screen_keyboard,
         .toggle_secure_input,
         .toggle_quick_terminal,
-        .toggle_visibility,
         .check_for_updates,
         .undo,
         .redo,
         => false,
+
+        // Only from a global binding (roadmap 5.5), which can also bring
+        // the windows back: menus and the palette don't offer it.
+        .toggle_visibility => false,
 
         // Arguments the runtime can't honor yet. HTML alone is all
         // `copy_to_clipboard:html` gives, and setClipboard writes text only

@@ -259,6 +259,16 @@ roadmap item behind it.
   drops all of them (`+new-window`) or opens nothing (`+new-tab`). A
   request's command wins over `initial-command`, and `+new-tab` brings its
   window forward; GTK's does neither.
+- **Global keybinds** (5.5): Windows hot keys, which take the combination
+  from every other program at once and fail when Windows or another
+  program holds it; GTK asks the desktop's global shortcuts portal, which
+  may ask the user first or let them pick another combination. A global
+  binding with chained actions runs them all, as the core runs one; GTK
+  binds only single-action global bindings.
+- **Toggle visibility** (5.5): `toggle_visibility` as on macOS: with
+  murrtty in front it hides every window, otherwise it brings murrtty
+  forward with the windows it hid, as they were; only while a global
+  binding can bring them back. GTK doesn't implement it.
 - **Taskbar progress** (5.4): OSC 9;4 also shows on the window's taskbar
   button (its active tab's focused pane's), as Windows Terminal shows it;
   GTK has only the bar over the pane.
@@ -2392,6 +2402,41 @@ the core's `performAllChainedAction`. Re-register on config change and
 keyboard layout change; report conflicts clearly. Includes `toggle_visibility`
 (hide and restore all normal windows), allowed only while a global binding or
 the tray (5.6) exists, so the process can never become unreachable.
+
+*Built 2026-10-27 (`win32/GlobalKeys.zig`):* each `global:` binding is a
+hot key of the wakeup window (`RegisterHotKey` with `MOD_NOREPEAT`),
+registered once any hand-off to a running murrtty is past (a launch that
+hands its window over takes none), after a config change and when the
+keyboard layout changes (`WM_INPUTLANGCHANGE`). Its key: the keypad's by
+their own virtual keys (a scan code gives the navigation key's), other
+physical keys by scan code (`MapVirtualKeyW`), letters and digits by their
+own virtual keys on every layout, other characters where the layout types
+them (`VkKeyScanW`, with the Shift or AltGr it takes). `WM_HOTKEY` is
+matched by its modifiers and key, looks the trigger up in the config as it
+is then and runs a copy of the actions through the core's
+`performAllChainedAction`, as the core runs a global binding; one pressed
+while a dialog is open runs when it closes. One that can't be had is told
+once per config, as GTK's notification is ("Global keybind unavailable",
+"Ctrl+Shift+Alt+F10: Windows or another program already uses it."):
+another program holds it, Caps Lock or Num Lock in it, a keypad key
+Windows can't tell from another (Enter, the navigation keys), no key types
+the character, two of murrtty's own on the same keys. Windows doesn't say
+who holds a key, so while another murrtty runs on the desktop (a separate
+instance) murrtty keeps quiet and tries again every 3 s: it takes the key
+when that one quits, or tells then if something else still has it.
+`toggle_visibility` follows macOS (GTK lacks it): with murrtty in front it
+hides the windows, recording them and the one in front; otherwise it
+brings murrtty forward, showing those windows as they were, all above
+other programs with the one that was in front first. Presenting a window
+(a notification's click, the pipe's request), opening one, maximizing or
+restoring one shows them too, as unhiding does on macOS.
+It hides only while a global binding with `toggle_visibility` exists, and
+the windows come back when a config change leaves none; menus and the
+palette don't offer it. The `global-keys` scenario posts `WM_HOTKEY` with
+the dump's modifiers and key (no real key reaches the user's foreground),
+holds a combination itself to see the refusal, and fakes murrtty being in
+front (dump wparam 16), since on the hidden desktop the foreground window
+is always the user desktop's.
 
 **5.6 Tray and background mode, M.** A persistent tray icon (New Window,
 Quick Terminal, Configuration, Quit), reusing 5.2's notification-area icon,

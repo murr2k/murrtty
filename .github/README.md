@@ -247,6 +247,12 @@ hosted Windows runner and then the unit tests.
   a click brings the terminal forward, and a notification goes once its
   terminal has the keyboard (`desktop-notifications = false` turns them
   off). One at a time stands for them all, for now.
+- Global key bindings (`keybind = global:ctrl+backquote=...`) that work
+  whatever program has the keyboard, as Windows hot keys; one that can't
+  be had (Windows or another program uses it, say) is reported by a
+  notification. `toggle_visibility` hides every window while murrtty is
+  in front and brings them back otherwise, as on macOS, when a global
+  binding can show them again.
 - Progress from programs (OSC 9;4, as `winget` and PowerShell modules
   write it): a thin bar over the terminal as in Ghostty's GTK app (red
   after an error, a moving block while indeterminate), and on the window's
@@ -295,8 +301,8 @@ hosted Windows runner and then the unit tests.
 - Dragging panes to rearrange splits.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with desktop integration (Phase 5: command-finished notices,
-taskbar progress, global keys, the tray and the quick terminal).
+continuing with desktop integration (Phase 5: the tray, the quick
+terminal, drag and drop, the selection clipboard).
 
 **Known issues**
 
