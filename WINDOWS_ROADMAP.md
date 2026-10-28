@@ -2469,6 +2469,9 @@ Ghostty terminals (Windows has no primary selection).
   for the `default` policy. State is written on change and on `WM_ENDSESSION`,
   since a crash gives no exit hook; `RegisterApplicationRestart` only
   relaunches the process.
+- The owner built session restore on a Linux Ghostty fork of their own
+  (noted 2026-10-27): read it first and follow its design (what is saved,
+  the state format, the restore policy) where Windows allows.
 
 **5.11 Undo and redo of closes, L.** Keep closed panes, tabs and windows
 parked (hidden, process running) until `undo-timeout`. Undo and redo enter
