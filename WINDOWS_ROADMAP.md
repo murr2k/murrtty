@@ -2807,9 +2807,11 @@ the buffer, the untouched system clipboard, and both pastes.
     new cmd pane's Up starts empty rather than with the shared history,
     and a pane's commands reach only its own Clink history, not the
     shared one, going with the pane when it closes for good (Clink's
-    files can't safely be merged from outside). Plain cmd without Clink
-    gets none: Windows can't preload cmd's history (accepted by the
-    owner).
+    files can't safely be merged from outside). The owner chose this
+    (2026-10-29) over Clink's shared history, and over seeding a new pane
+    from the shared history or handing a closed pane's commands back to
+    it: new cmd panes start empty. Plain cmd without Clink gets none:
+    Windows can't preload cmd's history (accepted by the owner).
   - **A crash while restoring** (a marker written before, cleared after)
     makes the next start skip the restore once and say so, so a bad state
     can't keep murrtty from starting.
@@ -2913,6 +2915,21 @@ the buffer, the untouched system clipboard, and both pastes.
     the session's own file (`clink_history-<label>_<pid>`) reaches the
     label's history, and Clink clears the dead session's files at its
     next start.
+  - *History garbage collector, 2026-10-29 (the owner's request):*
+    `Session.collectGarbage` runs at start and every 5 minutes, and stands
+    down for the run while `session.json` is there but unreadable or was
+    put aside. A history file or Clink marker whose pane is nowhere (not
+    open, not parked for undo, not waiting to be restored) goes, with the
+    marked label's Clink history: a close's deletion a shell's open
+    handle refused is tried again, and the marker stays until all of
+    Clink's files for the label are gone. A history whose pane waits to
+    be restored, which no shell writes meanwhile, is cut to its last
+    1,000 commands and rid of lines holding NUL bytes (a write cut
+    short), rewritten through a temporary file. A live pane's file is
+    never touched (one writer per file). Leftover `.tmp` files go. The
+    GUI tests run it on demand (dump wparam 24, `collectHistoryGarbage`):
+    `pane-history` while murrtty runs, `session-restore` the repair of a
+    waiting pane's file at start.
   - *Part B built 2026-10-29:* `gtk-single-instance` defaults to `true`
     on Windows (by the target, so the build's own tools agree). There
     `-e` implies its usual settings (single instance off, quitting with

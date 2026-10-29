@@ -424,6 +424,8 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     };
     if (wparam == 12) saveChrome(app);
     if (wparam == 22) app.openConfigEditor();
+    // The history's garbage collector now (roadmap 5.10b), not in minutes.
+    if (wparam == 24) app.session.collectGarbage();
     if (wparam == 23) if (app.config_editor) |editor| {
         var client: c.RECT = .{};
         _ = c.GetClientRect(editor.hwnd, &client);

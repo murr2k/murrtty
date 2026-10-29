@@ -1997,6 +1997,13 @@ pub fn openConfigEditor(self: *Harness, g: *const Ghostty) !void {
     d.deinit();
 }
 
+/// Run the session's history garbage collector now (dump wparam 24), as
+/// it otherwise does every few minutes (roadmap 5.10b).
+pub fn collectHistoryGarbage(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 24, 0);
+    d.deinit();
+}
+
 /// Paint the configuration editor as WM_PAINT does (dump wparam 23):
 /// `editor-bar-0.bmp` and `editor-list-0.bmp` beside the dump.
 pub fn snapshotConfigEditor(self: *Harness, g: *const Ghostty) !void {

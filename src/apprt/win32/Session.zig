@@ -60,6 +60,11 @@ const marker_ms = 5000;
 /// Writes failing in a row before the dialog: a moment's failure (a
 /// scanner holding the file) passes unsaid.
 const warn_after = 3;
+/// How often the history's garbage collector runs while murrtty does.
+const gc_ms = 5 * 60 * 1000;
+/// The commands a pane's history keeps (PowerShell's integration cuts a
+/// restored pane's file to them too).
+const history_keep = 1000;
 
 /// The state file's format.
 pub const format_version = 1;
@@ -165,6 +170,12 @@ pending_quick: ?usize = null,
 unrestored: std.ArrayList(u32) = .empty,
 /// When the crash marker of a restore goes (GetTickCount64).
 marker_until: ?u64 = null,
+/// The history's garbage collector: when it next runs (GetTickCount64),
+/// and held for the run when the saved session is there but couldn't be
+/// read, or was put aside (it may name histories that would look
+/// dangling).
+gc_next: u64 = 0,
+gc_hold: bool = false,
 /// The last start crashed while restoring: its session was put aside, and
 /// a toast says so once there is a window.
 skipped: bool = false,
@@ -202,6 +213,7 @@ pub fn start(self: *Session, owner: bool) void {
     };
     self.enabled = true;
     self.load();
+    self.collectGarbage();
 }
 
 /// The config changed (a reload): window-save-state turned on starts
@@ -287,7 +299,7 @@ pub const label_prefix = "murrtty";
 
 /// A pane given its Clink label: a marker beside the history files
 /// (`<id>.clink`), so that murrtty removes Clink's history for the labels
-/// it gave out, never another's (cleanHistories).
+/// it gave out, never another's (collectGarbage).
 pub fn markClink(self: *Session, id: Id) void {
     var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
     defer arena.deinit();
@@ -308,22 +320,53 @@ pub fn paneClosed(self: *Session, id: Id) void {
     defer arena.deinit();
     const a = arena.allocator();
     const dir = self.historyDir(a) orelse return;
-    for ([_][]const u8{ "txt", "clink" }) |ext| {
-        const path = std.fmt.allocPrint(a, "{s}\\{s}.{s}", .{ dir, &id, ext }) catch continue;
-        if (std.mem.eql(u8, ext, "clink") and exists(a, path)) deleteClinkHistory(a, id);
-        deleteFile(a, path);
-    }
+    forgetPane(a, dir, id);
 }
 
-/// At start: the history files of panes the saved session doesn't have
-/// (closed while murrtty quit, parked for undo then, a restore that
-/// failed) go, and Clink's for the labels murrtty gave them (markers).
-fn cleanHistories(self: *Session, a: Allocator, state: ?State) void {
+/// A pane's history files gone: its own, and its Clink history with the
+/// marker (kept while any of Clink's files stays, a shell of the label
+/// still holding one, so the garbage collector tries again).
+fn forgetPane(a: Allocator, dir: []const u8, id: Id) void {
+    if (std.fmt.allocPrint(a, "{s}\\{s}.txt", .{ dir, &id })) |path| deleteFile(a, path) else |_| {}
+    const marker = std.fmt.allocPrint(a, "{s}\\{s}.clink", .{ dir, &id }) catch return;
+    if (exists(a, marker) and deleteClinkHistory(a, id)) deleteFile(a, marker);
+}
+
+/// The history's garbage collector (roadmap 5.10b part C), at start and
+/// every few minutes while murrtty runs; held for the run while the saved
+/// session is there but unreadable. A history (or Clink marker) whose pane
+/// is nowhere (not open, not parked for undo, not waiting to be restored)
+/// goes, with the marked label's Clink history: one a pane's close
+/// couldn't remove (a shell still held it) is tried again, and one
+/// murrtty left behind (killed, a pane parked as it quit) goes. A history
+/// whose pane waits to be restored, which no shell writes meanwhile, is cut
+/// to its last commands and rid of lines with NUL bytes (a write cut short
+/// leaves them), so PowerShell gets a clean file back. A file a live
+/// pane's shell writes is never touched: one writer per file. murrtty's
+/// own temporary files (`.tmp`, a rewrite cut short) go too.
+pub fn collectGarbage(self: *Session) void {
+    if (!self.enabled or self.frozen or self.restoring or self.gc_hold) return;
+    self.gc_next = c.GetTickCount64() + gc_ms;
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
     const dir = self.historyDir(a) orelse return;
-    var keep: std.StringHashMapUnmanaged(void) = .empty;
-    if (state) |st| for (st.windows) |w| for (w.tabs) |t| for (t.nodes) |n| {
-        if (n.pane) |p| if (paneId(p) != null) keep.put(a, p.id, {}) catch return;
+
+    var live: std.StringHashMapUnmanaged(void) = .empty;
+    for (self.app.core_app.surfaces.items) |s| {
+        live.put(a, a.dupe(u8, &s.session_id) catch return, {}) catch return;
+    }
+    var waiting: std.StringHashMapUnmanaged(void) = .empty;
+    if (self.pending) |p| for (p.value.windows, 0..) |sw, i| {
+        const restoring_later = (self.pending_windows and !sw.quick) or
+            (self.pending_quick != null and self.pending_quick.? == i) or
+            std.mem.indexOfScalar(u32, self.unrestored.items, @intCast(i)) != null;
+        if (!restoring_later) continue;
+        for (sw.tabs) |t| for (t.nodes) |n| if (n.pane) |pane| {
+            if (paneId(pane) != null) waiting.put(a, pane.id, {}) catch return;
+        };
     };
+
     const pattern = std.fmt.allocPrint(a, "{s}\\*", .{dir}) catch return;
     const pattern_w = text_util.utf16Lossy(a, pattern) catch return;
     var data: c.WIN32_FIND_DATAW = undefined;
@@ -331,14 +374,65 @@ fn cleanHistories(self: *Session, a: Allocator, state: ?State) void {
     if (find == c.INVALID_HANDLE_VALUE) return;
     defer _ = c.FindClose(find);
     while (true) {
-        if (historyFile(std.mem.sliceTo(&data.cFileName, 0))) |file| if (!keep.contains(&file.id)) {
-            if (std.fmt.allocPrint(a, "{s}\\{s}.{s}", .{ dir, &file.id, @tagName(file.kind) })) |path| {
-                if (file.kind == .clink) deleteClinkHistory(a, file.id);
+        entry: {
+            if (data.dwFileAttributes & 0x10 != 0) break :entry;
+            const name_w = std.mem.sliceTo(&data.cFileName, 0);
+            const name = std.unicode.utf16LeToUtf8Alloc(a, name_w) catch break :entry;
+            const path = std.fmt.allocPrint(a, "{s}\\{s}", .{ dir, name }) catch break :entry;
+            if (std.ascii.endsWithIgnoreCase(name, ".tmp")) {
                 deleteFile(a, path);
-            } else |_| {}
-        };
+                break :entry;
+            }
+            const file = historyFile(name_w) orelse break :entry;
+            if (live.contains(&file.id)) break :entry;
+            if (waiting.contains(&file.id)) {
+                if (file.kind == .txt) repairHistory(a, path);
+                break :entry;
+            }
+            forgetPane(a, dir, file.id);
+        }
         if (c.FindNextFileW(find, &data) == 0) break;
     }
+}
+
+/// A waiting pane's history file cut and cleaned (trimHistory), rewritten
+/// whole through a file beside it only when that changes it.
+fn repairHistory(a: Allocator, path: []const u8) void {
+    const text = readFile(a, path) orelse return;
+    const fixed = (trimHistory(a, text, history_keep) catch return) orelse return;
+    writeFile(a, path, fixed) catch |err| log.warn("a pane's history couldn't be cut err={}", .{err});
+}
+
+/// PowerShell's history file text cut to its last `keep` commands (a line
+/// ending in a backtick goes on in the next, as PSReadLine writes them),
+/// lines holding NUL bytes dropped; null when it needs no change.
+fn trimHistory(a: Allocator, text: []const u8, keep: usize) !?[]u8 {
+    var lines: std.ArrayList([]const u8) = .empty;
+    var dropped = false;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (std.mem.indexOfScalar(u8, line, 0) != null) {
+            dropped = true;
+            continue;
+        }
+        try lines.append(a, line);
+    }
+    // The text's last newline leaves an empty last piece.
+    if (lines.items.len > 0 and lines.items[lines.items.len - 1].len == 0) _ = lines.pop();
+    var starts: std.ArrayList(usize) = .empty;
+    for (lines.items, 0..) |line, i| {
+        _ = line;
+        if (i == 0 or !std.mem.endsWith(u8, lines.items[i - 1], "`")) try starts.append(a, i);
+    }
+    const from = if (starts.items.len > keep) starts.items[starts.items.len - keep] else 0;
+    if (!dropped and from == 0) return null;
+    var out: std.ArrayList(u8) = .empty;
+    for (lines.items[from..]) |line| {
+        try out.appendSlice(a, line);
+        try out.append(a, '\n');
+    }
+    return out.items;
 }
 
 /// A file of the history folder by its name: a pane's history
@@ -364,27 +458,31 @@ fn clinkPattern(a: Allocator, profile: []const u8, id: Id) ![]u8 {
 
 /// Clink's history for a pane's label, in Clink's profile: CLINK_PROFILE's,
 /// else its default (%LOCALAPPDATA%\clink). One a launcher's `--profile`
-/// chose elsewhere stays.
-fn deleteClinkHistory(a: Allocator, id: Id) void {
-    var environ_map = global.environMap() catch return;
+/// chose elsewhere stays. Whether none of its files is left.
+fn deleteClinkHistory(a: Allocator, id: Id) bool {
+    var environ_map = global.environMap() catch return false;
     defer environ_map.deinit();
     const dir = if (environ_map.get("CLINK_PROFILE")) |p|
-        a.dupe(u8, p) catch return
+        a.dupe(u8, p) catch return false
     else if (environ_map.get("LOCALAPPDATA")) |local|
-        std.fmt.allocPrint(a, "{s}\\clink", .{local}) catch return
+        std.fmt.allocPrint(a, "{s}\\clink", .{local}) catch return false
     else
-        return;
-    const pattern = clinkPattern(a, dir, id) catch return;
-    const pattern_w = text_util.utf16Lossy(a, pattern) catch return;
+        return true;
+    const pattern = clinkPattern(a, dir, id) catch return false;
+    const pattern_w = text_util.utf16Lossy(a, pattern) catch return false;
     var data: c.WIN32_FIND_DATAW = undefined;
     const find = c.FindFirstFileExW(pattern_w.ptr, c.FindExInfoBasic, &data, c.FindExSearchNameMatch, null, 0);
-    if (find == c.INVALID_HANDLE_VALUE) return;
+    if (find == c.INVALID_HANDLE_VALUE) return true;
     defer _ = c.FindClose(find);
+    var all = true;
     while (true) {
-        const name = std.unicode.utf16LeToUtf8Alloc(a, std.mem.sliceTo(&data.cFileName, 0)) catch break;
-        if (std.fmt.allocPrint(a, "{s}\\{s}", .{ dir, name })) |path| deleteFile(a, path) else |_| {}
+        const name = std.unicode.utf16LeToUtf8Alloc(a, std.mem.sliceTo(&data.cFileName, 0)) catch return false;
+        const path = std.fmt.allocPrint(a, "{s}\\{s}", .{ dir, name }) catch return false;
+        const path_w = text_util.utf16Lossy(a, path) catch return false;
+        if (c.DeleteFileW(path_w.ptr) == 0) all = false;
         if (c.FindNextFileW(find, &data) == 0) break;
     }
+    return all;
 }
 
 /// The saved session into `pending`. A start that crashed while restoring
@@ -400,6 +498,8 @@ fn load(self: *Session) void {
     if (exists(a, marker)) {
         self.skipped = true;
         self.skip_notice = true;
+        // The session put aside may come back by hand: its histories stay.
+        self.gc_hold = true;
         const aside = self.fileName(a, "-skipped.json") catch return;
         _ = moveFile(a, path, aside);
         deleteFile(a, marker);
@@ -407,9 +507,9 @@ fn load(self: *Session) void {
         return;
     }
     const text = readFile(a, path) orelse {
-        // No session: no pane's history is wanted. One that couldn't be
-        // read (a scanner holding it) keeps them.
-        if (missing(a, path)) self.cleanHistories(a, null);
+        // No session: no pane's history is wanted (collectGarbage). One
+        // that couldn't be read (a scanner holding it) keeps them.
+        if (!missing(a, path)) self.gc_hold = true;
         return;
     };
     self.last = alloc.dupe(u8, text) catch null;
@@ -420,10 +520,10 @@ fn load(self: *Session) void {
         // Its histories stay this run; the next save replaces it, and the
         // start after that clears what it doesn't name.
         log.warn("the saved session can't be read, starting without it err={}", .{err});
+        self.gc_hold = true;
         return;
     };
     self.pending = parsed;
-    self.cleanHistories(a, parsed.value);
     const windows = parsed.value.windows;
     for (windows, 0..) |w, i| {
         if (w.quick) {
@@ -803,6 +903,7 @@ pub fn tick(self: *Session) void {
     self.notices();
     if (!self.enabled or self.restoring or self.dragging()) return;
     self.save(.fresh);
+    if (c.GetTickCount64() >= self.gc_next) self.collectGarbage();
 }
 
 /// What waits to be said, once murrtty runs with a window and no dialog
@@ -1300,6 +1401,21 @@ test "Session: a pane's Clink history label" {
     const pattern = try clinkPattern(testing.allocator, "C:\\p", id);
     defer testing.allocator.free(pattern);
     try testing.expectEqualStrings("C:\\p\\clink_history-murrtty0123456789abcdef*", pattern);
+}
+
+test "Session: a waiting pane's history cut and cleaned" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Fine as it is: nothing to change.
+    try testing.expect(try trimHistory(a, "echo 1\necho 2\n", 5) == null);
+    // Five commands, the second on two lines, cut to the last three.
+    const five = "echo 1\nfirst `\nsecond\necho 3\r\necho 4\necho 5\n";
+    try testing.expectEqualStrings("echo 3\necho 4\necho 5\n", (try trimHistory(a, five, 3)).?);
+    // A command on two lines is kept whole.
+    try testing.expectEqualStrings("first `\nsecond\necho 3\necho 4\necho 5\n", (try trimHistory(a, five, 4)).?);
+    // A line a cut-short write left with NUL bytes goes.
+    try testing.expectEqualStrings("echo 1\necho 2\n", (try trimHistory(a, "echo 1\n\x00\x00\x00\necho 2\n", 5)).?);
 }
 
 test "Session: the history folder's files" {

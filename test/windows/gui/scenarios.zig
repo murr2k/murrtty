@@ -11515,11 +11515,33 @@ fn sessionRestore(h: *Harness) anyerror!void {
     {
         const lazy = try std.fmt.allocPrint(h.alloc, "{s}initial-window = false\n", .{config});
         defer h.alloc.free(lazy);
+        // A history for a pane that waits to be restored, too long and with
+        // a line a cut-short write left: the collector repairs it at start.
+        const waiting_file = try std.fmt.allocPrint(h.alloc, "{s}\\history-{s}\\00000000000000a1.txt", .{ folder, class });
+        defer h.alloc.free(waiting_file);
+        {
+            const history_dir = try std.fmt.allocPrint(h.alloc, "{s}\\history-{s}", .{ folder, class });
+            defer h.alloc.free(history_dir);
+            try h.makeDirAt(history_dir);
+            var text: std.ArrayList(u8) = .empty;
+            defer text.deinit(h.alloc);
+            for (0..1200) |i| {
+                if (i == 600) try text.appendSlice(h.alloc, "\x00\x00\x00\n");
+                try text.print(h.alloc, "echo {d}\n", .{i});
+            }
+            try h.writeFileAt(waiting_file, text.items);
+        }
         var g = try h.launchWith("session-restore-lazy", lazy, .{ .env = env, .wait_window = false });
         defer g.deinit();
         try h.waitAnswering(&g, 15000);
         h.alloc.free(try waitListening(h, &g, 5000));
         w.Sleep(1000);
+        {
+            const repaired = h.readFileOrNull(waiting_file) orelse return h.fail("the waiting pane's history went", .{});
+            defer h.alloc.free(repaired);
+            const lines = std.mem.count(u8, repaired, "\n");
+            try h.expect(lines == 1000 and std.mem.indexOfScalar(u8, repaired, 0) == null and std.mem.startsWith(u8, repaired, "echo 200\n"), "a waiting pane's history is cut to its last 1,000 commands and rid of a damaged line ({d} lines)", .{lines});
+        }
         {
             const wins = try h.windows(&g, "MurrttyWindow");
             defer h.alloc.free(wins);
@@ -11988,6 +12010,34 @@ fn paneHistory(h: *Harness) anyerror!void {
         try h.typeText(surf, "echo murrtty-history-three");
         h.enter(surf);
         try h.expect(waitFileHas(h, pane_file, "echo murrtty-history-three", 10000), "the restored pane's new command lands in its own file", .{});
+
+        // The garbage collector while murrtty runs (every few minutes; run
+        // now through the hook): a history no pane has, a marked label's
+        // Clink history and a leftover temporary file go; the live pane's
+        // file stays as it is.
+        {
+            const dangling = try std.fmt.allocPrint(h.alloc, "{s}\\cccccccccccccccc.txt", .{history_dir});
+            defer h.alloc.free(dangling);
+            const dangling_marker = try std.fmt.allocPrint(h.alloc, "{s}\\cccccccccccccccc.clink", .{history_dir});
+            defer h.alloc.free(dangling_marker);
+            const dangling_clink = try std.fmt.allocPrint(h.alloc, "{s}\\clink_history-murrttycccccccccccccccc", .{clink});
+            defer h.alloc.free(dangling_clink);
+            const leftover = try std.fmt.allocPrint(h.alloc, "{s}\\cccccccccccccccc.txt.tmp", .{history_dir});
+            defer h.alloc.free(leftover);
+            try h.writeFileAt(dangling, "echo dangling\n");
+            try h.writeFileAt(dangling_marker, "");
+            try h.writeFileAt(dangling_clink, "echo dangling\n");
+            try h.writeFileAt(leftover, "echo half\n");
+            const before = h.readFileOrNull(pane_file) orelse return h.fail("no pane history", .{});
+            defer h.alloc.free(before);
+            try h.collectHistoryGarbage(&g);
+            try h.expect(!fileThere(h, dangling) and !fileThere(h, dangling_marker) and !fileThere(h, dangling_clink), "the garbage collector removes a history no pane has, with its marked Clink history", .{});
+            try h.expect(!fileThere(h, leftover), "and a leftover temporary file", .{});
+            const after = h.readFileOrNull(pane_file) orelse return h.fail("the live pane's history went", .{});
+            defer h.alloc.free(after);
+            try h.expect(std.mem.eql(u8, before, after), "and leaves the live pane's file as it is", .{});
+            try h.expect(fileThere(h, foreign_clink), "and a Clink history murrtty didn't label", .{});
+        }
         // Clink's history label for the pane (Clink itself isn't run here).
         {
             const id = try savedPaneId(h, session_path, 0);
