@@ -3589,6 +3589,15 @@ Windows on ARM).
 **7.9 Upstreaming.** *Dropped 2026-10-26 (decision 7):* Ghostty won't take
 another runtime. A fix that matters to Ghostty itself can still be offered
 upstream on its own, under upstream's `CONTRIBUTING.md` and `AI_POLICY.md`.
+A candidate (2026-10-29): the renderer thread stopped without draining its
+mailbox, so a font grid swap a surface queued just before closing (a
+config reload, say) never released the old grid, and `App.deinit`'s
+`font_grid_set.count() == 0` assertion panicked a Debug build at exit
+(queued configs leaked too). Found on the desktop CI (`theme`'s
+`theme-system`, one quit in many), reproduced 6 times in 20 by the opt-in
+`quit-after-reload` stress scenario; `renderer/Thread.zig`'s
+`drainForExit` takes what owns memory after the loop stops, and the
+scenario then passes 20 of 20 with no leak. Upstream's code is the same.
 
 ---
 

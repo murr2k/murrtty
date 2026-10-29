@@ -255,6 +255,39 @@ fn threadMain_(self: *Thread) !void {
     log.debug("starting renderer thread", .{});
     defer log.debug("starting renderer thread shutdown", .{});
     _ = try self.loop.run(.until_done);
+    self.drainForExit();
+}
+
+/// After the loop has stopped (the surface is closing), what the mailbox
+/// still holds that owns something is taken as drainMailbox takes it: a
+/// font grid swap releases the old grid, else the app's font grid set
+/// keeps a reference and App.deinit's assertion fails (murrtty, seen on a
+/// quit right after a config reload); a config or a search's matches are
+/// freed. The rest only steered a renderer that is stopping.
+fn drainForExit(self: *Thread) void {
+    while (self.mailbox.pop(global.io())) |message| switch (message) {
+        .font_grid => |grid| {
+            self.renderer.setFontGrid(grid.grid);
+            grid.set.deref(grid.old_key);
+        },
+        .change_config => |config| {
+            defer config.alloc.destroy(config.thread);
+            defer config.alloc.destroy(config.impl);
+            self.changeConfig(config.thread) catch {};
+            self.renderer.changeConfig(config.impl) catch |err| {
+                log.warn("error taking a config at exit err={}", .{err});
+            };
+        },
+        .search_viewport_matches => |v| {
+            if (self.renderer.search_matches) |*m| m.arena.deinit();
+            self.renderer.search_matches = v;
+        },
+        .search_selected_match => |v| {
+            if (self.renderer.search_selected_match) |*m| m.arena.deinit();
+            self.renderer.search_selected_match = v;
+        },
+        else => {},
+    };
 }
 
 fn setQosClass(self: *const Thread) void {

@@ -111,6 +111,7 @@ pub const all = [_]Scenario{
     .{ .name = "session-restore", .about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
+    .{ .name = "quit-after-reload", .about = "20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
@@ -9001,6 +9002,15 @@ fn waitAtPrompt(h: *Harness, g: *Harness.Ghostty, tab: usize, want: bool) !void 
 
 /// Ctrl+Shift+Q at an idle prompt: Ghostty exits with code 0 and no dialog.
 fn quitIdle(h: *Harness, g: *Harness.Ghostty, target: w.HWND) !void {
+    // The shell's next prompt first: a quit just after a command's output,
+    // before that prompt is drawn, rightly asks (desktop CI, launch-context,
+    // 2026-10-29).
+    const active = active: {
+        var d = try h.dump(g);
+        defer d.deinit();
+        break :active d.value.windows[0].active;
+    };
+    try waitAtPrompt(h, g, active, true);
     h.key(target, .{ .ctrl = true, .shift = true }, 'Q');
     const code = g.waitExit(10000);
     try h.expect(code != null and code.? == 0, "an idle prompt quits without asking, code 0 (got {?d})", .{code});
@@ -12186,4 +12196,38 @@ fn logClinkProfile(h: *Harness, profile: []const u8, comptime when: []const u8) 
         if (name[0] != '.') h.log("clink profile " ++ when ++ ": {s} ({d} bytes)", .{ name, data.nFileSizeLow });
         if (w.FindNextFileW(find, &data) == 0) break;
     }
+}
+
+/// A quit right after config reloads exits cleanly (desktop CI, 2026-10-29:
+/// theme-system's murrtty panicked at exit, App.deinit's font grid
+/// assertion). A reload has each pane swap its font grid through the
+/// renderer thread's mailbox, which releases the old grid as it takes the
+/// swap; a renderer stopping for the quit before it had taken one kept a
+/// reference. The stopping renderer now takes what it still holds
+/// (drainForExit). Racy by nature, so many launches; opt-in
+/// (GHOSTTY_GUI_STRESS=1).
+fn quitAfterReload(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_STRESS"), null, 0) == 0) {
+        return h.skip("set GHOSTTY_GUI_STRESS=1 to run it", .{});
+    }
+    var failed: usize = 0;
+    for (0..20) |i| {
+        const name = try std.fmt.allocPrint(h.alloc, "quit-after-reload-{d}", .{i});
+        defer h.alloc.free(name);
+        var g = try start(h, name, "window-theme = system\nconfirm-close-surface = false\n", ">");
+        defer g.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try h.setSystemDark(&g, true);
+        try h.setSystemDark(&g, false);
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'Q');
+        const code = g.waitExit(15000);
+        if (code == null or code.? != 0) {
+            failed += 1;
+            h.log("launch {d}: exit {?d}", .{ i, code });
+        } else {
+            // What the stopping renderer took (configs) is freed once.
+            try expectNoLeaks(h, &g, "and leaks nothing");
+        }
+    }
+    try h.expect(failed == 0, "every quit right after reloads exits 0 ({d} of 20 didn't)", .{failed});
 }
