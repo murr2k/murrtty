@@ -2736,9 +2736,11 @@ the buffer, the untouched system clipboard, and both pastes.
     and come back hidden until summoned.
   - **When:** on every change (windows moved, sized, maximized; tabs and
     splits made, closed, moved, renamed, focused; a directory a shell
-    reports), coalesced to a few writes a second during a drag, the last
-    change always written. Nothing else: a crash restores what the last
-    write held. Once murrtty quits (Quit, `WM_ENDSESSION`) the state is
+    reports). A drag (a window moved or sized, a divider, a tab or a pane
+    dragged) is saved once, on release (`WM_EXITSIZEMOVE`, the drop); one
+    cut short (a crash, Escape) saves nothing, so the state stays as it
+    was before it (the owner's choice, 2026-10-29). Nothing else: a crash
+    restores what the last write held. Once murrtty quits (Quit, `WM_ENDSESSION`) the state is
     frozen, so closing its windows on the way out doesn't empty it;
     closing windows one by one does (closing the last one leaves nothing
     to restore, as on macOS). Parked panes (5.11) aren't saved.
@@ -2796,8 +2798,8 @@ the buffer, the untouched system clipboard, and both pastes.
     monitor's work area without maximizing it, for a window whose edges
     and title bar are out of reach. Menus only: Ghostty has no such
     action, and a binding to one would be an error in its file.
-  - **Tests:** a scenario saves (the file after each kind of change, a
-    move coalesced), one restores from a written file (windows, tabs,
+  - **Tests:** a scenario saves (the file after each kind of change; a
+    drag's only on release, none for one cancelled), one restores from a written file (windows, tabs,
     splits, sizes, names, directories, a gone directory, an off-screen
     and an oversized window, the quick terminal), PowerShell history over
     a restart (Up shows the last command), Clink's where `GHOSTTY_GUI_CLINK`
