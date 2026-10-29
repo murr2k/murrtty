@@ -451,7 +451,8 @@ roadmap item behind it.
   at exit). A restored pane runs a fresh shell with no scrollback.
 - **Single instance by default** (5.10b): `gtk-single-instance` defaults
   to `true`, and a second plain launch brings the running murrtty's
-  windows to the front without opening a window; GTK's default is
+  windows to the front without opening a window, one with a command
+  opening it as a new tab in the front window; GTK's default is
   `detect`, and its second launch opens a window.
 - **Fit Window to Screen** (5.10b): a menu item sizing the window to its
   monitor's work area; GTK has none.
@@ -2765,9 +2766,10 @@ the buffer, the untouched system clipboard, and both pastes.
     last directory instead. A directory that's gone keeps the pane, starts
     the shell in the home folder and says so in a line in the pane. A
     window on a monitor that's gone, or bigger than its screen, is moved
-    and sized into a visible work area. A launch with a command also gets
-    its window after the restored ones; `initial-window = false` only
-    leaves out the empty first window when there is nothing to restore.
+    and sized into a visible work area. A launch with a command opens it
+    as a new tab, with no splits, in the front window of those restored;
+    `initial-window = false` only leaves out the empty first window when
+    there is nothing to restore.
   - **History:** through the shell integration (needs
     `shell-integration` on, as directories do). PowerShell (PSReadLine):
     the prompt wrapper appends each command line to the pane's file, and
@@ -2791,8 +2793,10 @@ the buffer, the untouched system clipboard, and both pastes.
     windows to the front (restoring minimized ones, bringing back what
     `toggle_visibility` hid; its foreground right handed over with
     `AllowSetForegroundWindow`) and opens nothing; GTK's opens a new
-    window. A launch with a command still opens its window there
-    (5.1's overrides), and `+new-window` and `+new-tab` are as before.
+    window. A launch with a command opens it as a new tab, with no
+    splits, in the running murrtty's front window (a new window only when
+    it has none), keeping one instance (the owner's choice, 2026-10-29);
+    `+new-window` and `+new-tab` are as before.
   - **Fit Window to Screen:** an item in the terminal's menu (its Window
     submenu) and the system menu (Alt+Space) that sizes the window to its
     monitor's work area without maximizing it, for a window whose edges
