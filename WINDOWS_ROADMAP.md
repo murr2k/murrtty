@@ -3308,7 +3308,11 @@ GitHub Releases (winget's usual source). murrtty has no server part, so no
 Fly.io unless one comes. The site waits for the public repository (R4),
 which it links to; until then the domain gets only its baseline: no mail
 (a null MX, SPF `-all`, DMARC reject, so nobody can send as it) and HTTPS
-only.
+only. *Applied 2026-10-28* (Cloudflare account murr2k, free plan, through
+the Cloudflare MCP server): `MX . 0`, `TXT "v=spf1 -all"`, `_dmarc` `TXT
+"v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s"`, Always Use HTTPS on,
+minimum TLS 1.2; the records checked from the zone's own nameserver. The
+zone has no other records yet.
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build
