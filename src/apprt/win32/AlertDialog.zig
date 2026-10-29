@@ -51,6 +51,20 @@ pub const Options = struct {
     remember: ?Remember = null,
     /// Responses that run `action` and leave the dialog open.
     stay: ?Stay = null,
+    /// A box under the body that takes every key (the config editor's new
+    /// key binding, roadmap F1c), with the keyboard in it.
+    capture: ?Capture = null,
+
+    pub const Capture = struct {
+        ctx: *anyopaque,
+        /// A key pressed in the box: what it stands for, allocated with
+        /// `alloc`, ending the dialog with IDOK (Result.text holds it), or
+        /// null to wait for another (a modifier alone). Escape alone
+        /// cancels.
+        take: *const fn (ctx: *anyopaque, alloc: Allocator, vk: c.WPARAM, lparam: c.LPARAM) ?[]u8,
+        /// What the box shows (ASCII).
+        prompt: []const u8,
+    };
 
     pub const Text = struct {
         /// Shown as is: lines broken with CRLF.
@@ -81,6 +95,8 @@ pub const id_remember = 101;
 /// The body: a static control, so screen readers read it (and it names
 /// the entry after it).
 const id_body = 102;
+/// The capture box.
+pub const id_capture = 103;
 
 /// The response chosen, what the entry held then (the caller frees it;
 /// null without an entry, or if it couldn't be read), and the switch.
@@ -147,6 +163,8 @@ const State = struct {
     /// The switch, and the procedure its button had.
     remember: bool = false,
     remember_proc: isize = 0,
+    /// The procedure the capture box had (Button's).
+    capture_proc: isize = 0,
 
     fn scale(self: *const State, v: c_int) c_int {
         return draw.scale(self.dpi, v);
@@ -211,8 +229,9 @@ pub fn run(alloc: Allocator, opts: Options) ?Result {
     return .{ .id = @intCast(ret), .text = state.entry_text, .remember = state.remember };
 }
 
-/// A layered child over `owner`'s client area, black at `alpha`.
-fn dimOver(owner: c.HWND, alpha: u8) ?c.HWND {
+/// A layered child over `owner`'s client area, black at `alpha` (also the
+/// config editor's chooser's).
+pub fn dimOver(owner: c.HWND, alpha: u8) ?c.HWND {
     var client: c.RECT = .{};
     _ = c.GetClientRect(owner, &client);
     const dim = c.CreateWindowExW(
@@ -240,7 +259,7 @@ fn dimOver(owner: c.HWND, alpha: u8) ?c.HWND {
 fn buildTemplate(alloc: Allocator, out: *std.ArrayList(u8), opts: Options) !void {
     const put16 = TitleDialog.put16;
     const put32 = TitleDialog.put32;
-    const child = opts.entry != null or opts.text != null;
+    const child = opts.entry != null or opts.text != null or opts.capture != null;
     const items = opts.responses.len + @intFromBool(opts.body.len > 0) + @intFromBool(child) + @intFromBool(opts.remember != null);
     try put32(alloc, out, c.WS_POPUP | c.WS_CLIPCHILDREN);
     try put32(alloc, out, 0);
@@ -263,6 +282,8 @@ fn buildTemplate(alloc: Allocator, out: *std.ArrayList(u8), opts: Options) !void
     } else if (opts.text != null) {
         const style = shown | c.WS_VSCROLL | c.WS_HSCROLL | c.ES_MULTILINE | c.ES_READONLY | c.ES_AUTOVSCROLL | c.ES_AUTOHSCROLL;
         try TitleDialog.putItem(alloc, out, style, .{ 0, 0, 10, 10 }, id_text, edit_class, "");
+    } else if (opts.capture) |cap| {
+        try TitleDialog.putItem(alloc, out, shown | c.BS_OWNERDRAW, .{ 0, 0, 10, 10 }, id_capture, button_class, cap.prompt);
     }
     if (opts.remember != null) {
         try TitleDialog.putItem(alloc, out, shown | c.BS_OWNERDRAW, .{ 0, 0, 10, 10 }, id_remember, button_class, "");
@@ -307,6 +328,11 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
             if (c.GetDlgItem(hwnd, id_remember)) |button| {
                 state.remember_proc = c.SetWindowLongPtrW(button, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&rememberProc)));
             }
+            if (state.opts.capture != null) if (c.GetDlgItem(hwnd, id_capture)) |box| {
+                state.capture_proc = c.SetWindowLongPtrW(box, c.GWLP_WNDPROC, @bitCast(@intFromPtr(&captureProc)));
+                _ = c.SetFocus(box);
+                return 0;
+            };
             if (state.opts.entry) |initial| if (c.GetDlgItem(hwnd, id_entry)) |edit| {
                 // The text, selected, with the keyboard in it (a program's
                 // title may hold invalid UTF-8: U+FFFD for it).
@@ -360,7 +386,13 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
         c.WM_DRAWITEM => {
             const state = fromHwnd(hwnd) orelse return 0;
             const item: *const c.DRAWITEMSTRUCT = @ptrFromInt(@as(usize, @bitCast(lparam)));
-            if (item.CtlID == id_remember) drawRemember(state, item) else drawButton(state, item);
+            if (item.CtlID == id_remember) {
+                drawRemember(state, item);
+            } else if (item.CtlID == id_capture) {
+                drawCapture(state, item);
+            } else {
+                drawButton(state, item);
+            }
             return 1;
         },
         c.WM_COMMAND => {
@@ -379,7 +411,7 @@ fn dialogProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
                 }
                 return 0;
             }
-            if (id == id_text or id == id_body) return 0;
+            if (id == id_text or id == id_body or id == id_capture) return 0;
             if (id == id_remember) {
                 // A double click's second click comes as BN_DOUBLECLICKED.
                 if (code == c.BN_CLICKED or code == c.BN_DOUBLECLICKED) {
@@ -555,6 +587,13 @@ fn layout(hwnd: c.HWND, state: *State) void {
         _ = c.SetWindowPos(edit, null, r.left + m, r.top + m, r.right - r.left - 2 * m, r.bottom - r.top - 2 * m, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
         y += state.scale(t.height);
     };
+    if (state.opts.capture != null) if (c.GetDlgItem(hwnd, id_capture)) |box| {
+        y += state.scale(child_gap);
+        state.child_rect = .{ .left = side, .top = y, .right = side + text_w, .bottom = y + state.scale(entry_height) };
+        const r = state.child_rect;
+        _ = c.SetWindowPos(box, null, r.left, r.top, r.right - r.left, r.bottom - r.top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+        y += state.scale(entry_height);
+    };
     if (state.opts.remember != null) if (c.GetDlgItem(hwnd, id_remember)) |button| {
         y += state.scale(row_gap);
         const pad = state.scale(row_pad);
@@ -695,6 +734,63 @@ fn drawRemember(state: *const State, item: *const c.DRAWITEMSTRUCT) void {
     const knob = sh - 2 * inset;
     const kx = if (state.remember) track.right - inset - knob else track.left + inset;
     draw.roundRect(dc, .{ .left = kx, .top = track.top + inset, .right = kx + knob, .bottom = track.top + inset + knob }, @divTrunc(knob, 2), pal.knob, null, 0);
+}
+
+/// The capture box: every key comes to it (the dialog manager hands it
+/// Tab, Enter and Escape too), and it gives each to Capture.take; Escape
+/// with no modifier cancels. Its characters and releases are swallowed, so
+/// Alt's keys never reach the dialog's menu handling.
+fn captureProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
+    const dialog = c.GetParent(hwnd) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+    const s = fromHwnd(dialog) orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+    const capture = s.opts.capture orelse return c.CallWindowProcW(s.capture_proc, hwnd, msg, wparam, lparam);
+    switch (msg) {
+        c.WM_GETDLGCODE => return c.DLGC_WANTALLKEYS,
+        c.WM_KEYDOWN, c.WM_SYSKEYDOWN => {
+            const plain = c.GetKeyState(c.VK_CONTROL) >= 0 and c.GetKeyState(c.VK_MENU) >= 0 and
+                c.GetKeyState(c.VK_SHIFT) >= 0 and c.GetKeyState(c.VK_LWIN) >= 0 and c.GetKeyState(c.VK_RWIN) >= 0;
+            if (wparam == c.VK_ESCAPE and plain) {
+                _ = c.EndDialog(dialog, c.IDCANCEL);
+                return 0;
+            }
+            if (capture.take(capture.ctx, s.alloc, wparam, lparam)) |taken| {
+                if (s.entry_text) |t| s.alloc.free(t);
+                s.entry_text = taken;
+                _ = c.EndDialog(dialog, c.IDOK);
+            }
+            return 0;
+        },
+        c.WM_KEYUP, c.WM_SYSKEYUP, c.WM_CHAR, c.WM_SYSCHAR, c.WM_DEADCHAR, c.WM_SYSDEADCHAR => return 0,
+        else => {},
+    }
+    return c.CallWindowProcW(s.capture_proc, hwnd, msg, wparam, lparam);
+}
+
+/// The capture box: libadwaita's entry, its prompt dimmed and centered,
+/// ringed in the accent while it has the keyboard.
+fn drawCapture(state: *const State, item: *const c.DRAWITEMSTRUCT) void {
+    const dc = item.hDC;
+    const r = item.rcItem;
+    const pal = state.pal;
+    draw.fill(dc, r, pal.bg);
+    const radius = state.scale(entry_radius);
+    if (item.itemState & c.ODS_FOCUS != 0) {
+        draw.roundRect(dc, r, radius, pal.focus, null, 0);
+        const ring = @max(1, state.scale(2));
+        draw.roundRect(dc, .{ .left = r.left + ring, .top = r.top + ring, .right = r.right - ring, .bottom = r.bottom - ring }, radius - ring, pal.button, null, 0);
+    } else {
+        draw.roundRect(dc, r, radius, pal.button, null, 0);
+    }
+    var label: [128]u16 = undefined;
+    const n: usize = @intCast(@max(c.GetWindowTextW(item.hwndItem, &label, label.len), 0));
+    const old = if (state.body_font) |f| c.SelectObject(dc, f) else null;
+    defer if (old) |o| {
+        _ = c.SelectObject(dc, o);
+    };
+    _ = c.SetBkMode(dc, c.TRANSPARENT);
+    _ = c.SetTextColor(dc, pal.subtitle);
+    var tr = r;
+    _ = c.DrawTextW(dc, &label, @intCast(n), &tr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
 }
 
 /// A response's button: a rounded pill, its label bold and centered.

@@ -9,6 +9,7 @@ const help_strings = @import("help_strings");
 const Config = @import("Config.zig");
 const formatter = @import("formatter.zig");
 const args = @import("../cli/args.zig");
+const Binding = @import("../input/Binding.zig");
 
 /// How an option's value is edited.
 pub const Kind = enum {
@@ -142,6 +143,47 @@ const options: [option_count]Option = options: {
 
 /// Every option, in the order `Config` declares them.
 pub const all: []const Option = &options;
+
+/// A key binding's action, as the editor's binding page lists it (roadmap
+/// F1c): from `Binding.Action`'s fields, so actions upstream adds appear
+/// after a merge, each with its documentation (`+list-actions`').
+pub const Action = struct {
+    name: []const u8,
+    /// Whether it takes a value after a colon (`goto_tab:2`); some take
+    /// one only optionally.
+    takes_value: bool,
+    doc: []const u8,
+};
+
+const action_fields = @typeInfo(Binding.Action).@"union".field_names;
+
+const action_count = count: {
+    var n: usize = 0;
+    for (action_fields) |f| {
+        if (f[0] != '_') n += 1;
+    }
+    break :count n;
+};
+
+const action_list: [action_count]Action = list: {
+    @setEvalBranchQuota(100_000);
+    var out: [action_count]Action = undefined;
+    var i: usize = 0;
+    for (action_fields) |f| {
+        if (f[0] == '_') continue;
+        out[i] = .{
+            .name = f,
+            .takes_value = @FieldType(Binding.Action, f) != void,
+            .doc = if (@hasDecl(help_strings.KeybindAction, f)) @field(help_strings.KeybindAction, f) else "",
+        };
+        i += 1;
+    }
+    break :list out;
+};
+
+/// Every action a key binding can take, in the order `Binding.Action`
+/// declares them.
+pub const actions: []const Action = &action_list;
 
 /// The option named `name`, or null.
 pub fn find(name: []const u8) ?*const Option {
@@ -544,6 +586,18 @@ test "option_list: every compatibility entry classified" {
     try testing.expect(keyFor("scrollback-limit-bytes", "scrollback-limit-bytes"));
     try testing.expect(!keyFor("scrollback-limit-bytes", "scrollback-limit"));
     try testing.expect(!keyFor("scrollback-limit", "scrollback-limit-lines"));
+}
+
+test "option_list: the actions a binding takes" {
+    var new_window: ?Action = null;
+    var goto_tab: ?Action = null;
+    for (actions) |a| {
+        if (std.mem.eql(u8, a.name, "new_window")) new_window = a;
+        if (std.mem.eql(u8, a.name, "goto_tab")) goto_tab = a;
+        try testing.expect(a.name[0] != '_');
+    }
+    try testing.expect(!new_window.?.takes_value and new_window.?.doc.len > 0);
+    try testing.expect(goto_tab.?.takes_value);
 }
 
 test "option_list: flags start from their type's defaults" {

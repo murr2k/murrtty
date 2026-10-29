@@ -5,7 +5,11 @@
 //! options, each option a row with its name, its documentation's first
 //! sentence (all of it once the row is opened), and the control that edits
 //! its value: a switch, a menu of its choices or flags, a field (a color's
-//! with its swatch, a path's), or a list's lines.
+//! with its swatch, a path's), or a list's lines. Some rows have a picker
+//! too (roadmap F1c): a color's swatch opens Windows' color dialog, a
+//! path's button its file dialog, and a font's or the theme's a chooser
+//! (Chooser.zig) listing the installed fonts or the themes with their
+//! colors.
 //!
 //! It edits the files the loader reads at start (`edit.defaultFiles`:
 //! murrtty's own, else Ghostty's), with the one `open_config` opens as the
@@ -33,7 +37,13 @@ const draw = @import("draw.zig");
 const text_util = @import("text.zig");
 const App = @import("App.zig");
 const AlertDialog = @import("AlertDialog.zig");
+const Chooser = @import("Chooser.zig");
 const ContextMenu = @import("ContextMenu.zig");
+const test_hooks = @import("test_hooks.zig");
+const key_util = @import("key.zig");
+const input = @import("../../input.zig");
+const dwrite = @import("../../font/dwrite.zig");
+const theme_paths = @import("../../config/theme.zig");
 
 const log = std.log.scoped(.win32_config_editor);
 
@@ -174,7 +184,21 @@ const Item = struct {
 };
 
 /// What a click lands on.
-const Part = enum { row, control, reset };
+const Part = enum { row, control, reset, picker };
+
+/// What a row's picker opens: Windows' color dialog (from the swatch), its
+/// file dialog, a chooser of the installed fonts or of the themes, or a
+/// new key binding's keys and action.
+const Picker = enum { none, color, path, font, theme, keybind };
+
+fn pickerOf(o: *const option_list.Option) Picker {
+    if (o.kind == .color) return .color;
+    if (o.kind == .path) return .path;
+    if (std.mem.startsWith(u8, o.name, "font-family") or std.mem.eql(u8, o.name, "window-title-font-family")) return .font;
+    if (std.mem.eql(u8, o.name, "theme")) return .theme;
+    if (std.mem.eql(u8, o.name, "keybind")) return .keybind;
+    return .none;
+}
 
 app: *App,
 hwnd: c.HWND,
@@ -203,6 +227,8 @@ query: std.ArrayList(u8) = .empty,
 /// Options changed since the editor opened (their names are constants), for
 /// what a save says about when they apply.
 changed: std.StringHashMapUnmanaged(void) = .empty,
+/// The color dialog's custom colors, kept while the editor is open.
+custom_colors: [16]c.COLORREF = @splat(0xffffff),
 /// The last message: what was saved, or why a value was refused.
 status: [512]u8 = undefined,
 status_len: usize = 0,
@@ -785,8 +811,9 @@ fn reveal(self: *ConfigEditor, option: u16) void {
 }
 
 /// A row's rectangles, in the list's client pixels: the row, its value's
-/// control and its reset button.
-const Rects = struct { row: c.RECT, control: c.RECT, reset: c.RECT };
+/// control, its reset button, and its picker (inside the control: a
+/// color's swatch at its left, else a square at its right).
+const Rects = struct { row: c.RECT, control: c.RECT, reset: c.RECT, picker: ?c.RECT };
 
 fn rectsOf(self: *const ConfigEditor, it: Item) Rects {
     const page = self.pageX();
@@ -810,7 +837,12 @@ fn rectsOf(self: *const ConfigEditor, it: Item) Rects {
         const sh = self.scale(switch_height);
         control = .{ .left = cright - sw, .top = top + @divTrunc(head_h - sh, 2), .right = cright, .bottom = top + @divTrunc(head_h - sh, 2) + sh };
     }
-    return .{ .row = row, .control = control, .reset = reset };
+    const picker: ?c.RECT = switch (pickerOf(&option_list.all[it.option])) {
+        .none => null,
+        .color => .{ .left = control.left, .top = control.top, .right = control.left + self.scale(9) + self.scale(swatch_size) + self.scale(4), .bottom = control.bottom },
+        else => .{ .left = control.right - (control.bottom - control.top), .top = control.top, .right = control.right, .bottom = control.bottom },
+    };
+    return .{ .row = row, .control = control, .reset = reset, .picker = picker };
 }
 
 /// What is at (x, y) in the list's client pixels.
@@ -820,6 +852,7 @@ fn hit(self: *const ConfigEditor, x: c_int, y: c_int) ?struct { item: usize, par
         const r = self.rectsOf(it);
         if (!draw.contains(r.row, x, y)) continue;
         if (self.session.isSet(option_list.all[it.option].name) and draw.contains(r.reset, x, y)) return .{ .item = i, .part = .reset };
+        if (r.picker) |p| if (draw.contains(p, x, y)) return .{ .item = i, .part = .picker };
         if (draw.contains(r.control, x, y)) return .{ .item = i, .part = .control };
         return .{ .item = i, .part = .row };
     }
@@ -957,6 +990,592 @@ fn activate(self: *ConfigEditor, item: usize) void {
         .number, .text, .color, .path => self.beginEdit(option),
     }
 }
+
+/// Open row `item`'s picker, if it has one.
+fn pick(self: *ConfigEditor, item: usize) void {
+    self.endEdit(.commit);
+    const option = self.items.items[item].option;
+    self.selected = option;
+    switch (pickerOf(&option_list.all[option])) {
+        .none => {},
+        .color => self.pickColor(option),
+        .path => self.pickPath(option),
+        .font => self.pickFont(option),
+        .theme => self.pickTheme(option),
+        .keybind => self.pickBinding(option),
+    }
+    if (self.list) |l| _ = c.InvalidateRect(l, null, c.FALSE);
+}
+
+/// A new key binding: the keys, pressed in a capture box; then the
+/// action, from a chooser that says what the keys do now; then its value,
+/// for an action that takes one. The line is tried as the loader reads
+/// it, then replaces the main file's line for the same keys, or is added.
+fn pickBinding(self: *ConfigEditor, option: u16) void {
+    const alloc = self.app.core_app.alloc;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const trigger: []const u8 = trigger: {
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        const result = AlertDialog.run(alloc, .{
+            .owner = self.hwnd,
+            .heading = "New Key Binding",
+            .body = "Press the keys for it. Escape cancels.",
+            .responses = &.{.{ .id = c.IDCANCEL, .label = "Cancel" }},
+            .default = c.IDCANCEL,
+            .dark = self.dark,
+            .capture = .{ .ctx = @ptrCast(self), .take = captureTrigger, .prompt = "Waiting for keys" },
+        }) orelse return;
+        const text = result.text orelse return;
+        defer alloc.free(text);
+        if (result.id != c.IDOK) return;
+        break :trigger a.dupe(u8, text) catch return;
+    };
+
+    const items = a.alloc(Chooser.Item, option_list.actions.len) catch return;
+    for (option_list.actions, items) |act, *it| {
+        var buf: [200]u8 = undefined;
+        it.* = .{ .title = act.name, .subtitle = a.dupe(u8, option_list.summary(act.doc, &buf)) catch "" };
+    }
+    const heading = if (self.currentAction(a, trigger)) |now|
+        std.fmt.allocPrint(a, "{s}: now {s}", .{ trigger, now }) catch trigger
+    else
+        std.fmt.allocPrint(a, "Action for {s}", .{trigger}) catch trigger;
+    const chosen = chosen: {
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        break :chosen Chooser.run(alloc, .{
+            .owner = self.hwnd,
+            .heading = heading,
+            .items = items,
+            .dark = self.dark,
+        }) orelse return;
+    };
+    const act = option_list.actions[chosen];
+
+    var value: []const u8 = act.name;
+    if (act.takes_value) {
+        var buf: [200]u8 = undefined;
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        const result = AlertDialog.run(alloc, .{
+            .owner = self.hwnd,
+            .heading = std.fmt.allocPrint(a, "Value for {s}", .{act.name}) catch act.name,
+            .body = option_list.summary(act.doc, &buf),
+            .entry = "",
+            .responses = &.{
+                .{ .id = c.IDCANCEL, .label = "Cancel" },
+                .{ .id = c.IDOK, .label = "Set", .appearance = .suggested },
+            },
+            .default = c.IDOK,
+            .dark = self.dark,
+        }) orelse return;
+        const text = result.text orelse return;
+        defer alloc.free(text);
+        if (result.id != c.IDOK) return;
+        const t = std.mem.trim(u8, text, " \t");
+        if (t.len > 0) value = std.fmt.allocPrint(a, "{s}:{s}", .{ act.name, t }) catch return;
+    }
+
+    const line = std.fmt.allocPrint(a, "{s}={s}", .{ trigger, value }) catch return;
+    if (option_list.check(alloc, "keybind", line) catch null) |message| {
+        defer alloc.free(message);
+        self.setStatus(true, "keybind = {s}: {s}", .{ line, message });
+        return;
+    }
+    // The main file's line in effect for the keys: the last for them after
+    // its last reset (`clear`, an empty value). It changes, keeping its
+    // flags (global: and the like), and the chain= lines after it go with
+    // the action they added to; else the line is added.
+    const entries = self.session.mainEntries(a, "keybind") catch return;
+    var after_reset: usize = 0;
+    for (entries, 0..) |e, i| {
+        const v = e orelse "";
+        if (v.len == 0 or std.mem.eql(u8, v, "clear")) after_reset = i + 1;
+    }
+    var match: ?usize = null;
+    for (entries[after_reset..], after_reset..) |e, i| {
+        const v = e orelse continue;
+        const t = lineTrigger(a, v) orelse continue;
+        if (std.mem.eql(u8, t, trigger)) match = i;
+    }
+    const next = a.alloc(?[]const u8, entries.len + 1) catch return;
+    var n: usize = 0;
+    var i: usize = 0;
+    var dropped_chain = false;
+    while (i < entries.len) : (i += 1) {
+        if (match != null and i == match.?) {
+            const flags = splitFlags(entries[i].?).flags;
+            next[n] = std.fmt.allocPrint(a, "{s}{s}", .{ flags, line }) catch return;
+            n += 1;
+            while (i + 1 < entries.len and entries[i + 1] != null and std.mem.startsWith(u8, entries[i + 1].?, "chain=")) {
+                i += 1;
+                dropped_chain = true;
+            }
+            continue;
+        }
+        next[n] = entries[i];
+        n += 1;
+    }
+    if (match == null) {
+        next[n] = line;
+        n += 1;
+    }
+    if (self.commitList(option, next[0..n]) and dropped_chain) {
+        self.setStatus(false, "keybind changed: the chain= lines that followed its old action went with it. Save to keep it.", .{});
+    }
+}
+
+/// A keybind line's flags (global:, all:, unconsumed:, performable:) and
+/// the rest.
+fn splitFlags(value: []const u8) struct { flags: []const u8, rest: []const u8 } {
+    var v = value;
+    strip: while (true) {
+        for ([_][]const u8{ "global:", "all:", "unconsumed:", "performable:" }) |flag| {
+            if (std.mem.startsWith(u8, v, flag)) {
+                v = v[flag.len..];
+                continue :strip;
+            }
+        }
+        break;
+    }
+    return .{ .flags = value[0 .. value.len - v.len], .rest = v };
+}
+
+/// A key pressed in the new binding's capture box (AlertDialog.Capture):
+/// its trigger as Ghostty writes it, from the terminal's own translation
+/// (key.zig), with Ctrl, Alt, Shift and the Windows key held. A key that
+/// types a character goes by that character unshifted (ctrl+shift+t, as
+/// Ghostty's defaults write them); another by its name (ctrl+page_up).
+/// Null for a modifier alone: the box waits for the key.
+fn captureTrigger(ctx: *anyopaque, alloc: Allocator, vk: c.WPARAM, lparam: c.LPARAM) ?[]u8 {
+    const self: *ConfigEditor = @ptrCast(@alignCast(ctx));
+    const mods = key_util.currentMods().binding();
+    // Alt+F4 and Alt+Space are Windows' own (the window's close and its
+    // system menu): a pane passes them on before the core sees them, so a
+    // binding of either would never run.
+    if (mods.alt and !mods.ctrl and !mods.shift and !mods.super and (vk == 0x73 or vk == c.VK_SPACE)) return null;
+    switch (vk) {
+        c.VK_SHIFT, c.VK_CONTROL, c.VK_MENU, c.VK_LWIN, c.VK_RWIN, c.VK_CAPITAL, c.VK_NUMLOCK => return null,
+        // The sided Shift, Ctrl and Alt.
+        0xA0...0xA5 => return null,
+        else => {},
+    }
+    const native = key_util.nativeKeycode(vk, lparam);
+    const physical = key_util.remapKeypad(key_util.physicalKey(native), vk);
+    const cp = key_util.unshiftedCodepoint(vk, native & 0xFF);
+    var trigger: input.Binding.Trigger = .{
+        .mods = mods,
+        .key = if (triggerChar(cp, physical)) |ch|
+            .{ .unicode = ch }
+        else if (physical != .unidentified)
+            .{ .physical = physical }
+        else
+            return null,
+    };
+    // A binding of the key itself (alt+digit_1, as Windows' defaults bind
+    // Alt+1 beside alt+1) is found before one of its character: where the
+    // keys have one, the new binding takes the same form, to replace it
+    // rather than lie under it.
+    if (trigger.key == .unicode and physical != .unidentified) {
+        const by_key: input.Binding.Trigger = .{ .mods = mods, .key = .{ .physical = physical } };
+        if (self.boundByKey(by_key)) trigger = by_key;
+    }
+    var w: std.Io.Writer.Allocating = .init(alloc);
+    trigger.format(&w.writer) catch {
+        w.deinit();
+        return null;
+    };
+    return w.toOwnedSlice() catch {
+        w.deinit();
+        return null;
+    };
+}
+
+/// The character a trigger names its key by, if it does: one the key types
+/// unshifted, unless the key is on the keypad (named so, apart from the
+/// main keys' characters), a space, or a character the line's syntax takes
+/// for itself (= + > :), which go by the key's name.
+fn triggerChar(cp: u21, physical: input.Key) ?u21 {
+    if (cp == 0 or physical.keypad()) return null;
+    return switch (cp) {
+        ' ', '=', '+', '>', ':' => null,
+        else => cp,
+    };
+}
+
+/// Whether `by_key` (a trigger naming its key) is bound: in the
+/// configuration murrtty runs, or by a line of the main file.
+fn boundByKey(self: *ConfigEditor, by_key: input.Binding.Trigger) bool {
+    if (self.app.config.keybind.set.get(by_key) != null) return true;
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var w: std.Io.Writer.Allocating = .init(a);
+    by_key.format(&w.writer) catch return false;
+    const entries = self.session.mainEntries(a, "keybind") catch return false;
+    for (entries) |e| if (e) |v| if (lineTrigger(a, v)) |t| if (std.mem.eql(u8, t, w.written())) return true;
+    return false;
+}
+
+/// What `trigger` does in the configuration murrtty runs now, as a
+/// binding's action is written, if it is bound.
+fn currentAction(self: *ConfigEditor, a: Allocator, trigger: []const u8) ?[]const u8 {
+    const t = input.Binding.Trigger.parse(trigger) catch return null;
+    const entry = self.app.config.keybind.set.get(t) orelse return null;
+    return switch (entry.value_ptr.*) {
+        .leaf => |leaf| std.fmt.allocPrint(a, "{f}", .{leaf.action}) catch null,
+        .leaf_chained => "several actions",
+        .leader => "the start of a sequence",
+    };
+}
+
+/// The trigger a keybind line binds, as Ghostty writes it, its flags
+/// (global:, all:, unconsumed:, performable:) set aside; null for a
+/// sequence, a reset (`clear`, an empty value) or one it can't read.
+fn lineTrigger(a: Allocator, value: []const u8) ?[]const u8 {
+    const v = splitFlags(value).rest;
+    const eq = std.mem.indexOfScalar(u8, v, '=') orelse return null;
+    const t = input.Binding.Trigger.parse(v[0..eq]) catch return null;
+    var w: std.Io.Writer.Allocating = .init(a);
+    t.format(&w.writer) catch return null;
+    return w.written();
+}
+
+/// With the test hooks, GHOSTTY_WIN32_TEST_PICK stands in for what
+/// Windows' color or file dialog would return, so the GUI tests needn't
+/// drive Windows' own dialogs (the choosers they drive).
+fn testPick(alloc: Allocator) ?[]u8 {
+    if (comptime !test_hooks.enabled) return null;
+    var buf: [1024]u16 = undefined;
+    const n = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_PICK"), &buf, buf.len);
+    if (n == 0 or n >= buf.len) return null;
+    return std.unicode.utf16LeToUtf8Alloc(alloc, buf[0..n]) catch null;
+}
+
+/// Windows' color dialog, opened at the value's color, its choice written
+/// as #rrggbb.
+fn pickColor(self: *ConfigEditor, option: u16) void {
+    const alloc = self.app.core_app.alloc;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var start: c.COLORREF = 0;
+    if (configpkg.Config.Color.parseCLI(self.valueOf(a, option)) catch null) |color| start = draw.ref(color);
+    var buf: [8]u8 = undefined;
+    const value: []const u8 = value: {
+        if (testPick(a)) |v| break :value v;
+        var cc: c.CHOOSECOLORW = .{
+            .hwndOwner = self.hwnd,
+            .rgbResult = start,
+            .lpCustColors = &self.custom_colors,
+            .Flags = c.CC_RGBINIT | c.CC_FULLOPEN,
+        };
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        if (c.ChooseColorW(&cc) == 0) return;
+        const rgb = cc.rgbResult;
+        break :value std.fmt.bufPrint(&buf, "#{x:0>2}{x:0>2}{x:0>2}", .{ rgb & 0xff, (rgb >> 8) & 0xff, (rgb >> 16) & 0xff }) catch return;
+    };
+    _ = self.commit(option, value);
+}
+
+/// Windows' file dialog, opened in the folder of the file the value
+/// names.
+fn pickPath(self: *ConfigEditor, option: u16) void {
+    const alloc = self.app.core_app.alloc;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const value: []const u8 = value: {
+        if (testPick(a)) |v| break :value v;
+        const file = a.alloc(u16, 32 * 1024) catch return;
+        @memset(file, 0);
+        var current = self.valueOf(a, option);
+        if (current.len > 0 and current[0] == '?') current = current[1..];
+        const dir: ?[:0]u16 = if (std.fs.path.dirname(current)) |d| text_util.utf16Lossy(a, d) catch null else null;
+        var ofn: c.OPENFILENAMEW = .{
+            .hwndOwner = self.hwnd,
+            .lpstrFilter = c.L("All files\x00*.*\x00"),
+            .lpstrFile = file.ptr,
+            .nMaxFile = @intCast(file.len),
+            .lpstrInitialDir = if (dir) |d| d.ptr else null,
+            .lpstrTitle = c.L("Choose a File"),
+            .Flags = c.OFN_EXPLORER | c.OFN_FILEMUSTEXIST | c.OFN_PATHMUSTEXIST | c.OFN_NOCHANGEDIR,
+        };
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        if (c.GetOpenFileNameW(&ofn) == 0) return;
+        break :value std.unicode.utf16LeToUtf8Alloc(a, std.mem.sliceTo(file, 0)) catch return;
+    };
+    _ = self.commit(option, value);
+}
+
+/// The installed monospaced fonts (DirectWrite's families: the names the
+/// configuration takes), each shown in itself. A list's first family in
+/// the main file becomes the one chosen (its fallbacks after it stay);
+/// window-title-font-family takes it as its value.
+fn pickFont(self: *ConfigEditor, option: u16) void {
+    const alloc = self.app.core_app.alloc;
+    const o = &option_list.all[option];
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var dw = dwrite.Dwrite.init() orelse {
+        self.setStatus(true, "{s}: the fonts can't be listed here; type the family's name", .{o.name});
+        return;
+    };
+    defer dw.deinit();
+    const names = dw.familyNames(alloc, true) catch return;
+    defer dwrite.freeNames(alloc, names);
+    if (names.len == 0) return;
+
+    // The family in effect, chosen at the start: a list's first after the
+    // main file's last reset (an empty value).
+    const entries: []const ?[]const u8 = if (o.kind == .list) self.session.mainEntries(a, o.name) catch &.{} else &.{};
+    var after_reset: usize = 0;
+    for (entries, 0..) |e, i| {
+        const v: []const u8 = e orelse "";
+        if (v.len == 0) after_reset = i + 1;
+    }
+    var current: []const u8 = if (o.kind == .list) "" else self.valueOf(a, option);
+    var primary: ?usize = null;
+    for (entries[after_reset..], after_reset..) |e, i| if (e) |v| if (v.len > 0) {
+        current = v;
+        primary = i;
+        break;
+    };
+    // The family in effect listed too when it isn't a monospaced one (a
+    // proportional Nerd Font), first.
+    var families: std.ArrayList([]const u8) = .empty;
+    const listed = for (names) |n| {
+        if (std.ascii.eqlIgnoreCase(n, current)) break true;
+    } else false;
+    if (!listed and current.len > 0) families.append(a, current) catch return;
+    for (names) |n| families.append(a, n) catch return;
+    const items = a.alloc(Chooser.Item, families.items.len) catch return;
+    for (families.items, items, 0..) |n, *it, i| it.* = .{ .title = n, .subtitle = if (i == 0 and !listed and current.len > 0) "The font in use" else "" };
+    var initial: ?usize = null;
+    for (families.items, 0..) |n, i| if (std.ascii.eqlIgnoreCase(n, current)) {
+        initial = i;
+        break;
+    };
+    var preview: FontPreview = .{ .names = families.items, .items = items };
+    const chosen = chosen: {
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        break :chosen Chooser.run(alloc, .{
+            .owner = self.hwnd,
+            .heading = "Choose a Font",
+            .items = items,
+            .initial = initial,
+            .dark = self.dark,
+            .row_height = 44,
+            .preview = .{ .ctx = &preview, .paint = FontPreview.paint },
+        }) orelse return;
+    };
+    const family = families.items[chosen];
+    if (o.kind != .list) {
+        _ = self.commit(option, family);
+        return;
+    }
+    const next = a.alloc(?[]const u8, entries.len + 1) catch return;
+    @memcpy(next[0..entries.len], entries);
+    var n = entries.len;
+    if (primary) |p| {
+        next[p] = family;
+    } else {
+        next[n] = family;
+        n += 1;
+    }
+    if (self.sameList(o.name, next[0..n])) return;
+    _ = self.commitList(option, next[0..n]);
+}
+
+/// A font chooser's row: the family's name in that family.
+const FontPreview = struct {
+    names: []const []const u8,
+    items: []const Chooser.Item,
+
+    fn paint(ctx: *anyopaque, dc: c.HDC, row: c.RECT, index: usize, look: *const Chooser.Look) void {
+        const self: *FontPreview = @ptrCast(@alignCast(ctx));
+        const name = self.names[index];
+        var lf: c.LOGFONTW = std.mem.zeroes(c.LOGFONTW);
+        lf.lfHeight = -@as(c_long, @intCast((13 * look.dpi + 36) / 72));
+        lf.lfWeight = 400;
+        lf.lfQuality = 4; // ANTIALIASED_QUALITY, as the chrome's text
+        lf.lfCharSet = 1; // DEFAULT_CHARSET
+        // A LOGFONT holds a face name of 31 units: a longer one shows in
+        // the dialog's font.
+        var font: ?c.HFONT = null;
+        if (std.unicode.calcUtf16LeLen(name) catch null) |len| if (len < lf.lfFaceName.len) {
+            _ = std.unicode.utf8ToUtf16Le(&lf.lfFaceName, name) catch 0;
+            font = c.CreateFontIndirectW(&lf);
+        };
+        defer if (font) |f| {
+            _ = c.DeleteObject(f);
+        };
+        var own = look.*;
+        if (font) |f| own.title_font = f;
+        Chooser.paintText(dc, row, self.items[index], &own);
+    }
+};
+
+/// A theme as the chooser lists it: its name, and the colors it sets.
+const Theme = struct {
+    name: []const u8,
+    background: ?c.COLORREF = null,
+    foreground: ?c.COLORREF = null,
+    palette: [16]?c.COLORREF = @splat(null),
+};
+
+/// The themes murrtty finds (the user's theme folder first, then those
+/// it ships; a name once, the first found), sorted, with their colors.
+/// In `a`.
+fn listThemes(a: Allocator) ![]Theme {
+    var out: std.ArrayList(Theme) = .empty;
+    var dirs: theme_paths.LocationIterator = .{ .arena_alloc = a };
+    while (try dirs.next()) |loc| {
+        const pattern = try std.fmt.allocPrint(a, "{s}\\*", .{loc.dir});
+        const pattern_w = try text_util.utf16Lossy(a, pattern);
+        var data: c.WIN32_FIND_DATAW = undefined;
+        const find = c.FindFirstFileExW(pattern_w.ptr, c.FindExInfoBasic, &data, c.FindExSearchNameMatch, null, 0);
+        if (find == c.INVALID_HANDLE_VALUE) continue;
+        defer _ = c.FindClose(find);
+        var more = true;
+        while (more) : (more = c.FindNextFileW(find, &data) != 0) {
+            // Folders, and hidden and system files (desktop.ini).
+            if (data.dwFileAttributes & (0x10 | 0x2 | 0x4) != 0) continue;
+            const name = std.unicode.utf16LeToUtf8Alloc(a, std.mem.sliceTo(&data.cFileName, 0)) catch continue;
+            if (name.len == 0 or name[0] == '.') continue;
+            const dup = for (out.items) |t| {
+                if (std.mem.eql(u8, t.name, name)) break true;
+            } else false;
+            if (dup) continue;
+            var theme: Theme = .{ .name = name };
+            const path = try std.fmt.allocPrint(a, "{s}\\{s}", .{ loc.dir, name });
+            switch (readFile(a, path)) {
+                .text => |text| themeColors(&theme, text),
+                else => {},
+            }
+            try out.append(a, theme);
+        }
+    }
+    std.mem.sort(Theme, out.items, {}, struct {
+        fn lessThan(_: void, x: Theme, y: Theme) bool {
+            return std.ascii.lessThanIgnoreCase(x.name, y.name);
+        }
+    }.lessThan);
+    return out.items;
+}
+
+/// The background, foreground and palette a theme file's lines set.
+fn themeColors(theme: *Theme, text: []const u8) void {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const e = configpkg.EditableFile.entry(line) orelse continue;
+        const v = e.value orelse continue;
+        if (std.mem.eql(u8, e.key, "background") or std.mem.eql(u8, e.key, "foreground")) {
+            const color = configpkg.Config.Color.parseCLI(v) catch continue;
+            if (e.key[0] == 'b') theme.background = draw.ref(color) else theme.foreground = draw.ref(color);
+        } else if (std.mem.eql(u8, e.key, "palette")) {
+            const eq = std.mem.indexOfScalar(u8, v, '=') orelse continue;
+            const n = std.fmt.parseInt(u8, std.mem.trim(u8, v[0..eq], " "), 10) catch continue;
+            if (n >= 16) continue;
+            const color = configpkg.Config.Color.parseCLI(std.mem.trim(u8, v[eq + 1 ..], " ")) catch continue;
+            theme.palette[n] = draw.ref(color);
+        }
+    }
+}
+
+/// The themes, each with a sample of its colors; the choice becomes
+/// `theme`.
+fn pickTheme(self: *ConfigEditor, option: u16) void {
+    const alloc = self.app.core_app.alloc;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const themes = listThemes(a) catch return;
+    if (themes.len == 0) {
+        self.setStatus(true, "theme: no themes were found", .{});
+        return;
+    }
+    const items = a.alloc(Chooser.Item, themes.len) catch return;
+    for (themes, items) |t, *it| {
+        const dark = if (t.background) |bg| luminance(bg) < 0.5 else false;
+        it.* = .{ .title = t.name, .subtitle = if (t.background == null) "" else if (dark) "Dark" else "Light" };
+    }
+    const current = self.valueOf(a, option);
+    var initial: ?usize = null;
+    for (themes, 0..) |t, i| if (std.mem.eql(u8, t.name, current)) {
+        initial = i;
+        break;
+    };
+    var preview: ThemePreview = .{ .themes = themes, .items = items };
+    const chosen = chosen: {
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        break :chosen Chooser.run(alloc, .{
+            .owner = self.hwnd,
+            .heading = "Choose a Theme",
+            .items = items,
+            .initial = initial,
+            .dark = self.dark,
+            .row_height = 54,
+            .preview = .{ .ctx = &preview, .paint = ThemePreview.paint },
+        }) orelse return;
+    };
+    _ = self.commit(option, themes[chosen].name);
+}
+
+/// Relative luminance's rough share (0 black, 1 white) of a color.
+fn luminance(color: c.COLORREF) f32 {
+    const r: f32 = @floatFromInt(color & 0xff);
+    const g: f32 = @floatFromInt((color >> 8) & 0xff);
+    const b: f32 = @floatFromInt((color >> 16) & 0xff);
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0;
+}
+
+/// A theme chooser's row: its name and whether it is dark, then a sample
+/// at its end: "Aa" in its foreground on its background, and the palette's
+/// six colors.
+const ThemePreview = struct {
+    themes: []const Theme,
+    items: []const Chooser.Item,
+
+    fn paint(ctx: *anyopaque, dc: c.HDC, row: c.RECT, index: usize, look: *const Chooser.Look) void {
+        const self: *ThemePreview = @ptrCast(@alignCast(ctx));
+        const t = self.themes[index];
+        const sample_w = look.scale(150);
+        const pad = look.scale(10);
+        const sample: c.RECT = .{ .left = row.right - pad - sample_w, .top = row.top + look.scale(8), .right = row.right - pad, .bottom = row.bottom - look.scale(8) };
+        var text = row;
+        text.right = sample.left - pad;
+        Chooser.paintText(dc, text, self.items[index], look);
+        const bg = t.background orelse return;
+        draw.roundRect(dc, sample, look.scale(6), bg, look.pal.subtitle, 1);
+        if (t.foreground) |fg| {
+            const old = if (look.title_font) |f| c.SelectObject(dc, f) else null;
+            defer if (old) |o| {
+                _ = c.SelectObject(dc, o);
+            };
+            var ar: c.RECT = .{ .left = sample.left + look.scale(10), .top = sample.top, .right = sample.left + look.scale(44), .bottom = sample.bottom };
+            _ = c.SetTextColor(dc, fg);
+            _ = c.DrawTextW(dc, c.L("Aa"), 2, &ar, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_NOPREFIX);
+        }
+        const dot = look.scale(12);
+        const gap = look.scale(4);
+        var x = sample.left + look.scale(46);
+        const y = sample.top + @divTrunc(sample.bottom - sample.top - dot, 2);
+        for (t.palette[1..7]) |p| {
+            const color = p orelse continue;
+            draw.roundRect(dc, .{ .left = x, .top = y, .right = x + dot, .bottom = y + dot }, @divTrunc(dot, 2), color, null, 0);
+            x += dot + gap;
+        }
+    }
+};
 
 fn screenPoint(self: *const ConfigEditor, x: c_int, y: c_int) c.POINT {
     var p: c.POINT = .{ .x = x, .y = y };
@@ -1105,7 +1724,8 @@ fn placeEdit(self: *ConfigEditor) void {
     const line = self.lineHeight(self.fonts.title) + 2;
     const swatch: c_int = if (o.kind == .color) self.scale(swatch_size) + self.scale(8) else 0;
     const ctl = r.control;
-    _ = c.SetWindowPos(edit, null, ctl.left + inset + swatch, ctl.top + @divTrunc(ctl.bottom - ctl.top - line, 2), ctl.right - ctl.left - 2 * inset - swatch, line, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+    const square: c_int = if (r.picker != null and o.kind != .color) ctl.bottom - ctl.top else 0;
+    _ = c.SetWindowPos(edit, null, ctl.left + inset + swatch, ctl.top + @divTrunc(ctl.bottom - ctl.top - line, 2), ctl.right - ctl.left - 2 * inset - swatch - square, line, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
 }
 
 const EndHow = enum { commit, cancel };
@@ -1573,16 +2193,37 @@ fn paintControl(self: *ConfigEditor, dc: c.HDC, a: Allocator, it: Item, idx: usi
     var tr = ctl;
     tr.left += self.scale(9);
     tr.right -= self.scale(9);
+    const picker_hovered = self.hover_item == idx and self.hover_part == .picker;
     if (o.kind == .color) {
+        // The swatch, the color dialog's button: an empty square for a
+        // value that isn't a color of its own (cell-foreground).
         const v = self.valueOf(a, it.option);
+        const s = self.scale(swatch_size);
+        const top = ctl.top + @divTrunc(ctl.bottom - ctl.top - s, 2);
+        const sq: c.RECT = .{ .left = tr.left, .top = top, .right = tr.left + s, .bottom = top + s };
+        const edge = if (picker_hovered) pal.text else pal.separator;
         if (configpkg.Config.Color.parseCLI(v) catch null) |color| {
-            const s = self.scale(swatch_size);
-            const top = ctl.top + @divTrunc(ctl.bottom - ctl.top - s, 2);
-            draw.roundRect(dc, .{ .left = tr.left, .top = top, .right = tr.left + s, .bottom = top + s }, self.scale(4), draw.ref(color), pal.separator, 1);
+            draw.roundRect(dc, sq, self.scale(4), draw.ref(color), edge, 1);
+        } else {
+            draw.roundRect(dc, sq, self.scale(4), null, edge, 1);
         }
         tr.left += self.scale(swatch_size) + self.scale(8);
+    } else if (r.picker) |p| {
+        // A square button at the control's end: "Aa" for a font, an
+        // ellipsis for a file or a theme.
+        if (picker_hovered) draw.roundRect(dc, p, self.scale(field_radius), pal.pressed, null, 0);
+        draw.fill(dc, .{ .left = p.left, .top = p.top + self.scale(7), .right = p.left + @max(1, self.scale(1)), .bottom = p.bottom - self.scale(7) }, pal.separator);
+        const glyph = switch (pickerOf(o)) {
+            .font => c.L("Aa"),
+            .keybind => c.L("+"),
+            else => c.L("\u{2026}"),
+        };
+        var gr = p;
+        _ = c.SetTextColor(dc, pal.text);
+        _ = c.DrawTextW(dc, glyph.ptr, @intCast(glyph.len), &gr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
+        tr.right = p.left - self.scale(6);
     }
-    const chevron = o.kind == .choice or o.kind == .flags or o.kind == .list;
+    const chevron = (o.kind == .choice or o.kind == .flags or o.kind == .list) and r.picker == null;
     if (chevron) tr.right -= self.scale(12);
     const shown = self.display(a, it.option);
     const w = text_util.utf16Lossy(a, shown) catch return;
@@ -1695,6 +2336,8 @@ fn listKey(self: *ConfigEditor, key: c.WPARAM) bool {
         },
         // F1: the selected option's documentation, whole.
         0x70 => if (self.selected) |s| self.toggleExpanded(s),
+        // F4: its picker, as F4 opens a combo box's list.
+        0x73 => if (self.selected) |s| if (self.indexOfOption(s)) |i| self.pick(i),
         c.VK_ESCAPE => if (self.expanded) |e| self.toggleExpanded(e),
         else => return false,
     }
@@ -1762,6 +2405,7 @@ fn listProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callc
             const option = self.items.items[h.item].option;
             switch (h.part) {
                 .reset => self.resetOption(option),
+                .picker => self.pick(h.item),
                 .control => self.activate(h.item),
                 .row => {
                     self.selected = option;
@@ -2104,6 +2748,9 @@ pub fn writeDump(self: *const ConfigEditor, alloc: Allocator, out: *std.ArrayLis
         try out.appendSlice(alloc, ",\"subtitle\":");
         try writeString(alloc, out, self.subtitle(a, it.option, &sub_buf).text);
         const source: i64 = if (self.session.source(o.name)) |s| @intCast(s) else -1;
+        if (r.picker) |p| {
+            try out.print(alloc, ",\"picker\":[{d},{d},{d},{d}]", .{ p.left, p.top, p.right, p.bottom });
+        }
         try out.print(alloc, ",\"kind\":\"{t}\",\"set\":{},\"source\":{d},\"row\":[{d},{d},{d},{d}],\"control\":[{d},{d},{d},{d}],\"reset\":[{d},{d},{d},{d}]}}", .{
             o.kind,
             self.session.isSet(o.name),
@@ -2123,6 +2770,31 @@ pub fn writeDump(self: *const ConfigEditor, alloc: Allocator, out: *std.ArrayLis
         });
     }
     try out.appendSlice(alloc, "]}");
+}
+
+test "lineTrigger: a binding's keys, its flags set aside" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try std.testing.expectEqualStrings("ctrl+shift+t", lineTrigger(a, "ctrl+shift+t=new_tab").?);
+    try std.testing.expectEqualStrings("ctrl+shift+t", lineTrigger(a, "shift+ctrl+t=new_tab").?);
+    try std.testing.expectEqualStrings("super+f1", lineTrigger(a, "global:super+f1=toggle_quick_terminal").?);
+    try std.testing.expectEqualStrings("ctrl+page_up", lineTrigger(a, "unconsumed:all:ctrl+page_up=previous_tab").?);
+    try std.testing.expect(lineTrigger(a, "ctrl+a>n=new_window") == null);
+    try std.testing.expect(lineTrigger(a, "clear") == null);
+    try std.testing.expect(lineTrigger(a, "") == null);
+    const split = splitFlags("global:unconsumed:ctrl+a=copy_to_clipboard");
+    try std.testing.expectEqualStrings("global:unconsumed:", split.flags);
+    try std.testing.expectEqualStrings("ctrl+a=copy_to_clipboard", split.rest);
+}
+
+test "triggerChar: characters, unless the key or the syntax wants a name" {
+    try std.testing.expectEqual(@as(?u21, 't'), triggerChar('t', .key_t));
+    try std.testing.expectEqual(@as(?u21, null), triggerChar(0, .f5));
+    try std.testing.expectEqual(@as(?u21, null), triggerChar(' ', .space));
+    try std.testing.expectEqual(@as(?u21, null), triggerChar('=', .equal));
+    try std.testing.expectEqual(@as(?u21, null), triggerChar('1', .numpad_1));
+    try std.testing.expectEqual(@as(?u21, '1'), triggerChar('1', .digit_1));
 }
 
 test "flagsOf: as the loader reads a packed struct's value" {

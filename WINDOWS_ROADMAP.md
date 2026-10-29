@@ -353,7 +353,12 @@ roadmap item behind it.
   GTK has none: `open_config` opens the file in an editor. It edits the
   file murrtty loaded, Ghostty's too, in place and in Ghostty's syntax.
   No key binding opens it: Ghostty has no such action, and a binding to
-  one would be an error in a file Ghostty reads.
+  one would be an error in a file Ghostty reads. Its pickers (F1c): a
+  color's swatch opens Windows' color dialog and a path's button its file
+  dialog (GTK's own dialogs would be its color and file choosers); fonts,
+  themes and a key binding's action come from a chooser drawn as
+  libadwaita's dialogs are, which lists only monospaced fonts, and a new
+  binding's keys are pressed in a capture box.
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -439,10 +444,7 @@ roadmap item behind it.
   Command Palette, Terminal Inspector, Config, About murrtty and Quit
   after Windows' own items; GTK has no such menu.
 
-*Decided, not built yet:*
-- **Configuration editor pages** (F1c): pages for key bindings (a chord
-  captured), themes (with a preview) and fonts, a color picker and a file
-  dialog for paths; F1b edits those options as text.
+*Decided, not built yet:* none at present.
 
 ## Rules every item keeps
 
@@ -3408,7 +3410,8 @@ the file by hand. Ghostty has none: its apps open the file in an editor
 
 *Done when:* every option can be set and reset from the editor, saving
 without changes leaves the file byte-identical, and the GUI harness drives
-a search, an edit, a key-binding capture and a save.
+a search, an edit, a key-binding capture and a save. *Done 2026-10-28*
+(F1a, F1b, F1c below).
 
 *F1a built 2026-10-28, the model with no window:*
 - `src/config/EditableFile.zig`: a file as its lines, each with its own
@@ -3518,6 +3521,55 @@ a search, an edit, a key-binding capture and a save.
   configuration edited in place with no murrtty file made, and an empty
   murrtty file chosen over Ghostty's.
   The opt-in `config-editor-look` writes its pictures, dark and light.
+
+*F1c built 2026-10-28, the pickers:*
+- A row whose value has a picker shows its button inside the control: a
+  color's swatch, else a square at its end ("Aa" for a font, "+" for a
+  key binding, an ellipsis for a file or the theme). A click or F4 opens
+  it; the control itself still takes typing.
+- Colors: Windows' color dialog, opened at the value's color, writes
+  `#rrggbb`. Paths (`background-image`, `bell-audio-path`): its file
+  dialog, in the current file's folder. Both are stood in for by
+  `GHOSTTY_WIN32_TEST_PICK` in Debug builds, for the GUI tests.
+- `src/apprt/win32/Chooser.zig`: a dialog drawn as libadwaita's (as
+  AlertDialog): a heading, a search, a rounded list of rows (an owner-drawn
+  list box holding no data of its own, so hundreds of rows cost nothing),
+  Cancel and Select. The search ranks a whole title, then a title's
+  start, a title, a subtitle. A row can draw its own preview.
+  - Fonts: the monospaced families DirectWrite lists
+    (`Dwrite.familyNames`), each shown in itself; the names are the ones
+    the configuration takes (the unit test finds every one's files), and
+    the family in use first when it isn't monospaced (a proportional Nerd
+    Font). The first family after the main file's last reset becomes the
+    one chosen, its fallbacks and reset lines kept;
+    `window-title-font-family` takes it as its value.
+  - Themes: the user's theme folder, then those murrtty ships (819), each
+    with Dark or Light and a sample of its background, foreground and
+    palette; `theme` takes the name.
+  - Key bindings: the keys pressed in a capture box (AlertDialog's
+    `capture`: every key reaches it, Escape alone cancels), written as
+    Ghostty writes triggers, through its own formatter: a key that types a
+    character by that character unshifted (`ctrl+shift+t`), another by its
+    name (`ctrl+shift+f5`), keypad keys, space and the syntax's own `= + >
+    :` by name. Keys already bound by their key rather than their
+    character (Windows' defaults bind Alt+1 as `alt+digit_1` beside
+    `alt+1`) take that form, which the core looks up first, so the new
+    binding replaces the old instead of lying under it. Alt+F4 and
+    Alt+Space aren't taken (Windows' own: they never reach the core). Then
+    the action, from a chooser of every binding action
+    (`option_list.actions`, with `+list-actions`' documentation) whose
+    heading says what the keys do now ("ctrl+shift+t: now new_tab"), then
+    its value for an action that takes one. The line is tried as the
+    loader reads it and replaces the main file's line in effect for the
+    same keys (the last after its last reset, `clear` or an empty value),
+    keeping its flags (`global:` and the like) and dropping the `chain=`
+    lines that followed it; else it is added.
+- GUI scenario `config-editor-pages`: the swatch and the file button, the
+  font chooser (only monospaced families, searched, Cascadia Mono taking
+  Consolas's line), the theme chooser (searched by name and by Dark), five
+  bindings (a bound key's current action, Alt+1 as `alt+digit_1`, a new
+  one, one with a value, the same keys again replacing their line), and
+  the saved file.
 
 ---
 

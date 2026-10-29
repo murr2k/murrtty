@@ -1622,6 +1622,8 @@ pub const Dump = struct {
             row: [4]i32 = .{ 0, 0, 0, 0 },
             control: [4]i32 = .{ 0, 0, 0, 0 },
             reset: [4]i32 = .{ 0, 0, 0, 0 },
+            /// Its picker button (F1c), where it has one.
+            picker: ?[4]i32 = null,
         };
 
         pub fn find(self: Editor, name: []const u8) ?Row {

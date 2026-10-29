@@ -19,6 +19,7 @@ const IID_IDWriteFactory2: GUID = .{ .a = 0x0439fc60, .b = 0xca44, .c = 0x4994, 
 const IID_IDWriteLocalFontFileLoader: GUID = .{ .a = 0xb2d9f3ec, .b = 0xc9fe, .c = 0x4a11, .d = .{ 0xa2, 0xec, 0xd8, 0x62, 0x08, 0xf7, 0xc0, 0xa2 } };
 const IID_IDWriteTextAnalysisSource: GUID = .{ .a = 0x688e1a58, .b = 0x5094, .c = 0x47c8, .d = .{ 0xad, 0xc8, 0xfb, 0xce, 0xa6, 0x0a, 0xe9, 0x2b } };
 const IID_IUnknown: GUID = .{ .a = 0, .b = 0, .c = 0, .d = .{ 0xc0, 0, 0, 0, 0, 0, 0, 0x46 } };
+const IID_IDWriteFont1: GUID = .{ .a = 0xacd16696, .b = 0x8c14, .c = 0x4f5d, .d = .{ 0x87, 0x7e, 0xfe, 0x3f, 0xc1, 0xd3, 0x27, 0x38 } };
 
 const DWRITE_FACTORY_TYPE_SHARED = 0;
 const DWRITE_FONT_WEIGHT_NORMAL = 400;
@@ -74,6 +75,28 @@ const FontFamily = extern struct {
         _3: Slot, // GetFontCollection
         GetFontCount: *const fn (*FontFamily) callconv(.winapi) u32, // 4
         GetFont: *const fn (*FontFamily, u32, *?*Font) callconv(.winapi) HRESULT, // 5
+        GetFamilyNames: *const fn (*FontFamily, *?*LocalizedStrings) callconv(.winapi) HRESULT, // 6
+    },
+};
+
+/// IDWriteLocalizedStrings: a name in each of its languages.
+const LocalizedStrings = extern struct {
+    vtable: *const extern struct {
+        unknown: IUnknownSlots(LocalizedStrings),
+        GetCount: *const fn (*LocalizedStrings) callconv(.winapi) u32, // 3
+        FindLocaleName: *const fn (*LocalizedStrings, [*:0]const u16, *u32, *BOOL) callconv(.winapi) HRESULT, // 4
+        _5_6: [2]Slot, // GetLocaleNameLength, GetLocaleName
+        GetStringLength: *const fn (*LocalizedStrings, u32, *u32) callconv(.winapi) HRESULT, // 7
+        GetString: *const fn (*LocalizedStrings, u32, [*]u16, u32) callconv(.winapi) HRESULT, // 8
+    },
+};
+
+/// IDWriteFont1 (dwrite_1.h), for IsMonospacedFont.
+const Font1 = extern struct {
+    vtable: *const extern struct {
+        unknown: IUnknownSlots(Font1),
+        _3_16: [14]Slot, // IDWriteFont's, GetMetrics, GetPanose, GetUnicodeRanges
+        IsMonospacedFont: *const fn (*Font1) callconv(.winapi) BOOL, // 17
     },
 };
 
@@ -322,6 +345,53 @@ pub const Dwrite = struct {
         return out.toOwnedSlice(alloc);
     }
 
+    /// The system collection's families (the names a configuration's
+    /// font-family takes and familyFiles finds), each by its name in the
+    /// user's display language, else English, else its first; sorted,
+    /// each once. With `monospace_only`, only those whose first face is
+    /// monospaced. The caller frees them with `freeNames`.
+    pub fn familyNames(self: *const Dwrite, alloc: Allocator, monospace_only: bool) Allocator.Error![][]u8 {
+        var out: std.ArrayList([]u8) = .empty;
+        errdefer {
+            for (out.items) |n| alloc.free(n);
+            out.deinit(alloc);
+        }
+        const collection = self.systemCollection() orelse return out.toOwnedSlice(alloc);
+        defer release(collection);
+        var locale_buf: [locale_max]u16 = undefined;
+        const locale = userLocale(&locale_buf);
+        const count = collection.vtable.GetFontFamilyCount(collection);
+        for (0..count) |i| {
+            var family: ?*FontFamily = null;
+            if (collection.vtable.GetFontFamily(collection, @intCast(i), &family) < 0) continue;
+            const fam = family orelse continue;
+            defer release(fam);
+            if (monospace_only and !isMonospaced(fam)) continue;
+            const name = (try familyName(alloc, fam, locale)) orelse continue;
+            out.append(alloc, name) catch |err| {
+                alloc.free(name);
+                return err;
+            };
+        }
+        std.mem.sort([]u8, out.items, {}, struct {
+            fn lessThan(_: void, a: []u8, b: []u8) bool {
+                return std.ascii.lessThanIgnoreCase(a, b);
+            }
+        }.lessThan);
+        // Each once: a name two families share (in some language) is one.
+        var kept: usize = 0;
+        for (out.items) |n| {
+            if (kept > 0 and std.ascii.eqlIgnoreCase(out.items[kept - 1], n)) {
+                alloc.free(n);
+                continue;
+            }
+            out.items[kept] = n;
+            kept += 1;
+        }
+        out.shrinkRetainingCapacity(kept);
+        return out.toOwnedSlice(alloc);
+    }
+
     /// The font DirectWrite falls back to for `codepoint` in `locale`
     /// (BCP 47, "ja-JP"), as bold or italic as asked: where Japanese,
     /// Chinese and Korean text sharing ideographs get a font of their own.
@@ -395,6 +465,49 @@ pub fn userLocale(buf: *[locale_max]u16) ?[*:0]const u16 {
     return @ptrCast(buf);
 }
 
+pub fn freeNames(alloc: Allocator, names: []const []u8) void {
+    for (names) |n| alloc.free(n);
+    alloc.free(names);
+}
+
+/// Whether `family`'s first face is monospaced (IDWriteFont1, Windows 8+).
+fn isMonospaced(family: *FontFamily) bool {
+    if (family.vtable.GetFontCount(family) == 0) return false;
+    var font: ?*Font = null;
+    if (family.vtable.GetFont(family, 0, &font) < 0) return false;
+    const f = font orelse return false;
+    defer release(f);
+    var raw: ?*anyopaque = null;
+    if (f.vtable.unknown.QueryInterface(f, &IID_IDWriteFont1, &raw) < 0) return false;
+    const f1: *Font1 = @ptrCast(@alignCast(raw orelse return false));
+    defer release(f1);
+    return f1.vtable.IsMonospacedFont(f1) != 0;
+}
+
+/// `family`'s name in `locale`, else in English, else its first.
+fn familyName(alloc: Allocator, family: *FontFamily, locale: ?[*:0]const u16) Allocator.Error!?[]u8 {
+    var names: ?*LocalizedStrings = null;
+    if (family.vtable.GetFamilyNames(family, &names) < 0) return null;
+    const ns = names orelse return null;
+    defer release(ns);
+    var index: u32 = 0;
+    var exists: BOOL = 0;
+    if (locale) |l| {
+        if (ns.vtable.FindLocaleName(ns, l, &index, &exists) < 0) exists = 0;
+    }
+    if (exists == 0 and ns.vtable.FindLocaleName(ns, std.unicode.utf8ToUtf16LeStringLiteral("en-us"), &index, &exists) < 0) exists = 0;
+    if (exists == 0) {
+        if (ns.vtable.GetCount(ns) == 0) return null;
+        index = 0;
+    }
+    var len: u32 = 0;
+    if (ns.vtable.GetStringLength(ns, index, &len) < 0) return null;
+    const buf = try alloc.alloc(u16, len + 1);
+    defer alloc.free(buf);
+    if (ns.vtable.GetString(ns, index, buf.ptr, len + 1) < 0) return null;
+    return try std.unicode.wtf16LeToWtf8Alloc(alloc, buf[0..len]);
+}
+
 /// `font`'s file on disk and face index; null for a font that isn't a
 /// local file (a downloadable or in-memory one).
 fn fileOf(alloc: Allocator, font: *Font) Allocator.Error!?File {
@@ -460,6 +573,57 @@ test "familyFiles: Consolas, by its name" {
     const none = try dw.familyFiles(alloc, "No Such Family 6.1");
     defer alloc.free(none);
     try testing.expectEqual(@as(usize, 0), none.len);
+}
+
+test "familyNames: every family, or the monospaced ones" {
+    const builtin = @import("builtin");
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest;
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var dw = Dwrite.init() orelse return error.SkipZigTest;
+    defer dw.deinit();
+
+    const every = try dw.familyNames(alloc, false);
+    defer freeNames(alloc, every);
+    const mono = try dw.familyNames(alloc, true);
+    defer freeNames(alloc, mono);
+    const has = struct {
+        fn f(names: []const []u8, name: []const u8) bool {
+            for (names) |n| if (std.mem.eql(u8, n, name)) return true;
+            return false;
+        }
+    }.f;
+    try testing.expect(has(every, "Consolas") and has(every, "Arial"));
+    try testing.expect(has(mono, "Consolas") and !has(mono, "Arial"));
+    try testing.expect(mono.len < every.len);
+    for (every[1..], every[0 .. every.len - 1]) |b, a| try testing.expect(std.ascii.lessThanIgnoreCase(a, b));
+    // IDWriteLocalizedStrings::GetCount, which familyName calls only for
+    // a family with no name in the user's language or English.
+    {
+        const collection = dw.systemCollection() orelse return error.TestUnexpectedResult;
+        defer release(collection);
+        var family: ?*FontFamily = null;
+        try testing.expect(collection.vtable.GetFontFamily(collection, 0, &family) >= 0);
+        defer release(family.?);
+        var names: ?*LocalizedStrings = null;
+        try testing.expect(family.?.vtable.GetFamilyNames(family.?, &names) >= 0);
+        defer release(names.?);
+        try testing.expect(names.?.vtable.GetCount(names.?) > 0);
+    }
+
+    // Each is a name familyFiles finds, as the configuration's
+    // font-family is looked up.
+    for (mono) |name| {
+        const files = try dw.familyFiles(alloc, name);
+        defer {
+            for (files) |f| f.deinit(alloc);
+            alloc.free(files);
+        }
+        if (files.len == 0) {
+            std.debug.print("no files for the family listed as {s}\n", .{name});
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 test "familyFiles: MS Gothic by its Japanese name" {

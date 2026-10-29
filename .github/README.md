@@ -260,8 +260,10 @@ hosted Windows runner and then the unit tests.
   option with its documentation, a search and pages, a switch, menu or
   field for each kind of value, reset, and a save that rewrites only the
   changed lines of the files murrtty reads, Ghostty's too, in Ghostty's
-  own syntax, then reloads. Key bindings, themes and fonts are edited as
-  text for now.
+  own syntax, then reloads. Pickers for colors and files (Windows' own
+  dialogs), fonts (the installed monospaced ones, each shown in itself),
+  themes (with a sample of their colors) and key bindings (press the
+  keys, choose the action).
 - Desktop notifications from programs (OSC 9, OSC 777;notify), as
   Windows toasts, with an icon in the notification area while one waits;
   a click brings the terminal forward, and a notification goes once its

@@ -102,6 +102,7 @@ pub const all = [_]Scenario{
     .{ .name = "progress", .about = "OSC 9;4: GTK's bar over the pane (accent, error tint, pulsing, paused) and the window's taskbar progress, the active tab's; gone after 15 s without a report; progress-style = false", .run = progressScenario },
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
+    .{ .name = "config-editor-pages", .about = "the configuration editor's pickers: a color's swatch and a file's button (Windows' dialogs stood in for), the font chooser (monospaced families, searched, one chosen) and the theme chooser", .run = configEditorPages },
     .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
@@ -4878,7 +4879,7 @@ fn editorNow(h: *Harness, g: *Harness.Ghostty, name: []const u8) !EditorNow {
 
 /// Show only `name`'s rows (Escape empties the search first), then click
 /// the control of `name`'s row.
-fn editorClick(h: *Harness, g: *Harness.Ghostty, name: []const u8, part: enum { control, reset }) !void {
+fn editorClick(h: *Harness, g: *Harness.Ghostty, name: []const u8, part: enum { control, reset, picker }) !void {
     const now = try editorNow(h, g, name);
     h.key(now.search, .{}, w.VK_ESCAPE);
     try h.typeText(now.search, name);
@@ -4889,7 +4890,11 @@ fn editorClick(h: *Harness, g: *Harness.Ghostty, name: []const u8, part: enum { 
         }
     }{ .name = name }, "the search shows the row");
     const row = (try editorNow(h, g, name)).row.?;
-    const r = if (part == .control) row.control else row.reset;
+    const r = switch (part) {
+        .control => row.control,
+        .reset => row.reset,
+        .picker => row.picker orelse return h.fail("{s} has no picker", .{name}),
+    };
     // Clear of a value the field takes over.
     w.Sleep(50);
     h.click(now.list, @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2), .left);
@@ -5337,6 +5342,216 @@ fn configEditor(h: *Harness) anyerror!void {
         try h.expect(std.ascii.eqlIgnoreCase(e.path, mpath), "beside an empty file of murrtty's, it opens that one ({s})", .{e.path});
         try h.expect(e.files.len == 1, "and only that one: Ghostty's isn't read ({d} files)", .{e.files.len});
     }
+}
+
+/// Set a chooser's search (Chooser.zig, F1c) and wait for its list to
+/// settle; the rows it leaves.
+fn chooserSearch(h: *Harness, dlg: w.HWND, text: []const u8) !usize {
+    const entry = w.GetDlgItem(dlg, 100) orelse return h.fail("the chooser has no search entry", .{});
+    const list = w.GetDlgItem(dlg, 101) orelse return h.fail("the chooser has no list", .{});
+    const wide = try std.unicode.utf8ToUtf16LeAllocZ(h.alloc, text);
+    defer h.alloc.free(wide);
+    var r: usize = 0;
+    _ = w.SendMessageTimeoutW(entry, w.WM_SETTEXT, 0, @bitCast(@intFromPtr(wide.ptr)), w.SMTO_ABORTIFHUNG, 2000, &r);
+    w.Sleep(150);
+    _ = w.SendMessageTimeoutW(list, w.LB_GETCOUNT, 0, 0, w.SMTO_ABORTIFHUNG, 2000, &r);
+    return r;
+}
+
+fn windowCaption(h: *Harness, hwnd: w.HWND) ![]u8 {
+    var buf: [256]u16 = undefined;
+    const n: usize = @intCast(@max(w.GetWindowTextW(hwnd, &buf, buf.len), 0));
+    return std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
+}
+
+/// Press `vk` with `mods` in the new key binding's capture box.
+fn captureKeys(h: *Harness, g: *Harness.Ghostty, mods: Harness.Mods, vk: u8) !void {
+    const dlg = try h.waitDialog(g, 5000);
+    const caption = try windowCaption(h, dlg);
+    defer h.alloc.free(caption);
+    try h.expect(std.mem.eql(u8, caption, "New Key Binding"), "the capture dialog opens ('{s}')", .{caption});
+    const box = w.GetDlgItem(dlg, 103) orelse return h.fail("the capture dialog has no box", .{});
+    h.key(box, mods, vk);
+}
+
+/// Wait for the dialog whose heading holds `text` (the action chooser
+/// naming the keys, the value's prompt), the one before it gone.
+fn waitDialogNamed(h: *Harness, g: *Harness.Ghostty, text: []const u8) !w.HWND {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        const d = try h.dialogs(g);
+        defer h.alloc.free(d);
+        if (d.len == 1) {
+            const caption = try windowCaption(h, d[0]);
+            defer h.alloc.free(caption);
+            if (std.mem.indexOf(u8, caption, text) != null) return d[0];
+        }
+        w.Sleep(100);
+    }
+    return h.fail("no dialog named '{s}' appeared", .{text});
+}
+
+/// Wait for a chooser's dialog to close after its answer.
+fn chooserGone(h: *Harness, g: *Harness.Ghostty) !void {
+    var waited: u32 = 0;
+    while (waited <= 3000 and try h.dialogCount(g) > 0) : (waited += 100) w.Sleep(100);
+    try h.expect(try h.dialogCount(g) == 0, "the chooser closes", .{});
+}
+
+/// Roadmap F1c: the configuration editor's pickers. A color's swatch and a
+/// file's button open Windows' own dialogs, stood in for by
+/// GHOSTTY_WIN32_TEST_PICK; the font and theme choosers are driven as a
+/// user would: a search typed, a row selected, Select.
+fn configEditorPages(h: *Harness) anyerror!void {
+    const config = try std.mem.concat(h.alloc, u8, &.{ base_config, "font-family = Consolas\n" });
+    defer h.alloc.free(config);
+    var g = try h.launchWith("config-editor-pages", config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_PICK", "#123456" }} });
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\config.ghostty", .{g.dir});
+    defer h.alloc.free(path);
+    try h.openConfigEditor(&g);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200;
+        }
+    }{}, "it opens");
+
+    // A color's swatch: the color dialog's choice, as #rrggbb.
+    try editorClick(h, &g, "background", .picker);
+    try waitEditor(h, &g, rowValue("background", "#123456"), "the swatch's dialog sets background");
+
+    // Fonts: only monospaced families, the search narrowing them, the one
+    // chosen taking the first family's line.
+    try editorClick(h, &g, "font-family", .picker);
+    {
+        const dlg = try h.waitDialog(&g, 5000);
+        const caption = try windowCaption(h, dlg);
+        defer h.alloc.free(caption);
+        try h.expect(std.mem.eql(u8, caption, "Choose a Font"), "the font chooser opens ('{s}')", .{caption});
+        const every = try chooserSearch(h, dlg, "");
+        try h.expect(every > 1, "it lists the monospaced fonts ({d})", .{every});
+        try snapshotDialog(h, dlg, "paint-font-chooser.bmp");
+        try h.expect(try chooserSearch(h, dlg, "Arial") == 0, "and not Arial, which isn't one", .{});
+        const found = try chooserSearch(h, dlg, "Cascadia Mono");
+        if (found == 0) {
+            h.answer(&g, dlg, w.IDCANCEL);
+            try chooserGone(h, &g);
+            return h.skip("Cascadia Mono isn't installed", .{});
+        }
+        const list = w.GetDlgItem(dlg, 101).?;
+        var r: usize = 0;
+        _ = w.SendMessageTimeoutW(list, w.LB_SETCURSEL, 0, 0, w.SMTO_ABORTIFHUNG, 2000, &r);
+        h.answer(&g, dlg, w.IDOK);
+        try chooserGone(h, &g);
+    }
+
+    // Themes: searched by name, with whether they are dark.
+    try editorClick(h, &g, "theme", .picker);
+    {
+        const dlg = try h.waitDialog(&g, 5000);
+        const caption = try windowCaption(h, dlg);
+        defer h.alloc.free(caption);
+        try h.expect(std.mem.eql(u8, caption, "Choose a Theme"), "the theme chooser opens ('{s}')", .{caption});
+        try h.expect(try chooserSearch(h, dlg, "") > 100, "it lists the themes murrtty ships", .{});
+        try snapshotDialog(h, dlg, "paint-theme-chooser.bmp");
+        const dark = try chooserSearch(h, dlg, "Dark");
+        try h.expect(dark > 10, "the search matches whether a theme is dark ({d})", .{dark});
+        try h.expect(try chooserSearch(h, dlg, "Dracula") > 0, "Dracula is among them", .{});
+        h.answer(&g, dlg, w.IDOK);
+        try chooserGone(h, &g);
+    }
+    try waitEditor(h, &g, rowValue("theme", "Dracula"), "Select takes the first row, Dracula");
+
+    // Key bindings: the keys pressed in the capture box, then the action
+    // from a chooser whose heading says what they do now.
+    try editorClick(h, &g, "keybind", .picker);
+    try captureKeys(h, &g, .{ .ctrl = true, .shift = true }, 'T');
+    {
+        const dlg = try waitDialogNamed(h, &g, "ctrl+shift+t");
+        const caption = try windowCaption(h, dlg);
+        defer h.alloc.free(caption);
+        try h.expect(std.mem.eql(u8, caption, "ctrl+shift+t: now new_tab"), "a bound key says what it does now ('{s}')", .{caption});
+        h.answer(&g, dlg, w.IDCANCEL);
+        try chooserGone(h, &g);
+    }
+    // Keys bound by their key, not their character (Windows' defaults bind
+    // Alt+1 as alt+digit_1 beside alt+1): the new binding takes that form,
+    // which is the one looked up first.
+    try editorClick(h, &g, "keybind", .picker);
+    try captureKeys(h, &g, .{ .alt = true }, '1');
+    {
+        const dlg = try waitDialogNamed(h, &g, "alt+digit_1");
+        const caption = try windowCaption(h, dlg);
+        defer h.alloc.free(caption);
+        try h.expect(std.mem.eql(u8, caption, "alt+digit_1: now goto_tab:1"), "Alt+1 is written as its key, as bound ('{s}')", .{caption});
+        h.answer(&g, dlg, w.IDCANCEL);
+        try chooserGone(h, &g);
+    }
+    try editorClick(h, &g, "keybind", .picker);
+    try captureKeys(h, &g, .{ .ctrl = true, .shift = true }, 'K');
+    {
+        const dlg = try waitDialogNamed(h, &g, "ctrl+shift+k");
+        try h.expect(try chooserSearch(h, dlg, "new_window") > 0, "new_window is among the actions", .{});
+        h.answer(&g, dlg, w.IDOK);
+        try chooserGone(h, &g);
+    }
+    // An action that takes a value asks for it.
+    try editorClick(h, &g, "keybind", .picker);
+    try captureKeys(h, &g, .{ .ctrl = true, .shift = true }, 0x74); // F5
+    {
+        const dlg = try waitDialogNamed(h, &g, "ctrl+shift+f5");
+        try h.expect(try chooserSearch(h, dlg, "goto_tab") > 0, "goto_tab is among the actions", .{});
+        h.answer(&g, dlg, w.IDOK);
+        const ask = try waitDialogNamed(h, &g, "Value for goto_tab");
+        const entry = w.GetDlgItem(ask, 100) orelse return h.fail("the value's prompt has no entry", .{});
+        var r: usize = 0;
+        _ = w.SendMessageTimeoutW(entry, w.WM_SETTEXT, 0, @bitCast(@intFromPtr(w.L("2"))), w.SMTO_ABORTIFHUNG, 2000, &r);
+        h.answer(&g, ask, w.IDOK);
+        try chooserGone(h, &g);
+    }
+    // The same keys again: their line changes, none is added.
+    try editorClick(h, &g, "keybind", .picker);
+    try captureKeys(h, &g, .{ .ctrl = true, .shift = true }, 'K');
+    {
+        const dlg = try waitDialogNamed(h, &g, "ctrl+shift+k");
+        try h.expect(try chooserSearch(h, dlg, "new_tab") > 0, "new_tab is among the actions", .{});
+        h.answer(&g, dlg, w.IDOK);
+        try chooserGone(h, &g);
+    }
+
+    // Saved: the lines, the font's in place of Consolas.
+    const now = try editorNow(h, &g, "theme");
+    h.key(now.list, .{ .ctrl = true }, 'S');
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return !e.dirty;
+        }
+    }{}, "saved");
+    {
+        const saved = h.readFileOrNull(path) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(saved);
+        try h.expect(std.mem.indexOf(u8, saved, "font-family = Cascadia Mono\n") != null and std.mem.indexOf(u8, saved, "Consolas") == null, "the chosen font takes Consolas's line", .{});
+        try h.expect(std.mem.indexOf(u8, saved, "background = #123456\n") != null, "background = #123456 is written", .{});
+        try h.expect(std.mem.indexOf(u8, saved, "theme = Dracula\n") != null, "theme = Dracula is written", .{});
+        try h.expect(std.mem.indexOf(u8, saved, "keybind = ctrl+shift+k=new_tab\n") != null and std.mem.indexOf(u8, saved, "new_window") == null, "ctrl+shift+k's line is new_tab, once", .{});
+        try h.expect(std.mem.indexOf(u8, saved, "keybind = ctrl+shift+f5=goto_tab:2\n") != null, "ctrl+shift+f5 = goto_tab:2 is written", .{});
+        try h.expect(std.mem.indexOf(u8, saved, "ctrl+shift+t=") == null, "the binding cancelled writes nothing", .{});
+    }
+
+    // A file's button: the file dialog's choice.
+    const chimes = "C:\\Windows\\Media\\chimes.wav";
+    var g2 = try h.launchWith("config-editor-pages-file", base_config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_PICK", chimes }} });
+    defer g2.deinit();
+    try h.waitText(&g2, ">", 1, 20000);
+    try h.openConfigEditor(&g2);
+    try waitEditor(h, &g2, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200;
+        }
+    }{}, "it opens");
+    try editorClick(h, &g2, "bell-audio-path", .picker);
+    try waitEditor(h, &g2, rowValue("bell-audio-path", chimes), "the file button's dialog sets bell-audio-path");
 }
 
 /// Pictures of the configuration editor (roadmap F1), as its WM_PAINT draws
