@@ -63,8 +63,8 @@ the modifier keys set as held where needed, and checked the results with
 window captures, a Debug-build state dump and logs. Those GUI tests are in
 `test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
 desktop. murrtty has not yet had much use on a physical keyboard. Every
-push runs the unit tests (about 4,300) and the GUI tests (108 scenarios,
-12 of them opt-in because they show something on the screen, save
+push runs the unit tests (about 4,300) and the GUI tests (109 scenarios,
+13 of them opt-in because they show something on the screen, save
 pictures, need Clink or run long) on a self-hosted runner on the
 development machine, in a private
 mirror of this repository

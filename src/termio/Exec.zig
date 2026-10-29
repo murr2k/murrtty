@@ -31,6 +31,7 @@ const ProcessInfo = @import("../pty.zig").ProcessInfo;
 const compat_fd = @import("../lib/compat/fd.zig");
 
 const log = std.log.scoped(.io_exec);
+const pty_trace = @import("pty_trace.zig");
 
 /// The termios poll rate in milliseconds.
 const TERMIOS_POLL_MS = 200;
@@ -485,6 +486,7 @@ pub fn queueWrite(
         };
 
         //for (slice) |b| log.warn("write: {x}", .{b});
+        if (comptime builtin.os.tag == .windows) pty_trace.record(@intFromPtr(exec), true, slice);
 
         exec.write_stream.queueWrite(
             td.loop,
@@ -507,13 +509,16 @@ fn ttyWrite(
     r: xev.WriteError!usize,
 ) xev.CallbackAction {
     const w = w_.?;
+    // The terminal's tag in the pty trace, before the pool takes the write
+    // back (its memory then holds the pool's free list).
+    const tag = @intFromPtr(w.td);
     w.td.write_pool.destroy(w);
 
     const d = r catch |err| {
         log.err("write error: {}", .{err});
         return .disarm;
     };
-    _ = d;
+    if (comptime builtin.os.tag == .windows) pty_trace.written(tag, d);
     //log.info("WROTE: {d}", .{d});
 
     return .disarm;
@@ -1987,6 +1992,7 @@ pub const ReadThread = struct {
                 }
 
                 if (capture) |h| _ = windows.exp.kernel32.WriteFile(h, &buf, n, null, null);
+                if (capture != null) pty_trace.record(@intFromPtr(io), false, buf[0..n]);
                 @call(.always_inline, termio.Termio.processOutput, .{ io, buf[0..n] });
 
                 // See threadMainPosix: hand the renderer state mutex

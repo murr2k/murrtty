@@ -112,7 +112,8 @@ pub const all = [_]Scenario{
     .{ .name = "session-restore", .about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
-    .{ .name = "quit-after-reload", .about = "20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
+    .{ .name = "pwsh-typeahead", .about = "task 42: PowerShell 7 and 5.1 with integration, commands typed ahead (during a slowed prompt; in pairs after a Ctrl+C) all run (GHOSTTY_GUI_STRESS=1; GHOSTTY_PTY_LOG for a trace)", .run = pwshTypeahead },
+    .{ .name = "quit-after-reload", .about ="20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
@@ -8921,6 +8922,148 @@ fn pwshKeys(h: *Harness) anyerror!void {
     try quit(h, &g, surf);
 }
 
+/// Roadmap task 42: `pwsh-integration` sometimes lost a typed command:
+/// every key reached the pty, the line showed at the prompt, but its Enter
+/// never took (desktop CI 40449976391: 'mark-b', typed right behind
+/// 'mark-a', just after a Ctrl+C: PowerShell's late flush, see
+/// settleAfterInterrupt). This keeps typing ahead where it did: 20
+/// commands as the last one's status arrives, during a prompt slowed to
+/// 400 ms (PSReadLine not yet reading), then 20 pairs typed back to back
+/// after a running command's Ctrl+C (half of them after its close
+/// confirmation), counting what never ran and logging the pane's rows.
+/// GHOSTTY_PTY_LOG set to a folder gives murrtty's timestamped trace of
+/// both directions (pty_trace.zig). Its versions lost nothing in 400
+/// rounds (2026-10-29).
+fn pwshTypeahead(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_STRESS"), null, 0) == 0) {
+        return h.skip("set GHOSTTY_GUI_STRESS=1 to run it", .{});
+    }
+    for ([_][2][]const u8{ .{ "pwsh-typeahead-7", "pwsh -NoLogo" }, .{ "pwsh-typeahead-5", "powershell -NoLogo" } }) |shell| {
+        const extra = try std.fmt.allocPrint(h.alloc, "command = {s}\nshell-integration = detect\n", .{shell[1]});
+        defer h.alloc.free(extra);
+        var g = try start(h, shell[0], extra, "PS ");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const surf = try h.surface(&g, win);
+        const rounds = 40;
+        var lost: u32 = 0;
+        // A slow prompt, wrapped by the script loaded again (as a venv's):
+        // the status (OSC 133;D) comes 400 ms before PSReadLine reads, so
+        // what is typed then waits in the input buffer, as on a loaded
+        // machine.
+        try h.typeText(surf, "function global:prompt { Start-Sleep -Milliseconds 400; \"PS $($ExecutionContext.SessionState.Path.CurrentLocation)> \" }; " ++
+            ". ([scriptblock]::Create([IO.File]::ReadAllText(\"$env:GHOSTTY_RESOURCES_DIR\\shell-integration\\powershell\\ghostty.ps1\")))");
+        h.enter(surf);
+        w.Sleep(1500);
+        for (0..rounds) |i| {
+            if (i < rounds / 2) {
+                // Typed as the status arrives, during the slow prompt.
+                const code = i % 9 + 1;
+                const before = try paneCommands(h, &g);
+                const cmd = try std.fmt.allocPrint(h.alloc, "cmd /c exit {d} #typeahead-p-{d}", .{ code, i });
+                defer h.alloc.free(cmd);
+                try h.typeText(surf, cmd);
+                h.enter(surf);
+                if (try waitCommandStatus(h, &g, before + 1, code)) continue;
+                lost += 1;
+                try logLost(h, &g, shell[0], cmd, i);
+                h.key(surf, .{}, w.VK_ESCAPE);
+                h.enter(surf);
+                w.Sleep(1500);
+                continue;
+            }
+            // Two commands, the second typed right behind the first (as
+            // `pwsh-integration`'s 'mark-a' and 'mark-b'): it waits in the
+            // input buffer while the first is accepted and runs.
+            const code = i % 9 + 1;
+            // As in `pwsh-integration` before 'mark-a': a running command
+            // interrupted with Ctrl+C, after (every other round) a close
+            // confirmation's dialog, which takes the keyboard and gives it
+            // back (focus reports to ConPTY).
+            try h.typeText(surf, "Start-Sleep 30");
+            h.enter(surf);
+            try waitTabTitle(h, &g, 0, "Start-Sleep 30");
+            if (i % 2 == 1) {
+                h.key(surf, .{ .ctrl = true, .shift = true }, 'W');
+                const dlg = try h.waitDialog(&g, 5000);
+                h.answer(&g, dlg, w.IDCANCEL);
+                try waitNoDialog(h, &g);
+            }
+            h.key(surf, .{ .ctrl = true }, 'C');
+            try waitAtPrompt(h, &g, 0, true);
+            try settleAfterInterrupt(h, &g, surf);
+            const before = try paneCommands(h, &g);
+            // More than a screen, scrolling, as 'mark-a' printed.
+            const first_cmd = try std.fmt.allocPrint(h.alloc, "'typeahead-a-{d}'; 1..45", .{i});
+            defer h.alloc.free(first_cmd);
+            const cmd = try std.fmt.allocPrint(h.alloc, "cmd /c exit {d} #typeahead-b-{d}", .{ code, i });
+            defer h.alloc.free(cmd);
+            try h.typeText(surf, first_cmd);
+            h.enter(surf);
+            try h.typeText(surf, cmd);
+            h.enter(surf);
+            if (try waitCommandStatus(h, &g, before + 2, code)) continue;
+            lost += 1;
+            try logLost(h, &g, shell[0], cmd, i);
+            // Whatever is on the line goes, for the next round.
+            h.key(surf, .{}, w.VK_ESCAPE);
+            h.enter(surf);
+            w.Sleep(1500);
+        }
+        try h.expect(lost == 0, "{s}: {d} of {d} commands typed ahead never ran", .{ shell[0], lost, rounds });
+        try quitIdle(h, &g, surf);
+    }
+}
+
+/// After Ctrl+C in PowerShell, before typing on: its break handler flushes
+/// the console's input buffer on a thread of its own once it has asked the
+/// command to stop (ConsoleHost.HandleBreak), and under ConPTY the flush
+/// can come after the next prompt, dropping what was typed meanwhile
+/// (task 42: desktop CI 40449976391 lost 'mark-b''s Enter so). A no-op
+/// typed until it runs shows the flush is past. The first window's first
+/// pane.
+fn settleAfterInterrupt(h: *Harness, g: *Harness.Ghostty, target: w.HWND) !void {
+    for (0..3) |_| {
+        const before = try paneCommands(h, g);
+        try h.typeText(target, "$null");
+        h.enter(target);
+        if (try waitCommandStatus(h, g, before + 1, 0)) return;
+        h.log("a command typed after Ctrl+C was dropped; typing it again", .{});
+        h.key(target, .{}, w.VK_ESCAPE);
+    }
+    return h.fail("PowerShell took no command after Ctrl+C", .{});
+}
+
+/// Whether the first pane has finished `count` commands, the last with
+/// status `code`, within 10 s.
+fn waitCommandStatus(h: *Harness, g: *Harness.Ghostty, count: u32, code: usize) !bool {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const panes = d.value.windows[0].tabs[0].panes orelse return false;
+        if (panes.len > 0 and panes[0].commands >= count) return panes[0].last_exit == @as(i32, @intCast(code));
+        w.Sleep(100);
+    }
+    return false;
+}
+
+/// A typed command that never ran: the pane's last rows, to the log.
+fn logLost(h: *Harness, g: *Harness.Ghostty, shell: []const u8, cmd: []const u8, round: usize) !void {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const text = d.value.windows[0].tabs[0].text orelse "";
+    h.log("{s}: '{s}' never ran (round {d}); the pane's last rows:\n{s}", .{ shell, cmd, round, text[text.len -| 600..] });
+}
+
+/// The first window's first pane's count of finished commands.
+fn paneCommands(h: *Harness, g: *Harness.Ghostty) !u32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const p = d.value.windows[0].tabs[0].panes orelse return 0;
+    return if (p.len > 0) p[0].commands else 0;
+}
+
 fn pwshIntegration(h: *Harness) anyerror!void {
     try powershellIntegration(h, "pwsh-integration-7", "pwsh -NoLogo");
     try powershellIntegration(h, "pwsh-integration-5", "powershell -NoLogo");
@@ -8972,6 +9115,7 @@ fn powershellIntegration(h: *Harness, name: []const u8, command: []const u8) !vo
     try waitWindowTabs(h, &g, win, 1);
     h.key(first, .{ .ctrl = true }, 'C');
     try waitTabTitle(h, &g, 0, "C:\\Windows");
+    try settleAfterInterrupt(h, &g, first);
 
     // Two commands each printing more than a screen; jump_to_prompt
     // (Ctrl+Shift+Up) brings each one's prompt to the top of the view.
