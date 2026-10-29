@@ -378,7 +378,8 @@ roadmap item behind it.
 - **Each pane's command history** (5.10b part C): a restored pane's shell
   gets back its own command lines for up-arrow (PowerShell through
   PSReadLine's history file, cmd with Clink through a history label of
-  the pane's own); GTK keeps none.
+  the pane's own, so a cmd pane's history isn't Clink's shared one); GTK
+  keeps none.
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -2904,9 +2905,14 @@ the buffer, the untouched system clipboard, and both pastes.
     new command there landing in it; the label; the cleanup, a marked
     label's Clink history going and an unmarked one staying, in a Clink
     profile of the scenario's own; a closed tab's file and Clink history
-    going after undo's 5 s). Clink itself waits for the owner's run,
-    which should also check that a cmd pane's commands come back after
-    murrtty quits, as murrtty ends cmd without letting Clink save.
+    going after undo's 5 s). With Clink, the opt-in `clink-history`
+    (`GHOSTTY_GUI_CLINK`; `test\windows\gui\run-clink.cmd` runs it with
+    `cmd-integration`) checks a cmd pane's label and that its command
+    comes back for Up after murrtty quits and restarts: passed 2026-10-29
+    with Clink 1.9.34. Though murrtty ends cmd without letting Clink save,
+    the session's own file (`clink_history-<label>_<pid>`) reaches the
+    label's history, and Clink clears the dead session's files at its
+    next start.
   - *Part B built 2026-10-29:* `gtk-single-instance` defaults to `true`
     on Windows (by the target, so the build's own tools agree). There
     `-e` implies its usual settings (single instance off, quitting with

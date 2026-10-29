@@ -258,7 +258,7 @@ hosted Windows runner and then the unit tests.
   in `%LOCALAPPDATA%\murrtty`) and come back when murrtty starts, each
   terminal a fresh shell in its folder; `window-save-state = never` turns
   it off. Each terminal's command history comes back with it, for
-  up-arrow, in PowerShell (and in cmd with Clink, untested so far). Fit
+  up-arrow, in PowerShell and in cmd with Clink. Fit
   Window to Screen (the terminal's Window menu, Alt+Space) brings back a
   window too big for its screen.
 - `open_config:new_window`: the config file in a new window, in `$VISUAL`

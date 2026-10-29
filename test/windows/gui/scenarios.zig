@@ -106,6 +106,7 @@ pub const all = [_]Scenario{
     .{ .name = "second-launch", .about = "single instance by default: a second plain launch brings the running murrtty's minimized window back and opens nothing (with a dialog open, it raises the dialog); one with -e or --title= opens a new tab in the front window, from the launch's folder; one with a configuration option runs apart; -e reaches a murrtty in the tray", .run = secondLaunch },
     .{ .name = "fit-window", .about = "Fit Window to Screen, from the terminal's Window submenu and the system menu: an oversized window fits its monitor's work area, not maximized; a maximized one and a fullscreen one are restored and fitted", .run = fitWindow },
     .{ .name = "pane-history", .about = "each pane's own command history (PowerShell 5.1): a new pane copies its commands into its own file, one already in the shared history too; restored, Up brings back its own last command; a history no saved pane has goes at start; one of a pane closed for good goes after undo's time", .run = paneHistory },
+    .{ .name = "clink-history", .about = "a cmd pane with Clink gets its own Clink history (CLINK_HISTORY_LABEL), and after murrtty quits and restarts, Up in the restored pane brings back its command (GHOSTTY_GUI_CLINK=folder)", .run = clinkHistory },
     .{ .name = "session-save", .about = "the session saved as it changes (session.json): the window, a tab and its pane's directory, a new tab, the tab in front, a split; a move saved as it ends, a divider as it is let go; a drag Esc cancels or murrtty ending mid-drag saves nothing; an unwritable state folder said once", .run = sessionSave },
     .{ .name = "session-restore", .about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
@@ -12026,5 +12027,113 @@ fn paneHistory(h: *Harness) anyerror!void {
         try h.expect(waitFileHas(h, second_file, null, 10000), "and goes once undo's time has passed", .{});
         try h.expect(!fileThere(h, second_clink) and !fileThere(h, second_marker), "with its Clink history", .{});
         try h.expect(fileThere(h, pane_file), "the other pane's stays", .{});
+    }
+}
+
+/// Roadmap 5.10b part C with Clink (opt-in: GHOSTTY_GUI_CLINK names a folder
+/// holding clink_x64.exe, as for cmd-integration; its profile is the
+/// scenario's own). A cmd pane with Clink has a Clink history label of its
+/// own (murrtty<pane id>); a command run there comes back for Up in the
+/// pane murrtty restores after quitting, though murrtty ends cmd without
+/// letting Clink save on exit. What Clink's profile holds is logged.
+fn clinkHistory(h: *Harness) anyerror!void {
+    var buf: [1024]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_CLINK"), &buf, buf.len);
+    if (n == 0 or n >= buf.len) return h.skip("set GHOSTTY_GUI_CLINK to a Clink folder to run it", .{});
+    const clink_dir = try std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
+    defer h.alloc.free(clink_dir);
+
+    const class = try ipcClass(h, "clink-history");
+    defer h.alloc.free(class);
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\clink-history", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    const state = try std.fmt.allocPrint(h.alloc, "{s}\\state", .{dir});
+    defer h.alloc.free(state);
+    const profile = try std.fmt.allocPrint(h.alloc, "{s}\\clink-profile", .{dir});
+    defer h.alloc.free(profile);
+    try h.makeDirAt(dir);
+    try h.makeDirAt(state);
+    try h.makeDirAt(profile);
+    {
+        const settings = try std.fmt.allocPrint(h.alloc, "{s}\\clink_settings", .{profile});
+        defer h.alloc.free(settings);
+        try h.writeFileAt(settings, "clink.autoupdate = off\n");
+    }
+    const session_path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\session-{s}.json", .{ state, class });
+    defer h.alloc.free(session_path);
+    var path_buf: [32767]u16 = undefined;
+    const path_len = w.GetEnvironmentVariableW(w.L("PATH"), &path_buf, path_buf.len);
+    const path = try std.unicode.utf16LeToUtf8Alloc(h.alloc, path_buf[0..@min(path_len, path_buf.len)]);
+    defer h.alloc.free(path);
+    const clink_path = try std.mem.concat(h.alloc, u8, &.{ clink_dir, ";", path });
+    defer h.alloc.free(clink_path);
+    const env: []const [2][]const u8 = &.{ .{ "XDG_STATE_HOME", state }, .{ "CLINK_PROFILE", profile }, .{ "PATH", clink_path } };
+    const config = try std.fmt.allocPrint(h.alloc, "{s}shell-integration = detect\ncommand = cmd.exe /k clink_x64.exe inject --quiet\nconfirm-close-surface = false\nclass = {s}\n", .{ base_config, class });
+    defer h.alloc.free(config);
+
+    var label: []u8 = &.{};
+    defer h.alloc.free(label);
+    {
+        var g = try h.launchWith("clink-history", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 30000);
+        // Clink's prompt filter (murrtty's ghostty.lua) is in by its second
+        // prompt; give the injection a moment.
+        w.Sleep(1500);
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        const id = try savedPaneId(h, session_path, 0);
+        defer h.alloc.free(id);
+        label = try std.fmt.allocPrint(h.alloc, "murrtty{s}", .{id});
+        try h.typeText(surf, "set CLINK_HISTORY_LABEL");
+        h.enter(surf);
+        const shown = try std.fmt.allocPrint(h.alloc, "CLINK_HISTORY_LABEL={s}", .{label});
+        defer h.alloc.free(shown);
+        try h.waitText(&g, shown, 1, 10000);
+        try h.typeText(surf, "echo clink-history-check");
+        h.enter(surf);
+        try h.waitText(&g, "clink-history-check", 2, 10000);
+        w.Sleep(1000);
+        logClinkProfile(h, profile, "before quitting");
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'Q');
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "murrtty quits (exit {?d})", .{code});
+    }
+    w.Sleep(1000);
+    logClinkProfile(h, profile, "after quitting");
+    {
+        var g = try h.launchWith("clink-history-restored", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 30000);
+        w.Sleep(2000);
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const text = d.value.windows[0].tabs[0].text orelse "";
+            try h.expect(std.mem.indexOf(u8, text, "clink-history-check") == null, "the restored pane starts with no scrollback", .{});
+        }
+        h.key(surf, .{}, w.VK_UP);
+        const back = h.waitText(&g, "echo clink-history-check", 1, 10000);
+        logClinkProfile(h, profile, "restored");
+        back catch return h.fail("Up in the restored cmd pane doesn't bring back its command (label {s})", .{label});
+        h.key(surf, .{}, w.VK_ESCAPE);
+    }
+}
+
+/// The files in Clink's profile, with their sizes, for the log.
+fn logClinkProfile(h: *Harness, profile: []const u8, comptime when: []const u8) void {
+    const pattern = std.fmt.allocPrint(h.alloc, "{s}\\*", .{profile}) catch return;
+    defer h.alloc.free(pattern);
+    const pattern_w = std.unicode.utf8ToUtf16LeAllocZ(h.alloc, pattern) catch return;
+    defer h.alloc.free(pattern_w);
+    var data: w.WIN32_FIND_DATAW = undefined;
+    const find = w.FindFirstFileW(pattern_w.ptr, &data);
+    if (find == w.INVALID_HANDLE_VALUE) return;
+    defer _ = w.FindClose(find);
+    while (true) {
+        const name = std.unicode.utf16LeToUtf8Alloc(h.alloc, std.mem.sliceTo(&data.cFileName, 0)) catch break;
+        defer h.alloc.free(name);
+        if (name[0] != '.') h.log("clink profile " ++ when ++ ": {s} ({d} bytes)", .{ name, data.nFileSizeLow });
+        if (w.FindNextFileW(find, &data) == 0) break;
     }
 }
