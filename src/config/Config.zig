@@ -3801,7 +3801,8 @@ else
 /// If `false`, each new ghostty process will launch a separate application.
 ///
 /// If `detect`, Ghostty will assume true (single instance) unless one of
-/// the following scenarios is found:
+/// the following scenarios is found (on Windows: unless it was launched
+/// from somewhere other than the desktop, or with arguments):
 ///
 /// 1. TERM_PROGRAM environment variable is a non-empty value. In this
 /// case, we assume Ghostty is being launched from a graphical terminal
@@ -3818,7 +3819,16 @@ else
 /// The pre-1.2 option `desktop` has been deprecated. Please replace
 /// this with `detect`.
 ///
-/// The default value is `detect`.
+/// The default value is `detect`, except on Windows (murrtty), where it is
+/// `true`: a second launch brings the running murrtty's windows to the
+/// front, opening nothing new (a window only when it has none); one with a
+/// command (`-e`) or a pane's options (`--title`, `--working-directory`,
+/// `--command`, `--shell-integration`) opens them as a new tab in its front
+/// window, in the launch's directory; `--gtk-single-instance=true` alone
+/// opens a new window there. A launch with other options (`--font-size`,
+/// `--config-file`) runs as a murrtty of its own, which keeps no session.
+/// There `-e` implies none of what it implies elsewhere (see `command`)
+/// unless this is `false`.
 ///
 /// Note that debug builds of Ghostty have a separate single-instance ID
 /// so you can test single instance without conflicting with release builds.
@@ -4962,7 +4972,7 @@ pub fn finalize(self: *Config) !void {
                 // On Windows that is a launch from anywhere but the
                 // desktop, and arguments (a shortcut's) keep theirs too.
                 .detect => self.@"gtk-single-instance" = if (probable_cli or
-                    (comptime build_config.app_runtime == .win32) and global.args().vector.len > 1)
+                    (comptime build_config.app_runtime == .win32) and windowsArgCount(alloc) > 1)
                     .false
                 else
                     .true,
@@ -5059,11 +5069,18 @@ pub fn parseManuallyHook(
 
         // See "command" docs for the implied configurations and why.
         self.@"initial-command" = .{ .direct = command.items };
-        self.@"gtk-single-instance" = .false;
-        self.@"quit-after-last-window-closed" = true;
-        self.@"quit-after-last-window-closed-delay" = null;
-        if (self.@"shell-integration" != .none) {
-            self.@"shell-integration" = .detect;
+        // murrtty keeps one instance (roadmap 5.10b): a running one opens
+        // the command as a tab, and one started for it carries on as the
+        // instance (its command's pane alone gets shell integration only for
+        // a shell it detects, as an IPC request's does). What -e implies
+        // holds there only with single instance off.
+        if (builtin.target.os.tag != .windows or self.@"gtk-single-instance" == .false) {
+            self.@"gtk-single-instance" = .false;
+            self.@"quit-after-last-window-closed" = true;
+            self.@"quit-after-last-window-closed-delay" = null;
+            if (self.@"shell-integration" != .none) {
+                self.@"shell-integration" = .detect;
+            }
         }
 
         // Do not continue, we consumed everything.
@@ -5095,6 +5112,14 @@ fn compatGtkTabsLocation(
     }
 
     return false;
+}
+
+/// Windows: the launch's arguments, the program's name included. Its args
+/// vector is the whole command line (WTF-16), so its length counts
+/// characters, not arguments.
+fn windowsArgCount(alloc: Allocator) usize {
+    const argv = global.args().toSlice(alloc) catch return 1;
+    return argv.len;
 }
 
 fn compatGtkSingleInstance(
@@ -9411,7 +9436,10 @@ pub const GtkSingleInstance = enum {
     true,
     detect,
 
-    pub const default: GtkSingleInstance = .detect;
+    /// murrtty's (Windows) is `true` (roadmap 5.10b): one instance keeps
+    /// one session. By the target, not the runtime: the build's own tools
+    /// compile this without build options.
+    pub const default: GtkSingleInstance = if (builtin.target.os.tag == .windows) .true else .detect;
 };
 
 /// See gtk-tabs-location

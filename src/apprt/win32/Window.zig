@@ -2035,7 +2035,48 @@ fn runChoice(self: *Window, surface: *Surface, choice: ContextMenu.Choice) void 
         .about => self.app.showAbout(self.hwnd),
         .notify_next => surface.notify_next_command = !surface.notify_next_command,
         .config_editor => self.app.openConfigEditor(),
+        .fit_screen => self.fitToScreen(),
     }
+}
+
+/// Fit Window to Screen (roadmap 5.10b): the window sized to the work area
+/// of the monitor it is on (a maximized one's, not its restored place's)
+/// without maximizing it, for a window whose edges and title bar are out
+/// of reach. Fullscreen, maximized or minimized, it is shown normally
+/// first (never back to maximized: one minimized while maximized).
+pub fn fitToScreen(self: *Window) void {
+    if (self.quick != null) return;
+    var mi: c.MONITORINFO = .{};
+    const monitor = c.MonitorFromWindow(self.hwnd, c.MONITOR_DEFAULTTONEAREST) orelse return;
+    if (c.GetMonitorInfoW(monitor, &mi) == 0) return;
+    if (self.fullscreen != null) self.toggleFullscreen();
+    var wp: c.WINDOWPLACEMENT = .{};
+    if (c.GetWindowPlacement(self.hwnd, &wp) != 0 and wp.showCmd != c.SW_SHOWNORMAL) {
+        wp.showCmd = c.SW_SHOWNORMAL;
+        wp.flags &= ~@as(@TypeOf(wp.flags), c.WPF_RESTORETOMAXIMIZED);
+        _ = c.SetWindowPlacement(self.hwnd, &wp);
+    }
+    // Twice at most: a monitor of another DPI resizes the frame as the
+    // window arrives (WM_DPICHANGED applies Windows' rectangle).
+    for (0..2) |_| {
+        const dpi = c.GetDpiForWindow(self.hwnd);
+        self.fitFrame(mi.rcWork);
+        if (c.GetDpiForWindow(self.hwnd) == dpi) break;
+    }
+}
+
+/// The window's visible frame on `work`'s edges: DWM's frame lies inside
+/// the window rectangle by the resize border.
+fn fitFrame(self: *Window, work: c.RECT) void {
+    var r: c.RECT = .{};
+    _ = c.GetWindowRect(self.hwnd, &r);
+    var visible: c.RECT = r;
+    if (c.DwmGetWindowAttribute(self.hwnd, c.DWMWA_EXTENDED_FRAME_BOUNDS, &visible, @sizeOf(c.RECT)) < 0) visible = r;
+    const left = work.left - (visible.left - r.left);
+    const top = work.top - (visible.top - r.top);
+    const right = work.right + (r.right - visible.right);
+    const bottom = work.bottom + (r.bottom - visible.bottom);
+    _ = c.SetWindowPos(self.hwnd, null, left, top, right - left, bottom - top, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
 }
 
 /// The window's button a non-client hit code names.

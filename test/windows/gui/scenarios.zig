@@ -103,6 +103,8 @@ pub const all = [_]Scenario{
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
     .{ .name = "config-editor-pages", .about = "the configuration editor's pickers: a color's swatch and a file's button (Windows' dialogs stood in for), the font chooser (monospaced families, searched, one chosen) and the theme chooser", .run = configEditorPages },
+    .{ .name = "second-launch", .about = "single instance by default: a second plain launch brings the running murrtty's minimized window back and opens nothing (with a dialog open, it raises the dialog); one with -e or --title= opens a new tab in the front window, from the launch's folder; one with a configuration option runs apart; -e reaches a murrtty in the tray", .run = secondLaunch },
+    .{ .name = "fit-window", .about = "Fit Window to Screen, from the terminal's Window submenu and the system menu: an oversized window fits its monitor's work area, not maximized; a maximized one and a fullscreen one are restored and fitted", .run = fitWindow },
     .{ .name = "session-save", .about = "the session saved as it changes (session.json): the window, a tab and its pane's directory, a new tab, the tab in front, a split; a move saved as it ends, a divider as it is let go; a drag Esc cancels or murrtty ending mid-drag saves nothing; an unwritable state folder said once", .run = sessionSave },
     .{ .name = "session-restore", .about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
@@ -9587,7 +9589,8 @@ fn singleInstance(h: *Harness) anyerror!void {
     }
     try waitWindowCount(h, &g, 2);
 
-    const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
+    // detect, no longer the default on Windows (true, roadmap 5.10b).
+    const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra, "gtk-single-instance = detect\n" });
     defer h.alloc.free(config);
     var other = try h.launch("single-instance-other", config);
     defer other.deinit();
@@ -11644,4 +11647,200 @@ fn sessionRestore(h: *Harness) anyerror!void {
         defer if (left) |l| h.alloc.free(l);
         try h.expect(left == null, "and the marker is gone", .{});
     }
+}
+
+/// Roadmap 5.10b: single instance by default on Windows. A second plain
+/// launch hands over (`present`) and exits 0: the running murrtty's window
+/// comes back from minimized and nothing opens. One with a command (`-e`)
+/// opens it as a new tab in the front window, in the launch's folder.
+fn secondLaunch(h: *Harness) anyerror!void {
+    const class = try ipcClass(h, "second");
+    defer h.alloc.free(class);
+    const extra = try std.fmt.allocPrint(h.alloc, "class = {s}\n", .{class});
+    defer h.alloc.free(extra);
+    const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
+    defer h.alloc.free(config);
+    var g = try start(h, "second-launch", extra, ">");
+    defer g.deinit();
+    h.alloc.free(try waitListening(h, &g, 5000));
+    const win = try h.mainWindow(&g);
+    _ = w.ShowWindow(win, w.SW_MINIMIZE);
+    var waited: u32 = 0;
+    while (w.IsIconic(win) == 0 and waited < 3000) : (waited += 100) w.Sleep(100);
+    try h.expect(w.IsIconic(win) != 0, "the first murrtty's window is minimized", .{});
+
+    {
+        var second = try h.launchWith("second-launch-plain", config, .{ .wait_window = false });
+        defer second.deinit();
+        const code = second.waitExit(15000);
+        try h.expect(code != null and code.? == 0, "a second plain launch hands over and exits 0 (exit {?d})", .{code});
+    }
+    waited = 0;
+    while (w.IsIconic(win) != 0 and waited < 5000) : (waited += 100) w.Sleep(100);
+    try h.expect(w.IsIconic(win) == 0, "and the running murrtty's window comes back from minimized", .{});
+    w.Sleep(500);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.windows.len == 1 and d.value.windows[0].tabs.len == 1, "with nothing new opened ({d} windows, {d} tabs)", .{ d.value.windows.len, if (d.value.windows.len > 0) d.value.windows[0].tabs.len else 0 });
+    }
+
+    {
+        var third = try h.launchWith("second-launch-command", config, .{ .wait_window = false, .args = &.{ "-e", "cmd.exe", "/k", "echo", "second-launch-tab" } });
+        defer third.deinit();
+        const code = third.waitExit(15000);
+        try h.expect(code != null and code.? == 0, "a launch with a command hands over and exits 0 (exit {?d})", .{code});
+    }
+    try waitWindowTabText(h, &g, 0, 1, "second-launch-tab");
+    const folder = try std.fmt.allocPrint(h.alloc, "{s}\\second-launch-command", .{h.temp_dir});
+    defer h.alloc.free(folder);
+    var d = try h.dump(&g);
+    defer d.deinit();
+    const win_tabs = if (d.value.windows.len > 0) d.value.windows[0].tabs else &.{};
+    const pwd = if (win_tabs.len > 1) if (win_tabs[1].panes) |p| (if (p.len > 0) p[0].pwd else null) else null else null;
+    try h.expect(d.value.windows.len == 1 and win_tabs.len == 2 and sameDir(pwd, folder), "it opens as a new tab in the front window ({d} windows, {d} tabs), in the launch's folder ({s})", .{ d.value.windows.len, win_tabs.len, pwd orelse "none" });
+
+    // A pane's option alone: a new tab with it.
+    {
+        var titled = try h.launchWith("second-launch-title", config, .{ .wait_window = false, .args = &.{"--title=Handed over"} });
+        defer titled.deinit();
+        const code = titled.waitExit(15000);
+        try h.expect(code != null and code.? == 0, "a launch with --title= hands over and exits 0 (exit {?d})", .{code});
+    }
+    {
+        var found = false;
+        waited = 0;
+        while (!found and waited < 10000) : (waited += 200) {
+            var dt = try h.dump(&g);
+            defer dt.deinit();
+            if (dt.value.windows.len > 0 and dt.value.windows[0].tabs.len == 3) {
+                found = std.mem.eql(u8, dt.value.windows[0].tabs[2].pane_name, "Handed over");
+            }
+            if (!found) w.Sleep(200);
+        }
+        try h.expect(found, "and opens a tab titled as it asked", .{});
+    }
+
+    // A configuration option only a murrtty of its own takes: it runs apart.
+    {
+        var apart = try h.launchWith("second-launch-separate", config, .{ .args = &.{"--font-size=20"} });
+        defer apart.deinit();
+        try h.waitText(&apart, ">", 1, 20000);
+        var da = try h.dump(&apart);
+        defer da.deinit();
+        var dg = try h.dump(&g);
+        defer dg.deinit();
+        try h.expect(apart.exitCode() == null and !da.value.ipc.listening and dg.value.windows.len == 1 and dg.value.windows[0].tabs.len == 3, "a launch with --font-size= runs as a murrtty of its own, the first unchanged", .{});
+    }
+
+    // With a dialog open, a second launch raises the dialog: its minimized
+    // owner comes back.
+    {
+        h.key(try paneHwnd(h, &g, 0), .{ .ctrl = true, .shift = true }, 'Q');
+        const dlg = try h.waitDialog(&g, 5000);
+        _ = w.ShowWindow(win, w.SW_MINIMIZE);
+        waited = 0;
+        while (w.IsIconic(win) == 0 and waited < 3000) : (waited += 100) w.Sleep(100);
+        var again = try h.launchWith("second-launch-dialog", config, .{ .wait_window = false });
+        defer again.deinit();
+        const code = again.waitExit(15000);
+        waited = 0;
+        while (w.IsIconic(win) != 0 and waited < 5000) : (waited += 100) w.Sleep(100);
+        try h.expect(code != null and code.? == 0 and w.IsIconic(win) == 0, "with a dialog open, a second launch raises it, its window back from minimized (exit {?d})", .{code});
+        h.answer(&g, dlg, w.IDCANCEL);
+        try waitNoDialog(h, &g);
+    }
+
+    // -e reaches a murrtty in the tray (initial-window = false).
+    {
+        const tray_class = try ipcClass(h, "second-tray");
+        defer h.alloc.free(tray_class);
+        const tray_config = try std.fmt.allocPrint(h.alloc, "{s}class = {s}\ninitial-window = false\n", .{ base_config, tray_class });
+        defer h.alloc.free(tray_config);
+        var tray = try h.launchWith("second-launch-tray", tray_config, .{ .wait_window = false });
+        defer tray.deinit();
+        try h.waitAnswering(&tray, 15000);
+        h.alloc.free(try waitListening(h, &tray, 5000));
+        var cmd = try h.launchWith("second-launch-tray-command", tray_config, .{ .wait_window = false, .args = &.{ "-e", "cmd.exe", "/k", "echo", "tray-tab" } });
+        defer cmd.deinit();
+        const code = cmd.waitExit(15000);
+        try h.expect(code != null and code.? == 0, "-e to a murrtty in the tray hands over and exits 0 (exit {?d})", .{code});
+        try waitWindowCount(h, &tray, 1);
+        try waitWindowText(h, &tray, 0, "tray-tab");
+    }
+}
+
+/// The window fits `work` (its frame on the work area's edges, the
+/// window rectangle wider by at most the invisible resize border), not
+/// maximized.
+fn expectFits(h: *Harness, win: w.HWND, work: w.RECT, comptime how: []const u8) !void {
+    var r: w.RECT = .{};
+    var ok = false;
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        _ = w.GetWindowRect(win, &r);
+        const inside = r.left <= work.left and r.top <= work.top and r.right >= work.right and r.bottom >= work.bottom;
+        const close = work.left - r.left <= 16 and work.top - r.top <= 16 and r.right - work.right <= 16 and r.bottom - work.bottom <= 16;
+        ok = w.IsZoomed(win) == 0 and inside and close;
+        if (ok or waited >= 3000) break;
+        w.Sleep(100);
+    }
+    try h.expect(ok, how ++ ": the window fits the work area, not maximized ({d},{d},{d},{d} for {d},{d},{d},{d}, zoomed {d})", .{ r.left, r.top, r.right, r.bottom, work.left, work.top, work.right, work.bottom, w.IsZoomed(win) });
+}
+
+/// Roadmap 5.10b: Fit Window to Screen, murrtty's own (Ghostty has no
+/// such action), from the terminal's Window submenu and the system menu:
+/// a window bigger than its screen, its corner off it, fits the monitor's
+/// work area without being maximized; a maximized one is restored first.
+fn fitWindow(h: *Harness) anyerror!void {
+    var g = try start(h, "fit-window", "keybind = ctrl+shift+f5=toggle_fullscreen\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    var mi: w.MONITORINFO = .{};
+    const monitor = w.MonitorFromWindow(win, w.MONITOR_DEFAULTTONEAREST) orelse return h.fail("no monitor", .{});
+    _ = w.GetMonitorInfoW(monitor, &mi);
+    const work = mi.rcWork;
+    _ = w.SetWindowPos(win, null, work.left - 300, work.top - 200, work.right - work.left + 800, work.bottom - work.top + 600, w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+    w.Sleep(800);
+
+    h.rightPress(surf, 120, 160);
+    const menu = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu, 'w');
+    const sub = try h.waitMenu(&g, 2, 5000);
+    {
+        const items = try h.menuItems(sub);
+        defer h.freeMenuItems(items);
+        var listed = false;
+        for (items) |it| listed = listed or std.mem.indexOf(u8, it.text, "Fit Window to Screen") != null;
+        try h.expect(listed, "the Window submenu has Fit Window to Screen", .{});
+    }
+    h.menuKey(sub, 'f');
+    try expectFits(h, win, work, "from the terminal's menu");
+
+    _ = w.ShowWindow(win, w.SW_MAXIMIZE);
+    var waited: u32 = 0;
+    while (w.IsZoomed(win) == 0 and waited < 3000) : (waited += 100) w.Sleep(100);
+    try h.expect(w.IsZoomed(win) != 0, "the window is maximized", .{});
+    const sys = try openSystemMenu(h, &g, win);
+    h.menuKey(sys, 'f');
+    try expectFits(h, win, work, "from the system menu, maximized");
+
+    // Fullscreen (no system menu then): from the terminal's menu.
+    h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F5);
+    var r: w.RECT = .{};
+    waited = 0;
+    while (waited < 3000) : (waited += 100) {
+        _ = w.GetWindowRect(win, &r);
+        if (r.left == mi.rcMonitor.left and r.top == mi.rcMonitor.top and r.right == mi.rcMonitor.right and r.bottom == mi.rcMonitor.bottom) break;
+        w.Sleep(100);
+    }
+    try h.expect(r.right - r.left == mi.rcMonitor.right - mi.rcMonitor.left, "the window is fullscreen", .{});
+    h.rightPress(surf, 120, 160);
+    const menu2 = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu2, 'w');
+    const sub2 = try h.waitMenu(&g, 2, 5000);
+    h.menuKey(sub2, 'f');
+    try expectFits(h, win, work, "from fullscreen");
+    try quit(h, &g, surf);
 }

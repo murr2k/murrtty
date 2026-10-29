@@ -359,6 +359,22 @@ roadmap item behind it.
   themes and a key binding's action come from a chooser drawn as
   libadwaita's dialogs are, which lists only monospaced fonts, and a new
   binding's keys are pressed in a capture box.
+- **Session restore** (5.10b, the owner's design): `window-save-state`
+  (`default` or `always`) restores the windows, tabs, splits, names and
+  directories at start, or with `initial-window = false` on the first
+  window asked for; the state is saved on every change (a drag on
+  release), not at exit. GTK ignores the option (macOS has it, saved at
+  exit). A restored pane runs a fresh shell with no scrollback.
+- **Single instance by default** (5.10b): `gtk-single-instance` defaults
+  to `true`, `-e` doesn't turn it off, and a second plain launch brings
+  the running murrtty's windows to the front without opening a window,
+  one with a command opening it as a new tab in the front window; GTK's
+  default is `detect` (`-e` forces `false`), and its second launch opens
+  a window. `+new-tab` with no pane focused goes to the front window, as
+  GTK's goes to its active window.
+- **Fit Window to Screen** (5.10b): an item in the terminal's Window
+  submenu and the system menu sizing the window to its monitor's work
+  area, not maximized; GTK has none.
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -445,17 +461,9 @@ roadmap item behind it.
   after Windows' own items; GTK has no such menu.
 
 *Decided, not built yet:*
-- **Session restore** (5.10b): `window-save-state` restores windows,
-  tabs, splits, directories and each pane's command history at start, the
-  state saved on every change; GTK ignores the option (macOS has it, saved
-  at exit). A restored pane runs a fresh shell with no scrollback.
-- **Single instance by default** (5.10b): `gtk-single-instance` defaults
-  to `true`, and a second plain launch brings the running murrtty's
-  windows to the front without opening a window, one with a command
-  opening it as a new tab in the front window; GTK's default is
-  `detect`, and its second launch opens a window.
-- **Fit Window to Screen** (5.10b): a menu item sizing the window to its
-  monitor's work area; GTK has none.
+- **Each pane's command history** (5.10b part C): a restored pane's shell
+  gets back its own command lines for up-arrow (PowerShell, cmd with
+  Clink); GTK keeps none.
 
 ## Rules every item keeps
 
@@ -2854,6 +2862,38 @@ the buffer, the untouched system clipboard, and both pastes.
     (each pane's history) follow. The `session-save` and `session-restore`
     scenarios check it, an end of session called off and a failed start
     included.
+  - *Part B built 2026-10-29:* `gtk-single-instance` defaults to `true`
+    on Windows (by the target, so the build's own tools agree). There
+    `-e` implies its usual settings (single instance off, quitting with
+    the last window, shell integration only for a detected shell) only
+    with single instance off: a murrtty started for one carries on as
+    the instance, its command's pane alone getting the detected
+    integration (as an IPC request's pane does). A launch handed over
+    asks by its arguments (`App.handOffRequest`): none, the new IPC kind
+    `present` (what a click on the tray icon does: hidden windows back,
+    its windows forward with a minimized one restored, or a window, the
+    session's, when it has none; with a dialog open, the dialog raised at
+    once, as requests otherwise wait for it); a command or a pane's
+    options (`--title`, `--working-directory`, `--command`,
+    `--shell-integration`), `new_tab` with them after the launch's
+    directory (`GetCurrentDirectoryW`, a mapped drive's letter kept; a
+    relative `--working-directory` made absolute against it), also to a
+    murrtty with `initial-window = false`; `--gtk-single-instance=true`
+    alone (the Jump List's New Window), `new_window` as before; any other
+    option (`--font-size`), no hand-off: the launch runs as a murrtty of
+    its own, which keeps no session. `+new-tab` with no pane focused, or
+    the quick terminal's last focused, takes the front window. `detect`
+    counted characters of the command line as arguments (Windows' args
+    vector is the whole line), so it was always `false`; it counts
+    arguments now. Fit Window to Screen (`Window.fitToScreen`) takes the
+    monitor the window is on, leaves fullscreen, shows it normally
+    (never back to maximized), puts the visible frame on the work area
+    (DWM's frame bounds) and fits again once if the monitor's DPI
+    changed it. `RegisterApplicationRestart` (not after a crash or a
+    hang; the class quoted) is set by the instance keeping the session
+    while it is saved, dropped when a reload turns it to `never`, never
+    under the GUI tests. The `second-launch` and `fit-window` scenarios
+    check it.
 
 **5.11 Undo and redo of closes, L.** Keep closed panes, tabs and windows
 parked (hidden, process running) until `undo-timeout`. Undo and redo enter

@@ -40,6 +40,9 @@ const Item = union(enum) {
     /// The configuration editor (roadmap F1), murrtty's own: no core
     /// action opens it, so a configuration naming one stays Ghostty's.
     config_editor: []const u8,
+    /// Fit Window to Screen (roadmap 5.10b), murrtty's own (no core
+    /// action): grayed for the quick terminal.
+    fit_screen: []const u8,
 };
 
 /// What was chosen from a menu.
@@ -49,6 +52,7 @@ pub const Choice = union(enum) {
     /// Toggle the pane's Notify on Next Command Finish.
     notify_next,
     config_editor,
+    fit_screen,
 };
 
 /// Whom a menu is for: a pane's menus act on their pane, the tray's on the
@@ -102,6 +106,7 @@ const items = [_]Item{
     .{ .submenu = .{ .label = "&Window", .items = &.{
         act("Change Window &Title...", .prompt_window_title),
         act("&New Window", .new_window),
+        .{ .fit_screen = "&Fit Window to Screen" },
         act("&Close Window", .close_window),
     } } },
     .separator,
@@ -164,6 +169,7 @@ const system_items = [_]Item{
     act("New &Window", .new_window),
     act("New &Tab", .new_tab),
     .{ .submenu = .{ .label = "Sp&lit", .items = &split_submenu } },
+    .{ .fit_screen = "&Fit Window to Screen" },
     .separator,
     act("Command &Palette", .toggle_command_palette),
     act("Terminal &Inspector", .{ .inspector = .toggle }),
@@ -436,7 +442,7 @@ pub fn trackTray(app: *App, owner: c.HWND, screen: c.POINT) ?Choice {
 fn actionOf(choice: ?Choice) ?Action {
     return switch (choice orelse return null) {
         .action => |a| a,
-        .about, .notify_next, .config_editor => null,
+        .about, .notify_next, .config_editor, .fit_screen => null,
     };
 }
 
@@ -587,6 +593,13 @@ fn fill(
             const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
             try built.choices.append(alloc, .config_editor);
             try append(alloc, built, menu, .item, text, built.nextId(), false, null);
+        },
+        .fit_screen => |label| {
+            var free: [64]u8 = undefined;
+            const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
+            const quick = if (ctx.surface) |s| s.window.quick != null else true;
+            try built.choices.append(alloc, .fit_screen);
+            try append(alloc, built, menu, .item, text, built.nextId(), quick, null);
         },
         .submenu => |s| {
             // A submenu's access keys are its own.
@@ -863,7 +876,7 @@ test "system menu items: access keys of their own, clear of the system's" {
         const label = switch (item) {
             .action => |a| a.label,
             .submenu => |s| s.label,
-            .about, .unavailable, .notify_next, .config_editor => |l| l,
+            .about, .unavailable, .notify_next, .config_editor, .fit_screen => |l| l,
             .separator => continue,
         };
         const k = accessKey(u8, label) orelse return error.NoAccessKey;

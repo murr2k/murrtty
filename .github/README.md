@@ -249,10 +249,16 @@ hosted Windows runner and then the unit tests.
   `-e`, `--title=`, `--working-directory=`, and `--surface-id=` for the
   tab's window) open in the murrtty already running, over a pipe only your
   own processes in your session can use; with none running they start
-  one. With `gtk-single-instance` (on by default for launches from the
-  Start menu, a shortcut or Explorer without arguments), a second launch
-  opens its window in the running murrtty, as in Ghostty's GTK app.
-  `--class=` keeps separate instances apart.
+  one. One instance by default (`gtk-single-instance = true`): a second
+  launch brings the running murrtty's windows to the front and opens
+  nothing, and one with a command (`murrtty -e ...`) opens it as a new
+  tab in the front window. `--class=` keeps separate instances apart.
+- Session restore: the windows, their tabs and splits, sizes, names and
+  each terminal's directory are saved as they change (to `session.json`
+  in `%LOCALAPPDATA%\murrtty`) and come back when murrtty starts, each
+  terminal a fresh shell in its folder; `window-save-state = never` turns
+  it off. Fit Window to Screen (the terminal's Window menu, Alt+Space)
+  brings back a window too big for its screen.
 - `open_config:new_window`: the config file in a new window, in `$VISUAL`
   or `$EDITOR`.
 - A configuration editor, murrtty's own (Ghostty has none): Open
@@ -374,10 +380,11 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- Session restore (restoring windows, tabs and splits after a restart).
+- Each terminal's command history coming back with the session (for
+  up-arrow in PowerShell and in cmd with Clink).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with session restore (Phase 5) and platform quality (Phase 6:
+continuing with each terminal's history (Phase 5) and platform quality (Phase 6:
 DirectWrite fonts, keyboard layouts and IMEs, OpenGL fallbacks).
 
 **Known issues**

@@ -499,6 +499,7 @@ pub extern "user32" fn DestroyWindow(HWND) callconv(.winapi) BOOL;
 pub extern "user32" fn ShowWindow(HWND, c_int) callconv(.winapi) BOOL;
 pub extern "user32" fn IsIconic(HWND) callconv(.winapi) BOOL;
 pub const SW_MINIMIZE = 6;
+pub const SW_MAXIMIZE = 3;
 pub const SW_RESTORE = 9;
 pub extern "user32" fn PeekMessageW(*MSG, ?HWND, UINT, UINT, UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn DispatchMessageW(*const MSG) callconv(.winapi) LRESULT;

@@ -52,6 +52,9 @@ pub const Kind = enum(u8) {
     new_window = 0,
     new_tab = 1,
     toggle_quick_terminal = 2,
+    /// A second plain launch (roadmap 5.10b): the windows to the front, or
+    /// a window (the session's) when there is none; nothing new.
+    present = 3,
     _,
 };
 
@@ -121,7 +124,7 @@ pub fn decode(arena: Allocator, bytes: []const u8) DecodeError!Message {
     if (bytes[4] != version) return error.Unsupported;
     const kind: Kind = @enumFromInt(bytes[5]);
     switch (kind) {
-        .new_window, .new_tab, .toggle_quick_terminal => {},
+        .new_window, .new_tab, .toggle_quick_terminal, .present => {},
         _ => return error.Unsupported,
     }
     const has_arguments = switch (bytes[6]) {
@@ -134,6 +137,8 @@ pub fn decode(arena: Allocator, bytes: []const u8) DecodeError!Message {
     if (kind != .new_tab and surface_id != 0) return error.Malformed;
     const count = std.mem.readInt(u32, bytes[16..20], .little);
     if (count > max_arguments or has_arguments != (count > 0)) return error.Malformed;
+    // present asks for nothing a pane would take.
+    if (kind == .present and has_arguments) return error.Malformed;
 
     const args = try arena.alloc([:0]const u8, count);
     var rest = bytes[header_len..];
@@ -919,10 +924,10 @@ fn failed(err: SendError) error{IPCFailed} {
     return error.IPCFailed;
 }
 
-/// gtk-single-instance: ask the murrtty serving `class` for the window this
-/// launch would open. Whether it took it.
-pub fn handOff(alloc: Allocator, class: ?[]const u8) bool {
-    const sent = send(alloc, class, .{ .kind = .new_window }, 0) catch |err| {
+/// gtk-single-instance: hand this launch's request (App.handOff) to the
+/// murrtty serving `class`. Whether it took it.
+pub fn handOff(alloc: Allocator, class: ?[]const u8, msg: Message) bool {
+    const sent = send(alloc, class, msg, 0) catch |err| {
         log.warn("handing the window to the running murrtty failed err={}", .{err});
         return false;
     };
@@ -1039,7 +1044,7 @@ fn startsWithIgnoreCase(s: []const u16, prefix: []const u16) bool {
 }
 
 /// Append `arg` to a command line, quoted as the C runtime splits one.
-fn appendQuoted(alloc: Allocator, out: *std.ArrayList(u16), arg: []const u16) Allocator.Error!void {
+pub fn appendQuoted(alloc: Allocator, out: *std.ArrayList(u16), arg: []const u16) Allocator.Error!void {
     const needs = arg.len == 0 or for (arg) |ch| {
         if (ch == ' ' or ch == '\t' or ch == '"') break true;
     } else false;
@@ -1065,6 +1070,21 @@ fn appendQuoted(alloc: Allocator, out: *std.ArrayList(u16), arg: []const u16) Al
 
 //---------------------------------------------------------------
 // Tests
+
+test "present round trips, and takes no arguments" {
+    const testing = std.testing;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const bytes = try encode(testing.allocator, .{ .kind = .present });
+    defer testing.allocator.free(bytes);
+    const msg = try decode(arena.allocator(), bytes);
+    try testing.expectEqual(Kind.present, msg.kind);
+    try testing.expectEqual(@as(?[]const [:0]const u8, null), msg.arguments);
+    const args = [_][:0]const u8{"--title=x"};
+    const with = try encode(testing.allocator, .{ .kind = .present, .arguments = &args });
+    defer testing.allocator.free(with);
+    try testing.expectError(error.Malformed, decode(arena.allocator(), with));
+}
 
 test "encode and decode round trip" {
     const testing = std.testing;

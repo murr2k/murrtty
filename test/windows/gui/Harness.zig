@@ -246,6 +246,8 @@ pub const LaunchOptions = struct {
     /// Wait for murrtty's first window (none comes with initial-window =
     /// false).
     wait_window: bool = true,
+    /// Arguments after the program's name (quoted where they hold spaces).
+    args: []const []const u8 = &.{},
 };
 
 pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: LaunchOptions) !Ghostty {
@@ -279,7 +281,17 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
     defer cmdline.deinit(alloc);
     try cmdline.append(alloc, '"');
     try cmdline.appendSlice(alloc, self.exe);
-    try cmdline.appendSlice(alloc, &.{ '"', 0 });
+    try cmdline.append(alloc, '"');
+    for (opts.args) |arg| {
+        const quote = arg.len == 0 or std.mem.indexOfScalar(u8, arg, ' ') != null;
+        try cmdline.append(alloc, ' ');
+        if (quote) try cmdline.append(alloc, '"');
+        const arg16 = try std.unicode.utf8ToUtf16LeAlloc(alloc, arg);
+        defer alloc.free(arg16);
+        try cmdline.appendSlice(alloc, arg16);
+        if (quote) try cmdline.append(alloc, '"');
+    }
+    try cmdline.append(alloc, 0);
 
     var desktop: ?[:0]u16 = null;
     defer if (desktop) |d| alloc.free(d);

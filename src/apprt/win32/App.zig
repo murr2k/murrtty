@@ -403,15 +403,27 @@ pub fn run(self: *App) !void {
     // and GTK's second instance just ends: the first already runs.
     self.startIpc();
     const holding = if (self.ipc_server) |s| s.listening.load(.acquire) else false;
-    if (!self.ipc_launch and !holding and self.config.@"gtk-single-instance" == .true) {
-        if (!self.config.@"initial-window") {
+    if (!self.ipc_launch and !holding and self.config.@"gtk-single-instance" == .true) handoff: {
+        var arena: std.heap.ArenaAllocator = .init(self.core_app.alloc);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const msg: ipc.Message = switch (handOffRequest(a)) {
+            .separate => {
+                log.info("this launch's options are its own: it runs as a murrtty of its own", .{});
+                break :handoff;
+            },
+            .present => .{ .kind = .present },
+            .new_window => .{ .kind = .new_window },
+            .new_tab => |args| .{ .kind = .new_tab, .arguments = args },
+        };
+        if (!self.config.@"initial-window" and msg.kind != .new_tab) {
             // Only if one really does (not a pipe squatted, or one going).
             if (ipc.serverRunning(self.core_app.alloc, self.ipcClass())) {
                 log.info("murrtty already runs, and there is no initial window to hand it", .{});
                 return;
             }
-        } else if (ipc.handOff(self.core_app.alloc, self.ipcClass())) {
-            log.info("handed the window to the running murrtty", .{});
+        } else if (ipc.handOff(a, self.ipcClass(), msg)) {
+            log.info("handed the launch to the running murrtty", .{});
             return;
         }
     }
@@ -434,31 +446,40 @@ pub fn run(self: *App) !void {
     } else if (self.session.restoreAtStart() > 0) {
         // A launch with a command opens it in a tab of its own.
         self.openLaunchTab();
-    } else _ = Window.create(self, null) catch |err| {
-        // A GUI program has no console, so say why it can't start: for
-        // OpenGL, what is missing and what to do (roadmap 6.3).
-        if (gl_diagnosis.isGlError(err)) {
-            // No hand-offs to an instance that can't open a window: a
-            // murrtty started meanwhile opens its own.
-            if (self.ipc_server) |s| s.stop();
-            self.ipc_server = null;
-            gl_diagnosis.show(self, err);
+    } else {
+        // A launch's command (-e) runs in the first pane as an IPC
+        // request's would: shell integration only for a shell it detects,
+        // for that pane alone (this murrtty carries on as the instance).
+        const launch_cmd: ipc.Overrides = .{ .command = self.config.@"initial-command" };
+        if (launch_cmd.command != null) self.ipc_overrides = &launch_cmd;
+        defer self.ipc_overrides = null;
+        _ = Window.create(self, null) catch |err| {
+            // A GUI program has no console, so say why it can't start: for
+            // OpenGL, what is missing and what to do (roadmap 6.3).
+            if (gl_diagnosis.isGlError(err)) {
+                // No hand-offs to an instance that can't open a window: a
+                // murrtty started meanwhile opens its own.
+                if (self.ipc_server) |s| s.stop();
+                self.ipc_server = null;
+                gl_diagnosis.show(self, err);
+                return err;
+            }
+            const msg = std.fmt.allocPrint(
+                self.core_app.alloc,
+                "murrtty could not open a window ({t}).\n\n" ++
+                    "To see the log, start murrtty from a shell with: murrtty.exe 2> murrtty.log",
+                .{err},
+            ) catch return err;
+            defer self.core_app.alloc.free(msg);
+            _ = Surface.messageBox(self.core_app.alloc, null, msg, "murrtty", c.MB_OK | c.MB_ICONERROR);
             return err;
-        }
-        const msg = std.fmt.allocPrint(
-            self.core_app.alloc,
-            "murrtty could not open a window ({t}).\n\n" ++
-                "To see the log, start murrtty from a shell with: murrtty.exe 2> murrtty.log",
-            .{err},
-        ) catch return err;
-        defer self.core_app.alloc.free(msg);
-        _ = Surface.messageBox(self.core_app.alloc, null, msg, "murrtty", c.MB_OK | c.MB_ICONERROR);
-        return err;
-    };
+        };
+    }
 
     // A GUI program's log goes nowhere, so show any config errors.
     self.queueConfigErrors();
     self.started = true;
+    self.registerRestart();
 
     var msg: c.MSG = undefined;
     while (true) {
@@ -602,6 +623,103 @@ fn startIpc(self: *App) void {
     };
 }
 
+/// What a launch asks of the murrtty already running (gtk-single-instance,
+/// roadmap 5.10b), by its arguments.
+const HandOff = union(enum) {
+    /// Options only a murrtty of its own takes (its configuration's:
+    /// `--font-size=20`): run apart.
+    separate,
+    /// None: the running murrtty's windows to the front.
+    present,
+    /// `--gtk-single-instance=true` alone (the Jump List's New Window).
+    new_window,
+    /// A command or a pane's options: a new tab in the front window, with
+    /// them and the launch's directory.
+    new_tab: []const [:0]const u8,
+};
+
+fn handOffRequest(a: Allocator) HandOff {
+    const argv = global.args().toSlice(a) catch return .separate;
+    const cwd = currentDirectory(a);
+    var args: std.ArrayList([:0]const u8) = .empty;
+    // The launch's directory first: a later --working-directory wins, and
+    // `inherit` keeps it.
+    if (cwd) |d| args.append(a, a.printSentinel("--working-directory={s}", .{d}, 0) catch return .separate) catch return .separate;
+    var explicit = false;
+    var command = false;
+    var any = false;
+    if (argv.len > 1) for (argv[1..]) |given| {
+        var arg = given;
+        // A command's own arguments are its.
+        if (!command) {
+            if (std.mem.startsWith(u8, arg, "--class=")) continue;
+            if (std.mem.startsWith(u8, arg, "--gtk-single-instance")) {
+                explicit = true;
+                continue;
+            }
+            if (std.mem.eql(u8, arg, "-e")) {
+                command = true;
+            } else if (std.mem.cutPrefix(u8, arg, "--working-directory=")) |v| {
+                // Relative to this launch's directory, not the running
+                // murrtty's.
+                const keyword = std.mem.eql(u8, v, "home") or std.mem.eql(u8, v, "inherit");
+                if (!keyword and v.len > 0 and v[0] != '~' and !std.fs.path.isAbsoluteWindows(v)) if (cwd) |d| {
+                    arg = a.printSentinel("--working-directory={s}\\{s}", .{ d, v }, 0) catch return .separate;
+                };
+            } else if (!std.mem.startsWith(u8, arg, "--title=") and
+                !std.mem.startsWith(u8, arg, "--command=") and
+                !std.mem.startsWith(u8, arg, "--shell-integration="))
+            {
+                return .separate;
+            }
+        }
+        any = true;
+        args.append(a, arg) catch return .separate;
+    };
+    if (!any) return if (explicit) .new_window else .present;
+    return .{ .new_tab = args.items };
+}
+
+/// This process's current directory, as Windows has it (a mapped drive's
+/// letter kept, unlike a resolved path), or null.
+fn currentDirectory(a: Allocator) ?[]const u8 {
+    const len = c.GetCurrentDirectoryW(0, null);
+    if (len == 0) return null;
+    const buf = a.alloc(u16, len) catch return null;
+    const got = c.GetCurrentDirectoryW(len, buf.ptr);
+    if (got == 0 or got >= len) return null;
+    return std.unicode.utf16LeToUtf8Alloc(a, buf[0..got]) catch null;
+}
+
+/// Windows' restart of murrtty after an update or a reboot, where its
+/// "restart apps" setting is on (roadmap 5.10b): it comes back and restores
+/// its session. Only the instance keeping the session, and never under the
+/// GUI tests.
+fn registerRestart(self: *App) void {
+    if (comptime test_hooks.enabled) if (test_hooks.active()) return;
+    if (!self.session.owner) return;
+    // Nothing to restore: nothing to restart for (window-save-state =
+    // never, or no state folder).
+    if (!self.session.enabled) {
+        _ = c.UnregisterApplicationRestart();
+        return;
+    }
+    const alloc = self.core_app.alloc;
+    var line: std.ArrayList(u16) = .empty;
+    defer line.deinit(alloc);
+    if (self.config.class) |class| {
+        const text = std.fmt.allocPrint(alloc, "--class={s}", .{class}) catch return;
+        defer alloc.free(text);
+        const wide = std.unicode.utf8ToUtf16LeAlloc(alloc, text) catch return;
+        defer alloc.free(wide);
+        ipc.appendQuoted(alloc, &line, wide) catch return;
+    }
+    line.append(alloc, 0) catch return;
+    const args: ?[*:0]const u16 = if (line.items.len > 1) @ptrCast(line.items.ptr) else null;
+    const hr = c.RegisterApplicationRestart(args, c.RESTART_NO_CRASH | c.RESTART_NO_HANG);
+    if (hr < 0) log.warn("Windows won't restart murrtty after an update hr=0x{x}", .{@as(u32, @bitCast(hr))});
+}
+
 /// After restoring a session at start (roadmap 5.10b): a launch with a
 /// command (`-e`) opens it in a tab of its own in the front window, with
 /// no splits, rather than in the first restored pane.
@@ -635,13 +753,19 @@ fn runIpc(self: *App, msg: ipc.Message) void {
     // The first window asked for brings the saved session back (roadmap
     // 5.10b, initial-window = false); a plain +new-window (the CLI always
     // sends its directory) wants no more.
-    if (msg.kind != .toggle_quick_terminal and self.session.hasPending()) {
+    if (msg.kind != .toggle_quick_terminal and msg.kind != .present and self.session.hasPending()) {
         const plain = overrides.command == null and overrides.title == null and overrides.shell_integration == null;
         if (self.session.restorePending() > 0 and msg.kind == .new_window and plain) return;
     }
     self.ipc_overrides = &overrides;
     defer self.ipc_overrides = null;
 
+    // A second plain launch (roadmap 5.10b): as a click on the tray icon,
+    // the windows forward, or a window (the session's) when there is none.
+    if (msg.kind == .present) {
+        self.trayActivate();
+        return;
+    }
     // +toggle-quick-terminal (roadmap 5.7).
     if (msg.kind == .toggle_quick_terminal) {
         _ = self.toggleQuickTerminal(.ipc);
@@ -666,8 +790,15 @@ fn ipcTabTarget(self: *App, id: u64) ?*Surface {
         if (self.findSurface(id)) |s| return s;
         log.warn("new-tab: no surface 0x{x:0>16}, using the focused one", .{id});
     }
-    const focused = self.core_app.focusedSurface() orelse return null;
-    return self.findSurface(focused.id);
+    // Else the front window's, as GTK's goes to its active window (a launch
+    // handed over comes while another program has the keyboard). The core
+    // keeps the last focused pane after murrtty loses the keyboard; the
+    // quick terminal's (often hidden by then) isn't taken.
+    if (self.core_app.focusedSurface()) |focused| if (self.findSurface(focused.id)) |s| {
+        if (s.window.quick == null) return s;
+    };
+    const window = self.frontWindow() orelse return null;
+    return window.activeSurface();
 }
 
 /// open_config:new_window: the config file in a new window running $VISUAL
@@ -1301,6 +1432,13 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
             while (server.take()) |received| {
                 // Its window comes, even after a dialog: no need to quit.
                 if (self.ipc_launch) _ = c.KillTimer(hwnd, ipc_launch_timer);
+                // A second launch while a dialog is open raises the dialog
+                // now (requests wait for it), as a click on the tray icon.
+                if (received.message.kind == .present and self.modal_depth > 0) {
+                    received.destroy(self.core_app.alloc);
+                    self.raiseModal();
+                    continue;
+                }
                 self.request(.{ .ipc = received });
             }
             return 0;
@@ -1530,7 +1668,7 @@ pub fn trayMenu(self: *App, owner: c.HWND, at: c.POINT) void {
     switch (ContextMenu.trackTray(self, owner, at) orelse return) {
         .action => |action| self.runAppAction(action),
         .config_editor => self.openConfigEditor(),
-        .about, .notify_next => {},
+        .about, .notify_next, .fit_screen => {},
     }
 }
 
@@ -2297,8 +2435,10 @@ pub fn performAction(
                 // with them what keeps murrtty running.
                 self.syncTray();
                 self.global_keys.refresh(.config);
-                // window-save-state may have changed.
+                // window-save-state may have changed, and with it Windows'
+                // restart.
                 self.session.configChanged();
+                if (self.started) self.registerRestart();
                 if (self.windows_hidden and !self.canShowHidden()) self.showWindows();
                 // The tray gone with no window: as if the last had just
                 // closed (a delay still applies).
