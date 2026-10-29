@@ -1713,7 +1713,8 @@ default `bell-features`, so its part (S) is in M1; audio and border are M2.
 *Done when:* a BEL in a background tab marks it until selected, and the audio
 file plays at the configured volume.
 
-*3.7a (`title`) done 2026-10-26.* A BEL with `bell-features = title` (the
+*Still open (2026-10-29): `audio` and `border`, M2's last items besides
+5.2b.* *3.7a (`title`) done 2026-10-26.* A BEL with `bell-features = title` (the
 default) in a pane that doesn't have the keyboard puts "🔔 " before the
 tab's title, and the caption, while the pane's bell rings
 (`Surface.bell_ringing`), until the pane gets the keyboard, a key or a

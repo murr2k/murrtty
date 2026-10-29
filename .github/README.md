@@ -28,10 +28,12 @@ missing pieces, so that building on Windows
 (`zig build -Dtarget=x86_64-windows-gnu`, which `build-windows.cmd` runs)
 produces a native `murrtty.exe`:
 
-- **A Win32 application runtime** (`src/apprt/win32/`): windows, tabs,
-  keyboard and IME input, mouse, clipboard, DPI scaling and the system theme,
-  built directly on the Windows API (mainly `user32`, `gdi32`, `imm32` and
-  `dwmapi`).
+- **A Win32 application runtime** (`src/apprt/win32/`): windows, tabs and
+  splits, GTK's header bar and menus, keyboard and IME input, mouse,
+  clipboard, DPI scaling, the system theme, notifications, the tray, the
+  quick terminal, session restore and the rest listed under Status, built
+  directly on the Windows API (mainly `user32`, `gdi32`, `imm32`, `dwmapi`
+  and UI Automation).
 - **A WGL path in the OpenGL renderer** (`pkg/opengl/wgl.zig`,
   `src/renderer/OpenGL.zig`): each terminal gets an OpenGL 4.3 core context
   on its own window and presents with `SwapBuffers`. Other platforms keep
@@ -49,9 +51,8 @@ of `murrtty`, while `TERM` stays `xterm-ghostty`, so they still get the
 capabilities the shared core implements.
 
 murrtty merges upstream Ghostty from time to time instead of rebasing onto
-it. It last merged upstream
-[`0fe113a35`](https://github.com/ghostty-org/ghostty/commit/0fe113a35)
-(October 2026).
+it. It last merged Ghostty 1.4.0 (the release tag `v1.4.0`, October 2026),
+and `murrtty +version` says it is based on that release.
 
 ## Status
 
@@ -62,8 +63,11 @@ the modifier keys set as held where needed, and checked the results with
 window captures, a Debug-build state dump and logs. Those GUI tests are in
 `test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
 desktop. murrtty has not yet had much use on a physical keyboard. Every
-push runs the unit tests and the GUI tests on a self-hosted runner on the
-development machine, in a private mirror of this repository
+push runs the unit tests (about 4,300) and the GUI tests (108 scenarios,
+12 of them opt-in because they show something on the screen, save
+pictures, need Clink or run long) on a self-hosted runner on the
+development machine, in a private
+mirror of this repository
 (`.github/workflows/windows-port-desktop.yml`); the GUI tests need an
 OpenGL 4.3 driver, which GitHub's hosted runners lack. A manually started
 workflow (`.github/workflows/windows-port.yml`) runs the builder on a clean
@@ -258,9 +262,12 @@ hosted Windows runner and then the unit tests.
   in `%LOCALAPPDATA%\murrtty`) and come back when murrtty starts, each
   terminal a fresh shell in its folder; `window-save-state = never` turns
   it off. Each terminal's command history comes back with it, for
-  up-arrow, in PowerShell and in cmd with Clink. Fit
-  Window to Screen (the terminal's Window menu, Alt+Space) brings back a
-  window too big for its screen.
+  up-arrow: in PowerShell (new terminals still share PowerShell's history)
+  and in cmd with Clink (each terminal keeps a Clink history of its own, so
+  a new one starts empty). A crash while restoring skips the next restore
+  once, and a folder murrtty can't write is reported, never silently
+  ignored. Fit Window to Screen (the terminal's Window menu, Alt+Space)
+  brings back a window too big for its screen.
 - `open_config:new_window`: the config file in a new window, in `$VISUAL`
   or `$EDITOR`.
 - A configuration editor, murrtty's own (Ghostty has none): Open
@@ -382,12 +389,19 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
+- The bell's `audio` and `border` features.
+- Notifications as Windows' own toasts, each kept in the Action Center and
+  withdrawn on its own (today one notification-area entry stands for the
+  latest).
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
+- A release to download: an installer, code signing, winget and update
+  checks wait for this repository to be published.
+- A Direct3D 11 renderer, for machines without OpenGL 4.3 (later).
 
-[WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with platform quality (Phase 6:
-DirectWrite fonts, keyboard layouts and IMEs, OpenGL fallbacks).
+[WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was
+built and why, and plans what is left: the items above, tests on hosted CI,
+and testing on AMD and Intel graphics, ARM64 hardware and Windows 10.
 
 **Known issues**
 
@@ -514,12 +528,10 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   it without a text editor and keeps it a file Ghostty reads. Everything handled by Ghostty's
   shared core works as documented in the
   [configuration reference](https://ghostty.org/docs/config): fonts, colors,
-  themes, keybindings, the shell and so on. Options that the macOS and GTK
-  apps implement in their own user interface mostly have no effect here,
-  besides the missing features listed above. Among them:
-  `window-position-x`/`-y`, `window-save-state`, and the `audio` and
-  `border` bell features (`system`, `attention` and
-  `title` work).
+  themes, keybindings, the shell and so on. Most options that the macOS
+  and GTK apps implement in their own user interface work here too; the
+  exceptions are the missing features listed above, such as the `audio`
+  and `border` bell features (`system`, `attention` and `title` work).
 - **Shell.** The default is PowerShell 7 (`pwsh.exe -NoLogo`) when it is
   installed, else `cmd.exe` (`%COMSPEC%`); `command` picks another. Shell
   integration is automatic for PowerShell 7, Windows PowerShell and `cmd`
@@ -559,17 +571,26 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
 |---|---|
 | `src/apprt/win32.zig` | The runtime's entry point |
 | `src/apprt/win32/App.zig` | Message loop, a message-only window for cross-thread wakeups, action dispatch, close requests |
-| `src/apprt/win32/Window.zig` | Top-level window: tabs, size and DPI, fullscreen, close |
-| `src/apprt/win32/TabBar.zig` | The tab strip, drawn with GDI using the terminal's colors |
+| `src/apprt/win32/Window.zig` | Top-level window: tabs, size and DPI, fullscreen, close, the client-side decorations |
+| `src/apprt/win32/HeaderBar.zig`, `TabBar.zig`, `draw.zig` | GTK's header bar as the title bar, the tab row, and their GDI drawing in Adwaita's colors |
 | `src/apprt/win32/Tab.zig` | A tab: its terminal panes as a split tree, in a container window |
 | `src/apprt/win32/Surface.zig` | One child window per terminal: keyboard, IME, mouse, clipboard |
 | `src/apprt/win32/key.zig` | Scancode and text translation into Ghostty key events |
+| `src/apprt/win32/ContextMenu.zig`, `AlertDialog.zig`, `CommandPalette.zig`, `SearchBox.zig` | Menus as libadwaita's popovers, its alert dialogs, the command palette and search |
+| `src/apprt/win32/ipc.zig` | The single instance: a pipe only the user's own processes can use, for `+new-window`, `+new-tab` and second launches |
+| `src/apprt/win32/Session.zig` | Session restore: what is saved, when, and its restore; each pane's command history files |
+| `src/apprt/win32/Notifications.zig`, `taskbar.zig`, `GlobalKeys.zig`, `QuickTerminal.zig` | Notifications and the tray, taskbar progress, global key bindings, the quick terminal |
+| `src/apprt/win32/Undo.zig`, `Inspector.zig`, `Uia.zig`, `uia_text.zig` | Undo of closes, the terminal inspector, UI Automation for screen readers |
+| `src/apprt/win32/ConfigEditor.zig`, `src/config/EditableFile.zig`, `src/config/option_list.zig` | The configuration editor, and the in-place editing of the config file behind it |
+| `src/font/dwrite.zig` | Font discovery through DirectWrite (FreeType still draws) |
+| `src/apprt/win32/gl_diagnosis.zig` | Says at start why OpenGL 4.3 is missing |
 | `src/apprt/win32/console.zig` | Attaches to the parent console for CLI actions |
 | `src/apprt/win32/url.zig` | Decides whether a link from terminal output opens, asks first or is blocked |
 | `src/apprt/win32/c.zig` | Hand-written Win32 bindings |
+| `src/shell-integration/powershell/`, `src/shell-integration/cmd/` | Shell integration for PowerShell and for cmd (with Clink) |
 | `pkg/opengl/wgl.zig` | Minimal WGL bindings and context creation |
 | `src/renderer/OpenGL.zig`, `src/renderer/opengl/Device.zig` | WGL context per surface and `SwapBuffers` presentation on Windows |
-| `build-windows.ps1`, `build-windows.cmd` | The builder |
+| `build-windows.ps1`, `build-windows.cmd`, `dist/windows/` | The builder, the release package and its third-party notices |
 | `test/windows/gui/`, `src/apprt/win32/test_hooks.zig` | GUI tests, and the Debug-only state dump they read |
 | `.github/workflows/windows-port.yml` | CI, started by hand: the builder and the unit tests on a clean hosted Windows runner |
 | `.github/workflows/windows-port-desktop.yml` | CI on every push: unit tests and GUI tests on the self-hosted runner |
@@ -596,6 +617,9 @@ A few rules the code depends on:
   it, so text is never attached to the wrong key.
 - The window's pixel format is sRGB-capable and `GL_FRAMEBUFFER_SRGB` is on
   during the final blit, which keeps colors exact.
+- The session is saved from a timer, never inside a callback from the core
+  and never in the middle of a drag, and murrtty never writes a history
+  file a running shell writes.
 
 The commit messages explain each change in more detail.
 
@@ -621,6 +645,14 @@ code, the commit messages and this README, and ran the testing described
 under Status. Ghostty's [AI usage policy](../AI_POLICY.md) governs contributions
 to Ghostty itself; murrtty isn't submitted upstream, and any fix offered
 to Ghostty on its own would have to meet that policy.
+
+The roadmap's estimates assumed one experienced engineer working without
+an agent: about 36 to 45 engineer-weeks for its milestones and the work
+outside them, such as UI Automation and the configuration editor. With
+Claude Code, nearly all of it was built in six days, from October 23 to
+29, 2026; what is left is mostly what the roadmap said an agent wouldn't
+shorten: testing on other hardware, and the release work that waits on
+publishing.
 
 ## License
 
