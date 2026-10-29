@@ -105,6 +105,7 @@ pub const all = [_]Scenario{
     .{ .name = "config-editor-pages", .about = "the configuration editor's pickers: a color's swatch and a file's button (Windows' dialogs stood in for), the font chooser (monospaced families, searched, one chosen) and the theme chooser", .run = configEditorPages },
     .{ .name = "second-launch", .about = "single instance by default: a second plain launch brings the running murrtty's minimized window back and opens nothing (with a dialog open, it raises the dialog); one with -e or --title= opens a new tab in the front window, from the launch's folder; one with a configuration option runs apart; -e reaches a murrtty in the tray", .run = secondLaunch },
     .{ .name = "fit-window", .about = "Fit Window to Screen, from the terminal's Window submenu and the system menu: an oversized window fits its monitor's work area, not maximized; a maximized one and a fullscreen one are restored and fitted", .run = fitWindow },
+    .{ .name = "pane-history", .about = "each pane's own command history (PowerShell 5.1): a new pane copies its commands into its own file, one already in the shared history too; restored, Up brings back its own last command; a history no saved pane has goes at start; one of a pane closed for good goes after undo's time", .run = paneHistory },
     .{ .name = "session-save", .about = "the session saved as it changes (session.json): the window, a tab and its pane's directory, a new tab, the tab in front, a split; a move saved as it ends, a divider as it is let go; a drag Esc cancels or murrtty ending mid-drag saves nothing; an unwritable state folder said once", .run = sessionSave },
     .{ .name = "session-restore", .about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
@@ -9530,7 +9531,7 @@ fn ipcLaunch(h: *Harness) anyerror!void {
     const class_arg = try std.fmt.allocPrint(h.alloc, "--class={s}", .{class});
     defer h.alloc.free(class_arg);
     {
-        var r = try h.runCli("ipc-launch", &.{ "+new-window", class_arg, "--title=Launched for IPC", "-e", "cmd.exe", "/k", "set", "MURRTTY" });
+        var r = try h.runCli("ipc-launch", &.{ "+new-window", class_arg, "--title=Launched for IPC", "-e", "cmd.exe", "/k", "set", "MURRTTY_IPC" });
         defer r.deinit();
         try h.expect(r.code == 0, "+new-window with none running exits 0 (got {d})", .{r.code});
     }
@@ -9549,8 +9550,9 @@ fn ipcLaunch(h: *Harness) anyerror!void {
         const name = d.value.windows[0].tabs[0].pane_name;
         try h.expect(std.mem.eql(u8, name, "Launched for IPC"), "with the request's title (got '{s}')", .{name});
     }
-    // Its shells don't see the variable it was started with.
-    try waitWindowText(h, &g, 0, "Environment variable MURRTTY not defined");
+    // Its shells don't see the variable it was started with (others of
+    // murrtty's, MURRTTY_HISTORY_FILE, are theirs).
+    try waitWindowText(h, &g, 0, "Environment variable MURRTTY_IPC not defined");
     {
         var r = try h.runCli("ipc-launch-again", &.{ "+new-window", class_arg });
         defer r.deinit();
@@ -11843,4 +11845,186 @@ fn fitWindow(h: *Harness) anyerror!void {
     h.menuKey(sub2, 'f');
     try expectFits(h, win, work, "from fullscreen");
     try quit(h, &g, surf);
+}
+
+/// The id of the first window's first tab's first pane in the saved
+/// session, once it is there (caller frees).
+fn savedPaneId(h: *Harness, path: []const u8, tab: usize) ![]u8 {
+    var waited: u32 = 0;
+    while (waited < 10000) : (waited += 200) {
+        if (readSession(h, path)) |sv| {
+            defer sv.deinit();
+            if (sv.value.windows.len > 0 and sv.value.windows[0].tabs.len > tab) {
+                for (sv.value.windows[0].tabs[tab].nodes) |n| if (n.pane) |p| if (p.id.len == 16) return h.alloc.dupe(u8, p.id);
+            }
+        }
+        w.Sleep(200);
+    }
+    return h.fail("no pane in tab {d} of the saved session", .{tab});
+}
+
+/// Whether `path` can be read.
+fn fileThere(h: *Harness, path: []const u8) bool {
+    const text = h.readFileOrNull(path) orelse return false;
+    h.alloc.free(text);
+    return true;
+}
+
+/// Wait until `path` holds `needle` (or, with `gone`, until it is gone).
+fn waitFileHas(h: *Harness, path: []const u8, needle: ?[]const u8, ms: u32) bool {
+    var waited: u32 = 0;
+    while (true) : (waited += 200) {
+        const text = h.readFileOrNull(path);
+        defer if (text) |t| h.alloc.free(t);
+        if (needle) |n| {
+            if (text) |t| if (std.mem.indexOf(u8, t, n) != null) return true;
+        } else if (text == null) return true;
+        if (waited >= ms) return false;
+        w.Sleep(200);
+    }
+}
+
+/// Roadmap 5.10b part C: each pane's own command history, with PowerShell
+/// 5.1 and murrtty's integration. A new pane copies each command into its
+/// file (MURRTTY_HISTORY_FILE, history-<class>\<pane id>.txt), also one
+/// already in PSReadLine's shared history (which its no-duplicates rule
+/// keeps out of PSReadLine's own list). That shared file isn't checked:
+/// PSReadLine finds it through the shell's folders, not APPDATA, so it is
+/// the user's own, which the PowerShell scenarios type into anyway.
+/// After a restart its pane comes back with the same id, its file
+/// PSReadLine's: Up brings back a line only that file holds, and a new
+/// command lands there. At start, a history file no saved pane has goes,
+/// with the Clink history of a label murrtty gave out (its marker), not one
+/// it didn't; a pane closed for good loses its file and its Clink history
+/// once undo's time has passed. Clink's profile is the scenario's own
+/// (LOCALAPPDATA).
+fn paneHistory(h: *Harness) anyerror!void {
+    const class = try ipcClass(h, "history");
+    defer h.alloc.free(class);
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\pane-history", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    const state = try std.fmt.allocPrint(h.alloc, "{s}\\state", .{dir});
+    defer h.alloc.free(state);
+    try h.makeDirAt(dir);
+    try h.makeDirAt(state);
+    const session_path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\session-{s}.json", .{ state, class });
+    defer h.alloc.free(session_path);
+    const history_dir = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\history-{s}", .{ state, class });
+    defer h.alloc.free(history_dir);
+    const config = try std.fmt.allocPrint(h.alloc, "{s}command = powershell.exe -NoLogo -NoProfile\nshell-integration = detect\nconfirm-close-surface = false\nclass = {s}\n", .{ base_config, class });
+    defer h.alloc.free(config);
+    const orphan = try std.fmt.allocPrint(h.alloc, "{s}\\ffffffffffffffff.txt", .{history_dir});
+    defer h.alloc.free(orphan);
+    // Clink's profile, with a marked orphan's history and one murrtty didn't
+    // label.
+    const local = try std.fmt.allocPrint(h.alloc, "{s}\\local", .{dir});
+    defer h.alloc.free(local);
+    const clink = try std.fmt.allocPrint(h.alloc, "{s}\\clink", .{local});
+    defer h.alloc.free(clink);
+    try h.makeDirAt(local);
+    try h.makeDirAt(clink);
+    const orphan_marker = try std.fmt.allocPrint(h.alloc, "{s}\\eeeeeeeeeeeeeeee.clink", .{history_dir});
+    defer h.alloc.free(orphan_marker);
+    const orphan_clink = try std.fmt.allocPrint(h.alloc, "{s}\\clink_history-murrttyeeeeeeeeeeeeeeee", .{clink});
+    defer h.alloc.free(orphan_clink);
+    const foreign_clink = try std.fmt.allocPrint(h.alloc, "{s}\\clink_history-murrttydddddddddddddddd", .{clink});
+    defer h.alloc.free(foreign_clink);
+    try h.writeFileAt(orphan_clink, "echo stray\n");
+    try h.writeFileAt(foreign_clink, "echo not murrtty's\n");
+    const env: []const [2][]const u8 = &.{ .{ "XDG_STATE_HOME", state }, .{ "LOCALAPPDATA", local } };
+
+    var pane_file: []u8 = &.{};
+    defer h.alloc.free(pane_file);
+    {
+        var g = try h.launchWith("pane-history", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, "PS ", 1, 30000);
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try h.typeText(surf, "echo murrtty-history-one");
+        h.enter(surf);
+        try h.waitText(&g, "murrtty-history-one", 2, 15000);
+        const id = try savedPaneId(h, session_path, 0);
+        defer h.alloc.free(id);
+        pane_file = try std.fmt.allocPrint(h.alloc, "{s}\\{s}.txt", .{ history_dir, id });
+        try h.expect(waitFileHas(h, pane_file, "echo murrtty-history-one", 10000), "a new pane copies its command into its own history file ({s})", .{pane_file});
+        // A history no saved pane has, for the next start to clear, with a
+        // Clink marker; and a line only the pane's file holds.
+        try h.writeFileAt(orphan, "echo stray\n");
+        try h.writeFileAt(orphan_marker, "");
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'Q');
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "murrtty quits (exit {?d})", .{code});
+    }
+    try h.expect(fileThere(h, pane_file), "quitting keeps the pane's history", .{});
+    {
+        const text = h.readFileOrNull(pane_file) orelse return h.fail("no pane history", .{});
+        defer h.alloc.free(text);
+        const more = try std.mem.concat(h.alloc, u8, &.{ text, "echo murrtty-history-pane-only\n" });
+        defer h.alloc.free(more);
+        try h.writeFileAt(pane_file, more);
+    }
+
+    {
+        var g = try h.launchWith("pane-history-restored", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, "PS ", 1, 30000);
+        try h.expect(waitFileHas(h, orphan, null, 5000), "at start a history no saved pane has goes", .{});
+        try h.expect(!fileThere(h, orphan_marker) and !fileThere(h, orphan_clink), "with Clink's history for the label murrtty gave out", .{});
+        try h.expect(fileThere(h, foreign_clink), "and not one it didn't", .{});
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const text = d.value.windows[0].tabs[0].text orelse "";
+            try h.expect(std.mem.indexOf(u8, text, "murrtty-history-one") == null, "the restored pane starts with no scrollback", .{});
+        }
+        // The last line of the pane's file, which nothing else holds.
+        h.key(surf, .{}, w.VK_UP);
+        try h.waitText(&g, "echo murrtty-history-pane-only", 1, 10000);
+        // Clear the line: Escape.
+        h.key(surf, .{}, w.VK_ESCAPE);
+        // A new command lands in the pane's file (PSReadLine's now).
+        try h.typeText(surf, "echo murrtty-history-three");
+        h.enter(surf);
+        try h.expect(waitFileHas(h, pane_file, "echo murrtty-history-three", 10000), "the restored pane's new command lands in its own file", .{});
+        // Clink's history label for the pane (Clink itself isn't run here).
+        {
+            const id = try savedPaneId(h, session_path, 0);
+            defer h.alloc.free(id);
+            const label = try std.fmt.allocPrint(h.alloc, "murrtty{s}", .{id});
+            defer h.alloc.free(label);
+            try h.typeText(surf, "Write-Output \"label=$env:CLINK_HISTORY_LABEL\"");
+            h.enter(surf);
+            const shown = try std.fmt.allocPrint(h.alloc, "label={s}", .{label});
+            defer h.alloc.free(shown);
+            try h.waitText(&g, shown, 1, 10000);
+        }
+
+        // A tab of its own, closed for good: its history goes once undo's
+        // time (5 s) has passed.
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
+        try waitWindowTabText(h, &g, 0, 1, "PS ");
+        const second = try paneHwnd(h, &g, 0);
+        try h.typeText(second, "echo murrtty-history-two");
+        h.enter(second);
+        try waitWindowTabText(h, &g, 0, 1, "murrtty-history-two");
+        const id2 = try savedPaneId(h, session_path, 1);
+        defer h.alloc.free(id2);
+        const second_file = try std.fmt.allocPrint(h.alloc, "{s}\\{s}.txt", .{ history_dir, id2 });
+        defer h.alloc.free(second_file);
+        try h.expect(waitFileHas(h, second_file, "echo murrtty-history-two", 10000), "the new tab keeps its own history", .{});
+        // Its Clink history (as Clink would keep it).
+        const second_marker = try std.fmt.allocPrint(h.alloc, "{s}\\{s}.clink", .{ history_dir, id2 });
+        defer h.alloc.free(second_marker);
+        const second_clink = try std.fmt.allocPrint(h.alloc, "{s}\\clink_history-murrtty{s}", .{ clink, id2 });
+        defer h.alloc.free(second_clink);
+        try h.expect(fileThere(h, second_marker), "murrtty marks the Clink label it gave the tab", .{});
+        try h.writeFileAt(second_clink, "echo murrtty-history-two\n");
+        h.key(second, .{ .ctrl = true, .shift = true }, 'W');
+        w.Sleep(1500);
+        try h.expect(fileThere(h, second_file), "closed, its history stays while undo can bring it back", .{});
+        try h.expect(waitFileHas(h, second_file, null, 10000), "and goes once undo's time has passed", .{});
+        try h.expect(!fileThere(h, second_clink) and !fileThere(h, second_marker), "with its Clink history", .{});
+        try h.expect(fileThere(h, pane_file), "the other pane's stays", .{});
+    }
 }

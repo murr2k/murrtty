@@ -15,6 +15,8 @@
 #   OSC 133;D;status  when the command finishes
 #   OSC 7             the working directory, for new tabs and splits; empty
 #                     (unknown) where it isn't a local drive path
+# and keeps the pane's own command history for murrtty's session restore
+# ($env:MURRTTY_HISTORY_FILE),
 # and, as GHOSTTY_SHELL_FEATURES asks: a bar cursor at the prompt (cursor,
 # with PSReadLine, which restores it), the folder or the running command as
 # the title (title), and Ghostty's own folder on PATH (path).
@@ -40,6 +42,74 @@
     }
 
     if ($null -eq $global:__GhosttyCommandRunning) { $global:__GhosttyCommandRunning = $false }
+
+    # murrtty's session restore (roadmap 5.10b): the pane's own command
+    # history, in the file $env:MURRTTY_HISTORY_FILE names, for up-arrow in
+    # the pane murrtty brings back. Set up at the first prompt, when
+    # PSReadLine is loaded if the host uses it (never loaded here), and
+    # before it reads its history (its first line edit). A pane that has
+    # its file (a restored pane) makes it PSReadLine's history file, so
+    # PSReadLine reads its commands and writes each new one to it. A new
+    # pane keeps PSReadLine's shared history. Either way, each command is
+    # copied from PowerShell's own history (which PSReadLine's no-duplicates
+    # rule doesn't thin) into the file PSReadLine doesn't write: the pane's,
+    # or the shared one, so nothing typed is lost to either. A line
+    # PSReadLine's AddToHistoryHandler keeps from files (one with a
+    # password) is copied nowhere, nor any under HistorySaveStyle
+    # SaveNothing.
+    function global:__GhosttyTrimHistory([string]$path, [int]$keep) {
+        # PSReadLine's file: a line ending in a backtick goes on in the next.
+        $lines = [IO.File]::ReadAllLines($path)
+        $starts = New-Object System.Collections.Generic.List[int]
+        for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($i -eq 0 -or -not $lines[$i - 1].EndsWith('`')) { $starts.Add($i) }
+        }
+        if ($starts.Count -le $keep) { return }
+        $from = $starts[$starts.Count - $keep]
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        [IO.File]::WriteAllLines($path, [string[]]$lines[$from..($lines.Count - 1)], $utf8)
+    }
+
+    function global:__GhosttyHistory {
+        if (-not $global:__GhosttyHistoryReady) {
+            $global:__GhosttyHistoryReady = $true
+            if (-not $env:MURRTTY_HISTORY_FILE -or -not (Get-Module PSReadLine)) { return }
+            $global:__GhosttyHistoryFile = $env:MURRTTY_HISTORY_FILE
+            $global:__GhosttyHistoryShared = (Get-PSReadLineOption).HistorySavePath
+            $lastEntry = Get-History -Count 1
+            $global:__GhosttyHistoryId = if ($lastEntry) { $lastEntry.Id } else { 0 }
+            $item = Get-Item -LiteralPath $global:__GhosttyHistoryFile -ErrorAction Ignore
+            if ($item -and $item.Length -gt 0) {
+                __GhosttyTrimHistory $global:__GhosttyHistoryFile 1000
+                Set-PSReadLineOption -HistorySavePath $global:__GhosttyHistoryFile
+                $global:__GhosttyHistoryCopyTo = $global:__GhosttyHistoryShared
+            } else {
+                $global:__GhosttyHistoryCopyTo = $global:__GhosttyHistoryFile
+            }
+            return
+        }
+        if (-not $global:__GhosttyHistoryCopyTo) { return }
+        $entry = Get-History -Count 1
+        if ($null -eq $entry -or $entry.Id -le $global:__GhosttyHistoryId) { return }
+        $global:__GhosttyHistoryId = $entry.Id
+        $line = $entry.CommandLine
+        if (-not $line -or -not $line.Trim()) { return }
+        if (-not (Get-Module PSReadLine)) { return }
+        $options = Get-PSReadLineOption
+        if ("$($options.HistorySaveStyle)" -eq 'SaveNothing') { return }
+        $handler = $options.AddToHistoryHandler
+        if ($handler) {
+            $verdict = $handler.Invoke($line)
+            if ($verdict -is [bool] -and -not $verdict) { return }
+            if ("$verdict" -eq 'MemoryOnly' -or "$verdict" -eq 'SkipAdding') { return }
+        }
+        # PSReadLine's file: each line but the last of a command ends in a
+        # backtick.
+        $text = (($line -split "\r?\n") -join ('`' + "`n")) + "`n"
+        $path = $global:__GhosttyHistoryCopyTo
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
+        [IO.File]::AppendAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
+    }
 
     # This computer in OSC 7 URLs: its name when that is a DNS label (Ghostty
     # takes reports from this computer only), else localhost.
@@ -156,6 +226,11 @@ __GhosttyPrompt $succeeded ([object]::ReferenceEquals($function:prompt, $global:
         $exitCode = $global:LASTEXITCODE
         $errorAdded = $global:Error.Count -gt 0 -and
             -not [object]::ReferenceEquals($global:Error[0], $global:__GhosttyErrorBefore)
+        # The pane's history (murrtty), after the last command's status is
+        # read; an error it meets stays out of $Error, the user's.
+        $errorCount = $global:Error.Count
+        try { __GhosttyHistory } catch {}
+        while ($global:Error.Count -gt $errorCount) { $global:Error.RemoveAt(0) }
         $esc = [char]27
         $bel = [char]7
         $out = ''

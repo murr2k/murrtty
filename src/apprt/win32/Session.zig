@@ -237,13 +237,154 @@ fn stateDir(alloc: Allocator) ![]u8 {
 fn fileName(self: *const Session, a: Allocator, comptime suffix: []const u8) ![]u8 {
     const dir = self.dir orelse return error.NoDirectory;
     if (self.app.config.class) |class| {
-        const safe = try a.dupe(u8, class);
-        for (safe) |*ch| if (!std.ascii.isAlphanumeric(ch.*) and ch.* != '-' and ch.* != '_' and ch.* != '.') {
-            ch.* = '_';
-        };
-        return std.fmt.allocPrint(a, "{s}\\session-{s}" ++ suffix, .{ dir, safe });
+        return std.fmt.allocPrint(a, "{s}\\session-{s}" ++ suffix, .{ dir, try safeName(a, class) });
     }
     return std.fmt.allocPrint(a, "{s}\\session" ++ suffix, .{dir});
+}
+
+/// A class as part of a file name.
+fn safeName(a: Allocator, class: []const u8) ![]u8 {
+    const safe = try a.dupe(u8, class);
+    for (safe) |*ch| if (!std.ascii.isAlphanumeric(ch.*) and ch.* != '-' and ch.* != '_' and ch.* != '.') {
+        ch.* = '_';
+    };
+    return safe;
+}
+
+// ---------------------------------------------------------------- history
+
+/// The folder of the panes' history files: `history` in the state folder
+/// (`history-<class>` for a class's murrtty).
+fn historyDir(self: *const Session, a: Allocator) ?[]u8 {
+    const dir = self.dir orelse return null;
+    if (self.app.config.class) |class| {
+        const safe = safeName(a, class) catch return null;
+        return std.fmt.allocPrint(a, "{s}\\history-{s}", .{ dir, safe }) catch null;
+    }
+    return std.fmt.allocPrint(a, "{s}\\history", .{dir}) catch null;
+}
+
+/// A pane's own command history (roadmap 5.10b part C): the file its
+/// shell's integration keeps (MURRTTY_HISTORY_FILE: PowerShell's), null
+/// while nothing is saved.
+pub fn historyPath(self: *const Session, a: Allocator, id: Id) ?[]u8 {
+    if (!self.enabled) return null;
+    const dir = self.historyDir(a) orelse return null;
+    return std.fmt.allocPrint(a, "{s}\\{s}.txt", .{ dir, &id }) catch null;
+}
+
+/// The Clink history label of a pane: Clink keeps a history of its own for
+/// each (CLINK_HISTORY_LABEL, up to 32 letters and digits), in
+/// `clink_history-<label>` beside its master history.
+pub fn clinkLabel(id: Id) [label_prefix.len + 16]u8 {
+    var out: [label_prefix.len + 16]u8 = undefined;
+    @memcpy(out[0..label_prefix.len], label_prefix);
+    @memcpy(out[label_prefix.len..], &id);
+    return out;
+}
+
+pub const label_prefix = "murrtty";
+
+/// A pane given its Clink label: a marker beside the history files
+/// (`<id>.clink`), so that murrtty removes Clink's history for the labels
+/// it gave out, never another's (cleanHistories).
+pub fn markClink(self: *Session, id: Id) void {
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = self.historyDir(a) orelse return;
+    const marker = std.fmt.allocPrint(a, "{s}\\{s}.clink", .{ dir, &id }) catch return;
+    if (exists(a, marker)) return;
+    makeDirs(a, dir) catch return;
+    writeFile(a, marker, "") catch |err| log.warn("no Clink marker for a pane err={}", .{err});
+}
+
+/// A pane closed for good (not parked for undo, not murrtty quitting or
+/// Windows ending its session, not a restore that failed): its history
+/// goes, and Clink's for it.
+pub fn paneClosed(self: *Session, id: Id) void {
+    if (!self.enabled or self.frozen or self.restoring) return;
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = self.historyDir(a) orelse return;
+    for ([_][]const u8{ "txt", "clink" }) |ext| {
+        const path = std.fmt.allocPrint(a, "{s}\\{s}.{s}", .{ dir, &id, ext }) catch continue;
+        if (std.mem.eql(u8, ext, "clink") and exists(a, path)) deleteClinkHistory(a, id);
+        deleteFile(a, path);
+    }
+}
+
+/// At start: the history files of panes the saved session doesn't have
+/// (closed while murrtty quit, parked for undo then, a restore that
+/// failed) go, and Clink's for the labels murrtty gave them (markers).
+fn cleanHistories(self: *Session, a: Allocator, state: ?State) void {
+    const dir = self.historyDir(a) orelse return;
+    var keep: std.StringHashMapUnmanaged(void) = .empty;
+    if (state) |st| for (st.windows) |w| for (w.tabs) |t| for (t.nodes) |n| {
+        if (n.pane) |p| if (paneId(p) != null) keep.put(a, p.id, {}) catch return;
+    };
+    const pattern = std.fmt.allocPrint(a, "{s}\\*", .{dir}) catch return;
+    const pattern_w = text_util.utf16Lossy(a, pattern) catch return;
+    var data: c.WIN32_FIND_DATAW = undefined;
+    const find = c.FindFirstFileExW(pattern_w.ptr, c.FindExInfoBasic, &data, c.FindExSearchNameMatch, null, 0);
+    if (find == c.INVALID_HANDLE_VALUE) return;
+    defer _ = c.FindClose(find);
+    while (true) {
+        if (historyFile(std.mem.sliceTo(&data.cFileName, 0))) |file| if (!keep.contains(&file.id)) {
+            if (std.fmt.allocPrint(a, "{s}\\{s}.{s}", .{ dir, &file.id, @tagName(file.kind) })) |path| {
+                if (file.kind == .clink) deleteClinkHistory(a, file.id);
+                deleteFile(a, path);
+            } else |_| {}
+        };
+        if (c.FindNextFileW(find, &data) == 0) break;
+    }
+}
+
+/// A file of the history folder by its name: a pane's history
+/// (`<id>.txt`) or its Clink marker (`<id>.clink`).
+fn historyFile(name_w: []const u16) ?struct { id: Id, kind: enum { txt, clink } } {
+    var buf: [32]u8 = undefined;
+    if (name_w.len > buf.len) return null;
+    for (name_w, buf[0..name_w.len]) |ch, *o| o.* = if (ch < 128) @intCast(ch) else return null;
+    const name = buf[0..name_w.len];
+    if (name.len < 18 or name[16] != '.') return null;
+    const id = paneId(.{ .id = name[0..16] }) orelse return null;
+    if (std.mem.eql(u8, name[17..], "txt")) return .{ .id = id, .kind = .txt };
+    if (std.mem.eql(u8, name[17..], "clink")) return .{ .id = id, .kind = .clink };
+    return null;
+}
+
+/// Clink's history file names for a label, as a FindFirstFile pattern:
+/// `clink_history-<label>` and the files beside it.
+fn clinkPattern(a: Allocator, profile: []const u8, id: Id) ![]u8 {
+    const label = clinkLabel(id);
+    return std.fmt.allocPrint(a, "{s}\\clink_history-{s}*", .{ profile, &label });
+}
+
+/// Clink's history for a pane's label, in Clink's profile: CLINK_PROFILE's,
+/// else its default (%LOCALAPPDATA%\clink). One a launcher's `--profile`
+/// chose elsewhere stays.
+fn deleteClinkHistory(a: Allocator, id: Id) void {
+    var environ_map = global.environMap() catch return;
+    defer environ_map.deinit();
+    const dir = if (environ_map.get("CLINK_PROFILE")) |p|
+        a.dupe(u8, p) catch return
+    else if (environ_map.get("LOCALAPPDATA")) |local|
+        std.fmt.allocPrint(a, "{s}\\clink", .{local}) catch return
+    else
+        return;
+    const pattern = clinkPattern(a, dir, id) catch return;
+    const pattern_w = text_util.utf16Lossy(a, pattern) catch return;
+    var data: c.WIN32_FIND_DATAW = undefined;
+    const find = c.FindFirstFileExW(pattern_w.ptr, c.FindExInfoBasic, &data, c.FindExSearchNameMatch, null, 0);
+    if (find == c.INVALID_HANDLE_VALUE) return;
+    defer _ = c.FindClose(find);
+    while (true) {
+        const name = std.unicode.utf16LeToUtf8Alloc(a, std.mem.sliceTo(&data.cFileName, 0)) catch break;
+        if (std.fmt.allocPrint(a, "{s}\\{s}", .{ dir, name })) |path| deleteFile(a, path) else |_| {}
+        if (c.FindNextFileW(find, &data) == 0) break;
+    }
 }
 
 /// The saved session into `pending`. A start that crashed while restoring
@@ -265,16 +406,24 @@ fn load(self: *Session) void {
         log.warn("the last start crashed while restoring: its session is kept as {s}", .{aside});
         return;
     }
-    const text = readFile(a, path) orelse return;
+    const text = readFile(a, path) orelse {
+        // No session: no pane's history is wanted. One that couldn't be
+        // read (a scanner holding it) keeps them.
+        if (missing(a, path)) self.cleanHistories(a, null);
+        return;
+    };
     self.last = alloc.dupe(u8, text) catch null;
     const parsed = std.json.parseFromSlice(State, alloc, text, .{
         .ignore_unknown_fields = true,
         .allocate = .alloc_always,
     }) catch |err| {
+        // Its histories stay this run; the next save replaces it, and the
+        // start after that clears what it doesn't name.
         log.warn("the saved session can't be read, starting without it err={}", .{err});
         return;
     };
     self.pending = parsed;
+    self.cleanHistories(a, parsed.value);
     const windows = parsed.value.windows;
     for (windows, 0..) |w, i| {
         if (w.quick) {
@@ -960,6 +1109,14 @@ fn showWarning(self: *Session, reason: []const u8) void {
 
 // ---------------------------------------------------------------- files
 
+/// Whether `path` is surely not there (not just unreadable now).
+fn missing(a: Allocator, path: []const u8) bool {
+    const w = text_util.utf16Lossy(a, path) catch return false;
+    if (c.GetFileAttributesW(w.ptr) != 0xFFFFFFFF) return false;
+    const err = c.GetLastError();
+    return err == 2 or err == 3; // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+}
+
 fn exists(a: Allocator, path: []const u8) bool {
     const w = text_util.utf16Lossy(a, path) catch return false;
     return c.GetFileAttributesW(w.ptr) != 0xFFFFFFFF;
@@ -1130,6 +1287,29 @@ test "Session: a shell of its own comes back, a one-off command doesn't" {
     try testing.expect(!ownShell(.{ .direct = &.{ "ssh", "host" } }));
     try testing.expect(!ownShell(.{ .shell = "vim notes.txt" }));
     try testing.expect(!ownShell(.{ .direct = &.{} }));
+}
+
+test "Session: a pane's Clink history label" {
+    const id: Id = "0123456789abcdef".*;
+    const label = clinkLabel(id);
+    try testing.expectEqualStrings("murrtty0123456789abcdef", &label);
+    // Clink takes up to 32 letters and digits.
+    try testing.expect(label.len <= 32);
+    for (label) |ch| try testing.expect(std.ascii.isAlphanumeric(ch));
+    // Clink 1.9 names it clink_history-<label> (`clink info` says so).
+    const pattern = try clinkPattern(testing.allocator, "C:\\p", id);
+    defer testing.allocator.free(pattern);
+    try testing.expectEqualStrings("C:\\p\\clink_history-murrtty0123456789abcdef*", pattern);
+}
+
+test "Session: the history folder's files" {
+    const L = std.unicode.utf8ToUtf16LeStringLiteral;
+    const txt = historyFile(L("0123456789abcdef.txt")).?;
+    try testing.expect(txt.kind == .txt and std.mem.eql(u8, &txt.id, "0123456789abcdef"));
+    try testing.expect(historyFile(L("0123456789abcdef.clink")).?.kind == .clink);
+    try testing.expect(historyFile(L("0123456789abcdeg.txt")) == null);
+    try testing.expect(historyFile(L("0123456789abcdef.txt.tmp")) == null);
+    try testing.expect(historyFile(L("notes.txt")) == null);
 }
 
 test "Session: pane ids" {

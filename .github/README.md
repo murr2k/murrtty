@@ -257,8 +257,10 @@ hosted Windows runner and then the unit tests.
   each terminal's directory are saved as they change (to `session.json`
   in `%LOCALAPPDATA%\murrtty`) and come back when murrtty starts, each
   terminal a fresh shell in its folder; `window-save-state = never` turns
-  it off. Fit Window to Screen (the terminal's Window menu, Alt+Space)
-  brings back a window too big for its screen.
+  it off. Each terminal's command history comes back with it, for
+  up-arrow, in PowerShell (and in cmd with Clink, untested so far). Fit
+  Window to Screen (the terminal's Window menu, Alt+Space) brings back a
+  window too big for its screen.
 - `open_config:new_window`: the config file in a new window, in `$VISUAL`
   or `$EDITOR`.
 - A configuration editor, murrtty's own (Ghostty has none): Open
@@ -380,11 +382,11 @@ hosted Windows runner and then the unit tests.
 
 **Not implemented yet**
 
-- Each terminal's command history coming back with the session (for
-  up-arrow in PowerShell and in cmd with Clink).
+- Restoring the session's command history in plain cmd (without Clink):
+  Windows has no way to give cmd a history.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) is the plan for the rest,
-continuing with each terminal's history (Phase 5) and platform quality (Phase 6:
+continuing with platform quality (Phase 6:
 DirectWrite fonts, keyboard layouts and IMEs, OpenGL fallbacks).
 
 **Known issues**

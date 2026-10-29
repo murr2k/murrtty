@@ -780,6 +780,8 @@ pub fn deinit(self: *Surface) void {
     self.program = null;
     if (self.session_dir) |d| self.app.core_app.alloc.free(d);
     self.session_dir = null;
+    // Gone for good, unless murrtty is quitting: its history too (5.10b).
+    self.app.session.paneClosed(self.session_id);
     self.resize_overlay.deinit();
     self.search.deinit();
     for ([_]*Overlay{ &self.link_overlay, &self.readonly_overlay, &self.key_overlay, &self.health_overlay }) |o| o.deinit();
@@ -1245,11 +1247,30 @@ fn confirmClipboardWrite(self: *Surface, text: []const u8, target: apprt.Clipboa
 }
 
 pub fn defaultTermioEnv(self: *Surface) !std.process.Environ.Map {
-    _ = self;
     var env = try global.environMap();
+    errdefer env.deinit();
     // A murrtty started for a request doesn't pass that on: a murrtty
     // started from its shells would wait for one too.
     _ = env.orderedRemove(ipc.launch_env);
+    // The pane's own command history (roadmap 5.10b): the file PowerShell's
+    // integration keeps, and Clink's label. Never a murrtty's own from the
+    // environment it was started with (a pane of another murrtty's).
+    _ = env.orderedRemove("MURRTTY_HISTORY_FILE");
+    if (env.get("CLINK_HISTORY_LABEL")) |label| if (std.mem.startsWith(u8, label, Session.label_prefix)) {
+        _ = env.orderedRemove("CLINK_HISTORY_LABEL");
+    };
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    if (self.app.session.historyPath(arena.allocator(), self.session_id)) |path| {
+        try env.put("MURRTTY_HISTORY_FILE", path);
+        // Clink's for cmd's integration, as the history needs it on; one
+        // the user set stays theirs.
+        if (self.app.config.@"shell-integration" != .none and env.get("CLINK_HISTORY_LABEL") == null) {
+            const label = Session.clinkLabel(self.session_id);
+            try env.put("CLINK_HISTORY_LABEL", &label);
+            self.app.session.markClink(self.session_id);
+        }
+    }
     return env;
 }
 

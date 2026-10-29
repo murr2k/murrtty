@@ -375,6 +375,10 @@ roadmap item behind it.
 - **Fit Window to Screen** (5.10b): an item in the terminal's Window
   submenu and the system menu sizing the window to its monitor's work
   area, not maximized; GTK has none.
+- **Each pane's command history** (5.10b part C): a restored pane's shell
+  gets back its own command lines for up-arrow (PowerShell through
+  PSReadLine's history file, cmd with Clink through a history label of
+  the pane's own); GTK keeps none.
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -461,9 +465,6 @@ roadmap item behind it.
   after Windows' own items; GTK has no such menu.
 
 *Decided, not built yet:*
-- **Each pane's command history** (5.10b part C): a restored pane's shell
-  gets back its own command lines for up-arrow (PowerShell, cmd with
-  Clink); GTK keeps none.
 
 ## Rules every item keeps
 
@@ -2787,16 +2788,27 @@ the buffer, the untouched system clipboard, and both pastes.
     own tabs when first summoned; until then what waits stays in the
     file.
   - **History:** through the shell integration (needs
-    `shell-integration` on, as directories do). PowerShell (PSReadLine):
-    the prompt wrapper appends each command line to the pane's file, and
-    a restored pane loads it with `PSConsoleReadLine.AddToHistory`, on top
-    of PSReadLine's own shared history, which is left as it is. cmd with
-    Clink: `ghostty.lua` the same through Clink's Lua API, on top of
-    Clink's history (to verify while building: if Clink can't take lines
-    without replacing its own, the pane gets a history label of its own).
-    Plain cmd without Clink gets none: Windows can't preload cmd's history
-    (accepted by the owner). The shell learns its file from
-    `MURRTTY_HISTORY_FILE`, which murrtty sets per pane.
+    `shell-integration` on, as directories do). The shell learns its
+    file from `MURRTTY_HISTORY_FILE`, which murrtty sets per pane.
+    PowerShell (PSReadLine): a new pane keeps PSReadLine's shared history
+    and the prompt wrapper copies each command into the pane's file; a
+    restored pane (its file there) makes that file PSReadLine's history
+    file, so up-arrow brings back its own commands, and the wrapper copies
+    each command into the shared file instead, so the shared history
+    still gets every command. Loading them on top of
+    the shared history (`PSConsoleReadLine.AddToHistory`) doesn't work:
+    PSReadLine reads its file at the first prompt, after anything added
+    earlier, and its next save writes added lines into the shared file.
+    cmd with Clink: Clink's Lua API can't add lines to its history (only
+    read them), so each pane gets a Clink history label of its own
+    (`CLINK_HISTORY_LABEL`, `murrtty<pane id>`, in
+    `clink_history-<label>`), which Clink keeps and reloads. Two costs: a
+    new cmd pane's Up starts empty rather than with the shared history,
+    and a pane's commands reach only its own Clink history, not the
+    shared one, going with the pane when it closes for good (Clink's
+    files can't safely be merged from outside). Plain cmd without Clink
+    gets none: Windows can't preload cmd's history (accepted by the
+    owner).
   - **A crash while restoring** (a marker written before, cleared after)
     makes the next start skip the restore once and say so, so a bad state
     can't keep murrtty from starting.
@@ -2862,6 +2874,39 @@ the buffer, the untouched system clipboard, and both pastes.
     (each pane's history) follow. The `session-save` and `session-restore`
     scenarios check it, an end of session called off and a failed start
     included.
+  - *Part C built 2026-10-29:* each pane's history file is
+    `history\<pane id>.txt` beside the session (`history-<class>` for a
+    class), and `MURRTTY_HISTORY_FILE` names it in the pane's environment
+    while the session is kept (never one inherited from another murrtty's
+    pane), and, with shell integration on, `CLINK_HISTORY_LABEL` unless
+    the user set their own (a `<id>.clink` marker beside the history
+    files records each label murrtty gave out). PowerShell's integration
+    sets up at the first prompt (PSReadLine loaded by then if the host
+    uses it; the script never loads it) and copies each command from
+    PowerShell's own history (`Get-History`: PSReadLine's no-duplicates
+    rule keeps a line already in the shared history out of its own list)
+    into the file PSReadLine isn't writing, unless PSReadLine's
+    `AddToHistoryHandler` keeps it from files or its save style is
+    `SaveNothing`, in PSReadLine's file format (a backtick ends each line
+    of a command but the last), after the prompt has read the last
+    command's status and with any error of its own kept out of `$Error`.
+    A restored pane's file is cut to its last 1,000 commands, then set as
+    `HistorySavePath`. A pane closed for good (its undo expired, its
+    program ended) loses its file and, if marked, Clink's
+    (`clink_history-<label>*` in `CLINK_PROFILE`, else Clink's default
+    `%LOCALAPPDATA%\clink`); quitting, the end of Windows' session and a
+    failed restore keep them; at start, files and markers no saved pane
+    names go, with the marked labels' Clink histories (only those: never
+    a scan of Clink's profile), but not when `session.json` is there yet
+    unreadable, or was put aside. The `pane-history` scenario checks
+    PowerShell 5.1 (a command copied, one already in the shared history
+    too; Up in the restored pane bringing a line only its file holds; a
+    new command there landing in it; the label; the cleanup, a marked
+    label's Clink history going and an unmarked one staying, in a Clink
+    profile of the scenario's own; a closed tab's file and Clink history
+    going after undo's 5 s). Clink itself waits for the owner's run,
+    which should also check that a cmd pane's commands come back after
+    murrtty quits, as murrtty ends cmd without letting Clink save.
   - *Part B built 2026-10-29:* `gtk-single-instance` defaults to `true`
     on Windows (by the target, so the build's own tools agree). There
     `-e` implies its usual settings (single instance off, quitting with
