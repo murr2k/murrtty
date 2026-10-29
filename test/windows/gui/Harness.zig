@@ -1579,6 +1579,56 @@ pub const Dump = struct {
     /// Undo's history (roadmap 5.11): the entries' names, oldest first, and
     /// how many tabs are parked.
     undo: struct { undo: []const []const u8 = &.{}, redo: []const []const u8 = &.{}, parked: u32 = 0 } = .{},
+    /// The configuration editor (roadmap F1), while open.
+    config_editor: ?Editor = null,
+
+    pub const Editor = struct {
+        hwnd: u64 = 0,
+        /// The search field, the list and the field over a value (0 when
+        /// none is being typed).
+        search: u64 = 0,
+        list: u64 = 0,
+        edit: u64 = 0,
+        dirty: bool = false,
+        scroll: i32 = 0,
+        content_height: i32 = 0,
+        /// The opened file.
+        path: []const u8 = "",
+        query: []const u8 = "",
+        /// The page shown ("" for all).
+        group: []const u8 = "",
+        selected: []const u8 = "",
+        expanded: []const u8 = "",
+        /// The option a field is open for.
+        editing: []const u8 = "",
+        status_error: bool = false,
+        status: []const u8 = "",
+        /// The opened file, then those it includes.
+        files: []const []const u8 = &.{},
+        /// The rows shown, in order.
+        rows: []const Row = &.{},
+
+        pub const Row = struct {
+            name: []const u8 = "",
+            group: []const u8 = "",
+            /// What its control shows.
+            value: []const u8 = "",
+            subtitle: []const u8 = "",
+            kind: []const u8 = "",
+            /// A file sets it, and which (-1 none).
+            set: bool = false,
+            source: i32 = -1,
+            /// In the list's client pixels.
+            row: [4]i32 = .{ 0, 0, 0, 0 },
+            control: [4]i32 = .{ 0, 0, 0, 0 },
+            reset: [4]i32 = .{ 0, 0, 0, 0 },
+        };
+
+        pub fn find(self: Editor, name: []const u8) ?Row {
+            for (self.rows) |r| if (std.mem.eql(u8, r.name, name)) return r;
+            return null;
+        }
+    };
 
     /// The quick terminal's state (roadmap 5.7): shown (also while it
     /// slides in), sliding, and the work area and DPI it chose.
@@ -1926,6 +1976,32 @@ pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u
 /// the panes window by window, tab by tab, from 0). Ghostty reads them in
 /// Debug builds, so this works on the hidden desktop, where captures read
 /// white.
+/// Open the configuration editor (roadmap F1; dump wparam 22), or bring it
+/// forward.
+pub fn openConfigEditor(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 22, 0);
+    d.deinit();
+}
+
+/// Paint the configuration editor as WM_PAINT does (dump wparam 23):
+/// `editor-bar-0.bmp` and `editor-list-0.bmp` beside the dump.
+pub fn snapshotConfigEditor(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 23, 0);
+    d.deinit();
+}
+
+/// Choose item `index` of the open popup menu `menu` with the keyboard
+/// (Down to it, then Enter): for a menu whose items have no access keys,
+/// as the config editor's choices.
+pub fn menuChoose(self: *Harness, menu: w.HWND, index: usize) void {
+    _ = self;
+    for (0..index + 1) |_| {
+        _ = w.PostMessageW(menu, w.WM_KEYDOWN, w.VK_DOWN, 1);
+        w.Sleep(30);
+    }
+    _ = w.PostMessageW(menu, w.WM_KEYDOWN, w.VK_RETURN, 1);
+}
+
 /// Fake a GPU driver reset for every pane (dump wparam 19): each renderer
 /// takes its context as lost at its next frame and builds itself again in
 /// a new one.

@@ -1986,6 +1986,7 @@ fn runChoice(self: *Window, surface: *Surface, choice: ContextMenu.Choice) void 
         .action => |a| self.performOnPane(surface, a),
         .about => self.app.showAbout(self.hwnd),
         .notify_next => surface.notify_next_command = !surface.notify_next_command,
+        .config_editor => self.app.openConfigEditor(),
     }
 }
 

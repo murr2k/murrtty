@@ -1462,5 +1462,80 @@ pub inline fn yParam(lparam: LPARAM) i16 {
     return @bitCast(hiword(lparam));
 }
 
+// The configuration editor (roadmap F1, ConfigEditor.zig): its list's
+// scroll bar, the search field's placeholder, a file saved whole, and the
+// color and file pickers.
+pub const WM_VSCROLL = 0x0115;
+pub const SB_VERT = 1;
+pub const SB_LINEUP = 0;
+pub const SB_LINEDOWN = 1;
+pub const SB_PAGEUP = 2;
+pub const SB_PAGEDOWN = 3;
+pub const SB_THUMBTRACK = 5;
+pub const SB_TOP = 6;
+pub const SB_BOTTOM = 7;
+pub const SIF_RANGE = 0x1;
+pub const SIF_PAGE = 0x2;
+pub const SIF_POS = 0x4;
+pub const SIF_TRACKPOS = 0x10;
+pub const SIF_ALL = 0x17;
+pub const SCROLLINFO = extern struct {
+    cbSize: UINT = @sizeOf(SCROLLINFO),
+    fMask: UINT = 0,
+    nMin: c_int = 0,
+    nMax: c_int = 0,
+    nPage: UINT = 0,
+    nPos: c_int = 0,
+    nTrackPos: c_int = 0,
+};
+pub extern "user32" fn SetScrollInfo(HWND, c_int, *const SCROLLINFO, BOOL) callconv(.winapi) c_int;
+pub extern "user32" fn GetScrollInfo(HWND, c_int, *SCROLLINFO) callconv(.winapi) BOOL;
+pub const EM_SETCUEBANNER = 0x1501;
+pub const EM_LIMITTEXT = 0x00C5;
+pub const DT_EXPANDTABS = 0x00000040;
+pub const ES_WANTRETURN = 0x1000;
+pub const MOVEFILE_REPLACE_EXISTING = 0x1;
+pub const MOVEFILE_WRITE_THROUGH = 0x8;
+pub extern "kernel32" fn MoveFileExW(LPCWSTR, LPCWSTR, DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn FlushFileBuffers(HANDLE) callconv(.winapi) BOOL;
+pub const TRUNCATE_EXISTING = 5;
+pub const ERROR_PATH_NOT_FOUND = 3;
+pub const ERROR_SHARING_VIOLATION = 32;
+pub const BY_HANDLE_FILE_INFORMATION = extern struct {
+    dwFileAttributes: DWORD,
+    ftCreationTime: FILETIME,
+    ftLastAccessTime: FILETIME,
+    ftLastWriteTime: FILETIME,
+    dwVolumeSerialNumber: DWORD,
+    nFileSizeHigh: DWORD,
+    nFileSizeLow: DWORD,
+    nNumberOfLinks: DWORD,
+    nFileIndexHigh: DWORD,
+    nFileIndexLow: DWORD,
+};
+pub extern "kernel32" fn GetFileInformationByHandle(HANDLE, *BY_HANDLE_FILE_INFORMATION) callconv(.winapi) BOOL;
+pub extern "kernel32" fn CreateHardLinkW(LPCWSTR, LPCWSTR, ?*anyopaque) callconv(.winapi) BOOL;
+pub const SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE = 0x2;
+/// Returns a BOOLEAN.
+pub extern "kernel32" fn CreateSymbolicLinkW(LPCWSTR, LPCWSTR, DWORD) callconv(.winapi) u8;
+/// dwFlags 0: the normalized name with its drive letter (`\\?\C:\...`).
+pub extern "kernel32" fn GetFinalPathNameByHandleW(HANDLE, [*]u16, DWORD, DWORD) callconv(.winapi) DWORD;
+pub const CC_RGBINIT = 0x1;
+pub const CC_FULLOPEN = 0x2;
+pub const CHOOSECOLORW = extern struct {
+    lStructSize: DWORD = @sizeOf(CHOOSECOLORW),
+    hwndOwner: ?HWND = null,
+    hInstance: ?HWND = null,
+    rgbResult: COLORREF = 0,
+    lpCustColors: [*]COLORREF,
+    Flags: DWORD = 0,
+    lCustData: LPARAM = 0,
+    lpfnHook: ?*const anyopaque = null,
+    lpTemplateName: ?[*:0]const u16 = null,
+};
+pub extern "comdlg32" fn ChooseColorW(*CHOOSECOLORW) callconv(.winapi) BOOL;
+pub extern "comdlg32" fn GetOpenFileNameW(*OPENFILENAMEW) callconv(.winapi) BOOL;
+pub const OFN_FILEMUSTEXIST = 0x00001000;
+
 /// Wide string literal.
 pub const L = @import("std").unicode.utf8ToUtf16LeStringLiteral;

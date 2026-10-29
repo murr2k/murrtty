@@ -200,6 +200,7 @@ pub const VK_CONTROL = 0x11;
 pub const VK_MENU = 0x12;
 pub const VK_PRIOR = 0x21;
 pub const VK_NEXT = 0x22;
+pub const VK_END = 0x23;
 pub const VK_INSERT = 0x2D;
 pub const VK_LEFT = 0x25;
 pub const VK_SPACE = 0x20;

@@ -346,6 +346,14 @@ roadmap item behind it.
   or `$EDITOR` itself, its words split as a command's (quotes group) with
   the file as one argument, where GTK runs it through `/bin/sh -c`; with
   neither set the file opens as `open_config` opens it, where GTK runs vi.
+- **Configuration editor** (F1b): a window for every option, drawn as
+  libadwaita's preferences window, opened by "Open Configuration Editor"
+  in the Config submenu (the terminal's, the main menu's, the system
+  menu's and the tray's) and by the command palette's entry of that name.
+  GTK has none: `open_config` opens the file in an editor. It edits the
+  file murrtty loaded, Ghostty's too, in place and in Ghostty's syntax.
+  No key binding opens it: Ghostty has no such action, and a binding to
+  one would be an error in a file Ghostty reads.
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -432,8 +440,9 @@ roadmap item behind it.
   after Windows' own items; GTK has no such menu.
 
 *Decided, not built yet:*
-- **Config editor** (F1): a GUI for every configuration option; Ghostty is
-  configured only by editing its file.
+- **Configuration editor pages** (F1c): pages for key bindings (a chord
+  captured), themes (with a preview) and fonts, a color picker and a file
+  dialog for paths; F1b edits those options as text.
 
 ## Rules every item keeps
 
@@ -3387,6 +3396,15 @@ the file by hand. Ghostty has none: its apps open the file in an editor
   imported Ghostty file would override every edit made in murrtty's; and
   a new core action, `open_config_editor`, which runtimes without an
   editor take as `open_config` (a binding needs a core action either way).
+  *Changed 2026-10-28 by the owner's request to keep Ghostty's file
+  working:* the editor edits the file murrtty loaded, in place, whether
+  murrtty's own or Ghostty's (murrtty falls back to it), and never copies
+  it: a copy would stop Ghostty's later edits reaching murrtty. murrtty
+  adds no option names over Ghostty 1.4 and only two values
+  (`shell-integration = cmd` and `powershell`), which the editor marks
+  as murrtty's alone. There is no core action: a binding to a name
+  Ghostty lacks makes the whole line an error for Ghostty, so the editor
+  opens from menus and the palette only.
 
 *Done when:* every option can be set and reset from the editor, saving
 without changes leaves the file byte-identical, and the GUI harness drives
@@ -3424,6 +3442,82 @@ a search, an edit, a key-binding capture and a save.
     message, so the editor can refuse what the loader would.
 - Unit tests check what the loader's own `LineIterator` reads back from
   each edited file.
+
+*F1b built 2026-10-28, the window:*
+- `src/config/EditorSession.zig`: the files the loader reads at start
+  (`edit.defaultFiles`: a legacy `config` before `config.ghostty`,
+  murrtty's own or else Ghostty's) and their `config-file` includes, in
+  the loader's order: its one `config-file` list, filled from every
+  top-level file in turn and then from each file it names (an empty
+  value empties it; a top-level file named again applies again). An
+  include that isn't there, or holds a line the loader can't read, is
+  left alone; one that can't be read (in use, access denied) is said in
+  a dialog as the editor opens, since what it sets isn't shown. The main
+  file is the one `open_config` opens. An option's source is the last
+  file that sets it, the one whose value the loader keeps.
+  - `set` writes a single value to that file, or to the main file when
+    none sets it; a list (`setList`) is written in the main file only.
+  - `reset` removes the option from every file (a list from the main
+    file), so the default applies again.
+  - A change of `config-file` finds the includes again: a file dropped
+    stops counting (an edit already made in it is still saved), a file
+    added is read and applies where the loader puts it.
+  - `changedFiles` lists what a save writes; untouched files stay as
+    they were, byte for byte.
+- An old spelling the loader still takes for a renamed option
+  (`option_list.renamed`: `scrollback-limit`, `background-blur-radius`,
+  `adw-toolbar-style`) counts as the option's line, and a line the
+  editor changes keeps the name it is written with, so a Ghostty from
+  before the rename still reads it. A unit test fails on a new
+  `Config.compatibility` entry until it is classified.
+- `edit.openPath` (`open_config`, Ctrl+,) now picks from the files the
+  loader reads: murrtty's own whenever one exists, even empty, never
+  Ghostty's beside it. Before, a non-empty Ghostty file won over an
+  empty murrtty one, so Ctrl+, opened a file murrtty wasn't reading.
+- `src/apprt/win32/ConfigEditor.zig`: one window per murrtty, as
+  libadwaita's preferences window draws it (its colors and metrics from
+  `draw.adwaita`, light or dark with `window-theme`).
+  - A search field (names and documentation, `option_list.matches`) and
+    a page picker (`option_list.Group`: Fonts, Colors, Window and so on)
+    over a list of rounded cards, one row per option: the name, a line
+    of documentation (or where the value comes from), the value's
+    control and a reset button when the option is set.
+  - Per kind: a switch for toggles, a menu for choices
+    (`ContextMenu.pick`), a menu that stays open for flags, a swatch and
+    field for colors, and a field for numbers, paths and text; a list
+    opens a multi-line field, one value a line, `""` for the empty value
+    that resets a list (blank lines are only space). A row opens to show
+    its whole documentation.
+  - Flags read as the loader reads them: what a value doesn't name keeps
+    its type's default (`Option.flag_defaults`), and a change writes
+    only the flags that differ from those (`no-cursor,sudo`).
+  - Each value goes through `option_list.check` before it is taken; the
+    loader's message shows in the status line and nothing changes.
+  - Save writes each changed file to a temporary file beside it and
+    moves it over (`MoveFileExW`, write-through), refuses a file that
+    changed on disk since it was read until asked to replace it, then
+    reloads the configuration and says when the change applies (at once,
+    new terminals or a restart, from `option_list.reload`). Through a
+    symbolic link the file it names is written and the link stays; a
+    file with other hard links is written over in place. A file that
+    can't be read (in use, access denied) isn't opened or saved: the
+    editor never shows defaults a save would write over it.
+  - Its menus and dialogs keep "one dialog at a time": another window's
+    dialog disables it (`App.beginModal`), its fields' own menus and its
+    system menu run in modal scopes.
+  - Closing with unsaved changes asks: Save, Discard or Cancel. murrtty
+    doesn't quit while the editor is open (`App.checkQuit`), and Quit
+    asks the editor first.
+- GUI scenario `config-editor` drives it from the context menu and the
+  palette: searches, a list taken unchanged (its reset line kept), a
+  number taken and one refused, a switch and its reset, a choice, a
+  murrtty-only value pointed out, a list's new line beside the old,
+  flags read from their defaults, a save that changes only the edited
+  lines and reloads, Cancel and Discard on closing, the editor disabled
+  under a terminal's dialog, a save with nothing changed, a Ghostty-only
+  configuration edited in place with no murrtty file made, and an empty
+  murrtty file chosen over Ghostty's.
+  The opt-in `config-editor-look` writes its pictures, dark and light.
 
 ---
 

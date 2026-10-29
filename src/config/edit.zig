@@ -74,7 +74,7 @@ const ConfigPathResult = struct {
 /// The allocator must be an arena allocator. No memory is freed by this
 /// function and the resulting path is not all the memory that is allocated.
 fn configPath(alloc_arena: Allocator) !ConfigPathResult {
-    const paths: []const []const u8 = try configPathCandidates(alloc_arena);
+    const paths: []const []const u8 = try loadedGroup(alloc_arena);
     assert(paths.len > 0);
 
     // Find the first path that exists and is non-empty. If no paths are
@@ -117,6 +117,63 @@ fn configPath(alloc_arena: Allocator) !ConfigPathResult {
         .name = paths[0],
         .exists = false,
     };
+}
+
+/// The candidates the loader reads from: for murrtty, its own files if
+/// either exists, else Ghostty's if either does, else its own (where a new
+/// file is made), as `Config.loadDefaultFiles` decides; it never reads
+/// Ghostty's beside an existing file of murrtty's, even an empty one.
+fn loadedGroup(alloc_arena: Allocator) ![]const []const u8 {
+    const paths = try configPathCandidates(alloc_arena);
+    if (comptime !build_config.murrtty) return paths;
+    const own = paths[0 .. paths.len - 2];
+    const ghostty = paths[paths.len - 2 ..];
+    if (try anyExists(own) or !try anyExists(ghostty)) return own;
+    return ghostty;
+}
+
+fn anyExists(paths: []const []const u8) !bool {
+    for (paths) |path| {
+        const f = std.Io.Dir.openFileAbsolute(global.io(), path, .{}) catch |err| switch (err) {
+            error.BadPathName, error.FileNotFound => continue,
+            // Some other error: it exists, as configPath takes it.
+            else => return true,
+        };
+        f.close(global.io());
+        return true;
+    }
+    return false;
+}
+
+/// The default files the loader reads at start that exist, in the order it
+/// reads them (a legacy `config` before `config.ghostty`), from the group
+/// `loadedGroup` picks: what the config editor edits. Free with
+/// `freeDefaultFiles`.
+pub fn defaultFiles(alloc_gpa: Allocator) ![][]u8 {
+    var arena = ArenaAllocator.init(alloc_gpa);
+    defer arena.deinit();
+    const group = try loadedGroup(arena.allocator());
+    var out: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (out.items) |f| alloc_gpa.free(f);
+        out.deinit(alloc_gpa);
+    }
+    // The candidates list the new name before the legacy one; the loader
+    // reads the legacy one first.
+    var i = group.len;
+    while (i > 0) {
+        i -= 1;
+        if (!try anyExists(group[i .. i + 1])) continue;
+        const path = try alloc_gpa.dupe(u8, group[i]);
+        errdefer alloc_gpa.free(path);
+        try out.append(alloc_gpa, path);
+    }
+    return out.toOwnedSlice(alloc_gpa);
+}
+
+pub fn freeDefaultFiles(alloc_gpa: Allocator, files: []const []u8) void {
+    for (files) |f| alloc_gpa.free(f);
+    alloc_gpa.free(files);
 }
 
 /// Returns a const list of possible paths the main config file could be

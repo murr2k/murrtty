@@ -37,6 +37,9 @@ const Item = union(enum) {
     submenu: struct { label: []const u8, items: []const Item },
     /// murrtty's About box, which no core action shows.
     about: []const u8,
+    /// The configuration editor (roadmap F1), murrtty's own: no core
+    /// action opens it, so a configuration naming one stays Ghostty's.
+    config_editor: []const u8,
 };
 
 /// What was chosen from a menu.
@@ -45,6 +48,7 @@ pub const Choice = union(enum) {
     about,
     /// Toggle the pane's Notify on Next Command Finish.
     notify_next,
+    config_editor,
 };
 
 /// Whom a menu is for: a pane's menus act on their pane, the tray's on the
@@ -74,6 +78,7 @@ const split_submenu = [_]Item{
 
 /// The Config submenu, likewise.
 const config_submenu = [_]Item{
+    .{ .config_editor = "Open Configuration &Editor" },
     act("&Open Configuration in OS Editor", .{ .open_config = .os_open }),
     act("Open Configuration in New &Window", .{ .open_config = .new_window }),
     act("&Reload Configuration", .reload_config),
@@ -422,17 +427,57 @@ pub fn trackMain(surface: *Surface, screen: c.POINT) ?Choice {
     return show(.of(surface), &main_items, null, surface.window.hwnd, screen, .right);
 }
 
-/// The tray icon's menu, owned by its window `owner`, at `screen`; the
-/// app-wide action chosen, if any.
-pub fn trackTray(app: *App, owner: c.HWND, screen: c.POINT) ?Action {
-    return actionOf(show(.{ .app = app, .surface = null }, &tray_items, null, owner, screen, .left));
+/// The tray icon's menu, owned by its window `owner`, at `screen`; what
+/// was chosen, if anything.
+pub fn trackTray(app: *App, owner: c.HWND, screen: c.POINT) ?Choice {
+    return show(.{ .app = app, .surface = null }, &tray_items, null, owner, screen, .left);
 }
 
 fn actionOf(choice: ?Choice) ?Action {
     return switch (choice orelse return null) {
         .action => |a| a,
-        .about, .notify_next => null,
+        .about, .notify_next, .config_editor => null,
     };
+}
+
+/// A menu of `labels` at `screen` (its top left), owned by `owner`: the
+/// config editor's choices, flags and pages, as the other menus look. The
+/// items `checked` says are checked; the index chosen, if any.
+pub fn pick(app: *App, owner: c.HWND, screen: c.POINT, labels: []const []const u8, checked: []const bool) ?usize {
+    const alloc = app.core_app.alloc;
+    var built: Built = .{ .look = Look.init(app, c.GetDpiForWindow(owner)) };
+    defer built.deinit(alloc);
+    const menu = c.CreatePopupMenu() orelse return null;
+    defer _ = c.DestroyMenu(menu);
+    const info: c.MENUINFO = .{ .fMask = c.MIM_BACKGROUND, .hbrBack = built.look.?.brush };
+    _ = c.SetMenuInfo(menu, &info);
+    const any_checked = for (checked) |ck| {
+        if (ck) break true;
+    } else false;
+    for (labels, 0..) |label, i| {
+        // An "&" in a value is itself, not an access key.
+        var buf: [256]u8 = undefined;
+        var w: std.Io.Writer = .fixed(&buf);
+        for (label) |ch| {
+            if (ch == '&') w.writeByte('&') catch break;
+            w.writeByte(ch) catch break;
+        }
+        const text = addString(alloc, &built, w.buffered()) catch return null;
+        append(alloc, &built, menu, .item, text, i + 1, false, null) catch return null;
+        if (i < checked.len and checked[i]) _ = c.CheckMenuItem(menu, @intCast(i + 1), c.MF_BYCOMMAND | c.MF_CHECKED);
+    }
+    if (any_checked) for (built.draws.items) |*d| {
+        d.indent = true;
+    };
+    showing = &built;
+    defer showing = null;
+    var modal = app.beginModal(owner, .{ .disable_others = false });
+    defer modal.end();
+    if (comptime @import("test_hooks.zig").enabled) app.test_state.menus_shown += 1;
+    const id = c.TrackPopupMenuEx(menu, c.TPM_RETURNCMD | c.TPM_RIGHTBUTTON | c.TPM_NONOTIFY, screen.x, screen.y, owner, null);
+    _ = c.PostMessageW(owner, c.WM_NULL, 0, 0);
+    if (id <= 0 or id > labels.len) return null;
+    return @intCast(id - 1);
 }
 
 fn show(
@@ -535,6 +580,12 @@ fn fill(
             var free: [64]u8 = undefined;
             const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
             try built.choices.append(alloc, .about);
+            try append(alloc, built, menu, .item, text, built.nextId(), false, null);
+        },
+        .config_editor => |label| {
+            var free: [64]u8 = undefined;
+            const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
+            try built.choices.append(alloc, .config_editor);
             try append(alloc, built, menu, .item, text, built.nextId(), false, null);
         },
         .submenu => |s| {
@@ -812,7 +863,7 @@ test "system menu items: access keys of their own, clear of the system's" {
         const label = switch (item) {
             .action => |a| a.label,
             .submenu => |s| s.label,
-            .about, .unavailable, .notify_next => |l| l,
+            .about, .unavailable, .notify_next, .config_editor => |l| l,
             .separator => continue,
         };
         const k = accessKey(u8, label) orelse return error.NoAccessKey;

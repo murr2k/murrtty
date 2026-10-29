@@ -255,6 +255,13 @@ hosted Windows runner and then the unit tests.
   `--class=` keeps separate instances apart.
 - `open_config:new_window`: the config file in a new window, in `$VISUAL`
   or `$EDITOR`.
+- A configuration editor, murrtty's own (Ghostty has none): Open
+  Configuration Editor in the Config menus and the command palette. Every
+  option with its documentation, a search and pages, a switch, menu or
+  field for each kind of value, reset, and a save that rewrites only the
+  changed lines of the files murrtty reads, Ghostty's too, in Ghostty's
+  own syntax, then reloads. Key bindings, themes and fonts are edited as
+  text for now.
 - Desktop notifications from programs (OSC 9, OSC 777;notify), as
   Windows toasts, with an icon in the notification area while one waits;
   a click brings the terminal forward, and a notification goes once its
@@ -491,7 +498,9 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   `%LOCALAPPDATA%\ghostty\config.ghostty` exists, murrtty reads that one
   instead, and Open Configuration (`Ctrl+,`) opens it; copy it into the
   murrtty folder to give murrtty settings of its own. With neither, murrtty
-  creates its file as a commented template on first launch. Everything handled by Ghostty's
+  creates its file as a commented template on first launch. Open
+  Configuration Editor (in the Config menu and the command palette) edits
+  it without a text editor and keeps it a file Ghostty reads. Everything handled by Ghostty's
   shared core works as documented in the
   [configuration reference](https://ghostty.org/docs/config): fonts, colors,
   themes, keybindings, the shell and so on. Options that the macOS and GTK

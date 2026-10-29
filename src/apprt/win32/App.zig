@@ -27,6 +27,7 @@ const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
 const Undo = @import("Undo.zig");
 const Inspector = @import("Inspector.zig");
+const ConfigEditor = @import("ConfigEditor.zig");
 const wgl = @import("opengl").wgl;
 const gl_diagnosis = @import("gl_diagnosis.zig");
 const taskbar = @import("taskbar.zig");
@@ -272,6 +273,10 @@ started: bool = false,
 taskbar_button_msg: c.UINT = 0,
 taskbar_list: ?*taskbar.List = null,
 
+/// The configuration editor (roadmap F1), while it is open; it keeps
+/// murrtty running (checkQuit).
+config_editor: ?*ConfigEditor = null,
+
 /// The GUI test harness's state dump (Debug builds only; see test_hooks).
 test_state: test_hooks.State = .{},
 
@@ -328,6 +333,7 @@ pub fn init(
     try Banner.registerClass(instance);
     try Notifications.registerClass(instance);
     try Inspector.registerClass(instance);
+    try ConfigEditor.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wakeupWndProc,
@@ -453,6 +459,7 @@ pub fn terminate(self: *App) void {
     // With the requests it queued that the loop never took.
     if (self.ipc_server) |s| s.stop();
     self.ipc_server = null;
+    if (self.config_editor) |editor| editor.destroy();
     while (self.windows.items.len > 0) {
         _ = c.DestroyWindow(self.windows.items[self.windows.items.len - 1].hwnd);
     }
@@ -956,12 +963,18 @@ pub fn beginModal(self: *App, owner: ?c.HWND, opts: ModalOptions) Modal {
             modal.lowered_quick = q.id;
         };
         const alloc = self.core_app.alloc;
-        for (self.windows.items) |w| {
-            if (owner != null and w.hwnd == owner.?) continue;
+        var others: std.ArrayList(c.HWND) = .empty;
+        defer others.deinit(alloc);
+        for (self.windows.items) |w| others.append(alloc, w.hwnd) catch {};
+        // The configuration editor too: its own dialogs and a reload must
+        // not run inside another dialog's loop.
+        if (self.config_editor) |e| others.append(alloc, e.hwnd) catch {};
+        for (others.items) |hwnd| {
+            if (owner != null and hwnd == owner.?) continue;
             // EnableWindow returns 0 if the window was enabled before.
-            if (c.EnableWindow(w.hwnd, c.FALSE) == 0) {
-                modal.disabled.append(alloc, w.hwnd) catch {
-                    _ = c.EnableWindow(w.hwnd, c.TRUE);
+            if (c.EnableWindow(hwnd, c.FALSE) == 0) {
+                modal.disabled.append(alloc, hwnd) catch {
+                    _ = c.EnableWindow(hwnd, c.TRUE);
                 };
             }
         }
@@ -1324,6 +1337,8 @@ pub fn windowDestroyed(self: *App, window: *Window) void {
 /// run() has opened the first window or the tray.
 fn checkQuit(self: *App) void {
     if (!self.started or self.quitting or self.windows.items.len > 0) return;
+    // The configuration editor open: it asks before its changes go.
+    if (self.config_editor != null) return;
     // Started for a request: its own timer decides.
     if (self.ipc_launch and !self.requested_window) return;
     const config = &self.config;
@@ -1349,6 +1364,25 @@ fn startQuitTimer(self: *App) void {
 fn stopQuitTimer(self: *App) void {
     if (self.quit_timer == .active) _ = c.KillTimer(self.wakeup_hwnd, quit_timer_id);
     self.quit_timer = .off;
+}
+
+/// Open the configuration editor (roadmap F1), or bring it forward.
+pub fn openConfigEditor(self: *App) void {
+    if (self.modal_depth > 0) return self.raiseModal();
+    ConfigEditor.open(self);
+}
+
+/// The configuration editor closed: murrtty may now quit (checkQuit).
+pub fn configEditorClosed(self: *App) void {
+    self.checkQuit();
+}
+
+/// Reload the configuration from its files, as a reload_config the user
+/// asked for: the config editor's save.
+pub fn reloadConfigFiles(self: *App) void {
+    self.reloadConfig(.app, false) catch |err| {
+        log.warn("error reloading the configuration err={}", .{err});
+    };
 }
 
 /// The tray (roadmap 5.6), while murrtty can run with no window:
@@ -1449,8 +1483,11 @@ pub fn ownsWindow(_: *const App, hwnd: c.HWND) bool {
 /// action chosen. One dialog or menu at a time.
 pub fn trayMenu(self: *App, owner: c.HWND, at: c.POINT) void {
     if (self.modal_depth > 0) return self.raiseModal();
-    const action = ContextMenu.trackTray(self, owner, at) orelse return;
-    self.runAppAction(action);
+    switch (ContextMenu.trackTray(self, owner, at) orelse return) {
+        .action => |action| self.runAppAction(action),
+        .config_editor => self.openConfigEditor(),
+        .about, .notify_next => {},
+    }
 }
 
 fn runAppAction(self: *App, action: input.Binding.Action) void {
@@ -1489,6 +1526,8 @@ fn confirmCloseAll(self: *App, target: CloseTarget) bool {
 }
 
 fn quit(self: *App) void {
+    // The configuration editor's changes first: Save, Discard or Cancel.
+    if (self.config_editor) |editor| if (!editor.allowQuit()) return;
     if (!self.confirmCloseAll(.app)) return;
     self.closeAllWindows(false);
     self.quitNow();

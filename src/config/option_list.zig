@@ -49,6 +49,11 @@ pub const Option = struct {
     /// The names a `choice` takes, or the flags of `flags`; else empty.
     names: []const []const u8,
 
+    /// For `flags`, each flag's state before a value names it: the loader
+    /// starts a set of flags from its type's own defaults (`T{}`) and
+    /// changes only those the value names. Else empty.
+    flag_defaults: []const bool,
+
     /// Whether an empty value unsets it.
     optional: bool,
 
@@ -126,6 +131,7 @@ const options: [option_count]Option = options: {
             .name = f,
             .kind = kindOf(V),
             .names = namesOf(V),
+            .flag_defaults = flagDefaultsOf(V),
             .optional = optional,
             .doc = doc,
         };
@@ -180,6 +186,16 @@ fn namesOf(comptime T: type) []const []const u8 {
         else => {},
     }
     return &.{};
+}
+
+fn flagDefaultsOf(comptime T: type) []const bool {
+    if (comptime kindOf(T) != .flags) return &.{};
+    const names = @typeInfo(T).@"struct".field_names;
+    const d: T = .{};
+    var out: [names.len]bool = undefined;
+    for (names, 0..) |name, i| out[i] = @field(d, name);
+    const final = out;
+    return &final;
 }
 
 /// A type's name without its namespaces: `Config.RepeatableString` is
@@ -265,7 +281,329 @@ pub fn check(alloc: Allocator, name: []const u8, value: ?[]const u8) Allocator.E
     return try alloc.dupe(u8, found[0].message);
 }
 
+/// The editor's pages, named as a preferences window's would be. Labels
+/// say "and", not "&": the group picker is a menu, where "&" marks an
+/// access key.
+pub const Group = enum {
+    fonts,
+    colors,
+    background,
+    cursor,
+    window,
+    tabs,
+    mouse,
+    clipboard,
+    keyboard,
+    shell,
+    scrollback,
+    notifications,
+    quick_terminal,
+    gtk,
+    terminal,
+    platforms,
+    other,
+
+    pub fn title(self: Group) []const u8 {
+        return switch (self) {
+            .fonts => "Fonts",
+            .colors => "Colors",
+            .background => "Background",
+            .cursor => "Cursor",
+            .window => "Window",
+            .tabs => "Tabs and Splits",
+            .mouse => "Mouse and Selection",
+            .clipboard => "Clipboard",
+            .keyboard => "Keyboard",
+            .shell => "Shell and Commands",
+            .scrollback => "Scrollback",
+            .notifications => "Notifications and Bell",
+            .quick_terminal => "Quick Terminal",
+            .gtk => "GTK",
+            .terminal => "Terminal",
+            .platforms => "macOS and Linux",
+            .other => "Other",
+        };
+    }
+};
+
+/// Which page an option goes on, by its name: the first rule it matches,
+/// the most particular first (`window-new-tab-position` is a tab's before
+/// a window's). An option upstream adds lands by its prefix, else in Other.
+pub fn groupOf(name: []const u8) Group {
+    const Rule = struct { []const u8, Group, enum { exact, prefix } };
+    const rules = [_]Rule{
+        .{ "window-new-tab-position", .tabs, .exact },
+        .{ "window-show-tab-bar", .tabs, .exact },
+        .{ "tab-inherit-working-directory", .tabs, .exact },
+        .{ "split-inherit-working-directory", .tabs, .exact },
+        .{ "window-inherit-working-directory", .window, .exact },
+        .{ "notify-on-command-finish", .notifications, .prefix },
+        .{ "gtk-quick-terminal-", .quick_terminal, .prefix },
+        .{ "quick-terminal-", .quick_terminal, .prefix },
+        .{ "clipboard-codepoint-map", .clipboard, .exact },
+        .{ "cursor-", .cursor, .prefix },
+        .{ "adjust-cursor-", .cursor, .prefix },
+        .{ "font-", .fonts, .prefix },
+        .{ "adjust-", .fonts, .prefix },
+        .{ "grapheme-width-method", .fonts, .exact },
+        .{ "freetype-load-flags", .fonts, .exact },
+        .{ "background-", .background, .prefix },
+        .{ "theme", .colors, .exact },
+        .{ "background", .colors, .exact },
+        .{ "foreground", .colors, .exact },
+        .{ "palette", .colors, .prefix },
+        .{ "selection-foreground", .colors, .exact },
+        .{ "selection-background", .colors, .exact },
+        .{ "search-", .colors, .prefix },
+        .{ "minimum-contrast", .colors, .exact },
+        .{ "bold-color", .colors, .exact },
+        .{ "faint-opacity", .colors, .exact },
+        .{ "alpha-blending", .colors, .exact },
+        .{ "selection-", .mouse, .prefix },
+        .{ "mouse-", .mouse, .prefix },
+        .{ "scroll-to-bottom", .mouse, .exact },
+        .{ "copy-on-select", .mouse, .exact },
+        .{ "right-click-action", .mouse, .exact },
+        .{ "middle-click-action", .mouse, .exact },
+        .{ "click-repeat-interval", .mouse, .exact },
+        .{ "focus-follows-mouse", .mouse, .exact },
+        .{ "link", .mouse, .prefix },
+        .{ "clipboard-", .clipboard, .prefix },
+        .{ "split-", .tabs, .prefix },
+        .{ "unfocused-split-", .tabs, .prefix },
+        .{ "window-", .window, .prefix },
+        .{ "maximize", .window, .exact },
+        .{ "fullscreen", .window, .exact },
+        .{ "title", .window, .exact },
+        .{ "class", .window, .exact },
+        .{ "x11-instance-name", .window, .exact },
+        .{ "initial-window", .window, .exact },
+        .{ "resize-overlay", .window, .prefix },
+        .{ "drag-handle", .window, .exact },
+        .{ "confirm-close-surface", .window, .exact },
+        .{ "quit-after-last-window-closed", .window, .prefix },
+        .{ "undo-timeout", .window, .exact },
+        .{ "keybind", .keyboard, .exact },
+        .{ "key-remap", .keyboard, .exact },
+        .{ "command-palette-entry", .keyboard, .exact },
+        .{ "command", .shell, .exact },
+        .{ "initial-command", .shell, .exact },
+        .{ "working-directory", .shell, .exact },
+        .{ "shell-integration", .shell, .prefix },
+        .{ "env", .shell, .exact },
+        .{ "input", .shell, .exact },
+        .{ "wait-after-command", .shell, .exact },
+        .{ "abnormal-command-exit-runtime", .shell, .exact },
+        .{ "scrollback-", .scrollback, .prefix },
+        .{ "scrollbar", .scrollback, .exact },
+        .{ "bell-", .notifications, .prefix },
+        .{ "app-notifications", .notifications, .exact },
+        .{ "desktop-notifications", .notifications, .exact },
+        .{ "progress-style", .notifications, .exact },
+        .{ "gtk-", .gtk, .prefix },
+        .{ "macos-", .platforms, .prefix },
+        .{ "linux-", .platforms, .prefix },
+        .{ "term", .terminal, .exact },
+        .{ "enquiry-response", .terminal, .exact },
+        .{ "osc-", .terminal, .prefix },
+        .{ "vt-", .terminal, .prefix },
+        .{ "title-report", .terminal, .exact },
+        .{ "image-storage-limit", .terminal, .exact },
+        .{ "custom-shader", .terminal, .prefix },
+        .{ "async-backend", .terminal, .exact },
+    };
+    for (rules) |r| {
+        const hit = switch (r[2]) {
+            .exact => std.mem.eql(u8, name, r[0]),
+            .prefix => std.mem.startsWith(u8, name, r[0]),
+        };
+        if (hit) return r[1];
+    }
+    return .other;
+}
+
+/// An option's documentation in a line: its first sentence (up to a
+/// period and a space or line break, or a blank line), line breaks as
+/// spaces and Markdown's backticks dropped, cut to fit `buf`.
+pub fn summary(doc: []const u8, buf: []u8) []const u8 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < doc.len and n < buf.len) : (i += 1) {
+        const ch = doc[i];
+        if (ch == '\n' and i + 1 < doc.len and doc[i + 1] == '\n') break;
+        if (ch == '`') continue;
+        buf[n] = if (ch == '\n' or ch == '\r') ' ' else ch;
+        n += 1;
+        if (ch == '.' and (i + 1 == doc.len or doc[i + 1] == ' ' or doc[i + 1] == '\n')) break;
+    }
+    return std.mem.trim(u8, buf[0..n], " ");
+}
+
+/// Whether `option` matches what was typed into the search: every word of
+/// it, ignoring case, in its name or its documentation.
+pub fn matches(option: *const Option, query: []const u8) bool {
+    var words = std.mem.tokenizeAny(u8, query, " \t");
+    while (words.next()) |word| {
+        if (std.ascii.findIgnoreCase(option.name, word) == null and
+            std.ascii.findIgnoreCase(option.doc, word) == null) return false;
+    }
+    return true;
+}
+
+/// Whether Ghostty refuses `value` for `name`: values murrtty takes of its
+/// own, which would make a configuration Ghostty also reads report an
+/// error there (roadmap F1, compatibility with Ghostty's files).
+pub fn ghosttyLacks(name: []const u8, value: []const u8) bool {
+    if (std.mem.eql(u8, name, "shell-integration")) {
+        // Windows' shells (roadmap 2.2, 2.3).
+        return std.mem.eql(u8, value, "cmd") or std.mem.eql(u8, value, "powershell");
+    }
+    return false;
+}
+
+/// Old spellings the loader still takes for an option renamed since
+/// (`Config.compatibility`'s `compatibilityRenamed` entries): the editor
+/// reads a line with the old name as the new one's, and a line it changes
+/// keeps the name it has (any Ghostty since the rename reads both; one from
+/// before reads only the old).
+pub const renamed = [_]struct { old: []const u8, new: []const u8 }{
+    .{ .old = "background-blur-radius", .new = "background-blur" },
+    .{ .old = "adw-toolbar-style", .new = "gtk-toolbar-style" },
+    .{ .old = "scrollback-limit", .new = "scrollback-limit-bytes" },
+};
+
+/// `Config.compatibility`'s other entries for names no option has now: a
+/// removed option whose value the loader maps onto another option's
+/// (`bold-is-bright = true` is `bold-color = bright`). The editor shows
+/// these lines as they are and doesn't edit them.
+const mapped_away = [_][]const u8{
+    "cursor-invert-fg-bg",
+    "selection-invert-fg-bg",
+    "bold-is-bright",
+};
+
+/// Whether a line keyed `written` sets the option `name`: its own name, or
+/// an old spelling of it (`renamed`).
+pub fn keyFor(written: []const u8, name: []const u8) bool {
+    if (std.mem.eql(u8, written, name)) return true;
+    for (renamed) |r| {
+        if (std.mem.eql(u8, written, r.old) and std.mem.eql(u8, name, r.new)) return true;
+    }
+    return false;
+}
+
 const testing = std.testing;
+
+test "option_list: every compatibility entry classified" {
+    // A new entry upstream fails here until it is put in `renamed` (a plain
+    // rename) or `mapped_away` (a removed option's value moved elsewhere),
+    // or is an option of today's whose old values the loader maps.
+    for (Config.compatibility.keys()) |key| {
+        if (find(key) != null) continue;
+        const is_renamed = for (renamed) |r| {
+            if (std.mem.eql(u8, r.old, key)) break true;
+        } else false;
+        const is_mapped = for (mapped_away) |m| {
+            if (std.mem.eql(u8, m, key)) break true;
+        } else false;
+        if (!is_renamed and !is_mapped) {
+            std.debug.print("unclassified compatibility entry: {s}\n", .{key});
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // Each rename is one: the old name sets the new option as the new name
+    // does, from a value that isn't its default.
+    const samples = [_][]const u8{ "20", "flat", "1000" };
+    for (renamed, samples) |r, sample| {
+        try testing.expect(find(r.new) != null);
+        try testing.expect(find(r.old) == null);
+        var formatted: [2][]u8 = undefined;
+        for ([_][]const u8{ r.old, r.new }, 0..) |key, i| {
+            var config: Config = try .default(testing.allocator);
+            defer config.deinit();
+            const arg = try std.fmt.allocPrint(testing.allocator, "--{s}={s}", .{ key, sample });
+            defer testing.allocator.free(arg);
+            var iter = args.sliceIterator(&.{arg});
+            try args.parse(Config, testing.allocator, &config, &iter);
+            try testing.expectEqual(0, config._diagnostics.items().len);
+            const v = try values(testing.allocator, &config, r.new);
+            defer freeValues(testing.allocator, v);
+            formatted[i] = try testing.allocator.dupe(u8, v[0]);
+        }
+        defer for (formatted) |f| testing.allocator.free(f);
+        try testing.expectEqualStrings(formatted[1], formatted[0]);
+        var defaults: Config = try .default(testing.allocator);
+        defer defaults.deinit();
+        const d = try values(testing.allocator, &defaults, r.new);
+        defer freeValues(testing.allocator, d);
+        try testing.expect(!std.mem.eql(u8, d[0], formatted[0]));
+    }
+
+    try testing.expect(keyFor("scrollback-limit", "scrollback-limit-bytes"));
+    try testing.expect(keyFor("scrollback-limit-bytes", "scrollback-limit-bytes"));
+    try testing.expect(!keyFor("scrollback-limit-bytes", "scrollback-limit"));
+    try testing.expect(!keyFor("scrollback-limit", "scrollback-limit-lines"));
+}
+
+test "option_list: flags start from their type's defaults" {
+    const o = find("shell-integration-features").?;
+    try testing.expectEqual(o.names.len, o.flag_defaults.len);
+    const T = Config.ShellIntegrationFeatures;
+    const d: T = .{};
+    inline for (@typeInfo(T).@"struct".field_names, 0..) |name, i| {
+        try testing.expectEqual(@field(d, name), o.flag_defaults[i]);
+    }
+    try testing.expectEqual(0, find("font-size").?.flag_defaults.len);
+}
+
+test "option_list: every option on a page, the particular before the general" {
+    try testing.expectEqual(Group.tabs, groupOf("window-new-tab-position"));
+    try testing.expectEqual(Group.window, groupOf("window-decoration"));
+    try testing.expectEqual(Group.cursor, groupOf("cursor-style"));
+    try testing.expectEqual(Group.cursor, groupOf("adjust-cursor-thickness"));
+    try testing.expectEqual(Group.fonts, groupOf("adjust-cell-width"));
+    try testing.expectEqual(Group.colors, groupOf("background"));
+    try testing.expectEqual(Group.background, groupOf("background-opacity"));
+    try testing.expectEqual(Group.colors, groupOf("selection-foreground"));
+    try testing.expectEqual(Group.mouse, groupOf("selection-word-chars"));
+    try testing.expectEqual(Group.notifications, groupOf("notify-on-command-finish-after"));
+    try testing.expectEqual(Group.quick_terminal, groupOf("gtk-quick-terminal-layer"));
+    try testing.expectEqual(Group.gtk, groupOf("gtk-titlebar"));
+    try testing.expectEqual(Group.platforms, groupOf("macos-option-as-alt"));
+    try testing.expectEqual(Group.shell, groupOf("command"));
+    try testing.expectEqual(Group.other, groupOf("auto-update"));
+    // No page is left empty, and Other holds only a few.
+    var counts: [@typeInfo(Group).@"enum".field_names.len]usize = @splat(0);
+    for (all) |o| counts[@intFromEnum(groupOf(o.name))] += 1;
+    for (counts, 0..) |n, g| {
+        testing.expect(n > 0) catch |err| {
+            std.debug.print("empty page {t}\n", .{@as(Group, @enumFromInt(g))});
+            return err;
+        };
+    }
+    try testing.expect(counts[@intFromEnum(Group.other)] < 12);
+}
+
+test "option_list: summary, search and what Ghostty lacks" {
+    var buf: [160]u8 = undefined;
+    try testing.expectEqualStrings("The x option.", summary("The `x` option. More", &buf));
+    try testing.expectEqualStrings("Cut at", summary("Cut at the buffer", buf[0..7]));
+    try testing.expectEqualStrings("Font size in points.", summary("Font size in\npoints. This value can be", &buf));
+    try testing.expectEqualStrings("A first paragraph", summary("A first paragraph\n\nThe second.", &buf));
+    try testing.expectEqualStrings("Uses x.y in it.", summary("Uses x.y in it. Then", &buf));
+
+    const size = find("font-size").?;
+    try testing.expect(matches(size, ""));
+    try testing.expect(matches(size, "FONT size"));
+    try testing.expect(matches(size, "points"));
+    try testing.expect(!matches(size, "font palette"));
+
+    try testing.expect(ghosttyLacks("shell-integration", "powershell"));
+    try testing.expect(ghosttyLacks("shell-integration", "cmd"));
+    try testing.expect(!ghosttyLacks("shell-integration", "detect"));
+    try testing.expect(!ghosttyLacks("font-family", "cmd"));
+}
 
 test "option_list: every option, once" {
     try testing.expectEqual(@typeInfo(@import("key.zig").Key).@"enum".field_names.len, all.len);

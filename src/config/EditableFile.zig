@@ -11,13 +11,14 @@
 //! (longer than its buffer, where it stops reading the file) is refused,
 //! and no edit writes one.
 //!
-//! Keys are matched as written: an old spelling the loader still takes
-//! (`Config.compatibility`, such as `scrollback-limit`) is another key
-//! here, which the editor maps.
+//! An old spelling the loader still takes for a renamed option
+//! (`option_list.renamed`, such as `scrollback-limit`) counts as the new
+//! name's line, and a line that changes keeps the name it is written with.
 const EditableFile = @This();
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const option_list = @import("option_list.zig");
 const LineIterator = @import("../cli/args.zig").LineIterator;
 const whitespace = @import("../cli/args.zig").whitespace;
 
@@ -148,7 +149,7 @@ pub fn values(
     errdefer out.deinit(alloc);
     for (self.lines.items) |line| {
         const e = entry(line.text) orelse continue;
-        if (std.mem.eql(u8, e.key, key)) try out.append(alloc, e.value);
+        if (option_list.keyFor(e.key, key)) try out.append(alloc, e.value);
     }
     return out.toOwnedSlice(alloc);
 }
@@ -167,7 +168,9 @@ pub fn has(self: *const EditableFile, key: []const u8) bool {
 pub fn set(self: *EditableFile, key: []const u8, value: ?[]const u8) Error!void {
     if (self.lastIndex(key)) |i| {
         const line = &self.lines.items[i];
-        const text = try formatLine(self.alloc, indentOf(line.text), key, value, line.ending);
+        // Under the name it has: an old spelling stays one.
+        const written = entry(line.text).?.key;
+        const text = try formatLine(self.alloc, indentOf(line.text), written, value, line.ending);
         self.alloc.free(line.text);
         line.text = text;
         return;
@@ -188,7 +191,7 @@ pub fn setList(self: *EditableFile, key: []const u8, new: []const ?[]const u8) E
     defer at.deinit(alloc);
     for (self.lines.items, 0..) |line, i| {
         const e = entry(line.text) orelse continue;
-        if (std.mem.eql(u8, e.key, key)) try at.append(alloc, i);
+        if (option_list.keyFor(e.key, key)) try at.append(alloc, i);
     }
     const old = try alloc.alloc(?[]const u8, at.items.len);
     defer alloc.free(old);
@@ -282,7 +285,7 @@ pub fn remove(self: *EditableFile, key: []const u8) void {
             i += 1;
             continue;
         };
-        if (!std.mem.eql(u8, e.key, key)) {
+        if (!option_list.keyFor(e.key, key)) {
             i += 1;
             continue;
         }
@@ -296,7 +299,7 @@ fn lastIndex(self: *const EditableFile, key: []const u8) ?usize {
     while (i > 0) {
         i -= 1;
         const e = entry(self.lines.items[i].text) orelse continue;
-        if (std.mem.eql(u8, e.key, key)) return i;
+        if (option_list.keyFor(e.key, key)) return i;
     }
     return null;
 }
@@ -693,4 +696,29 @@ test "EditableFile: remove drops every line for the key" {
     file.remove("a");
     try expectText(&file, "b = 2\n# a\n");
     try testing.expect(!file.has("a"));
+}
+
+test "EditableFile: an old spelling is the renamed option's line, and keeps its name" {
+    var file = try parse(testing.allocator, "scrollback-limit = 1000\nfont-size = 12\n");
+    defer file.deinit();
+    try testing.expect(file.has("scrollback-limit-bytes"));
+    const v = try file.values(testing.allocator, "scrollback-limit-bytes");
+    defer testing.allocator.free(v);
+    try testing.expectEqual(1, v.len);
+    try testing.expectEqualStrings("1000", v[0].?);
+
+    // Changed under the name it has.
+    try file.set("scrollback-limit-bytes", "2000");
+    try expectText(&file, "scrollback-limit = 2000\nfont-size = 12\n");
+
+    // Both spellings: the last line is the one taken and changed.
+    try file.set("font-size", "13");
+    var both = try parse(testing.allocator, "scrollback-limit = 1\nscrollback-limit-bytes = 2\n");
+    defer both.deinit();
+    try both.set("scrollback-limit-bytes", "3");
+    try expectText(&both, "scrollback-limit = 1\nscrollback-limit-bytes = 3\n");
+
+    // Removed in either spelling.
+    both.remove("scrollback-limit-bytes");
+    try expectText(&both, "");
 }

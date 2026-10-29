@@ -83,6 +83,7 @@ pub const all = [_]Scenario{
     .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
     .{ .name = "split-grip", .about = "the grip band stops 64 px from a divider; a band picks the divider on its own side", .run = splitGrip },
     .{ .name = "split-all", .about = "an all: new_split binding splits every pane of ten tabs at once", .run = splitAll },
+    .{ .name = "config-editor", .about = "the configuration editor (murrtty's own): from the terminal's menu and the palette; each option's value and where it comes from; search; a number, a switch and a choice set, a refused value, a value only murrtty takes pointed out, a reset; saving rewrites only the lines changed and reloads; unsaved changes ask; a Ghostty-only configuration edited in place", .run = configEditor },
     .{ .name = "pane-commit", .about = "thread stacks commit as they grow (under 1 MB each on average), not 16 MB each up front; a pane adds under 80 MB of commit charge in all", .run = paneCommit },
     .{ .name = "focus-follows-mouse", .about = "the mouse moving over a pane focuses it; not a pane moving under it, nor in an inactive window", .run = focusFollowsMouse },
     .{ .name = "pwd", .about = "OSC 9;9 and OSC 7 set the working directory; new tabs start there; relative links resolve against it", .run = pwdReports },
@@ -101,6 +102,7 @@ pub const all = [_]Scenario{
     .{ .name = "progress", .about = "OSC 9;4: GTK's bar over the pane (accent, error tint, pulsing, paused) and the window's taskbar progress, the active tab's; gone after 15 s without a report; progress-style = false", .run = progressScenario },
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
+    .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
@@ -4845,6 +4847,539 @@ fn splits(h: *Harness) anyerror!void {
         try h.expect(t.dividers.?.len == 0, "no dividers", .{});
     }
     try quit(h, &g, second);
+}
+
+/// Wait until the configuration editor's state passes `ctx.ok`, or fail
+/// saying `what` and its status line.
+fn waitEditor(h: *Harness, g: *Harness.Ghostty, ctx: anytype, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.config_editor) |e| if (ctx.ok(e)) return;
+        w.Sleep(100);
+    }
+    var d = try h.dump(g);
+    defer d.deinit();
+    const status = if (d.value.config_editor) |e| e.status else "(closed)";
+    return h.fail("config editor: " ++ what ++ " (status '{s}')", .{status});
+}
+
+/// The configuration editor's state now, copied out of the dump: its
+/// windows and one row.
+const EditorNow = struct { list: w.HWND, search: w.HWND, hwnd: w.HWND, row: ?Harness.Dump.Editor.Row = null };
+
+fn editorNow(h: *Harness, g: *Harness.Ghostty, name: []const u8) !EditorNow {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const e = d.value.config_editor orelse return h.fail("the config editor isn't open", .{});
+    return .{ .list = hwndOf(e.list), .search = hwndOf(e.search), .hwnd = hwndOf(e.hwnd), .row = e.find(name) };
+}
+
+/// Show only `name`'s rows (Escape empties the search first), then click
+/// the control of `name`'s row.
+fn editorClick(h: *Harness, g: *Harness.Ghostty, name: []const u8, part: enum { control, reset }) !void {
+    const now = try editorNow(h, g, name);
+    h.key(now.search, .{}, w.VK_ESCAPE);
+    try h.typeText(now.search, name);
+    try waitEditor(h, g, struct {
+        name: []const u8,
+        fn ok(self: @This(), e: Harness.Dump.Editor) bool {
+            return std.mem.eql(u8, e.query, self.name) and e.find(self.name) != null;
+        }
+    }{ .name = name }, "the search shows the row");
+    const row = (try editorNow(h, g, name)).row.?;
+    const r = if (part == .control) row.control else row.reset;
+    // Clear of a value the field takes over.
+    w.Sleep(50);
+    h.click(now.list, @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2), .left);
+}
+
+fn rowValue(name: []const u8, value: []const u8) struct {
+    name: []const u8,
+    value: []const u8,
+    fn ok(self: @This(), e: Harness.Dump.Editor) bool {
+        const r = e.find(self.name) orelse return false;
+        return std.mem.eql(u8, r.value, self.value);
+    }
+} {
+    return .{ .name = name, .value = value };
+}
+
+/// Roadmap F1: the configuration editor, murrtty's own. It opens from the
+/// terminal's menu (Config, Open Configuration Editor) and the command
+/// palette, lists every option with its value and whether a file sets it,
+/// and searches them. A number is typed, a switch flipped, a choice picked
+/// from its menu, a value the loader refuses kept out with its message, a
+/// value only murrtty takes pointed out, and a reset takes an option out.
+/// Saving rewrites only the lines changed, keeping the rest of the file
+/// byte for byte, and reloads (window-theme reaches the window). Closing
+/// with changes unsaved asks; a save with none writes nothing. A
+/// configuration that is only Ghostty's is edited in place, with no file
+/// of murrtty's made.
+fn configEditor(h: *Harness) anyerror!void {
+    const extra = "# kept as it is\nfont-size = 13\nfont-family = \"\"\nfont-family = Consolas\nshell-integration-features = no-cursor\nwindow-theme = dark\n";
+    var g = try start(h, "config-editor", extra, ">");
+    defer g.deinit();
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\config.ghostty", .{g.dir});
+    defer h.alloc.free(path);
+    const original = h.readFileOrNull(path) orelse return h.fail("no configuration file at {s}", .{path});
+    defer h.alloc.free(original);
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+
+    // From the terminal's menu: Config, then Open Configuration Editor.
+    h.rightPress(surf, 100, 100);
+    const menu = try h.waitMenu(&g, 1, 5000);
+    h.menuKey(menu, 'o');
+    const sub = try h.waitMenu(&g, 2, 5000);
+    {
+        const items = try h.menuItems(sub);
+        defer h.freeMenuItems(items);
+        try h.expect(items.len == 4 and std.mem.eql(u8, items[0].text, "Open Configuration &Editor"), "the Config submenu starts with Open Configuration Editor ({d} items)", .{items.len});
+    }
+    h.menuKey(sub, 'e');
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200;
+        }
+    }{}, "it opens with every option");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const e = d.value.config_editor.?;
+        try h.expect(std.ascii.eqlIgnoreCase(e.path, path), "it edits murrtty's file ({s})", .{e.path});
+        try h.expect(!e.dirty, "nothing changed yet", .{});
+        const size = e.find("font-size") orelse return h.fail("no font-size row", .{});
+        try h.expect(std.mem.eql(u8, size.value, "13") and size.set and size.source == 0, "font-size shows the file's 13 (got '{s}', set {})", .{ size.value, size.set });
+        const style = e.find("cursor-style") orelse return h.fail("no cursor-style row", .{});
+        try h.expect(!style.set and style.value.len > 0, "cursor-style, unset, shows its default ('{s}')", .{style.value});
+    }
+
+    // A list's field opened and taken as it is changes nothing: its reset
+    // line (`font-family = ""`, shown as "") stays.
+    try editorClick(h, &g, "font-family", .control);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0 and std.mem.eql(u8, e.editing, "font-family");
+        }
+    }{}, "the list's field");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        h.key(hwndOf(d.value.config_editor.?.edit), .{ .ctrl = true }, w.VK_RETURN);
+    }
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit == 0;
+        }
+    }{}, "Ctrl+Enter takes it");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!d.value.config_editor.?.dirty, "a list taken unchanged, its reset line included, changes nothing", .{});
+    }
+
+    // A number, typed and taken; then one the loader refuses.
+    try editorClick(h, &g, "font-size", .control);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0 and std.mem.eql(u8, e.editing, "font-size");
+        }
+    }{}, "a click on the value puts a field over it");
+    var now = try editorNow(h, &g, "font-size");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const edit_hwnd = hwndOf(d.value.config_editor.?.edit);
+        try h.typeText(edit_hwnd, "15");
+        h.key(edit_hwnd, .{}, w.VK_RETURN);
+    }
+    try waitEditor(h, &g, rowValue("font-size", "15"), "Enter takes 15");
+    try editorClick(h, &g, "font-size", .control);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0;
+        }
+    }{}, "the field again");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const edit_hwnd = hwndOf(d.value.config_editor.?.edit);
+        try h.typeText(edit_hwnd, "big");
+        h.key(edit_hwnd, .{}, w.VK_RETURN);
+    }
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("font-size") orelse return false;
+            return e.status_error and std.mem.indexOf(u8, e.status, "font-size") != null and std.mem.eql(u8, r.value, "15");
+        }
+    }{}, "'big' is refused with the loader's message, 15 kept");
+
+    // A switch, then its reset.
+    try editorClick(h, &g, "focus-follows-mouse", .control);
+    try waitEditor(h, &g, rowValue("focus-follows-mouse", "true"), "a click on the switch turns it on");
+    try editorClick(h, &g, "focus-follows-mouse", .reset);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("focus-follows-mouse") orelse return false;
+            return !r.set;
+        }
+    }{}, "reset takes it out of the file");
+
+    // A choice from its menu.
+    try editorClick(h, &g, "window-theme", .control);
+    {
+        const choices = try h.waitMenu(&g, 1, 5000);
+        const items = try h.menuItems(choices);
+        defer h.freeMenuItems(items);
+        var light: ?usize = null;
+        var checked: []const u8 = "";
+        for (items, 0..) |it, i| {
+            if (std.mem.eql(u8, it.text, "light")) light = i;
+            if (it.checked) checked = it.text;
+        }
+        try h.expect(light != null and std.mem.eql(u8, checked, "dark"), "the menu lists the choices, dark checked (checked '{s}')", .{checked});
+        h.menuChoose(choices, light.?);
+    }
+    try waitEditor(h, &g, rowValue("window-theme", "light"), "light chosen");
+
+    // A value only murrtty takes is pointed out (Ghostty would report it).
+    try editorClick(h, &g, "shell-integration", .control);
+    {
+        const choices = try h.waitMenu(&g, 1, 5000);
+        const items = try h.menuItems(choices);
+        defer h.freeMenuItems(items);
+        const ps = for (items, 0..) |it, i| {
+            if (std.mem.eql(u8, it.text, "powershell")) break i;
+        } else return h.fail("no powershell in shell-integration's menu", .{});
+        h.menuChoose(choices, ps);
+    }
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("shell-integration") orelse return false;
+            return std.mem.startsWith(u8, r.subtitle, "Only murrtty");
+        }
+    }{}, "shell-integration = powershell is pointed out as murrtty's own");
+    // Back to the file's own none (a reset would take the line out, to the
+    // default): the line as it was.
+    try editorClick(h, &g, "shell-integration", .control);
+    {
+        const choices = try h.waitMenu(&g, 1, 5000);
+        const items = try h.menuItems(choices);
+        defer h.freeMenuItems(items);
+        const none = for (items, 0..) |it, i| {
+            if (std.mem.eql(u8, it.text, "none")) break i;
+        } else return h.fail("no none in shell-integration's menu", .{});
+        h.menuChoose(choices, none);
+    }
+    try waitEditor(h, &g, rowValue("shell-integration", "none"), "and none again");
+
+    // A list: its field holds the file's line; a second value goes in
+    // beneath it, Ctrl+Enter takes both.
+    try editorClick(h, &g, "font-family", .control);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0 and std.mem.eql(u8, e.editing, "font-family");
+        }
+    }{}, "a list's field opens");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const edit_hwnd = hwndOf(d.value.config_editor.?.edit);
+        h.key(edit_hwnd, .{ .ctrl = true }, w.VK_END);
+        try h.typeText(edit_hwnd, "Cascadia Mono");
+        h.key(edit_hwnd, .{ .ctrl = true }, w.VK_RETURN);
+    }
+    try waitEditor(h, &g, rowValue("font-family", "3 entries"), "Ctrl+Enter takes the lines");
+
+    // Flags: the menu shows what the loader makes of the file's no-cursor
+    // (the others at their type's defaults: title on, sudo off), drawn with
+    // its labels (owner-drawn: the editor measures its items), and a choice
+    // writes only what differs from the defaults.
+    try editorClick(h, &g, "shell-integration-features", .control);
+    {
+        const flags = try h.waitMenu(&g, 1, 5000);
+        var r: w.RECT = .{};
+        _ = w.GetWindowRect(flags, &r);
+        try h.expect(r.right - r.left > 60, "the flags' menu is drawn with its labels ({d} px wide)", .{r.right - r.left});
+        const items = try h.menuItems(flags);
+        defer h.freeMenuItems(items);
+        var cursor: ?bool = null;
+        var title: ?bool = null;
+        var sudo: ?usize = null;
+        var sudo_on = true;
+        for (items, 0..) |it, i| {
+            if (std.mem.eql(u8, it.text, "cursor")) cursor = it.checked;
+            if (std.mem.eql(u8, it.text, "title")) title = it.checked;
+            if (std.mem.eql(u8, it.text, "sudo")) {
+                sudo = i;
+                sudo_on = it.checked;
+            }
+        }
+        try h.expect(cursor == false and title == true and sudo != null and !sudo_on, "no-cursor reads as cursor off, title on, sudo off", .{});
+        h.menuChoose(flags, sudo.?);
+    }
+    try waitEditor(h, &g, rowValue("shell-integration-features", "no-cursor,sudo"), "sudo on writes no-cursor,sudo");
+    {
+        // The menu opens again for another flag; Escape closes it.
+        const again = try h.waitMenu(&g, 1, 5000);
+        _ = w.PostMessageW(again, w.WM_KEYDOWN, w.VK_ESCAPE, 1);
+        var gone: u32 = 0;
+        while (gone <= 3000 and try h.menuCount(&g) > 0) : (gone += 100) w.Sleep(100);
+        try h.expect(try h.menuCount(&g) == 0, "Escape closes the flags' menu", .{});
+    }
+
+    // Saved: only the changed lines, then the reload reaches the window.
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect((d.value.windows[0].chrome orelse return h.fail("no chrome in the dump", .{})).dark, "the window is dark before the save", .{});
+    }
+    now = try editorNow(h, &g, "font-size");
+    h.key(now.list, .{ .ctrl = true }, 'S');
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return !e.dirty and std.mem.startsWith(u8, e.status, "Saved");
+        }
+    }{}, "Ctrl+S saves");
+    const step1 = try std.mem.replaceOwned(u8, h.alloc, original, "font-size = 13\n", "font-size = 15\n");
+    defer h.alloc.free(step1);
+    const step2 = try std.mem.replaceOwned(u8, h.alloc, step1, "window-theme = dark\n", "window-theme = light\n");
+    defer h.alloc.free(step2);
+    const step3 = try std.mem.replaceOwned(u8, h.alloc, step2, "font-family = Consolas\n", "font-family = Consolas\nfont-family = Cascadia Mono\n");
+    defer h.alloc.free(step3);
+    const want = try std.mem.replaceOwned(u8, h.alloc, step3, "shell-integration-features = no-cursor\n", "shell-integration-features = no-cursor,sudo\n");
+    defer h.alloc.free(want);
+    {
+        const saved = h.readFileOrNull(path) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(saved);
+        try h.expect(std.mem.eql(u8, saved, want), "the file changes on its edited lines and gains the list's new one beside the old, the comment, the reset line and the rest as they were", .{});
+    }
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        if (!(d.value.windows[0].chrome orelse return h.fail("no chrome in the dump", .{})).dark) break;
+        w.Sleep(100);
+    }
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!(d.value.windows[0].chrome orelse return h.fail("no chrome in the dump", .{})).dark, "the reload makes the window light", .{});
+    }
+
+    // Unsaved changes ask: Cancel keeps the editor, Discard closes it.
+    try editorClick(h, &g, "font-size", .control);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0;
+        }
+    }{}, "the field for 16");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const edit_hwnd = hwndOf(d.value.config_editor.?.edit);
+        try h.typeText(edit_hwnd, "16");
+        h.key(edit_hwnd, .{}, w.VK_RETURN);
+    }
+    try waitEditor(h, &g, rowValue("font-size", "16"), "16 taken");
+    now = try editorNow(h, &g, "font-size");
+    _ = w.PostMessageW(now.hwnd, w.WM_CLOSE, 0, 0);
+    var dlg = try h.waitDialog(&g, 5000);
+    h.answer(&g, dlg, w.IDCANCEL);
+    waited = 0;
+    while (waited <= 3000 and try h.dialogCount(&g) > 0) : (waited += 100) w.Sleep(100);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.config_editor != null, "Cancel keeps the editor open", .{});
+    }
+    _ = w.PostMessageW(now.hwnd, w.WM_CLOSE, 0, 0);
+    dlg = try h.waitDialog(&g, 5000);
+    h.answer(&g, dlg, 201);
+    waited = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        if (d.value.config_editor == null) break;
+        w.Sleep(100);
+    }
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.config_editor == null, "Discard closes it", .{});
+        const saved = h.readFileOrNull(path) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(saved);
+        try h.expect(std.mem.eql(u8, saved, want), "and the file keeps what was saved", .{});
+    }
+
+    // From the palette; a save with nothing changed writes nothing.
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
+    const palette = hwndOf((try waitPalette(h, &g, win, true)).edit);
+    try h.typeText(palette, "Configuration Editor");
+    const st = try waitPaletteText(h, &g, win, "Configuration Editor");
+    try h.expect(std.mem.startsWith(u8, st.titles[0..st.titles_len], "Open Configuration Editor\n"), "the palette lists Open Configuration Editor", .{});
+    h.key(palette, .{}, w.VK_RETURN);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200;
+        }
+    }{}, "the palette opens it");
+    now = try editorNow(h, &g, "font-size");
+
+    // One dialog at a time: a terminal's dialog disables the editor until
+    // it closes.
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'W');
+    const close_dlg = try h.waitDialog(&g, 5000);
+    try h.expect(w.IsWindowEnabled(now.hwnd) == 0, "a terminal's dialog disables the editor", .{});
+    h.answer(&g, close_dlg, w.IDCANCEL);
+    waited = 0;
+    while (waited <= 3000 and try h.dialogCount(&g) > 0) : (waited += 100) w.Sleep(100);
+    try h.expect(w.IsWindowEnabled(now.hwnd) != 0, "and enables it again once it closes", .{});
+    h.key(now.list, .{ .ctrl = true }, 'S');
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return std.mem.eql(u8, e.status, "No changes to save");
+        }
+    }{}, "a save with nothing changed says so");
+    {
+        const saved = h.readFileOrNull(path) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(saved);
+        try h.expect(std.mem.eql(u8, saved, want), "and writes nothing", .{});
+    }
+    // Unchanged, it closes without asking.
+    _ = w.PostMessageW(now.hwnd, w.WM_CLOSE, 0, 0);
+    waited = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        if (d.value.config_editor == null) break;
+        w.Sleep(100);
+    }
+    try h.expect(try h.dialogCount(&g) == 0, "an unchanged editor closes without asking", .{});
+
+    // A configuration that is only Ghostty's: edited in place, kept
+    // Ghostty's, no file of murrtty's made.
+    const ghostty_text = try std.mem.concat(h.alloc, u8, &.{ base_config, "font-size = 12\n" });
+    defer h.alloc.free(ghostty_text);
+    var g2 = try h.launchWith("config-editor-ghostty", "", .{ .murrtty_config = false, .ghostty_config = ghostty_text });
+    defer g2.deinit();
+    try h.waitText(&g2, ">", 1, 20000);
+    try h.openConfigEditor(&g2);
+    try waitEditor(h, &g2, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return std.mem.endsWith(u8, e.path, "\\ghostty\\config.ghostty");
+        }
+    }{}, "it opens Ghostty's file when murrtty has none");
+    try editorClick(h, &g2, "font-size", .control);
+    try waitEditor(h, &g2, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0;
+        }
+    }{}, "the field");
+    {
+        var d = try h.dump(&g2);
+        defer d.deinit();
+        const edit_hwnd = hwndOf(d.value.config_editor.?.edit);
+        try h.typeText(edit_hwnd, "14");
+        h.key(edit_hwnd, .{}, w.VK_RETURN);
+    }
+    try waitEditor(h, &g2, rowValue("font-size", "14"), "14 taken");
+    now = try editorNow(h, &g2, "font-size");
+    h.key(now.list, .{ .ctrl = true }, 'S');
+    try waitEditor(h, &g2, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return !e.dirty;
+        }
+    }{}, "saved");
+    const gpath = try std.fmt.allocPrint(h.alloc, "{s}\\ghostty\\config.ghostty", .{g2.dir});
+    defer h.alloc.free(gpath);
+    const gwant = try std.mem.concat(h.alloc, u8, &.{ base_config, "font-size = 14\n" });
+    defer h.alloc.free(gwant);
+    {
+        const saved = h.readFileOrNull(gpath) orelse return h.fail("Ghostty's file is gone", .{});
+        defer h.alloc.free(saved);
+        try h.expect(std.mem.eql(u8, saved, gwant), "Ghostty's file changes on its font-size line only", .{});
+    }
+    const mpath = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\config.ghostty", .{g2.dir});
+    defer h.alloc.free(mpath);
+    if (h.readFileOrNull(mpath)) |m| {
+        h.alloc.free(m);
+        return h.fail("a file of murrtty's was made", .{});
+    }
+
+    // An empty file of murrtty's beside Ghostty's: the loader reads
+    // murrtty's alone (it exists), so that is the one the editor opens, as
+    // Ctrl+, does, not Ghostty's, which has more in it.
+    _ = w.PostMessageW(now.hwnd, w.WM_CLOSE, 0, 0);
+    waited = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(&g2);
+        defer d.deinit();
+        if (d.value.config_editor == null) break;
+        w.Sleep(100);
+    }
+    const mdir = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty", .{g2.dir});
+    defer h.alloc.free(mdir);
+    try h.makeDirAt(mdir);
+    try h.writeFileAt(mpath, "");
+    try h.openConfigEditor(&g2);
+    try waitEditor(h, &g2, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200;
+        }
+    }{}, "it opens again");
+    {
+        var d = try h.dump(&g2);
+        defer d.deinit();
+        const e = d.value.config_editor.?;
+        try h.expect(std.ascii.eqlIgnoreCase(e.path, mpath), "beside an empty file of murrtty's, it opens that one ({s})", .{e.path});
+        try h.expect(e.files.len == 1, "and only that one: Ghostty's isn't read ({d} files)", .{e.files.len});
+    }
+}
+
+/// Pictures of the configuration editor (roadmap F1), as its WM_PAINT draws
+/// it: dark, then light, with a row's documentation opened, copied into
+/// GHOSTTY_GUI_SNAPSHOT as `editor-<look>-bar.bmp` and `-list.bmp`.
+fn configEditorLook(h: *Harness) anyerror!void {
+    var out_buf: [512]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &out_buf, out_buf.len);
+    if (n == 0 or n >= out_buf.len) return h.skip("set GHOSTTY_GUI_SNAPSHOT to a folder", .{});
+    const out_dir = try std.unicode.utf16LeToUtf8Alloc(h.alloc, out_buf[0..n]);
+    defer h.alloc.free(out_dir);
+    for ([_]struct { []const u8, []const u8 }{
+        .{ "dark", "window-theme = dark\nfont-size = 13\nkeybind = ctrl+a=copy_to_clipboard\n" },
+        .{ "light", "window-theme = light\nfont-size = 13\n" },
+    }) |look| {
+        const name = try std.fmt.allocPrint(h.alloc, "config-editor-look-{s}", .{look[0]});
+        defer h.alloc.free(name);
+        var g = try start(h, name, look[1], ">");
+        defer g.deinit();
+        try h.openConfigEditor(&g);
+        try waitEditor(h, &g, struct {
+            fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+                return e.rows.len > 200;
+            }
+        }{}, "it opens");
+        // The fonts page's first rows, font-size opened.
+        try editorClick(h, &g, "font-size", .control);
+        w.Sleep(200);
+        const now = try editorNow(h, &g, "font-size");
+        h.key(now.search, .{}, w.VK_ESCAPE);
+        try h.typeText(now.search, "font");
+        w.Sleep(300);
+        try h.snapshotConfigEditor(&g);
+        for ([_][]const u8{ "bar", "list" }) |part| {
+            const src = try std.fmt.allocPrint(h.alloc, "{s}\\editor-{s}-0.bmp", .{ g.dir, part });
+            defer h.alloc.free(src);
+            const data = h.readFileOrNull(src) orelse return h.fail("no {s}", .{src});
+            defer h.alloc.free(data);
+            const dst = try std.fmt.allocPrint(h.alloc, "{s}\\editor-{s}-{s}.bmp", .{ out_dir, look[0], part });
+            defer h.alloc.free(dst);
+            try h.writeFileAt(dst, data);
+        }
+    }
 }
 
 /// Roadmap 0.15: std.Thread on Windows passes its stack size (16 MB) as

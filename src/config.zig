@@ -10,6 +10,7 @@ pub const string = @import("config/string.zig");
 pub const edit = @import("config/edit.zig");
 pub const EditableFile = @import("config/EditableFile.zig");
 pub const option_list = @import("config/option_list.zig");
+pub const EditorSession = @import("config/EditorSession.zig");
 pub const url = @import("config/url.zig");
 
 pub const ConditionalState = conditional.State;

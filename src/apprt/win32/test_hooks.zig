@@ -270,6 +270,10 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 /// - 21 (posted, not sent): crash on purpose (roadmap 7.5), with Windows'
 ///   error dialog off: an access violation on the UI thread (`lparam` 0),
 ///   or a Zig panic (1).
+/// - 22: open the configuration editor (roadmap F1), or bring it forward.
+/// - 23: paint the configuration editor's top bar and page as WM_PAINT does
+///   and write them as `editor-bar-0.bmp` and `editor-list-0.bmp` beside
+///   the dump file.
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -419,6 +423,14 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         }
     };
     if (wparam == 12) saveChrome(app);
+    if (wparam == 22) app.openConfigEditor();
+    if (wparam == 23) if (app.config_editor) |editor| {
+        var client: c.RECT = .{};
+        _ = c.GetClientRect(editor.hwnd, &client);
+        savePaint(app, "editor-bar", 0, client.right, client.bottom, editor, @import("ConfigEditor.zig").paintBarTo);
+        const list = editor.listSize();
+        savePaint(app, "editor-list", 0, list.right, list.bottom, editor, @import("ConfigEditor.zig").paintListTo);
+    };
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
     write(app, alloc, &out) catch |err| {
@@ -773,6 +785,11 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             if (d.target != null) @tagName(d.dir) else "",
         });
     }
+    // The configuration editor (roadmap F1), while open.
+    if (app.config_editor) |editor| {
+        try out.appendSlice(alloc, ",\"config_editor\":");
+        try editor.writeDump(alloc, out);
+    } else try out.appendSlice(alloc, ",\"config_editor\":null");
     try out.append(alloc, '}');
 }
 
@@ -1287,7 +1304,7 @@ fn rgbOf(ref: c.COLORREF) i64 {
 /// A JSON string literal. Each byte of invalid UTF-8 becomes U+FFFD: the
 /// harness's std.json rejects invalid UTF-8, and a terminal title (repeated
 /// in the command palette) can hold it.
-fn writeString(alloc: Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
+pub fn writeString(alloc: Allocator, out: *std.ArrayList(u8), s: []const u8) !void {
     try out.append(alloc, '"');
     var i: usize = 0;
     while (i < s.len) {

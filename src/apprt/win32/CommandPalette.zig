@@ -71,12 +71,16 @@ const Entry = struct {
     /// pane closed meanwhile is never confused with a new one at the same
     /// address.
     jump: ?u64,
+    /// murrtty's configuration editor (roadmap F1), which no core action
+    /// opens.
+    editor: bool = false,
 };
 
 /// What was chosen, kept past closing until WM_RUN runs it.
 const Choice = union(enum) {
     action: input.Binding.Action,
     jump: u64,
+    editor,
 };
 
 /// What it lists: commands and terminals, or the window's tabs.
@@ -316,6 +320,16 @@ fn build(self: *CommandPalette, app: *App) !void {
             .jump = null,
         });
     }
+
+    // murrtty's own: its configuration editor (roadmap F1).
+    try list.append(alloc, .{
+        .title = "Open Configuration Editor",
+        .detail = "murrtty's configuration editor",
+        .binding = "",
+        .action = null,
+        .jump = null,
+        .editor = true,
+    });
 
     // Window by window, tab by tab, so terminals of the same title keep
     // that order.
@@ -582,7 +596,7 @@ fn move(self: *CommandPalette, delta: isize) void {
 fn choose(self: *CommandPalette) void {
     const row = self.selected() orelse return self.close();
     const entry = self.entries[self.shown.items[row]];
-    self.pending = if (entry.jump) |s| .{ .jump = s } else action: {
+    self.pending = if (entry.editor) .editor else if (entry.jump) |s| .{ .jump = s } else action: {
         const window = self.window orelse return self.close();
         if (self.pending_arena == null) self.pending_arena = .init(window.app.core_app.alloc);
         const arena = &self.pending_arena.?;
@@ -606,6 +620,7 @@ fn run(self: *CommandPalette) void {
     self.pending = null;
     switch (choice) {
         .jump => |id| if (window.app.findSurface(id)) |s| s.window.presentSurface(s),
+        .editor => window.app.openConfigEditor(),
         .action => |action| {
             const target = self.targetSurface() orelse return;
             if (!target.core_initialized) return;
