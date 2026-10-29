@@ -85,6 +85,8 @@ fn gather(err: anyerror, adapter_buf: []u8, gl_buf: *[512]u8, library_buf: []u8)
     }
     // The GUI tests' stand-ins for machines they don't run on
     // (GHOSTTY_WIN32_TEST_GL_DIAG): "remote", "basic", "generic", "old".
+    // Each stands for the whole machine: a local one but for "remote", so
+    // a run over Remote Desktop still diagnoses the others as asked.
     if (test_hooks.active()) {
         var w: [16]u16 = undefined;
         const n = c.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("GHOSTTY_WIN32_TEST_GL_DIAG"), &w, w.len);
@@ -101,11 +103,14 @@ fn gather(err: anyerror, adapter_buf: []u8, gl_buf: *[512]u8, library_buf: []u8)
                 facts.adapter = "Microsoft Remote Display Adapter";
                 facts.gl = generic;
             } else if (is(which, "basic")) {
+                facts.remote = false;
                 facts.adapter = "Microsoft Basic Display Adapter";
                 facts.gl = generic;
             } else if (is(which, "generic")) {
+                facts.remote = false;
                 facts.gl = generic;
             } else if (is(which, "old")) {
+                facts.remote = false;
                 facts.gl = .{ .vendor = "Example", .renderer = "Example GPU", .version = "3.3.0 Example 1.0" };
             }
         }
