@@ -85,6 +85,7 @@ pub const WNDENUMPROC = *const fn (HWND, LPARAM) callconv(.winapi) BOOL;
 // Messages and flags
 pub const WM_CLOSE = 0x0010;
 pub const WM_QUERYENDSESSION = 0x0011;
+pub const WM_ENDSESSION = 0x0016;
 pub const ENDSESSION_LOGOFF: isize = 0x80000000;
 pub const WM_KEYDOWN = 0x0100;
 pub const WM_KEYUP = 0x0101;
@@ -136,6 +137,8 @@ pub const HTTOP = 12;
 pub const HTCLOSE = 20;
 pub const WM_NCLBUTTONDOWN = 0x00A1;
 pub const WM_NCLBUTTONUP = 0x00A2;
+pub const WM_ENTERSIZEMOVE = 0x0231;
+pub const WM_EXITSIZEMOVE = 0x0232;
 pub extern "user32" fn IsZoomed(HWND) callconv(.winapi) BOOL;
 pub const HTTRANSPARENT: isize = -1;
 pub const VK_ESCAPE = 0x1B;

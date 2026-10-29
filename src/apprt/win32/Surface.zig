@@ -31,6 +31,7 @@ const KeyState = @import("KeyState.zig");
 const DropTarget = @import("DropTarget.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
+const Session = @import("Session.zig");
 const Inspector = @import("Inspector.zig");
 const input_pane = @import("input_pane.zig");
 const Uia = @import("Uia.zig");
@@ -68,6 +69,18 @@ core_initialized: bool = false,
 /// user's name for the pane over it (prompt_surface_title).
 title: ?[:0]const u8 = null,
 title_override: ?[:0]const u8 = null,
+
+/// The pane's id in the saved session (roadmap 5.10b), kept across
+/// restores: its command history's file is named by it.
+session_id: Session.Id = @splat('0'),
+/// The program it was opened with when that wasn't the configured
+/// `command` (an IPC or launch override, a restore): a shell of its own
+/// comes back with it (Session.ownShell).
+program: ?configpkg.Command = null,
+/// Its directory as the session last read it (Session.savePane), for the
+/// saves that mustn't take the renderer's lock (quitting, the session
+/// ending).
+session_dir: ?[]u8 = null,
 
 /// Whether the bell rang here since the pane last had the keyboard or
 /// input (bell-features title: a bell before its tab's title, GTK's).
@@ -257,6 +270,16 @@ pub fn init(
     const overrides = app.ipc_overrides;
     app.ipc_overrides = null;
     if (overrides) |o| try o.apply(&config);
+    // Its id: the restored pane's own, else a new one.
+    self.session_id = app.restore_id orelse Session.newId();
+    app.restore_id = null;
+    if (overrides) |o| if (o.command) |cmd| {
+        self.program = try cmd.clone(app.core_app.alloc);
+    };
+    errdefer if (self.program) |p| {
+        p.deinit(app.core_app.alloc);
+        self.program = null;
+    };
     self.colors = .fromConfig(&config);
 
     // Initializing the core surface creates the renderer, which sets
@@ -753,6 +776,10 @@ pub fn deinit(self: *Surface) void {
     self.title = null;
     if (self.title_override) |v| self.app.core_app.alloc.free(v);
     self.title_override = null;
+    if (self.program) |p| p.deinit(self.app.core_app.alloc);
+    self.program = null;
+    if (self.session_dir) |d| self.app.core_app.alloc.free(d);
+    self.session_dir = null;
     self.resize_overlay.deinit();
     self.search.deinit();
     for ([_]*Overlay{ &self.link_overlay, &self.readonly_overlay, &self.key_overlay, &self.health_overlay }) |o| o.deinit();
@@ -1248,6 +1275,7 @@ pub fn setTitle(self: *Surface, title: [:0]const u8) void {
 /// Name the pane over the program's title, or (null, or empty) go back to
 /// the program's (GTK's prompt_surface_title).
 pub fn setTitleOverride(self: *Surface, title: ?[]const u8) void {
+    self.app.session.changed();
     const alloc = self.app.core_app.alloc;
     if (self.title_override) |v| alloc.free(v);
     self.title_override = null;

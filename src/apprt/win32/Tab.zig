@@ -190,6 +190,7 @@ pub fn label(self: *const Tab, alloc: std.mem.Allocator) std.mem.Allocator.Error
 
 /// Name the tab, or (null, or empty) go back to its pane's title.
 pub fn setTitleOverride(self: *Tab, name: ?[]const u8) void {
+    self.window.app.session.changed();
     const alloc = self.window.app.core_app.alloc;
     if (self.title_override) |v| alloc.free(v);
     self.title_override = null;
@@ -679,6 +680,8 @@ fn endDrag(self: *Tab) void {
     if (self.drag == null) return;
     self.drag = null;
     if (c.GetCapture() == self.hwnd) _ = c.ReleaseCapture();
+    // A divider dragged is saved once, as it is let go (roadmap 5.10b).
+    self.window.app.session.changed();
 }
 
 /// Esc during a drag: put the divider back. Returns whether a drag was

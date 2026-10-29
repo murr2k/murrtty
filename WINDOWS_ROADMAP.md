@@ -2741,7 +2741,9 @@ the buffer, the untouched system clipboard, and both pastes.
     dragged) is saved once, on release (`WM_EXITSIZEMOVE`, the drop); one
     cut short (a crash, Escape) saves nothing, so the state stays as it
     was before it (the owner's choice, 2026-10-29). Nothing else: a crash
-    restores what the last write held. Once murrtty quits (Quit, `WM_ENDSESSION`) the state is
+    restores what the last write held. Once murrtty quits (Quit, or
+    Windows asking to end its session, `WM_QUERYENDSESSION`, before the
+    shells end; let go if `WM_ENDSESSION` says it goes on) the state is
     frozen, so closing its windows on the way out doesn't empty it;
     closing windows one by one does (closing the last one leaves nothing
     to restore, as on macOS). Parked panes (5.11) aren't saved.
@@ -2762,14 +2764,20 @@ the buffer, the untouched system clipboard, and both pastes.
     back restores something. Each pane gets a fresh shell, its own program
     (`cmd`, `wsl`, PowerShell), in its saved directory, with no
     scrollback; its history comes back for up-arrow only. A pane opened
-    for a one-off command (`ssh host`, `-e`) gets the default shell in its
-    last directory instead. A directory that's gone keeps the pane, starts
-    the shell in the home folder and says so in a line in the pane. A
+    for a one-off command (`ssh host`, `-e vim`) gets the default shell in
+    its last directory instead; one opened with a shell (`-e wsl`) keeps
+    it. A directory that's gone keeps the pane, starts
+    the shell in the home folder and says so in a toast on its window
+    (murrtty writing into the pane would reach the shell's input). A
     window on a monitor that's gone, or bigger than its screen, is moved
     and sized into a visible work area. A launch with a command opens it
-    as a new tab, with no splits, in the front window of those restored;
-    `initial-window = false` only leaves out the empty first window when
-    there is nothing to restore.
+    as a new tab, with no splits, in the front window of those restored.
+    With `initial-window = false` the session comes back on first use
+    (the owner's choice, 2026-10-29): the first window asked for (the
+    tray, a `new_window` binding, a plain `+new-window`) brings back the
+    saved windows instead of an empty one, and the quick terminal its
+    own tabs when first summoned; until then what waits stays in the
+    file.
   - **History:** through the shell integration (needs
     `shell-integration` on, as directories do). PowerShell (PSReadLine):
     the prompt wrapper appends each command line to the pane's file, and
@@ -2810,6 +2818,42 @@ the buffer, the untouched system clipboard, and both pastes.
     is set, `never`, a `--class` instance's own file, an unwritable folder's
     dialog, the crash guard, a second launch bringing windows forward with
     no new one, and Fit Window to Screen.
+  - *Part A built 2026-10-29 (`win32/Session.zig`):* saving and restoring
+    the windows. The state is the windows' `GetWindowPlacement` rectangles
+    (workspace coordinates; the fullscreen window's from before it went
+    fullscreen), each tab's `SplitTree` nodes as the tree holds them, and
+    per pane a 16-digit id (the name its history file will take), its
+    directory (the core's `pwd`, cmd's own read from its process) and its
+    program when `ownShell` says it is a shell (cmd, PowerShell, wsl,
+    bash and the like). A snapshot comes from the wakeup window's timer:
+    100 ms after a change murrtty hears of, and once a second for the ones
+    it doesn't (a directory cmd moved to), written only when its text
+    differs. A restore rebuilds each tree the way it was built (the
+    leftmost pane first, then each split off the pane at its left or top,
+    its ratio set in place), passing each pane its directory, program and
+    name as an IPC request's overrides; a pane's saved id comes back with
+    it. A saved window off every monitor or bigger than its work area is
+    pulled into the nearest one. The front window is the last activated,
+    else the topmost in the z-order (a restored window may not have been
+    activated yet); a window shown normally is saved where it is, so one
+    snapped to a side keeps its snapped place (`GetWindowPlacement` has
+    its pre-snap one). Only the murrtty holding the single instance's
+    pipe keeps the session: a second instance (`gtk-single-instance =
+    false`, or a launch `detect` lets run apart) neither restores nor
+    saves it. Nothing is written before murrtty has started, and saved
+    windows that fail to come back (no OpenGL) stay in the file for the
+    next start, so a failed start loses nothing. The crash marker stays
+    5 s after a restore, so a crash in the windows' first layouts and
+    frames counts; quitting sooner clears it, but murrtty killed sooner
+    skips the next restore once. Saves at quitting and at the session's
+    end use each pane's directory as last read (no renderer lock then). A
+    failed write is said once three in a row have failed. A reload that
+    turns `window-save-state` to `never` stops saving, one that turns it
+    back starts again. Part B (single instance by default, a second
+    launch, Fit Window to Screen, `RegisterApplicationRestart`) and part C
+    (each pane's history) follow. The `session-save` and `session-restore`
+    scenarios check it, an end of session called off and a failed start
+    included.
 
 **5.11 Undo and redo of closes, L.** Keep closed panes, tabs and windows
 parked (hidden, process running) until `undo-timeout`. Undo and redo enter

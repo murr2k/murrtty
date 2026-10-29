@@ -25,6 +25,7 @@ const ipc = @import("ipc.zig");
 const Notifications = @import("Notifications.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
+const Session = @import("Session.zig");
 const Undo = @import("Undo.zig");
 const Inspector = @import("Inspector.zig");
 const ConfigEditor = @import("ConfigEditor.zig");
@@ -236,6 +237,11 @@ notifications: Notifications = undefined,
 global_keys: GlobalKeys = undefined,
 /// Undo and redo of closes (roadmap 5.11), set up in init.
 undo: Undo = undefined,
+/// Session restore (roadmap 5.10b), set up in init.
+session: Session = undefined,
+/// The id of the pane a restore is making (its history's), which
+/// Surface.init takes; else the pane gets a new one.
+restore_id: ?Session.Id = null,
 /// WGL's extensions, for the inspector's windows (roadmap 5.12), loaded at
 /// the first.
 wgl_ext: ?wgl.Extensions = null,
@@ -378,6 +384,7 @@ pub fn init(
     self.notifications.init(self);
     self.global_keys = .{ .app = self };
     self.undo = .{ .app = self };
+    self.session = .init(self);
     self.taskbar_button_msg = c.RegisterWindowMessageW(c.L("TaskbarButtonCreated"));
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
@@ -411,14 +418,22 @@ pub fn run(self: *App) !void {
     self.global_keys.start();
     // The tray (roadmap 5.6) before any window: murrtty may run without.
     self.syncTray();
+    // The saved session (roadmap 5.10b), read before any window: kept by
+    // the murrtty holding the pipe (another instance would restore it again
+    // and write over it), or by one with no pipe at all.
+    self.session.start(holding or self.ipc_server == null);
 
     if (self.ipc_launch) {
-        // The request brings the window; without it, don't linger.
+        // The request brings the window, and the session with it (runIpc);
+        // without it, don't linger.
         _ = c.SetTimer(self.wakeup_hwnd, ipc_launch_timer, ipc.launch_timeout_ms, null);
     } else if (!self.config.@"initial-window") {
         // In the tray, until a window is asked for. With a delay it quits
         // when that passes with none (the option's documentation).
         if (self.config.@"quit-after-last-window-closed-delay" != null) self.startQuitTimer();
+    } else if (self.session.restoreAtStart() > 0) {
+        // A launch with a command opens it in a tab of its own.
+        self.openLaunchTab();
     } else _ = Window.create(self, null) catch |err| {
         // A GUI program has no console, so say why it can't start: for
         // OpenGL, what is missing and what to do (roadmap 6.3).
@@ -456,6 +471,8 @@ pub fn run(self: *App) !void {
 }
 
 pub fn terminate(self: *App) void {
+    // The session stays as last written while the windows go.
+    self.session.freeze();
     // With the requests it queued that the loop never took.
     if (self.ipc_server) |s| s.stop();
     self.ipc_server = null;
@@ -466,6 +483,7 @@ pub fn terminate(self: *App) void {
     self.windows.deinit(self.core_app.alloc);
     // What undo kept, and the shelf.
     self.undo.deinit();
+    self.session.deinit();
     // After the windows, whose teardown can still ask for a refresh.
     self.global_keys.deinit();
     self.hidden_windows.deinit(self.core_app.alloc);
@@ -584,6 +602,22 @@ fn startIpc(self: *App) void {
     };
 }
 
+/// After restoring a session at start (roadmap 5.10b): a launch with a
+/// command (`-e`) opens it in a tab of its own in the front window, with
+/// no splits, rather than in the first restored pane.
+fn openLaunchTab(self: *App) void {
+    const command = self.config.@"initial-command" orelse return;
+    const window = self.frontWindow() orelse return;
+    const overrides: ipc.Overrides = .{ .command = command };
+    self.ipc_overrides = &overrides;
+    defer self.ipc_overrides = null;
+    _ = window.addTab(null, .tab) catch |err| {
+        log.warn("error opening the launch's command in a tab err={}", .{err});
+        return;
+    };
+    window.present();
+}
+
 /// An IPC request: +new-window's window, or +new-tab's tab in the window of
 /// the pane it names (else the focused one's, else a window, as GTK), with
 /// the request's overrides, in front.
@@ -594,11 +628,19 @@ fn runIpc(self: *App, msg: ipc.Message) void {
         ipc.Overrides.parse(arena.allocator(), args) catch .{}
     else
         .{};
-    self.ipc_overrides = &overrides;
-    defer self.ipc_overrides = null;
 
     // Started for this request, with no window to show for it: quit.
     defer if (self.ipc_launch and self.windows.items.len == 0) self.quitNow();
+
+    // The first window asked for brings the saved session back (roadmap
+    // 5.10b, initial-window = false); a plain +new-window (the CLI always
+    // sends its directory) wants no more.
+    if (msg.kind != .toggle_quick_terminal and self.session.hasPending()) {
+        const plain = overrides.command == null and overrides.title == null and overrides.shell_integration == null;
+        if (self.session.restorePending() > 0 and msg.kind == .new_window and plain) return;
+    }
+    self.ipc_overrides = &overrides;
+    defer self.ipc_overrides = null;
 
     // +toggle-quick-terminal (roadmap 5.7).
     if (msg.kind == .toggle_quick_terminal) {
@@ -1290,6 +1332,7 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 },
                 GlobalKeys.retry_timer => self.global_keys.retry(),
                 Undo.timer_id => self.undo.tick(),
+                Session.timer_id => self.session.tick(),
                 else => {},
             }
             return 0;
@@ -1324,6 +1367,7 @@ pub fn windowDestroyed(self: *App, window: *Window) void {
     }
     self.rescueQuick();
 
+    self.session.changed();
     // Quitting with the last window: what undo keeps goes first, so the
     // core sees its last surface go (and its quit timer starts).
     if (self.windows.items.len == 0 and self.config.@"quit-after-last-window-closed") self.undo.clear();
@@ -1529,6 +1573,8 @@ fn quit(self: *App) void {
     // The configuration editor's changes first: Save, Discard or Cancel.
     if (self.config_editor) |editor| if (!editor.allowQuit()) return;
     if (!self.confirmCloseAll(.app)) return;
+    // The session as it is: the windows closing now don't empty it.
+    self.session.freeze();
     self.closeAllWindows(false);
     self.quitNow();
 }
@@ -2002,6 +2048,12 @@ pub fn performAction(
                 .app => null,
                 .surface => |v| v,
             };
+            // The first window asked for brings a session that waited
+            // (initial-window = false, roadmap 5.10b), also from the quick
+            // terminal's pane while it is the only window.
+            if ((parent == null or self.frontWindow() == null) and self.session.hasPending()) {
+                if (self.session.restorePending() > 0) return true;
+            }
             _ = try Window.create(self, parent);
         },
 
@@ -2009,7 +2061,11 @@ pub fn performAction(
         // goto_tab) finds it. The core's `all:` loop copes with surfaces
         // added while it runs.
         .new_tab => switch (target) {
-            .app => _ = try Window.create(self, null),
+            .app => {
+                // A tab with no window: a session that waited, else a window.
+                if (self.session.hasPending() and self.session.restorePending() > 0) return true;
+                _ = try Window.create(self, null);
+            },
             .surface => |core| _ = try core.rt_surface.window.addTab(core, .tab),
         },
 
@@ -2241,6 +2297,8 @@ pub fn performAction(
                 // with them what keeps murrtty running.
                 self.syncTray();
                 self.global_keys.refresh(.config);
+                // window-save-state may have changed.
+                self.session.configChanged();
                 if (self.windows_hidden and !self.canShowHidden()) self.showWindows();
                 // The tray gone with no window: as if the last had just
                 // closed (a delay still applies).
@@ -2315,7 +2373,12 @@ pub fn performAction(
             surface.commands_finished +%= 1;
             surface.last_exit = value.exit_code;
             self.commandFinished(surface, value);
+            // A command may have moved its shell (roadmap 5.10b).
+            self.session.changed();
         },
+
+        // A shell reported its directory: the session keeps it.
+        .pwd => self.session.changed(),
 
         // The renderer draws on its own thread; nothing to schedule.
         .render => {},

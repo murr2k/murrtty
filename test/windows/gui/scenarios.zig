@@ -103,6 +103,8 @@ pub const all = [_]Scenario{
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
     .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
     .{ .name = "config-editor-pages", .about = "the configuration editor's pickers: a color's swatch and a file's button (Windows' dialogs stood in for), the font chooser (monospaced families, searched, one chosen) and the theme chooser", .run = configEditorPages },
+    .{ .name = "session-save", .about = "the session saved as it changes (session.json): the window, a tab and its pane's directory, a new tab, the tab in front, a split; a move saved as it ends, a divider as it is let go; a drag Esc cancels or murrtty ending mid-drag saves nothing; an unwritable state folder said once", .run = sessionSave },
+    .{ .name = "session-restore", .about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
@@ -4292,7 +4294,7 @@ fn crashReport(h: *Harness) anyerror!void {
     var before: usize = 0;
     for (kinds) |k| {
         {
-            var g = try h.launchWith(k.name, base_config, .{ .env = env });
+            var g = try h.launchWith(k.name, base_config ++ "window-save-state = never\n", .{ .env = env });
             defer g.deinit();
             try h.waitText(&g, ">", 1, 20000);
             // Sentry starts on a thread of its own: wait until it has.
@@ -4304,7 +4306,7 @@ fn crashReport(h: *Harness) anyerror!void {
         var found = try findReports(h, reports);
         if (found.count == before) {
             // Kept for the next start: start one, and let it send it.
-            var g = try h.launchWith(k.next, base_config, .{ .env = env });
+            var g = try h.launchWith(k.next, base_config ++ "window-save-state = never\n", .{ .env = env });
             defer g.deinit();
             try h.waitText(&g, ">", 1, 20000);
             var waited: u32 = 0;
@@ -10988,4 +10990,658 @@ fn selectionScenario(h: *Harness) anyerror!void {
     h.key(surf, .{ .ctrl = true, .shift = true }, 0x76);
     try waitWindowText(h, &g, 0, ">murrttyselwordmurrttyselword");
     try h.expect(true, "and paste_from_selection", .{});
+}
+
+// ---------------------------------------------------------------- session restore
+
+/// session.json as murrtty writes it (roadmap 5.10b), as far as read here.
+const SavedSession = struct {
+    version: u32 = 0,
+    front: ?u32 = null,
+    windows: []const Win = &.{},
+
+    const Win = struct {
+        quick: bool = false,
+        name: ?[]const u8 = null,
+        left: i32 = 0,
+        top: i32 = 0,
+        right: i32 = 0,
+        bottom: i32 = 0,
+        maximized: bool = false,
+        fullscreen: bool = false,
+        active: u32 = 0,
+        tabs: []const Tab = &.{},
+    };
+    const Tab = struct {
+        name: ?[]const u8 = null,
+        focused: u32 = 0,
+        nodes: []const Node = &.{},
+    };
+    const Node = struct {
+        pane: ?Pane = null,
+        split: ?Split = null,
+    };
+    const Split = struct {
+        layout: []const u8 = "horizontal",
+        ratio: f32 = 0.5,
+        left: u32 = 0,
+        right: u32 = 0,
+    };
+    const Pane = struct {
+        id: []const u8 = "",
+        directory: ?[]const u8 = null,
+        program: ?Program = null,
+        name: ?[]const u8 = null,
+    };
+    const Program = struct {
+        direct: ?[]const []const u8 = null,
+        shell: ?[]const u8 = null,
+    };
+
+    fn tabCount(self: SavedSession) usize {
+        return if (self.windows.len > 0) self.windows[0].tabs.len else 0;
+    }
+
+    /// The first window's first tab's root split, if it is one.
+    fn rootSplit(self: SavedSession) ?Split {
+        if (self.windows.len == 0 or self.windows[0].tabs.len == 0) return null;
+        const nodes = self.windows[0].tabs[0].nodes;
+        return if (nodes.len > 0) nodes[0].split else null;
+    }
+
+    fn findPane(self: SavedSession, id: []const u8) ?Pane {
+        for (self.windows) |win| for (win.tabs) |tab| for (tab.nodes) |n| {
+            if (n.pane) |p| if (std.mem.eql(u8, p.id, id)) return p;
+        };
+        return null;
+    }
+};
+
+fn readSession(h: *Harness, path: []const u8) ?std.json.Parsed(SavedSession) {
+    const text = h.readFileOrNull(path) orelse return null;
+    defer h.alloc.free(text);
+    return std.json.parseFromSlice(SavedSession, h.alloc, text, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch null;
+}
+
+/// Read the session file until `ok` holds or `ms` pass; the last read
+/// either way (the caller's checks then say what is wrong).
+fn waitSession(h: *Harness, path: []const u8, ms: u32, ctx: anytype, comptime ok: fn (@TypeOf(ctx), SavedSession) bool) !std.json.Parsed(SavedSession) {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        if (readSession(h, path)) |p| {
+            if (ok(ctx, p.value) or waited >= ms) return p;
+            p.deinit();
+        } else if (waited >= ms) return h.fail("no session in {s}", .{path});
+        w.Sleep(100);
+    }
+}
+
+fn userHome(h: *Harness) ![]u8 {
+    var buf: [512]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("USERPROFILE"), &buf, buf.len);
+    return std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
+}
+
+/// The same folder, as Windows compares names (case, a trailing backslash).
+fn sameDir(a: ?[]const u8, b: []const u8) bool {
+    const x = std.mem.trimEnd(u8, a orelse return false, "\\");
+    return std.ascii.eqlIgnoreCase(x, std.mem.trimEnd(u8, b, "\\"));
+}
+
+/// Roadmap 5.10b: murrtty saves its session as it changes, to session.json
+/// in its state folder (the scenario's own here): at start its window, a
+/// tab and its pane's directory; a new tab, the tab in front and a split as
+/// they come. A window moved is saved once the move ends (WM_EXITSIZEMOVE),
+/// a divider once it is let go; a divider drag Esc cancels saves nothing,
+/// nor one murrtty ends in the middle of. A state folder murrtty can't
+/// write is said in a dialog, once a run.
+fn sessionSave(h: *Harness) anyerror!void {
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\session-save\\state\\murrtty\\session.json", .{h.temp_dir});
+    defer h.alloc.free(path);
+    const home = try userHome(h);
+    defer h.alloc.free(home);
+    var before_kill: ?[]u8 = null;
+    defer if (before_kill) |b| h.alloc.free(b);
+    {
+        var g = try start(h, "session-save", "keybind = ctrl+shift+f7=goto_tab:1\n", ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+
+        // At start: the window, a tab, a pane in its directory.
+        {
+            var s = try waitSession(h, path, 5000, @as([]const u8, home), struct {
+                fn ok(want: []const u8, v: SavedSession) bool {
+                    if (v.tabCount() != 1) return false;
+                    const nodes = v.windows[0].tabs[0].nodes;
+                    return nodes.len == 1 and nodes[0].pane != null and sameDir(nodes[0].pane.?.directory, want);
+                }
+            }.ok);
+            defer s.deinit();
+            try h.expect(s.value.version == 1 and s.value.windows.len == 1 and s.value.tabCount() == 1, "at start the file has the window and its tab (version {d}, {d} windows, {d} tabs)", .{ s.value.version, s.value.windows.len, s.value.tabCount() });
+            const nodes = s.value.windows[0].tabs[0].nodes;
+            const pane = if (nodes.len == 1) nodes[0].pane else null;
+            try h.expect(pane != null and sameDir(pane.?.directory, home) and pane.?.id.len == 16, "and its pane, in its directory ({s}), with an id", .{if (pane) |p| p.directory orelse "none" else "no pane"});
+        }
+
+        // A new tab, in front; then the first in front again.
+        h.key(try h.surface(&g, win), .{ .ctrl = true, .shift = true }, 'T');
+        {
+            var s = try waitSession(h, path, 5000, {}, struct {
+                fn ok(_: void, v: SavedSession) bool {
+                    return v.tabCount() == 2 and v.windows[0].active == 1;
+                }
+            }.ok);
+            defer s.deinit();
+            try h.expect(s.value.tabCount() == 2 and s.value.windows[0].active == 1, "a new tab is saved, in front ({d} tabs)", .{s.value.tabCount()});
+        }
+        try waitWindowTabText(h, &g, 0, 1, ">");
+        h.key(try paneHwnd(h, &g, 0), .{ .ctrl = true, .shift = true }, w.VK_F7);
+        {
+            var s = try waitSession(h, path, 5000, {}, struct {
+                fn ok(_: void, v: SavedSession) bool {
+                    return v.tabCount() == 2 and v.windows[0].active == 0;
+                }
+            }.ok);
+            defer s.deinit();
+            try h.expect(s.value.tabCount() == 2 and s.value.windows[0].active == 0, "and the tab in front as it changes (active {d})", .{if (s.value.windows.len > 0) s.value.windows[0].active else 99});
+        }
+
+        // Windows asking to end its session holds the file as it is (the
+        // shells end first, and their panes close); called off, saving
+        // goes on.
+        {
+            var result: usize = 0;
+            _ = w.SendMessageTimeoutW(win, w.WM_QUERYENDSESSION, 0, w.ENDSESSION_LOGOFF, w.SMTO_ABORTIFHUNG, 5000, &result);
+            h.key(try paneHwnd(h, &g, 0), .{ .ctrl = true, .shift = true }, 'T');
+            w.Sleep(1500);
+            {
+                var s = readSession(h, path) orelse return h.fail("no session file", .{});
+                defer s.deinit();
+                try h.expect(s.value.tabCount() == 2, "while Windows ends its session a new tab isn't saved ({d} tabs)", .{s.value.tabCount()});
+            }
+            _ = w.SendMessageTimeoutW(win, w.WM_ENDSESSION, 0, w.ENDSESSION_LOGOFF, w.SMTO_ABORTIFHUNG, 5000, &result);
+            var s = try waitSession(h, path, 5000, {}, struct {
+                fn ok(_: void, v: SavedSession) bool {
+                    return v.tabCount() == 3;
+                }
+            }.ok);
+            defer s.deinit();
+            try h.expect(s.value.tabCount() == 3, "and once it's called off, it is ({d} tabs)", .{s.value.tabCount()});
+            try waitWindowTabText(h, &g, 0, 2, ">");
+            h.key(try paneHwnd(h, &g, 0), .{ .ctrl = true, .shift = true }, w.VK_F7);
+            try waitPanes(h, &g, 1);
+        }
+
+        // A split.
+        h.key(try paneHwnd(h, &g, 0), .{ .ctrl = true, .shift = true }, 'O');
+        try waitPanes(h, &g, 2);
+        {
+            var s = try waitSession(h, path, 5000, {}, struct {
+                fn ok(_: void, v: SavedSession) bool {
+                    return v.rootSplit() != null;
+                }
+            }.ok);
+            defer s.deinit();
+            const split = s.value.rootSplit();
+            try h.expect(split != null and std.mem.eql(u8, split.?.layout, "horizontal") and @abs(split.?.ratio - 0.5) < 0.01 and s.value.windows[0].tabs[0].nodes.len == 3, "a split is saved: side by side, halves", .{});
+            try h.expect(s.value.windows[0].active == 0, "in the first tab", .{});
+        }
+
+        // A move is saved as it ends, not while it goes on.
+        {
+            var s0 = try waitSession(h, path, 0, {}, struct {
+                fn ok(_: void, _: SavedSession) bool {
+                    return true;
+                }
+            }.ok);
+            defer s0.deinit();
+            const left0 = s0.value.windows[0].left;
+            const top0 = s0.value.windows[0].top;
+            var wr: w.RECT = .{};
+            _ = w.GetWindowRect(win, &wr);
+            _ = w.SendMessageTimeoutW(win, w.WM_ENTERSIZEMOVE, 0, 0, w.SMTO_ABORTIFHUNG, 2000, null);
+            _ = w.SetWindowPos(win, null, wr.left + 40, wr.top + 30, 0, 0, w.SWP_NOSIZE | w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+            w.Sleep(1500);
+            {
+                var s = readSession(h, path) orelse return h.fail("no session file mid-move", .{});
+                defer s.deinit();
+                try h.expect(s.value.windows[0].left == left0 and s.value.windows[0].top == top0, "mid-move the file keeps the window where it was ({d},{d}; was {d},{d})", .{ s.value.windows[0].left, s.value.windows[0].top, left0, top0 });
+            }
+            _ = w.SendMessageTimeoutW(win, w.WM_EXITSIZEMOVE, 0, 0, w.SMTO_ABORTIFHUNG, 2000, null);
+            const Want = struct { left: i32, top: i32 };
+            var s = try waitSession(h, path, 5000, Want{ .left = left0 + 40, .top = top0 + 30 }, struct {
+                fn ok(want: Want, v: SavedSession) bool {
+                    return v.windows.len == 1 and v.windows[0].left == want.left and v.windows[0].top == want.top;
+                }
+            }.ok);
+            defer s.deinit();
+            try h.expect(s.value.windows[0].left == left0 + 40 and s.value.windows[0].top == top0 + 30, "once it ends the move is saved ({d},{d})", .{ s.value.windows[0].left, s.value.windows[0].top });
+        }
+
+        // A divider is saved as it is let go.
+        const right_pane = try paneHwnd(h, &g, 1);
+        const container = w.GetParent(right_pane) orelse return h.fail("pane without a container", .{});
+        const y: i32 = 200;
+        {
+            const x0 = try rootDivider(h, &g);
+            postMouse(container, w.WM_LBUTTONDOWN, x0, y);
+            postMouse(container, w.WM_MOUSEMOVE, x0 + 60, y);
+            postMouse(container, w.WM_MOUSEMOVE, x0 + 120, y);
+            w.Sleep(1500);
+            const mid = try rootDivider(h, &g);
+            {
+                var s = readSession(h, path) orelse return h.fail("no session file mid-drag", .{});
+                defer s.deinit();
+                const split = s.value.rootSplit();
+                try h.expect(@abs(mid - (x0 + 120)) <= 1 and split != null and @abs(split.?.ratio - 0.5) < 0.01, "mid-drag the divider moves (to {d}) and the file keeps the halves", .{mid});
+            }
+            postMouse(container, w.WM_LBUTTONUP, x0 + 120, y);
+            var s = try waitSession(h, path, 5000, {}, struct {
+                fn ok(_: void, v: SavedSession) bool {
+                    const split = v.rootSplit() orelse return false;
+                    return split.ratio > 0.55;
+                }
+            }.ok);
+            defer s.deinit();
+            const split = s.value.rootSplit();
+            try h.expect(split != null and split.?.ratio > 0.55, "let go, the divider is saved (ratio {d:.3})", .{if (split) |sp| sp.ratio else 0});
+        }
+
+        // Esc puts a drag back and saves nothing.
+        const text0 = h.readFileOrNull(path) orelse return h.fail("no session file", .{});
+        defer h.alloc.free(text0);
+        const x1 = try rootDivider(h, &g);
+        {
+            postMouse(container, w.WM_LBUTTONDOWN, x1, y);
+            postMouse(container, w.WM_MOUSEMOVE, x1 - 200, y);
+            // Longer than the poll, which must not save it either.
+            w.Sleep(1500);
+            const esc: usize = 1 | (@as(usize, w.MapVirtualKeyW(w.VK_ESCAPE, w.MAPVK_VK_TO_VSC)) << 16);
+            _ = w.PostMessageW(right_pane, w.WM_KEYDOWN, w.VK_ESCAPE, @bitCast(esc));
+            _ = w.PostMessageW(right_pane, w.WM_KEYUP, w.VK_ESCAPE, @bitCast(esc | (3 << 30)));
+            postMouse(container, w.WM_LBUTTONUP, x1 - 200, y);
+            w.Sleep(1500);
+            const text = h.readFileOrNull(path) orelse return h.fail("no session file", .{});
+            defer h.alloc.free(text);
+            const back = try rootDivider(h, &g);
+            try h.expect(@abs(back - x1) <= 1 and std.mem.eql(u8, text, text0), "a drag Esc puts back saves nothing (divider at {d}, was {d})", .{ back, x1 });
+        }
+
+        // murrtty ending mid-drag leaves the file as it was.
+        postMouse(container, w.WM_LBUTTONDOWN, x1, y);
+        postMouse(container, w.WM_MOUSEMOVE, x1 - 150, y);
+        w.Sleep(1500);
+        const mid = try rootDivider(h, &g);
+        try h.expect(@abs(mid - (x1 - 150)) <= 1, "a last drag is under way (divider at {d})", .{mid});
+        before_kill = try h.alloc.dupe(u8, text0);
+        _ = w.TerminateProcess(g.proc, 1);
+        _ = g.waitExit(5000);
+    }
+    {
+        const text = h.readFileOrNull(path) orelse return h.fail("the session file went with murrtty", .{});
+        defer h.alloc.free(text);
+        try h.expect(std.mem.eql(u8, text, before_kill.?), "and murrtty ending mid-drag left the file as it was", .{});
+    }
+
+    // Quitting writes what changed last: a tab made just before Quit.
+    {
+        const quit_path = try std.fmt.allocPrint(h.alloc, "{s}\\session-quit\\state\\murrtty\\session.json", .{h.temp_dir});
+        defer h.alloc.free(quit_path);
+        var g = try start(h, "session-quit", "confirm-close-surface = false\n", ">");
+        defer g.deinit();
+        var s0 = try waitSession(h, quit_path, 5000, {}, struct {
+            fn ok(_: void, v: SavedSession) bool {
+                return v.tabCount() == 1;
+            }
+        }.ok);
+        s0.deinit();
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'Q');
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "murrtty quits at once (exit {?d})", .{code});
+        var s = readSession(h, quit_path) orelse return h.fail("no session after quitting", .{});
+        defer s.deinit();
+        try h.expect(s.value.tabCount() == 2, "quitting writes the last change (a tab made just before: {d} tabs)", .{s.value.tabCount()});
+    }
+
+    // A file where murrtty's state folder would be: said, once.
+    {
+        const dir = try std.fmt.allocPrint(h.alloc, "{s}\\session-unwritable", .{h.temp_dir});
+        defer h.alloc.free(dir);
+        const state = try std.fmt.allocPrint(h.alloc, "{s}\\state", .{dir});
+        defer h.alloc.free(state);
+        const blocker = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty", .{state});
+        defer h.alloc.free(blocker);
+        try h.makeDirAt(dir);
+        try h.makeDirAt(state);
+        try h.writeFileAt(blocker, "a file where murrtty's state folder goes\n");
+        var g = try h.launchWith("session-unwritable", base_config, .{ .env = &.{.{ "XDG_STATE_HOME", state }} });
+        defer g.deinit();
+        const dlg = try h.waitDialog(&g, 10000);
+        const want = try std.fmt.allocPrint(h.alloc, "murrtty can't save its session to {s}\\session.json: its folder can't be made.", .{blocker});
+        defer h.alloc.free(want);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const dl = d.value.dialog;
+            try h.expect(std.mem.eql(u8, dl.heading, "Session Not Saved") and std.mem.startsWith(u8, dl.body, want), "a state folder murrtty can't write is said: '{s}' / '{s}'", .{ dl.heading, dl.body });
+        }
+        h.answer(&g, dlg, w.IDCANCEL);
+        try waitNoDialog(h, &g);
+        h.key(try h.surface(&g, try h.mainWindow(&g)), .{ .ctrl = true, .shift = true }, 'T');
+        w.Sleep(2500);
+        try h.expect(try h.dialogCount(&g) == 0, "and only once a run (a new tab says nothing more)", .{});
+    }
+}
+
+/// Roadmap 5.10b: a saved session comes back at start, from a file written
+/// here (a `class` instance's own, session-<class>.json): two windows, the
+/// first with its name, size and tab in front, and a tab of three panes
+/// whose splits keep their sizes, with their names and directories, one of
+/// them gone (its shell starts in the home folder and a toast says so),
+/// and a tab whose program was cmd of its own, which runs it again; the
+/// second, saved off every monitor and bigger than any, pulled into a work
+/// area; the quick terminal's tabs wait for it to be summoned. What came
+/// is saved back, and quitting keeps it. With initial-window = false
+/// nothing shows until a window is asked for (+new-window), which brings
+/// the saved windows back instead of an empty one; `never` restores
+/// nothing and leaves the file alone; a start that crashed while restoring
+/// (its marker left) skips the restore once, keeping the session aside and
+/// saying so.
+fn sessionRestore(h: *Harness) anyerror!void {
+    const class = try ipcClass(h, "session");
+    defer h.alloc.free(class);
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\session-restore", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    const state = try std.fmt.allocPrint(h.alloc, "{s}\\state", .{dir});
+    defer h.alloc.free(state);
+    const folder = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty", .{state});
+    defer h.alloc.free(folder);
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\session-{s}.json", .{ folder, class });
+    defer h.alloc.free(path);
+    const work = try std.fmt.allocPrint(h.alloc, "{s}\\work", .{dir});
+    defer h.alloc.free(work);
+    const logs = try std.fmt.allocPrint(h.alloc, "{s}\\logs", .{dir});
+    defer h.alloc.free(logs);
+    const gone = try std.fmt.allocPrint(h.alloc, "{s}\\gone", .{dir});
+    defer h.alloc.free(gone);
+    for ([_][]const u8{ dir, state, folder, work, logs }) |p| try h.makeDirAt(p);
+    const home = try userHome(h);
+    defer h.alloc.free(home);
+
+    const S = SavedSession;
+    const main_panes = [_]S.Node{
+        .{ .split = .{ .layout = "horizontal", .ratio = 0.3, .left = 1, .right = 2 } },
+        .{ .pane = .{ .id = "00000000000000a1", .directory = work } },
+        .{ .split = .{ .layout = "vertical", .ratio = 0.7, .left = 3, .right = 4 } },
+        .{ .pane = .{ .id = "00000000000000a2", .directory = gone } },
+        .{ .pane = .{ .id = "00000000000000a3", .directory = logs, .name = "logs" } },
+    };
+    const own_cmd = [_]S.Node{.{ .pane = .{ .id = "00000000000000b1", .directory = work, .program = .{ .direct = &.{ "cmd.exe", "/k", "echo", "own-cmd" } } } }};
+    const lost_pane = [_]S.Node{.{ .pane = .{ .id = "00000000000000d1", .directory = work } }};
+    const quick_a = [_]S.Node{.{ .pane = .{ .id = "00000000000000c1", .directory = work } }};
+    const quick_b = [_]S.Node{.{ .pane = .{ .id = "00000000000000c2", .directory = logs, .name = "quick-logs" } }};
+    const main_tabs = [_]S.Tab{ .{ .name = "work", .focused = 4, .nodes = &main_panes }, .{ .nodes = &own_cmd } };
+    const lost_tabs = [_]S.Tab{.{ .nodes = &lost_pane }};
+    const quick_tabs = [_]S.Tab{ .{ .nodes = &quick_a }, .{ .nodes = &quick_b } };
+    const windows = [_]S.Win{
+        .{ .name = "main", .left = 100, .top = 100, .right = 1060, .bottom = 740, .active = 1, .tabs = &main_tabs },
+        // Saved on a monitor that's gone, and bigger than any.
+        .{ .left = -50000, .top = -50000, .right = -10000, .bottom = -20000, .tabs = &lost_tabs },
+        .{ .quick = true, .active = 1, .tabs = &quick_tabs },
+    };
+    {
+        const text = try std.json.Stringify.valueAlloc(h.alloc, S{ .version = 1, .front = 0, .windows = &windows }, .{ .emit_null_optional_fields = false });
+        defer h.alloc.free(text);
+        try h.writeFileAt(path, text);
+    }
+
+    const config = try std.fmt.allocPrint(h.alloc, "{s}class = {s}\nkeybind = ctrl+shift+f6=toggle_quick_terminal\n", .{ base_config, class });
+    defer h.alloc.free(config);
+    const env: []const [2][]const u8 = &.{.{ "XDG_STATE_HOME", state }};
+    {
+        var g = try h.launchWith("session-restore", config, .{ .env = env });
+        defer g.deinit();
+        try waitWindowCount(h, &g, 2);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const toast = if (d.value.windows.len > 0) d.value.windows[0].toast else "";
+            try h.expect(std.mem.indexOf(u8, toast, "is gone: started in your home folder") != null, "a toast says a folder is gone ('{s}')", .{toast});
+        }
+        try waitWindowTabText(h, &g, 0, 1, "own-cmd");
+        // Each pane's shell reports its directory once it runs.
+        var waited: u32 = 0;
+        while (waited < 10000) : (waited += 200) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const p = d.value.windows[0].tabs[0].panes orelse &.{};
+            if (p.len == 3 and sameDir(p[0].pwd, work) and sameDir(p[1].pwd, home) and sameDir(p[2].pwd, logs)) break;
+            w.Sleep(200);
+        }
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const wins = d.value.windows;
+        try h.expect(wins.len == 2, "the two saved windows come back, and no other ({d})", .{wins.len});
+        const main = wins[0];
+        var mi: w.MONITORINFO = .{};
+        if (w.MonitorFromPoint(.{ .x = 110, .y = 110 }, w.MONITOR_DEFAULTTONEAREST)) |m| _ = w.GetMonitorInfoW(m, &mi);
+        const want_w = @min(960, mi.rcWork.right - mi.rcWork.left);
+        const want_h = @min(640, mi.rcWork.bottom - mi.rcWork.top);
+        const size = [2]i32{ main.rect[2] - main.rect[0], main.rect[3] - main.rect[1] };
+        try h.expect(std.mem.eql(u8, main.window_name, "main") and size[0] == want_w and size[1] == want_h, "the first, named '{s}', at its size ({d}x{d}, saved {d}x{d})", .{ main.window_name, size[0], size[1], want_w, want_h });
+        try h.expect(main.tabs.len == 2 and main.active == 1, "with its two tabs, the second in front ({d} tabs, active {d})", .{ main.tabs.len, main.active });
+        const t0 = main.tabs[0];
+        const p = t0.panes orelse &.{};
+        try h.expect(std.mem.eql(u8, t0.tab_name, "work") and std.mem.eql(u8, t0.pane_name, "logs") and p.len == 3, "the first tab, named '{s}', has its three panes ({d}), the one named '{s}' focused", .{ t0.tab_name, p.len, t0.pane_name });
+        if (p.len == 3) {
+            const area = t0.area orelse .{ 1, 1 };
+            const share = @as(f32, @floatFromInt(p[0].rect[2] - p[0].rect[0])) / @as(f32, @floatFromInt(area[0]));
+            try h.expect(share > 0.26 and share < 0.34, "the split keeps its size (the left pane {d:.2} of the width)", .{share});
+            const top_h: f32 = @floatFromInt(p[1].rect[3] - p[1].rect[1]);
+            const bottom_h: f32 = @floatFromInt(p[2].rect[3] - p[2].rect[1]);
+            const top_share = top_h / (top_h + bottom_h);
+            try h.expect(p[1].rect[0] == p[2].rect[0] and p[1].rect[1] < p[2].rect[1] and top_share > 0.66 and top_share < 0.74, "and the right side is split top and bottom, keeping its own size (the top {d:.2})", .{top_share});
+            try h.expect(sameDir(p[0].pwd, work) and sameDir(p[2].pwd, logs), "each pane's shell in its directory ({s}, {s})", .{ p[0].pwd orelse "", p[2].pwd orelse "" });
+            try h.expect(sameDir(p[1].pwd, home), "the gone folder's pane in the home folder ({s})", .{p[1].pwd orelse ""});
+        }
+
+        // The window saved on a monitor that's gone, bigger than any.
+        if (wins.len == 2) {
+            const lost = wins[1];
+            const hwnd = hwndOf(lost.hwnd);
+            var lmi: w.MONITORINFO = .{};
+            if (w.MonitorFromWindow(hwnd, w.MONITOR_DEFAULTTONEAREST)) |m| _ = w.GetMonitorInfoW(m, &lmi);
+            const r = lost.rect;
+            const work_area = lmi.rcWork;
+            try h.expect(r[0] >= work_area.left and r[1] >= work_area.top and r[2] <= work_area.right and r[3] <= work_area.bottom and r[2] > r[0] and w.IsZoomed(hwnd) == 0, "the window saved off-screen and too big comes back inside a work area, not maximized ({d},{d},{d},{d} in {d},{d},{d},{d})", .{ r[0], r[1], r[2], r[3], work_area.left, work_area.top, work_area.right, work_area.bottom });
+        }
+
+        // What came is saved back: ids, names, the gone folder's pane in
+        // the home folder, the quick terminal's tabs still waiting.
+        {
+            var s = try waitSession(h, path, 5000, @as([]const u8, home), struct {
+                fn ok(want: []const u8, v: SavedSession) bool {
+                    const pane = v.findPane("00000000000000a2") orelse return false;
+                    return sameDir(pane.directory, want);
+                }
+            }.ok);
+            defer s.deinit();
+            const v = s.value;
+            try h.expect(v.windows.len == 3 and v.front != null and v.front.? == 0, "saved back: the two windows and the quick terminal's ({d}), the first in front", .{v.windows.len});
+            const named = v.findPane("00000000000000a3");
+            try h.expect(v.windows.len == 3 and std.mem.eql(u8, v.windows[0].name orelse "", "main") and std.mem.eql(u8, v.windows[0].tabs[0].name orelse "", "work") and named != null and std.mem.eql(u8, named.?.name orelse "", "logs"), "with their names and the panes' ids", .{});
+            const own = v.findPane("00000000000000b1");
+            const program = if (own) |o| if (o.program) |pr| pr.direct else null else null;
+            try h.expect(program != null and program.?.len == 4 and std.mem.eql(u8, program.?[3], "own-cmd"), "the pane running cmd of its own keeps it", .{});
+            var quick_tabs_saved: usize = 0;
+            for (v.windows) |sw| if (sw.quick) {
+                quick_tabs_saved = sw.tabs.len;
+            };
+            try h.expect(quick_tabs_saved == 2, "the quick terminal's two tabs stay saved while they wait ({d})", .{quick_tabs_saved});
+        }
+
+        // The quick terminal comes back with its tabs when summoned.
+        h.key(try paneHwnd(h, &g, 0), .{ .ctrl = true, .shift = true }, w.VK_F6);
+        var quick_seen = false;
+        waited = 0;
+        while (waited < 5000 and !quick_seen) : (waited += 100) {
+            var dq = try h.dump(&g);
+            defer dq.deinit();
+            for (dq.value.windows) |dw| if (dw.quick != null and dw.tabs.len == 2) {
+                quick_seen = true;
+                try h.expect(dw.active == 1 and std.mem.eql(u8, dw.tabs[1].pane_name, "quick-logs"), "the quick terminal comes back with its two tabs, the second in front ('{s}')", .{dw.tabs[1].pane_name});
+            };
+            if (!quick_seen) w.Sleep(100);
+        }
+        try h.expect(quick_seen, "summoned, the quick terminal has its saved tabs", .{});
+
+        // Quitting keeps the session.
+        try quit(h, &g, try paneHwnd(h, &g, 0));
+        var s = readSession(h, path) orelse return h.fail("no session after quitting", .{});
+        defer s.deinit();
+        try h.expect(s.value.windows.len == 3, "quitting keeps the windows in the file ({d})", .{s.value.windows.len});
+    }
+
+    // initial-window = false: nothing until a window is asked for, which
+    // brings the session back instead of an empty window.
+    {
+        const lazy = try std.fmt.allocPrint(h.alloc, "{s}initial-window = false\n", .{config});
+        defer h.alloc.free(lazy);
+        var g = try h.launchWith("session-restore-lazy", lazy, .{ .env = env, .wait_window = false });
+        defer g.deinit();
+        try h.waitAnswering(&g, 15000);
+        h.alloc.free(try waitListening(h, &g, 5000));
+        w.Sleep(1000);
+        {
+            const wins = try h.windows(&g, "MurrttyWindow");
+            defer h.alloc.free(wins);
+            try h.expect(wins.len == 0, "with initial-window = false nothing shows at start ({d} windows)", .{wins.len});
+        }
+        const class_arg = try std.fmt.allocPrint(h.alloc, "--class={s}", .{class});
+        defer h.alloc.free(class_arg);
+        var r = try h.runCli("session-new-window", &.{ "+new-window", class_arg });
+        defer r.deinit();
+        try h.expect(r.code == 0, "+new-window exits 0 (got {d})", .{r.code});
+        try waitWindowCount(h, &g, 2);
+        w.Sleep(1000);
+        const wins = try h.windows(&g, "MurrttyWindow");
+        defer h.alloc.free(wins);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const first = if (d.value.windows.len > 0) d.value.windows[0].window_name else "";
+        try h.expect(wins.len == 2 and std.mem.eql(u8, first, "main"), "the first window asked for brings the saved windows back, and no empty one ({d} windows, the first '{s}')", .{ wins.len, first });
+
+        // A second instance (single instance off) neither restores nor
+        // saves: the first keeps the session.
+        const second_config = try std.fmt.allocPrint(h.alloc, "{s}gtk-single-instance = false\n", .{config});
+        defer h.alloc.free(second_config);
+        var g2 = try h.launchWith("session-restore-second", second_config, .{ .env = env });
+        defer g2.deinit();
+        try h.waitText(&g2, ">", 1, 20000);
+        w.Sleep(1500);
+        const wins2 = try h.windows(&g2, "MurrttyWindow");
+        defer h.alloc.free(wins2);
+        var s = readSession(h, path) orelse return h.fail("no session file", .{});
+        defer s.deinit();
+        const name0 = if (s.value.windows.len > 0) s.value.windows[0].name orelse "" else "";
+        try h.expect(wins2.len == 1 and s.value.windows.len == 3 and std.mem.eql(u8, name0, "main"), "a second instance opens its own window ({d}) and leaves the session alone ({d} windows saved)", .{ wins2.len, s.value.windows.len });
+
+        // The restore's crash marker goes once murrtty has run a while
+        // after it; ending it sooner (as deinit does) would count as a
+        // crash at the next start.
+        const marker = try std.fmt.allocPrint(h.alloc, "{s}\\session-{s}.restoring", .{ folder, class });
+        defer h.alloc.free(marker);
+        var marker_waited: u32 = 0;
+        while (marker_waited < 10000) : (marker_waited += 200) {
+            const left = h.readFileOrNull(marker) orelse break;
+            h.alloc.free(left);
+            w.Sleep(200);
+        }
+        try h.expect(marker_waited < 10000, "the restore's crash marker goes a few seconds after it", .{});
+    }
+
+    // A start that fails (no OpenGL) leaves the file as it was, and no
+    // crash marker behind.
+    {
+        const before = h.readFileOrNull(path) orelse return h.fail("no session file", .{});
+        defer h.alloc.free(before);
+        const marker = try std.fmt.allocPrint(h.alloc, "{s}\\session-{s}.restoring", .{ folder, class });
+        defer h.alloc.free(marker);
+        const gl_env: []const [2][]const u8 = &.{ .{ "XDG_STATE_HOME", state }, .{ "GHOSTTY_WIN32_TEST_WGL", "context" } };
+        var g = try h.launchWith("session-restore-gl", config, .{ .env = gl_env, .wait_window = false });
+        defer g.deinit();
+        try h.waitAnswering(&g, 10000);
+        const dlg = try h.waitDialog(&g, 15000);
+        w.Sleep(1500);
+        {
+            const during = h.readFileOrNull(path) orelse return h.fail("the session file is gone", .{});
+            defer h.alloc.free(during);
+            try h.expect(std.mem.eql(u8, before, during), "while murrtty says it can't draw, the session file is as it was", .{});
+        }
+        h.answer(&g, dlg, w.IDCLOSE);
+        _ = g.waitExit(10000);
+        const after = h.readFileOrNull(path) orelse return h.fail("the session file is gone", .{});
+        defer h.alloc.free(after);
+        const left = h.readFileOrNull(marker);
+        defer if (left) |l| h.alloc.free(l);
+        try h.expect(std.mem.eql(u8, before, after) and left == null, "and after it ends, with no crash marker left (marker {s})", .{if (left != null) "left" else "gone"});
+    }
+
+    // never: nothing restored, the file left as it is.
+    {
+        const before = h.readFileOrNull(path) orelse return h.fail("no session file", .{});
+        defer h.alloc.free(before);
+        const never = try std.fmt.allocPrint(h.alloc, "{s}window-save-state = never\n", .{config});
+        defer h.alloc.free(never);
+        var g = try h.launchWith("session-restore-never", never, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        w.Sleep(1500);
+        const wins = try h.windows(&g, "MurrttyWindow");
+        defer h.alloc.free(wins);
+        const after = h.readFileOrNull(path) orelse return h.fail("the session file is gone", .{});
+        defer h.alloc.free(after);
+        try h.expect(wins.len == 1 and std.mem.eql(u8, before, after), "window-save-state = never restores nothing ({d} windows) and leaves the file as it was", .{wins.len});
+    }
+
+    // A start that crashed while restoring left its marker: the next skips
+    // the restore once, keeps the session aside and says so.
+    {
+        const marker = try std.fmt.allocPrint(h.alloc, "{s}\\session-{s}.restoring", .{ folder, class });
+        defer h.alloc.free(marker);
+        const aside = try std.fmt.allocPrint(h.alloc, "{s}\\session-{s}-skipped.json", .{ folder, class });
+        defer h.alloc.free(aside);
+        const saved = h.readFileOrNull(path) orelse return h.fail("no session file", .{});
+        defer h.alloc.free(saved);
+        try h.writeFileAt(marker, "");
+        var g = try h.launchWith("session-restore-crashed", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const wins = d.value.windows;
+        try h.expect(wins.len == 1, "after a start that crashed restoring, one new window ({d})", .{wins.len});
+        const toast = if (wins.len > 0) wins[0].toast else "";
+        const aside_name = try std.fmt.allocPrint(h.alloc, "session-{s}-skipped.json", .{class});
+        defer h.alloc.free(aside_name);
+        var toast_seen = std.mem.indexOf(u8, toast, "wasn't restored") != null;
+        // The notice waits for murrtty's first tick with a window.
+        var waited: u32 = 0;
+        while (!toast_seen and waited < 3000) : (waited += 100) {
+            w.Sleep(100);
+            var dt = try h.dump(&g);
+            defer dt.deinit();
+            const t = if (dt.value.windows.len > 0) dt.value.windows[0].toast else "";
+            toast_seen = std.mem.indexOf(u8, t, "wasn't restored") != null and std.mem.indexOf(u8, t, aside_name) != null;
+        }
+        try h.expect(toast_seen, "and a toast says why, naming {s}", .{aside_name});
+        const kept = h.readFileOrNull(aside);
+        defer if (kept) |k| h.alloc.free(k);
+        try h.expect(kept != null and std.mem.eql(u8, kept.?, saved), "the session is kept aside as session-<class>-skipped.json", .{});
+        const left = h.readFileOrNull(marker);
+        defer if (left) |l| h.alloc.free(l);
+        try h.expect(left == null, "and the marker is gone", .{});
+    }
 }

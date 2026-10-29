@@ -145,6 +145,9 @@ quick: ?QuickTerminal = null,
 /// The shelf (roadmap 5.11): never shown, not among App.windows; its tabs
 /// are the panes, tabs and windows closed but kept for undo.
 shelf: bool = false,
+/// Being moved or sized (WM_ENTERSIZEMOVE to WM_EXITSIZEMOVE): the session
+/// is saved as it is let go (roadmap 5.10b).
+in_size_move: bool = false,
 
 const TabDrag = struct {
     /// The tab pressed, found again on each move: tabs can close or move
@@ -208,7 +211,8 @@ pub fn create(app: *App, parent: ?*CoreSurface) !*Window {
 pub fn createQuick(app: *App) !*Window {
     const self = try createEmpty(app, .quick);
     errdefer self.discard();
-    _ = try self.addTab(null, .window);
+    // Its saved tabs, the first time it is summoned (roadmap 5.10b).
+    if (!app.session.restoreQuick(self)) _ = try self.addTab(null, .window);
     self.quick.?.show(self);
     return self;
 }
@@ -472,6 +476,38 @@ pub fn restoreTab(self: *Window, tab: *Tab, at: usize) !void {
     try self.tabs.ensureUnusedCapacity(self.app.core_app.alloc, 1);
     self.adoptTab(tab, at);
     self.present();
+}
+
+/// A window for a restored session (roadmap 5.10b): made hidden where
+/// `placement` had it (else where a new window goes), so that its panes
+/// open at that monitor's DPI and size, for its tabs to be added, then
+/// shown with showRestored (or discardRestore if none came).
+pub fn createForRestore(app: *App, placement: ?c.WINDOWPLACEMENT) !*Window {
+    const self = try createEmpty(app, .normal);
+    if (placement) |p| {
+        // Twice: moving to its monitor can change the DPI, whose suggested
+        // rect rescales the window; on that monitor now, the second keeps
+        // the size it had.
+        _ = c.SetWindowPlacement(self.hwnd, &p);
+        _ = c.SetWindowPlacement(self.hwnd, &p);
+    } else self.placeAsConfigured();
+    return self;
+}
+
+/// A restored window with no tab after all.
+pub fn discardRestore(self: *Window) void {
+    self.discard();
+}
+
+/// Show a restored window: maximized or fullscreen as it was, tab `active`
+/// selected.
+pub fn showRestored(self: *Window, maximized: bool, fullscreen: bool, active: usize) void {
+    self.select(active);
+    self.app.showWindows();
+    _ = c.ShowWindow(self.hwnd, if (maximized) c.SW_SHOWMAXIMIZED else c.SW_SHOWNORMAL);
+    if (fullscreen) self.toggleFullscreen();
+    _ = c.SetForegroundWindow(self.hwnd);
+    self.focusActive();
 }
 
 /// Undo createEmpty for a window that got no tab (its first failed).
@@ -744,6 +780,7 @@ pub fn closeTabsNow(self: *Window, surface: *Surface, mode: apprt.action.CloseTa
 /// with its panes. Removing the last tab closes the window, which frees
 /// `self`: callers must return at once.
 fn removeTab(self: *Window, index: usize, park: bool) enum { removed, window_destroyed } {
+    self.app.session.changed();
     if (self.tabs.items.len == 1) {
         if (park) self.app.undo.parkWindow(self);
         self.destroy();
@@ -780,6 +817,7 @@ fn needsConfirm(self: *Window, surface: *Surface) bool {
 
 /// Select tab `index`: show it, hide the rest.
 pub fn select(self: *Window, index: usize) void {
+    self.app.session.changed();
     if (index >= self.tabs.items.len) return;
     self.active = index;
     // In view on an overflowing strip; while minimized (no width to scroll
@@ -818,6 +856,7 @@ pub fn gotoTab(self: *Window, tab: apprt.action.GotoTab) bool {
 }
 
 pub fn moveTab(self: *Window, surface: *Surface, amount: isize) bool {
+    self.app.session.changed();
     const total: isize = @intCast(self.tabs.items.len);
     if (total < 2) return false;
     const from_u = self.tabIndexOf(surface) orelse return false;
@@ -914,6 +953,7 @@ pub fn discardTab(self: *Window, tab: *Tab) void {
 /// A pane moved into or out of `tab` (roadmap 1.10): its dimming, and the
 /// title, colors and strip, which follow its focused pane and lose a zoom.
 pub fn tabChanged(self: *Window, tab: *Tab) void {
+    self.app.session.changed();
     const index = std.mem.indexOfScalar(*Tab, self.tabs.items, tab) orelse return;
     tab.syncDim();
     if (index == self.active) {
@@ -1175,6 +1215,7 @@ pub fn surfaceTitleChanged(self: *Window, surface: *Surface) void {
 
 /// Name the window, or (null, or empty) go back to its active tab's title.
 pub fn setTitleOverride(self: *Window, name: ?[]const u8) void {
+    self.app.session.changed();
     const alloc = self.app.core_app.alloc;
     if (self.title_override) |v| alloc.free(v);
     self.title_override = null;
@@ -1476,6 +1517,12 @@ fn layout(self: *Window) void {
 /// Show an in-app notification (GTK's toast) for 3 seconds, in the active
 /// pane's colors.
 pub fn showToast(self: *Window, text: []const u8) void {
+    self.showToastFor(text, 3000);
+}
+
+/// A toast for `ms` milliseconds: longer for a notice to read (a session
+/// restore's).
+pub fn showToastFor(self: *Window, text: []const u8, ms: u32) void {
     if (self.activeSurface()) |s| {
         const bg = s.colors.bg;
         const fg = s.colors.fg;
@@ -1484,7 +1531,7 @@ pub fn showToast(self: *Window, text: []const u8) void {
         self.toast.bg = c.rgb(blend(bg.r, fg.r), blend(bg.g, fg.g), blend(bg.b, fg.b));
         self.toast.fg = c.rgb(fg.r, fg.g, fg.b);
     }
-    self.toast.show(self.hwnd, text, 3000);
+    self.toast.show(self.hwnd, text, ms);
 }
 
 fn blend(a: u8, b: u8) u8 {
@@ -1582,6 +1629,7 @@ pub fn toggleMaximize(self: *Window) void {
 
 pub fn toggleFullscreen(self: *Window) void {
     if (self.quick != null) return;
+    self.app.session.changed();
     // `fullscreen` changes first: the layouts the moves cause show or hide
     // the strip by it (headerShown).
     if (self.fullscreen) |saved| {
@@ -2254,6 +2302,36 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             const minimized = wparam == c.SIZE_MINIMIZED;
             if (!minimized) self.layout();
             if (self.activeTab()) |t| t.setVisible(!minimized);
+            // Maximized, restored, snapped (a drag waits for its release).
+            self.app.session.changed();
+            return 0;
+        },
+        c.WM_MOVE => {
+            self.app.session.changed();
+            return 0;
+        },
+        // A move or size by the mouse or keyboard: saved once, as it ends
+        // (roadmap 5.10b); one cut short saves nothing.
+        c.WM_ENTERSIZEMOVE => {
+            self.in_size_move = true;
+            return 0;
+        },
+        c.WM_EXITSIZEMOVE => {
+            self.in_size_move = false;
+            self.app.session.changed();
+            return 0;
+        },
+        // Windows asks whether its session may end (shutdown, restart,
+        // log-off): murrtty's session is written and held as it is before
+        // the shells end and their panes close (roadmap 5.10b). The answer
+        // stays DefWindowProc's yes (5.10a).
+        c.WM_QUERYENDSESSION => {
+            self.app.session.queryEnd();
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
+        // It ends (kept as it is), or goes on (saving goes on too).
+        c.WM_ENDSESSION => {
+            if (wparam != 0) self.app.session.freeze() else self.app.session.endCancelled();
             return 0;
         },
 
