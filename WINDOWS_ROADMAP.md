@@ -444,7 +444,17 @@ roadmap item behind it.
   Command Palette, Terminal Inspector, Config, About murrtty and Quit
   after Windows' own items; GTK has no such menu.
 
-*Decided, not built yet:* none at present.
+*Decided, not built yet:*
+- **Session restore** (5.10b): `window-save-state` restores windows,
+  tabs, splits, directories and each pane's command history at start, the
+  state saved on every change; GTK ignores the option (macOS has it, saved
+  at exit). A restored pane runs a fresh shell with no scrollback.
+- **Single instance by default** (5.10b): `gtk-single-instance` defaults
+  to `true`, and a second plain launch brings the running murrtty's
+  windows to the front without opening a window; GTK's default is
+  `detect`, and its second launch opens a window.
+- **Fit Window to Screen** (5.10b): a menu item sizing the window to its
+  monitor's work area; GTK has none.
 
 ## Rules every item keeps
 
@@ -2711,16 +2721,89 @@ the buffer, the untouched system clipboard, and both pastes.
   shutdown, though a close would ask. `WM_ENDSESSION` stays where the
   restore below writes its state. The `session-end` scenario checks the
   answer and that no dialog opens.
-- Then `window-save-state`: windows, placement, tabs, split trees and
-  directories as JSON under `%LOCALAPPDATA%`, with `RegisterApplicationRestart`
-  for the `default` policy. State is written on change and on `WM_ENDSESSION`,
-  since a crash gives no exit hook; `RegisterApplicationRestart` only
-  relaunches the process.
-- The owner built session restore on a Linux Ghostty fork of their own
-  (noted 2026-10-27). That fork is internal to their employer and can't be
-  read or copied: before starting, ask the owner to describe its design
-  (what is saved, the state format, the restore policy) and follow it
-  where Windows allows.
+- Then session restore (5.10b), *planned 2026-10-29* from the owner's
+  description of the session restore on their own Linux Ghostty fork
+  (described, never read: that fork is internal to their employer), with
+  the owner's choices on the open points. L, about two weeks.
+  - **What is saved:** every window (its place, size, monitor, maximized
+    or fullscreen, its name), its tabs (order, names, the active one),
+    each tab's split tree (layout, sizes, the focused pane), each pane's
+    directory, program and name, and each pane's command-line history.
+    Not saved: scrollback, what was running in a pane, program-set titles
+    (a fresh shell sets its own), and the environment, whose variables
+    often hold secrets; only what murrtty itself set for a pane (an IPC
+    override) is kept. The quick terminal's tabs and splits are saved too
+    and come back hidden until summoned.
+  - **When:** on every change (windows moved, sized, maximized; tabs and
+    splits made, closed, moved, renamed, focused; a directory a shell
+    reports), coalesced to a few writes a second during a drag, the last
+    change always written. Nothing else: a crash restores what the last
+    write held. Once murrtty quits (Quit, `WM_ENDSESSION`) the state is
+    frozen, so closing its windows on the way out doesn't empty it;
+    closing windows one by one does (closing the last one leaves nothing
+    to restore, as on macOS). Parked panes (5.11) aren't saved.
+  - **Where:** one file murrtty writes, `session.json` in murrtty's state
+    folder (`%LOCALAPPDATA%\murrtty`, or `XDG_STATE_HOME`'s, as the crash
+    reports), written whole through a temporary file and a replace, made
+    if missing, with a format version. Each pane's history is a small
+    file of its own beside it (`history\<pane id>.txt`), written by the
+    shell's integration, not by murrtty (one writer per file), capped at
+    1,000 lines and deleted when its pane closes for good (after
+    `undo-timeout`). A `--class` instance keeps its own
+    (`session-<class>.json`, histories alike). A folder murrtty can't
+    write is said in a dialog naming it and why, once a run; writes then
+    retry quietly until one succeeds. Never a silent failure.
+  - **Restore:** at start, by default. `window-save-state` (Ghostty's own
+    option, macOS-only upstream) decides: `default` and `always` restore,
+    `never` neither saves nor restores and keeps the old file, so going
+    back restores something. Each pane gets a fresh shell, its own program
+    (`cmd`, `wsl`, PowerShell), in its saved directory, with no
+    scrollback; its history comes back for up-arrow only. A pane opened
+    for a one-off command (`ssh host`, `-e`) gets the default shell in its
+    last directory instead. A directory that's gone keeps the pane, starts
+    the shell in the home folder and says so in a line in the pane. A
+    window on a monitor that's gone, or bigger than its screen, is moved
+    and sized into a visible work area. A launch with a command also gets
+    its window after the restored ones; `initial-window = false` only
+    leaves out the empty first window when there is nothing to restore.
+  - **History:** through the shell integration (needs
+    `shell-integration` on, as directories do). PowerShell (PSReadLine):
+    the prompt wrapper appends each command line to the pane's file, and
+    a restored pane loads it with `PSConsoleReadLine.AddToHistory`, on top
+    of PSReadLine's own shared history, which is left as it is. cmd with
+    Clink: `ghostty.lua` the same through Clink's Lua API, on top of
+    Clink's history (to verify while building: if Clink can't take lines
+    without replacing its own, the pane gets a history label of its own).
+    Plain cmd without Clink gets none: Windows can't preload cmd's history
+    (accepted by the owner). The shell learns its file from
+    `MURRTTY_HISTORY_FILE`, which murrtty sets per pane.
+  - **A crash while restoring** (a marker written before, cleared after)
+    makes the next start skip the restore once and say so, so a bad state
+    can't keep murrtty from starting.
+  - **Windows' restart after an update:** `RegisterApplicationRestart`,
+    so where Windows' "restart apps" setting is on, murrtty comes back
+    after a reboot and restores.
+  - **Single instance by default:** `gtk-single-instance` defaults to
+    `true` on Windows (GTK's `detect`), since two instances would write
+    one session. A second plain launch only brings the running murrtty's
+    windows to the front (restoring minimized ones, bringing back what
+    `toggle_visibility` hid; its foreground right handed over with
+    `AllowSetForegroundWindow`) and opens nothing; GTK's opens a new
+    window. A launch with a command still opens its window there
+    (5.1's overrides), and `+new-window` and `+new-tab` are as before.
+  - **Fit Window to Screen:** an item in the terminal's menu (its Window
+    submenu) and the system menu (Alt+Space) that sizes the window to its
+    monitor's work area without maximizing it, for a window whose edges
+    and title bar are out of reach. Menus only: Ghostty has no such
+    action, and a binding to one would be an error in its file.
+  - **Tests:** a scenario saves (the file after each kind of change, a
+    move coalesced), one restores from a written file (windows, tabs,
+    splits, sizes, names, directories, a gone directory, an off-screen
+    and an oversized window, the quick terminal), PowerShell history over
+    a restart (Up shows the last command), Clink's where `GHOSTTY_GUI_CLINK`
+    is set, `never`, a `--class` instance's own file, an unwritable folder's
+    dialog, the crash guard, a second launch bringing windows forward with
+    no new one, and Fit Window to Screen.
 
 **5.11 Undo and redo of closes, L.** Keep closed panes, tabs and windows
 parked (hidden, process running) until `undo-timeout`. Undo and redo enter
