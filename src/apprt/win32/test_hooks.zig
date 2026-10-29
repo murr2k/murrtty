@@ -576,7 +576,37 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 const r = @field(p, name);
                 try out.print(alloc, ",\"" ++ name ++ "\":[{d},{d},{d},{d}]", .{ r.left, r.top, r.right, r.bottom });
             }
-            try out.appendSlice(alloc, "},");
+            // The waiting panes' bells as hit-tested (Waiting): each one's
+            // pane, its rectangle, whether it stands for the rest, its
+            // tooltip; and the title's painted width.
+            const bells = w.header.bellPlace(client.right);
+            const title_at = w.header.titleAt(client.right, true) orelse .{ 0, 0 };
+            const title_alone = w.header.titleAt(client.right, false) orelse .{ 0, 0 };
+            try out.print(alloc, ",\"title_px\":{d},\"title_at\":[{d},{d}],\"title_alone\":[{d},{d}],\"bells\":[", .{
+                w.header.title_px,
+                title_at[0],
+                title_at[1],
+                title_alone[0],
+                title_alone[1],
+            });
+            for (0..bells.shown) |i| {
+                if (i > 0) try out.append(alloc, ',');
+                const r = bells.rect(i, p.new_tab.top, p.new_tab.bottom);
+                const id = if (i < app.waiting.list.items.len) app.waiting.list.items[i].surface else 0;
+                try out.print(alloc, "{{\"surface\":{d},\"rect\":[{d},{d},{d},{d}],\"more\":{},\"tooltip\":", .{
+                    id,
+                    r.left,
+                    r.top,
+                    r.right,
+                    r.bottom,
+                    bells.isMore(i),
+                });
+                const bell_tip = try w.tooltipText(alloc, .{ .bell = i });
+                defer alloc.free(bell_tip);
+                try writeString(alloc, out, bell_tip);
+                try out.append(alloc, '}');
+            }
+            try out.appendSlice(alloc, "]},");
         }
 
         // The tab row's geometry in client coordinates, for clicks; every
@@ -727,6 +757,14 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         app.notifications.pending,
         app.notifications.surface orelse 0,
     });
+    // The panes waiting for their user, oldest first (the header bars'
+    // bells).
+    try out.appendSlice(alloc, ",\"waiting\":[");
+    for (app.waiting.list.items, 0..) |e, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.print(alloc, "{d}", .{e.surface});
+    }
+    try out.append(alloc, ']');
     // The tray and what keeps murrtty running (roadmap 5.6).
     try out.print(alloc, ",\"tray\":{},\"quit_timer\":\"{t}\",\"requested_window\":{}", .{
         app.notifications.tray,

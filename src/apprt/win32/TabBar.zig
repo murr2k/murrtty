@@ -68,6 +68,9 @@ pub const Hit = union(enum) {
     list,
     /// The main menu's button.
     menu,
+    /// A waiting pane's bell in the header bar (Waiting), by its place in
+    /// the list.
+    bell: usize,
     /// The window's buttons.
     minimize,
     maximize,

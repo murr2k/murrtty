@@ -210,6 +210,8 @@ pub fn parkPane(self: *Undo, tab: *Tab, surface: *Surface) ?bool {
     tab.layoutPanes();
     op.* = .{ .pane = .{ .parked = parked, .beside = beside, .window = tab.window.id, .tree = old } };
     self.armTimer();
+    // A parked pane waits for no one (its bell would visit nothing).
+    self.app.waiting.prune(self.app);
     return refocus;
 }
 
@@ -224,6 +226,7 @@ pub fn parkTab(self: *Undo, window: *Window, index: usize) bool {
     shelf.shelve(tab);
     op.* = .{ .tab = .{ .parked = tab, .window = window.id, .index = index } };
     self.armTimer();
+    self.app.waiting.prune(self.app);
     return true;
 }
 
@@ -251,6 +254,7 @@ pub fn parkWindow(self: *Undo, window: *Window) void {
     window.tabs.clearRetainingCapacity();
     op.* = .{ .window = .{ .tabs = tabs, .placement = placement, .active = window.active } };
     self.armTimer();
+    self.app.waiting.prune(self.app);
 }
 
 /// Undo the latest close. From the message loop (App.Request).

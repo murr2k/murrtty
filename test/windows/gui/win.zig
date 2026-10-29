@@ -100,6 +100,7 @@ pub extern "user32" fn ScreenToClient(HWND, *POINT) callconv(.winapi) BOOL;
 pub const WM_LBUTTONDOWN = 0x0201;
 pub const WM_LBUTTONUP = 0x0202;
 pub const WM_RBUTTONDOWN = 0x0204;
+pub const WM_RBUTTONUP = 0x0205;
 pub const BM_CLICK = 0x00F5;
 pub const BM_GETCHECK = 0x00F0;
 pub const BM_SETCHECK = 0x00F1;

@@ -1351,7 +1351,9 @@ pub fn enter(self: *Harness, target: w.HWND) void {
     self.key(target, .{}, w.VK_RETURN);
 }
 
-pub const Button = enum { left, middle };
+/// A click's button; a right click's release goes on to DefWindowProc,
+/// which opens a context menu where nothing takes it.
+pub const Button = enum { left, middle, right };
 
 /// Click at client coordinates of `target`.
 pub fn click(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: Button) void {
@@ -1377,6 +1379,10 @@ pub fn clickMods(self: *Harness, target: w.HWND, x: c_int, y: c_int, button: But
         .middle => {
             _ = w.PostMessageW(target, w.WM_MBUTTONDOWN, mk | w.MK_MBUTTON, pos);
             _ = w.PostMessageW(target, w.WM_MBUTTONUP, mk, pos);
+        },
+        .right => {
+            _ = w.PostMessageW(target, w.WM_RBUTTONDOWN, mk | w.MK_RBUTTON, pos);
+            _ = w.PostMessageW(target, w.WM_RBUTTONUP, mk, pos);
         },
     }
 }
@@ -1554,6 +1560,9 @@ pub const Dump = struct {
     /// Whether a notification stands (the icon may stay as the tray).
     notify_pending: bool = false,
     notify_surface: u64 = 0,
+    /// The panes waiting for their user, oldest first: the header bars'
+    /// bells (their core ids).
+    waiting: []const u64 = &.{},
     /// The tray (roadmap 5.6); GTK's quit timer ("off", "active",
     /// "expired"); whether a window was ever opened.
     tray: bool = false,
@@ -1769,6 +1778,23 @@ pub const Dump = struct {
         minimize: [4]i32 = .{ 0, 0, 0, 0 },
         maximize: [4]i32 = .{ 0, 0, 0, 0 },
         window_close: [4]i32 = .{ 0, 0, 0, 0 },
+        /// The title's width as last painted (0 for none), and where it
+        /// goes (left edge, width): with the bells, and as if there were
+        /// none.
+        title_px: i32 = 0,
+        title_at: [2]i32 = .{ 0, 0 },
+        title_alone: [2]i32 = .{ 0, 0 },
+        /// The waiting panes' bells as shown, oldest first: each one's
+        /// pane (its core id), its rectangle, whether it stands for the
+        /// rest (more wait than fit), its tooltip.
+        bells: []const Bell = &.{},
+
+        pub const Bell = struct {
+            surface: u64 = 0,
+            rect: [4]i32 = .{ 0, 0, 0, 0 },
+            more: bool = false,
+            tooltip: []const u8 = "",
+        };
     };
     /// The tab row, below the header bar; rectangles in client coordinates.
     pub const TabBar = struct {

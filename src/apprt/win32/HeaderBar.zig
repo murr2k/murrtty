@@ -16,6 +16,10 @@
 //! The Window draws it while the window has client-side decorations;
 //! between the buttons it is the caption (WM_NCHITTEST), and the window's
 //! buttons answer as the caption's would (HTMINBUTTON and the rest).
+//!
+//! murrtty's own: after the split button, a bell for each pane waiting for
+//! its user (Waiting), up to where the title is centered, so their coming
+//! never moves it.
 const HeaderBar = @This();
 
 const std = @import("std");
@@ -36,6 +40,8 @@ const control_circle = 24;
 const button_radius = 9;
 /// Where a 16 px icon sits in a 34 px button.
 const icon_inset = 9;
+/// A waiting pane's bell: as tall as a button, narrower, so more fit.
+const bell_width = 28;
 
 dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 title_font: ?c.HFONT = null,
@@ -46,6 +52,11 @@ title_font: ?c.HFONT = null,
 tabs_style: bool = false,
 /// Whether the window's buttons show (client-side decorations).
 controls: bool = true,
+/// How many panes wait (Waiting): a bell each, as many as fit (bellPlace).
+bells: usize = 0,
+/// The title's width as last painted, in pixels (0 for none): the bells
+/// stop where it is centered.
+title_px: c_int = 0,
 
 pub fn deinit(self: *HeaderBar) void {
     if (self.title_font) |f| _ = c.DeleteObject(f);
@@ -116,6 +127,88 @@ pub fn tabsInset(self: *const HeaderBar) [2]c_int {
     return .{ p.new_tab_menu.right, -p.list.left };
 }
 
+/// tabsInset in a row `width` pixels wide, after the bells shown there.
+pub fn tabsInsetAt(self: *const HeaderBar, width: c_int) [2]c_int {
+    const inset = self.tabsInset();
+    const b = self.bellPlace(width);
+    if (b.shown == 0) return inset;
+    return .{ b.end(), inset[1] };
+}
+
+/// The waiting panes' bells (Waiting): after the split button, side by
+/// side, oldest first, `shown` of them from `start`. With `more`, the last
+/// stands for every pane from it on (more wait than fit), showing their
+/// count.
+pub const Bells = struct {
+    start: c_int,
+    width: c_int,
+    shown: usize = 0,
+    more: bool = false,
+
+    /// Bell `i`'s column, from `top` to `bottom`.
+    pub fn rect(b: Bells, i: usize, top: c_int, bottom: c_int) c.RECT {
+        const left = b.start + b.width * @as(c_int, @intCast(i));
+        return .{ .left = left, .top = top, .right = left + b.width, .bottom = bottom };
+    }
+
+    /// Where the bells end (their start with none).
+    pub fn end(b: Bells) c_int {
+        return b.start + b.width * @as(c_int, @intCast(b.shown));
+    }
+
+    /// Whether bell `i` stands for the rest.
+    pub fn isMore(b: Bells, i: usize) bool {
+        return b.more and i + 1 == b.shown;
+    }
+};
+
+/// Where the bells go in a bar `width` pixels wide: in the header bar up
+/// to where the title is centered without them, so their coming never
+/// moves it (the owner's design), and at least one while there is room
+/// before the tab list's button, the title then making way; in the tab row
+/// as the title bar (tabs_style), in the first half of the tabs' span and
+/// leaving a narrowest tab's room, so many waiting never crowd the tabs
+/// out (the rest share the last bell).
+pub fn bellPlace(self: *const HeaderBar, width: c_int) Bells {
+    const p = self.place(width);
+    const bw = self.scale(bell_width);
+    const start = p.new_tab_menu.right + self.scale(spacing);
+    var b: Bells = .{ .start = start, .width = bw };
+    if (self.bells == 0) return b;
+    const room = p.list.left - self.scale(spacing);
+    const limit = if (self.tabs_style)
+        @min(p.list.left - self.scale(min_tab), start + @divTrunc(p.list.left - start, 2))
+    else if (self.titlePlace(p, width, b)) |t|
+        t[0] - self.scale(spacing)
+    else
+        room;
+    var fit: usize = if (limit > start) @intCast(@divTrunc(limit - start, bw)) else 0;
+    if (fit == 0 and !self.tabs_style and start + bw <= room) fit = 1;
+    b.shown = @min(self.bells, fit);
+    b.more = self.bells > b.shown and b.shown > 0;
+    return b;
+}
+
+/// Where the title goes in a bar `width` pixels wide, as last measured:
+/// after the bells that show, or as if none did (the test hooks').
+pub fn titleAt(self: *const HeaderBar, width: c_int, with_bells: bool) ?[2]c_int {
+    const p = self.place(width);
+    const none: Bells = .{ .start = 0, .width = 0 };
+    return self.titlePlace(p, width, if (with_bells) self.bellPlace(width) else none);
+}
+
+/// Where the title goes (`title_px` wide): centered on the bar between
+/// the split button and the tab list's button, and after the bells that
+/// show. Its left edge and width, or null with no title or no room.
+fn titlePlace(self: *const HeaderBar, p: Place, width: c_int, bells: Bells) ?[2]c_int {
+    var lo = p.new_tab_menu.right + self.scale(spacing + 12);
+    const hi = p.list.left - self.scale(spacing + 12);
+    if (bells.shown > 0) lo = @max(lo, bells.end() + self.scale(spacing));
+    if (self.title_px <= 0 or hi <= lo) return null;
+    const tw = @min(self.title_px, hi - lo);
+    return .{ std.math.clamp(@divTrunc(width - tw, 2), lo, hi - tw), tw };
+}
+
 /// The narrowest bar that holds its buttons apart: the split button, then
 /// GTK's spacing (or, in the tab row, room for a tab at its narrowest),
 /// then the buttons at the right (their place doesn't depend on the
@@ -145,6 +238,11 @@ pub fn hitTest(self: *const HeaderBar, x: c_int, y: c_int, width: c_int) Hit {
     };
     for (columns) |col| {
         if (x >= col[1].left and x < col[1].right) return col[0];
+    }
+    const b = self.bellPlace(width);
+    for (0..b.shown) |i| {
+        const r = b.rect(i, 0, 0);
+        if (x >= r.left and x < r.right) return .{ .bell = i };
     }
     return .none;
 }
@@ -187,8 +285,9 @@ const Glyph = struct {
 /// or the tab row's with tabs_style, whose tabs are then painted over the
 /// span between the buttons), double buffered. `title` is UTF-16, as the
 /// window's caption holds it; with tabs_style the tabs take its place.
+/// Keeps the title's width (title_px), which places the bells.
 pub fn paint(
-    self: *const HeaderBar,
+    self: *HeaderBar,
     hdc: c.HDC,
     width: c_int,
     h: c_int,
@@ -211,6 +310,20 @@ pub fn paint(
 
     const p = self.place(width);
     const inset = self.scale(icon_inset);
+
+    // The title's font, for the title and the overflowing bell's count;
+    // the title measured first, as the bells stop where it goes.
+    const old_font = if (self.title_font) |f| c.SelectObject(mem, f) else null;
+    defer if (old_font) |f| {
+        _ = c.SelectObject(mem, f);
+    };
+    self.title_px = 0;
+    if (title.len > 0 and !self.tabs_style) {
+        var measure: c.RECT = .{ .right = width, .bottom = h };
+        _ = c.DrawTextW(mem, title.ptr, @intCast(title.len), &measure, c.DT_SINGLELINE | c.DT_CALCRECT | c.DT_NOPREFIX);
+        self.title_px = @max(0, measure.right - measure.left);
+    }
+    const bells = self.bellPlace(width);
 
     // New tab: tab-new, a rounded square holding a plus.
     var back = self.buttonBack(mem, p.new_tab, state(.new_tab, hover, pressed), pal);
@@ -283,26 +396,63 @@ pub fn paint(
         }
     };
 
+    // The waiting panes' bells; the last, when more wait than fit, the
+    // count of those it stands for.
+    _ = c.SetTextColor(mem, pal.text);
+    for (0..bells.shown) |i| {
+        const r = bells.rect(i, p.new_tab.top, p.new_tab.bottom);
+        _ = self.buttonBack(mem, r, state(.{ .bell = i }, hover, pressed), pal);
+        if (bells.isMore(i)) {
+            var buf: [12]u8 = undefined;
+            const label = std.fmt.bufPrint(&buf, "+{d}", .{self.bells - i}) catch "+";
+            var wide: [12]u16 = undefined;
+            for (label, 0..) |ch, k| wide[k] = ch;
+            var box = r;
+            _ = c.DrawTextW(mem, &wide, @intCast(label.len), &box, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
+        } else self.bellGlyph(mem, r, bellColor(pal));
+    }
+
     // The title, bold, centered on the bar, between the buttons.
-    if (title.len > 0 and !self.tabs_style) {
-        const old_font = if (self.title_font) |f| c.SelectObject(mem, f) else null;
-        defer if (old_font) |f| {
-            _ = c.SelectObject(mem, f);
-        };
-        const lo = p.new_tab_menu.right + self.scale(spacing + 12);
-        const hi = p.list.left - self.scale(spacing + 12);
-        if (hi > lo) {
-            var measure: c.RECT = .{ .right = hi - lo, .bottom = h };
-            _ = c.DrawTextW(mem, title.ptr, @intCast(title.len), &measure, c.DT_SINGLELINE | c.DT_CALCRECT | c.DT_NOPREFIX);
-            const tw_px = @min(measure.right - measure.left, hi - lo);
-            const left = std.math.clamp(@divTrunc(width - tw_px, 2), lo, hi - tw_px);
-            var rect: c.RECT = .{ .left = left, .top = 0, .right = left + tw_px, .bottom = h };
-            _ = c.SetTextColor(mem, pal.text);
-            _ = c.DrawTextW(mem, title.ptr, @intCast(title.len), &rect, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_END_ELLIPSIS | c.DT_NOPREFIX);
-        }
+    if (self.titlePlace(p, width, bells)) |t| {
+        var rect: c.RECT = .{ .left = t[0], .top = 0, .right = t[0] + t[1], .bottom = h };
+        _ = c.DrawTextW(mem, title.ptr, @intCast(title.len), &rect, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_END_ELLIPSIS | c.DT_NOPREFIX);
     }
 
     _ = c.BitBlt(hdc, 0, 0, width, h, mem, 0, 0, c.SRCCOPY);
+}
+
+/// A bell (notification-symbolic's shape on its 16 px grid: a crown, the
+/// dome flaring to a brim, the clapper below), centered in `r`.
+fn bellGlyph(self: *const HeaderBar, hdc: c.HDC, r: c.RECT, color: c.COLORREF) void {
+    const g: Glyph = .{
+        .bar = self,
+        .hdc = hdc,
+        .x = r.left + @divTrunc(r.right - r.left - self.scale(16), 2),
+        .y = r.top + self.scale(icon_inset),
+        .color = color,
+    };
+    g.fill(7, 0, 9, 2);
+    draw.roundRect(hdc, g.rect(4, 1, 12, 9), self.scale(4), color, null, 0);
+    const top = g.rect(4, 5, 12, 10);
+    const bottom = g.rect(2, 5, 14, 10);
+    draw.polygon(hdc, &.{
+        .{ .x = top.left, .y = top.top },
+        .{ .x = top.right, .y = top.top },
+        .{ .x = bottom.right, .y = bottom.bottom },
+        .{ .x = bottom.left, .y = bottom.bottom },
+    }, color);
+    g.fill(1, 10, 15, 12);
+    draw.roundRect(hdc, g.rect(6, 13, 10, 16), self.scale(2), color, null, 0);
+}
+
+/// The bell's color: yellow, as the emoji the owner's GTK fork shows
+/// (Adwaita's yellow 2 on a dark bar, its darker yellow 5 on a light one).
+fn bellColor(pal: draw.Palette) c.COLORREF {
+    const r: u32 = pal.bar & 0xFF;
+    const g: u32 = (pal.bar >> 8) & 0xFF;
+    const b: u32 = (pal.bar >> 16) & 0xFF;
+    const dark = r * 299 + g * 587 + b * 114 < 128 * 1000;
+    return if (dark) c.rgb(0xf6, 0xd3, 0x2d) else c.rgb(0xe5, 0xa5, 0x0a);
 }
 
 const State = enum { normal, hover, pressed };
@@ -380,6 +530,81 @@ test "place: GTK's tab row as the title bar (gtk-titlebar-style = tabs)" {
     try testing.expectEqual(Hit.menu, plain.hitTest(787, 20, 794));
     try testing.expectEqual(Hit.none, plain.hitTest(793, 20, 794));
     try testing.expectEqual(@as(c_int, 61 + 6 + 68 + 64), plain.minWidth());
+}
+
+test "bellPlace: bells never move a centered title" {
+    const testing = std.testing;
+    const width = 1000;
+    var bar: HeaderBar = .{ .title_px = 200 };
+    const p = bar.place(width);
+    const alone = bar.titlePlace(p, width, bar.bellPlace(width)).?;
+    try testing.expectEqual(@as(c_int, 400), alone[0]);
+    for ([_]usize{ 1, 3, 9 }) |n| {
+        bar.bells = n;
+        const b = bar.bellPlace(width);
+        try testing.expectEqual(n, b.shown);
+        try testing.expect(!b.more);
+        try testing.expect(b.start >= p.new_tab_menu.right);
+        try testing.expect(b.end() <= alone[0] - bar.scale(spacing));
+        try testing.expectEqual(alone, bar.titlePlace(p, width, b).?);
+        // Each bell hit-tests as itself, and the caption stays between
+        // the last and the title.
+        for (0..n) |i| {
+            const r = b.rect(i, 0, 0);
+            try testing.expectEqual(Hit{ .bell = i }, bar.hitTest(r.left, 20, width));
+            try testing.expectEqual(Hit{ .bell = i }, bar.hitTest(r.right - 1, 20, width));
+        }
+        try testing.expectEqual(Hit.none, bar.hitTest(b.end(), 20, width));
+    }
+    // More than fit: the last stands for the rest, still clear of the
+    // title.
+    bar.bells = 40;
+    const b = bar.bellPlace(width);
+    try testing.expect(b.more and b.shown < 40);
+    try testing.expect(b.isMore(b.shown - 1) and !b.isMore(0));
+    try testing.expect(b.end() <= alone[0] - bar.scale(spacing));
+    try testing.expectEqual(alone, bar.titlePlace(p, width, b).?);
+}
+
+test "bellPlace: a title too long to center makes way for one bell" {
+    const testing = std.testing;
+    const width = 800;
+    var bar: HeaderBar = .{ .title_px = 5000, .bells = 2 };
+    const p = bar.place(width);
+    const b = bar.bellPlace(width);
+    try testing.expectEqual(@as(usize, 1), b.shown);
+    try testing.expect(b.more);
+    const t = bar.titlePlace(p, width, b).?;
+    try testing.expect(t[0] >= b.end() + bar.scale(spacing));
+    try testing.expect(t[0] + t[1] <= p.list.left);
+    // No title: the bells go up to the tab list's button.
+    bar.title_px = 0;
+    bar.bells = 100;
+    const all = bar.bellPlace(width);
+    try testing.expect(all.end() <= p.list.left - bar.scale(spacing));
+    try testing.expect(all.end() + all.width > p.list.left - bar.scale(spacing));
+    // None waiting: none shown, nothing hit.
+    bar.bells = 0;
+    try testing.expectEqual(@as(usize, 0), bar.bellPlace(width).shown);
+    try testing.expectEqual(Hit.none, bar.hitTest(all.start + 2, 20, width));
+}
+
+test "tabsInsetAt: the tabs start after the bells in the tab row" {
+    const testing = std.testing;
+    var bar: HeaderBar = .{ .tabs_style = true };
+    try testing.expectEqual(bar.tabsInset(), bar.tabsInsetAt(794));
+    bar.bells = 2;
+    const b = bar.bellPlace(794);
+    try testing.expectEqual(@as(usize, 2), b.shown);
+    try testing.expectEqual([2]c_int{ b.end(), 794 - 612 }, bar.tabsInsetAt(794));
+    // Many waiting take at most the first half of the tabs' span.
+    bar.bells = 50;
+    const many = bar.bellPlace(794);
+    try testing.expect(many.more);
+    try testing.expect(many.end() <= many.start + @divTrunc(612 - many.start, 2));
+    try testing.expect(many.end() <= 612 - bar.scale(min_tab));
+    // At the narrowest row there is none to spare.
+    try testing.expectEqual(@as(usize, 0), bar.bellPlace(bar.minWidth()).shown);
 }
 
 test "minWidth: the buttons stay apart at the narrowest bar" {

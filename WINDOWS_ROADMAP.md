@@ -380,6 +380,18 @@ roadmap item behind it.
   PSReadLine's history file, cmd with Clink through a history label of
   the pane's own, so a cmd pane's history isn't Clink's shared one); GTK
   keeps none.
+- **Waiting bells** (F2, the owner's design): a bell, a notification or a
+  command-finished notice from a pane without the keyboard puts a yellow
+  bell for that pane in every window's header bar, after the split button
+  and oldest first, without moving the title; its tooltip names the pane,
+  its tab and window, and the notification's text. A left click goes to
+  the pane, a right click dismisses the bell; the pane getting the
+  keyboard or closing takes it away. GTK's header bar has none (its bell
+  marks only the tab). No option turns it off, as Ghostty's config has
+  none to read. The bells go where the header bar's buttons are: in the
+  header bar, or with `gtk-titlebar-style = tabs` in the tab row that
+  holds them; a window with neither (`gtk-titlebar = false` or server
+  decorations without the tab-row style, the quick terminal) shows none.
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -3821,6 +3833,64 @@ a search, an edit, a key-binding capture and a save. *Done 2026-10-28*
   bindings (a bound key's current action, Alt+1 as `alt+digit_1`, a new
   one, one with a value, the same keys again replacing their line), and
   the saved file.
+
+**F2 Waiting bells, S.** *The owner's design, 2026-10-29, from their Linux
+Ghostty fork (described, not its code).* The owner runs Claude Code in many
+tabs and splits; when one waits for input from a pane without the
+keyboard, a bell appears in the header bar. A left click dismisses it and
+goes to that pane; a right click dismisses it and leaves the keyboard
+where it is. The owner's answers: a bell or a notification (OSC 9 or 777)
+counts; one bell per waiting pane, each with a tooltip naming it, and
+their coming neither moves nor re-centers the title; every window shows
+every window's bells, and a click raises the pane's window.
+
+*Built 2026-10-29:*
+- `src/apprt/win32/Waiting.zig`: the waiting panes, oldest first, by
+  core surface id. `ring_bell`, `desktop_notification` and
+  command-finished notices add a pane unless it has the keyboard (as the
+  bell's title mark, 3.7a) or is parked for undo; a pane already waiting
+  keeps its place and takes the newer notification's text. The pane
+  getting the keyboard, closing or being parked (`Undo` prunes after each
+  park) removes it. Each change has every window's header bar lay its
+  bells out again (`Window.bellsChanged`), skipping a window whose
+  destroy has begun.
+- `HeaderBar.bellPlace`: bells 28 DIP wide, as tall as the buttons,
+  after the split button, up to where the title is centered without them
+  (`title_px`, measured as the bar paints), so they never move it. When
+  the title is too long to center, one bell still shows and the title
+  makes way. More panes than fit share the last bell, which shows their
+  count ("+3") and lists them in its tooltip; a click on it acts on the
+  oldest of them. With the tab row holding the header's buttons
+  (`gtk-titlebar-style = tabs`, which shows them with or without
+  client-side decorations) the bells go there and the tabs start after
+  them; the bells take at most the first half of the tabs' span, leaving
+  a narrowest tab's room, so many waiting never crowd the tabs out.
+- The bell is GTK's notification shape in yellow (Adwaita's yellow 2 on
+  a dark bar, its yellow 5 on a light one), as the emoji the owner's fork
+  shows.
+- Clicks act as the button comes up over the bell it went down on, still
+  standing for the same pane (a window raised on the press could take the
+  release, and a pane leaving the list meanwhile slides the next bell
+  into its place); the press holds the mouse, so a release elsewhere
+  clicks nothing. A click on a bell doesn't activate an inactive window
+  (`WM_MOUSEACTIVATE`): activating would give its focused pane the
+  keyboard, taking that pane's bell away under the mouse, and a right
+  click leaves the keyboard where it is. A double click's second press
+  does nothing on a bell: the first went to its pane, and the next bell
+  has slid under the mouse. A right click's release is taken, so no
+  system menu opens over the caption a dismissed bell leaves; a fast
+  second right click dismisses the next bell. Not testable on the hidden
+  desktop: posted clicks send no `WM_MOUSEACTIVATE`.
+- Tooltips: the pane's title, "Tab 2" (with several windows "Window 1,
+  tab 2"; "Quick terminal"), then the notification's title and body.
+- GUI scenario `header-bells`: a bell from the pane with the keyboard
+  (none), one from a background tab (after the split button, the title
+  unmoved, its tooltip), a left click (its tab forward), a right click
+  (dismissed, no menu, the keyboard stays), two waiting in order with an
+  OSC 9 notification's text, the keyboard taking a pane's bell, a second
+  window showing the first's bell and visiting it, a waiting tab closed
+  from its menu, and with a title too long to center, two sharing one
+  bell.
 
 ---
 

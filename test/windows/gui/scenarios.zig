@@ -44,6 +44,7 @@ pub const all = [_]Scenario{
     .{ .name = "tab-buttons", .about = "the arrow beside + opens the split menu; the menu button opens GTK's main menu (New Tab, Command Palette, About murrtty)", .run = tabButtons },
     .{ .name = "tab-menu", .about = "a tab's right-click menu: Change Tab Title, Close Tab, Close Other Tabs, Close Tabs to the Right, on the tab clicked; graying", .run = tabMenu },
     .{ .name = "bell", .about = "bell-features title: a bell before the tab's title and caption until input; a background tab's mark until selected", .run = bell },
+    .{ .name = "header-bells", .about = "murrtty's waiting bells: a bell or notification from a pane without the keyboard puts a bell in every window's header bar, oldest first, the title unmoved; tooltips name the pane; left click goes to it, right click dismisses with no menu; the keyboard, a close, overflow", .run = headerBells },
     .{ .name = "status-overlays", .about = "link preview, read-only badge, key sequence and table, renderer panel, toasts (copy, reload), child-exited banner (Close, any key)", .run = statusOverlays },
     .{ .name = "titles", .about = "rename prompts (tab, terminal) over program titles, blank restores, Cancel, set_window_title, copy_title_to_clipboard, double-click a tab", .run = titles },
     .{ .name = "scrollbar", .about = "overlay scrollbar: none without scrollback, shows on a move, widens pressed, drag to the top, track click pages, fades, none on the alternate screen, scrollbar = never", .run = scrollbar },
@@ -2111,6 +2112,296 @@ fn bell(h: *Harness) anyerror!void {
     t = try waitTabState(h, &g, 0, TabState.seen, "the tab seen");
     try h.expect(true, "selecting it clears the mark and answers the bell", .{});
     try quit(h, &g, first);
+}
+
+/// The panes waiting for their user (murrtty's own, the owner's design): a
+/// bell or a notification from a pane without the keyboard puts a bell in
+/// every window's header bar, oldest first, without moving the title; its
+/// tooltip names the pane (and the notification's text); a left click goes
+/// to the pane, a right click dismisses it where it is and opens no menu;
+/// the pane getting the keyboard, or closing, takes it away; more than fit
+/// share the last bell.
+fn headerBells(h: *Harness) anyerror!void {
+    var g = try h.launchWith("header-bells", base_config ++
+        "command = powershell.exe -NoLogo -NoProfile\n" ++
+        "confirm-close-surface = false\n" ++
+        "bell-features = title,no-attention,no-system\n", .{});
+    defer g.deinit();
+    try h.waitText(&g, "PS ", 1, 20000);
+    const win = try h.mainWindow(&g);
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    // Late enough for another tab to have the keyboard when it rings, under
+    // load too.
+    const ring = "Start-Sleep 3; [Console]::Write([char]7)";
+    const id0 = try tabPaneId(h, &g, win, 0);
+
+    // The pane with the keyboard rings: nothing waits.
+    const first = try h.surface(&g, win);
+    try h.typeText(first, "[Console]::Write([char]7); 'rang-' + 'here'");
+    h.enter(first);
+    try h.waitText(&g, "rang-here", 1, 15000);
+    h.sync(first);
+    w.Sleep(300);
+    try expectWaiting(h, &g, &.{}, "a bell from the pane with the keyboard waits for no one");
+
+    // The first tab rings once a second has the keyboard: a bell after the
+    // split button, clear of the title, which stays where it was.
+    try h.typeText(first, ring);
+    h.enter(first);
+    h.key(first, cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    const id1 = try tabPaneId(h, &g, win, 1);
+    try waitWaiting(h, &g, &.{id0}, 15000, "the first tab's pane waits");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const hb = d.value.windows[0].header;
+        try h.expect(hb.bells.len == 1 and hb.bells[0].surface == id0, "one bell in the header bar, the first tab's ({d})", .{hb.bells.len});
+        const r = hb.bells[0].rect;
+        try h.expect(r[0] >= hb.new_tab_menu[2] and r[2] <= hb.list[0], "after the split button, before the tab list's", .{});
+        try h.expect(std.mem.indexOf(u8, hb.bells[0].tooltip, "Tab 1") != null, "its tooltip names its tab ('{s}')", .{hb.bells[0].tooltip});
+        try expectTitleUnmoved(h, hb);
+    }
+
+    // A left click goes to it: its tab comes forward, the bell goes.
+    {
+        const at = try bellCenter(h, &g, win, 0);
+        h.click(win, at.x, at.y, .left);
+    }
+    try waitWaiting(h, &g, &.{}, 3000, "a left click takes the bell");
+    try waitActiveTab(h, &g, win, 0);
+
+    // Again, then a right click: dismissed where it is, no menu, the
+    // second tab keeps the keyboard.
+    const back = try h.surface(&g, win);
+    try h.typeText(back, ring);
+    h.enter(back);
+    h.key(back, .{ .ctrl = true }, 0x09);
+    try waitActiveTab(h, &g, win, 1);
+    try waitWaiting(h, &g, &.{id0}, 15000, "it waits again");
+    {
+        const at = try bellCenter(h, &g, win, 0);
+        h.click(win, at.x, at.y, .right);
+    }
+    try waitWaiting(h, &g, &.{}, 3000, "a right click dismisses it");
+    w.Sleep(500);
+    {
+        const menus = try h.menuCount(&g);
+        if (menus > 0) {
+            const m = try h.waitMenu(&g, 1, 100);
+            _ = w.PostMessageW(m, w.WM_KEYDOWN, w.VK_ESCAPE, 1);
+        }
+        try h.expect(menus == 0, "no menu opens over the caption it leaves ({d})", .{menus});
+    }
+    try waitActiveTab(h, &g, win, 1);
+
+    // Two waiting, oldest first: the first tab's bell, then the second's
+    // notification, while a third tab has the keyboard.
+    var surf = try h.surface(&g, win);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 0x09);
+    try waitActiveTab(h, &g, win, 0);
+    surf = try h.surface(&g, win);
+    try h.typeText(surf, "Start-Sleep 3; [Console]::Write([char]7)");
+    h.enter(surf);
+    h.key(surf, .{ .ctrl = true }, 0x09);
+    try waitActiveTab(h, &g, win, 1);
+    surf = try h.surface(&g, win);
+    {
+        const cmd = try oscCommand(h, "5", "]9;Claude is waiting for your input");
+        defer h.alloc.free(cmd);
+        try h.typeText(surf, cmd);
+        h.enter(surf);
+    }
+    h.key(surf, cs, 'T');
+    try waitWindowTabs(h, &g, win, 3);
+    try waitWaiting(h, &g, &.{ id0, id1 }, 20000, "two wait, oldest first");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const hb = d.value.windows[0].header;
+        try h.expect(hb.bells.len == 2 and hb.bells[0].surface == id0 and hb.bells[1].surface == id1, "two bells, in that order", .{});
+        try h.expect(hb.bells[0].rect[2] <= hb.bells[1].rect[0], "side by side, the oldest first", .{});
+        const tip = hb.bells[1].tooltip;
+        try h.expect(std.mem.indexOf(u8, tip, "Tab 2") != null and std.mem.indexOf(u8, tip, "Claude is waiting for your input") != null, "the notification's bell names its tab and says what it said ('{s}')", .{tip});
+        try expectTitleUnmoved(h, hb);
+    }
+
+    // The pane getting the keyboard takes its own bell: the second tab's.
+    surf = try h.surface(&g, win);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 0x09);
+    try waitActiveTab(h, &g, win, 1);
+    try waitWaiting(h, &g, &.{id0}, 3000, "the second tab's goes as it gets the keyboard");
+
+    // Every window shows every window's bells: a new window's header has
+    // the first tab's, says where it is, and a click there goes to it.
+    surf = try h.surface(&g, win);
+    h.key(surf, cs, 'N');
+    const other = try waitOtherWindow(h, &g, win);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        for (d.value.windows) |dw| if (dw.hwnd == @intFromPtr(other)) {
+            const hb = dw.header;
+            try h.expect(hb.bells.len == 1 and hb.bells[0].surface == id0, "the new window shows the first window's bell", .{});
+            try h.expect(std.mem.indexOf(u8, hb.bells[0].tooltip, "Window 1, tab 1") != null, "naming its window ('{s}')", .{hb.bells[0].tooltip});
+        };
+    }
+    {
+        const at = try bellCenter(h, &g, other, 0);
+        h.click(other, at.x, at.y, .left);
+    }
+    try waitWaiting(h, &g, &.{}, 3000, "a click in the other window takes it");
+    try waitActiveTab(h, &g, win, 0);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        for (d.value.windows) |dw| try h.expect(dw.header.bells.len == 0, "no window shows it any more", .{});
+    }
+    const other_surf = try h.surface(&g, other);
+    h.key(other_surf, cs, 'W');
+    try waitWindowCount(h, &g, 1);
+
+    // A waiting pane that closes takes its bell: the first tab's, closed
+    // from its menu (parked for undo).
+    surf = try h.surface(&g, win);
+    try h.typeText(surf, ring);
+    h.enter(surf);
+    h.key(surf, .{ .ctrl = true }, 0x09);
+    try waitActiveTab(h, &g, win, 1);
+    try waitWaiting(h, &g, &.{id0}, 15000, "the first tab's pane waits once more");
+    {
+        const at = try tabCenter(h, &g, 0);
+        h.rightPress(win, at.x, at.y);
+        const menu = try h.waitMenu(&g, 1, 5000);
+        h.menuKey(menu, 'c');
+    }
+    try waitWindowTabs(h, &g, win, 2);
+    {
+        var waited: u32 = 0;
+        while (true) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const gone = for (d.value.waiting) |id| {
+                if (id == id0) break false;
+            } else true;
+            if (gone) break;
+            if (waited >= 3000) return h.fail("the closed pane still waits", .{});
+            w.Sleep(100);
+        }
+        try h.expect(true, "a closed pane's bell goes with it", .{});
+    }
+
+    surf = try h.surface(&g, win);
+    h.key(surf, cs, 'Q');
+    const code = g.waitExit(10000);
+    try h.expect(code != null and code.? == 0, "quits with code 0 (got {?d})", .{code});
+    try expectNoLeaks(h, &g, "no leaks at exit");
+
+    // More than fit share the last bell, which counts them: a title too
+    // long to center leaves room for one bell (the title makes way), so
+    // two waiting share it, and a click visits the oldest.
+    var more = try h.launchWith("header-bells-more", base_config ++
+        "command = powershell.exe -NoLogo -NoProfile\n" ++
+        "confirm-close-surface = false\n" ++
+        "bell-features = title,no-attention,no-system\n" ++
+        "title = A window title long enough to run past the middle of the header bar, " ++
+        "on to the buttons at its right and well beyond them, at any width or DPI\n", .{});
+    defer more.deinit();
+    try h.waitText(&more, "PS ", 1, 20000);
+    const mwin = try h.mainWindow(&more);
+    const m0 = try tabPaneId(h, &more, mwin, 0);
+    surf = try h.surface(&more, mwin);
+    try h.typeText(surf, "Start-Sleep 3; [Console]::Write([char]7)");
+    h.enter(surf);
+    h.key(surf, cs, 'T');
+    try waitWindowTabs(h, &more, mwin, 2);
+    const m1 = try tabPaneId(h, &more, mwin, 1);
+    // Its shell's prompt before typing there.
+    try waitActivePaneText(h, &more, mwin, "PS ");
+    surf = try h.surface(&more, mwin);
+    try h.typeText(surf, "Start-Sleep 3; [Console]::Write([char]7)");
+    h.enter(surf);
+    h.key(surf, cs, 'T');
+    try waitWindowTabs(h, &more, mwin, 3);
+    try waitWaiting(h, &more, &.{ m0, m1 }, 20000, "two wait behind a long title");
+    {
+        var d = try h.dump(&more);
+        defer d.deinit();
+        const hb = d.value.windows[0].header;
+        try h.expect(hb.bells.len == 1 and hb.bells[0].more and hb.bells[0].surface == m0, "one bell stands for both ({d} shown)", .{hb.bells.len});
+        const tip = hb.bells[0].tooltip;
+        try h.expect(std.mem.startsWith(u8, tip, "2 waiting") and std.mem.indexOf(u8, tip, "Tab 1") != null and std.mem.indexOf(u8, tip, "Tab 2") != null, "its tooltip lists them ('{s}')", .{tip});
+        try h.expect(hb.title_at[1] > 0 and hb.bells[0].rect[2] <= hb.title_at[0], "the title makes way for it", .{});
+    }
+    {
+        const at = try bellCenter(h, &more, mwin, 0);
+        h.click(mwin, at.x, at.y, .left);
+    }
+    try waitWaiting(h, &more, &.{m1}, 3000, "a click visits the oldest of them");
+    try waitActiveTab(h, &more, mwin, 0);
+    {
+        var d = try h.dump(&more);
+        defer d.deinit();
+        const hb = d.value.windows[0].header;
+        try h.expect(hb.bells.len == 1 and !hb.bells[0].more and hb.bells[0].surface == m1, "the other then has the bell to itself", .{});
+    }
+    surf = try h.surface(&more, mwin);
+    h.key(surf, cs, 'Q');
+    const more_code = more.waitExit(10000);
+    try h.expect(more_code != null and more_code.? == 0, "quits with code 0 (got {?d})", .{more_code});
+}
+
+/// The core id of the first pane of `win`'s tab `tab`.
+fn tabPaneId(h: *Harness, g: *Harness.Ghostty, win: w.HWND, tab: usize) !u64 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    for (d.value.windows) |dw| if (dw.hwnd == @intFromPtr(win)) {
+        if (tab >= dw.tabs.len) return h.fail("no tab {d}", .{tab});
+        const panes = dw.tabs[tab].panes orelse return h.fail("no panes", .{});
+        return panes[0].surface_id;
+    };
+    return h.fail("no such window", .{});
+}
+
+fn waitingIs(got: []const u64, want: []const u64) bool {
+    return std.mem.eql(u64, got, want);
+}
+
+/// Wait until the waiting panes are `want`, oldest first.
+fn waitWaiting(h: *Harness, g: *Harness.Ghostty, want: []const u64, ms: u32, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (true) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (waitingIs(d.value.waiting, want)) return h.expect(true, what, .{});
+        if (waited >= ms) return h.fail(what ++ ": waiting {any}, not {any}", .{ d.value.waiting, want });
+        w.Sleep(100);
+    }
+}
+
+fn expectWaiting(h: *Harness, g: *Harness.Ghostty, want: []const u64, comptime what: []const u8) !void {
+    var d = try h.dump(g);
+    defer d.deinit();
+    try h.expect(waitingIs(d.value.waiting, want) and d.value.windows[0].header.bells.len == want.len, what ++ " (waiting {any})", .{d.value.waiting});
+}
+
+/// The header bar's title is where it would be without bells.
+fn expectTitleUnmoved(h: *Harness, hb: Harness.Dump.Header) !void {
+    try h.expect(hb.title_px > 0 and std.mem.eql(i32, &hb.title_at, &hb.title_alone), "the title stays where it was (at {any}, alone {any})", .{ hb.title_at, hb.title_alone });
+    if (hb.bells.len > 0) try h.expect(hb.bells[hb.bells.len - 1].rect[2] <= hb.title_at[0], "the bells end before it", .{});
+}
+
+/// The middle of bell `i` in `win`'s header bar, in its client area.
+fn bellCenter(h: *Harness, g: *Harness.Ghostty, win: w.HWND, i: usize) !struct { x: c_int, y: c_int } {
+    var d = try h.dump(g);
+    defer d.deinit();
+    for (d.value.windows) |dw| if (dw.hwnd == @intFromPtr(win)) {
+        const bells = dw.header.bells;
+        if (i >= bells.len) return h.fail("no bell {d} ({d} shown)", .{ i, bells.len });
+        const r = bells[i].rect;
+        return .{ .x = @divTrunc(r[0] + r[2], 2), .y = @divTrunc(r[1] + r[3], 2) };
+    };
+    return h.fail("no such window", .{});
 }
 
 /// The tab strip's right-click menu (roadmap 3.8): Change Tab Title, Close

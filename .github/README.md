@@ -222,6 +222,12 @@ hosted Windows runner and then the unit tests.
   when a terminal rings while it doesn't have the keyboard, until it gets
   the keyboard, a key or a click; and a mark on a background tab until you
   select it.
+- Waiting bells, murrtty's own: when a terminal without the keyboard rings,
+  sends a notification or reports a finished command
+  (`notify-on-command-finish`), as an agent asking for input in a
+  background tab does, a bell for it appears in every window's
+  header bar, without moving the title. Its tooltip says which terminal it
+  is and where; a left click goes there, a right click dismisses it.
 - An overlay scrollbar, as in Ghostty's GTK app: a thin thumb at the right
   edge shows while you scroll or move the mouse, widens under the mouse,
   drags, and pages with a click on the track; it fades when idle (not when

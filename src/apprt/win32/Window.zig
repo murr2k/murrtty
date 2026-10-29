@@ -59,6 +59,11 @@ toast: Overlay = .{ .position = .@"bottom-center", .margin = 24, .pad_x = 16, .p
 /// What the last press on the tab bar hit: a double click renames a tab
 /// only if both its presses were on it.
 last_press: TabBar.Hit = .none,
+/// The waiting pane's bell the left or right button went down on, the
+/// mouse held until it comes up: the click acts then, over that bell still
+/// standing for that pane (Waiting).
+bell_press: ?BellPress = null,
+bell_rpress: ?BellPress = null,
 
 /// A tab pressed, and dragged once the mouse moves past the system's drag
 /// distance (roadmap 4.5).
@@ -148,6 +153,13 @@ shelf: bool = false,
 /// Being moved or sized (WM_ENTERSIZEMOVE to WM_EXITSIZEMOVE): the session
 /// is saved as it is let go (roadmap 5.10b).
 in_size_move: bool = false,
+
+/// A press on a waiting pane's bell: its place, and the pane it stood for
+/// (a pane leaving the list meanwhile slides the next into its place).
+const BellPress = struct {
+    slot: usize,
+    surface: u64,
+};
 
 const TabDrag = struct {
     /// The tab pressed, found again on each move: tabs can close or move
@@ -729,6 +741,23 @@ pub fn invalidateTabBar(self: *Window) void {
     if (r.bottom > 0) _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
 }
 
+/// A pane began or stopped waiting (Waiting): the header bar's bells
+/// again, and with the tab row as the title bar the tabs after them. A
+/// hovered bell that is gone is no longer hovered; the tooltip asks for
+/// its text again.
+pub fn bellsChanged(self: *Window) void {
+    self.syncBars();
+    if (self.tabsTitlebar()) self.tab_bar.clampScroll(self.tabs.items.len, self.clientWidth());
+    switch (self.tab_bar.hover) {
+        .bell => |i| if (i >= self.header.bellPlace(self.clientWidth()).shown) {
+            self.tab_bar.hover = .none;
+        },
+        else => {},
+    }
+    if (self.tooltip) |tip| _ = c.SendMessageW(tip, c.TTM_POP, 0, 0);
+    self.invalidateTabBar();
+}
+
 /// Close tabs relative to the one holding `surface`, for the close_tab
 /// action, confirming first if a process is running in any of them.
 pub fn closeTabs(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMode) void {
@@ -1277,8 +1306,9 @@ fn syncBars(self: *Window) void {
     const tabs_style = self.tabsTitlebar();
     self.header.tabs_style = tabs_style;
     self.header.controls = self.csd();
+    self.header.bells = self.app.waiting.count();
     self.tab_bar.top_bar = self.headerHeight() == 0;
-    self.tab_bar.inset = if (tabs_style) self.header.tabsInset() else null;
+    self.tab_bar.inset = if (tabs_style) self.header.tabsInsetAt(self.clientWidth()) else null;
     self.tab_bar.inverted = self.app.config.@"gtk-tabs-inverted";
 }
 
@@ -2177,6 +2207,24 @@ fn chromeHit(self: *const Window, x: c_int, y: c_int) TabBar.Hit {
     return self.tab_bar.hitTest(x, y - header, n, width);
 }
 
+/// A press on bell `i`: the pane it stands for, the mouse held until the
+/// button comes up (a release over the caption or outside the window
+/// would otherwise leave the press standing). Null for a bell gone.
+fn pressBell(self: *Window, i: usize) ?BellPress {
+    const id = self.app.waiting.idAt(i) orelse return null;
+    _ = c.SetCapture(self.hwnd);
+    return .{ .slot = i, .surface = id };
+}
+
+/// The pane a click on a bell goes to: the one pressed, if the button came
+/// up (at the client point in `lparam`) over the same bell, still standing
+/// for it.
+fn releasedOnBell(self: *const Window, press: BellPress, lparam: c.LPARAM) ?u64 {
+    if (!self.tabBarHit(lparam).eql(.{ .bell = press.slot })) return null;
+    const now = self.app.waiting.idAt(press.slot) orelse return null;
+    return if (now == press.surface) now else null;
+}
+
 fn setHover(self: *Window, hit: TabBar.Hit) void {
     if (hit.eql(self.tab_bar.hover)) return;
     self.tab_bar.hover = hit;
@@ -2262,6 +2310,8 @@ pub fn tooltipText(self: *Window, alloc: std.mem.Allocator, hit: TabBar.Hit) ![]
         },
         .new_tab => try self.writeButton(w, "New Tab", .new_tab),
         .new_tab_menu => try w.writeAll("Split"),
+        // Which pane waits, or with more than fit, which panes.
+        .bell => |i| try self.app.waiting.describe(self.app, w, i, self.header.bellPlace(self.clientWidth()).isMore(i)),
         .list => try self.writeButton(w, "Tab List", .toggle_tab_overview),
         .menu => try w.writeAll("Menu"),
         .scroll_left => try w.writeAll("Scroll Tabs Left"),
@@ -2387,16 +2437,44 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             return 0;
         },
 
-        // A tab dragged (roadmap 4.5) is dropped.
+        // A tab dragged (roadmap 4.5) is dropped. A click on a waiting
+        // pane's bell goes to the pane, as the button comes up over the
+        // bell it went down on: on the press, the window it raises could
+        // take the release.
         c.WM_LBUTTONUP => {
+            if (self.bell_press) |press| {
+                self.bell_press = null;
+                _ = c.ReleaseCapture();
+                if (self.releasedOnBell(press, lparam)) |id| self.app.waiting.visit(self.app, id);
+                return 0;
+            }
             self.dropTab(c.xParam(lparam), c.yParam(lparam));
             return 0;
         },
 
-        // Another window took the mouse: the tab stays where it got to.
+        // Another window took the mouse: the tab stays where it got to,
+        // a pressed bell isn't clicked.
         c.WM_CAPTURECHANGED => {
-            if (lparam != @as(c.LPARAM, @bitCast(@intFromPtr(hwnd)))) self.tab_drag = null;
+            if (lparam != @as(c.LPARAM, @bitCast(@intFromPtr(hwnd)))) {
+                self.tab_drag = null;
+                self.bell_press = null;
+                self.bell_rpress = null;
+            }
             return 0;
+        },
+
+        // A click on a waiting pane's bell leaves an inactive window as it
+        // is: activating it would give its focused pane the keyboard, which
+        // takes that pane's bell away and slides the next under the mouse,
+        // and a right click leaves the keyboard where it is. A left click's
+        // pane comes forward itself (Waiting.visit).
+        c.WM_MOUSEACTIVATE => {
+            if (c.loword(lparam) == c.HTCLIENT) {
+                var pt: c.POINT = .{};
+                if (c.GetCursorPos(&pt) != 0 and c.ScreenToClient(hwnd, &pt) != 0 and
+                    std.meta.activeTag(self.chromeHit(pt.x, pt.y)) == .bell) return c.MA_NOACTIVATE;
+            }
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
 
         c.WM_MOUSELEAVE => {
@@ -2410,9 +2488,14 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_LBUTTONDOWN => {
             const hit = self.tabBarHit(lparam);
             self.last_press = hit;
+            self.bell_press = switch (hit) {
+                .bell => |i| self.pressBell(i),
+                else => null,
+            };
             switch (hit) {
-                // The window's buttons come as non-client messages.
-                .none, .minimize, .maximize, .window_close => {},
+                // The window's buttons come as non-client messages; a
+                // bell acts on the release.
+                .none, .minimize, .maximize, .window_close, .bell => {},
                 // Selected, and maybe dragged (dragTab).
                 .tab => |i| {
                     self.select(i);
@@ -2434,6 +2517,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         // was on, it renames the tab (murrtty's; from the message loop, as
         // any prompt). Anything else is just another click: the first
         // press may have moved the tabs ("+" adds one, "x" closes one).
+        // Not a bell's: the first click went to its pane, and the next
+        // bell has moved under the mouse.
         c.WM_LBUTTONDBLCLK => {
             const hit = self.tabBarHit(lparam);
             const same_tab = switch (hit) {
@@ -2441,8 +2526,9 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 else => false,
             };
             self.last_press = hit;
+            self.bell_press = null;
             switch (hit) {
-                .none, .minimize, .maximize, .window_close => {},
+                .none, .minimize, .maximize, .window_close, .bell => {},
                 .tab => |i| {
                     self.select(i);
                     if (same_tab) if (self.activeSurface()) |s| self.app.promptTitle(s, .tab);
@@ -2486,12 +2572,29 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
 
         // A tab's menu, on the press as the terminal's (GTK opens menus on
-        // the press).
-        c.WM_RBUTTONDOWN => {
-            switch (self.tabBarHit(lparam)) {
-                .tab, .close => |i| self.tabMenu(i, lparam),
+        // the press). A bell is dismissed as the button comes up over it,
+        // the second press of a double click too: dismissing one bell after
+        // another, each click lands on the next.
+        c.WM_RBUTTONDOWN, c.WM_RBUTTONDBLCLK => {
+            const hit = self.tabBarHit(lparam);
+            self.bell_rpress = switch (hit) {
+                .bell => |i| self.pressBell(i),
+                else => null,
+            };
+            switch (hit) {
+                .tab, .close => |i| if (msg == c.WM_RBUTTONDOWN) self.tabMenu(i, lparam),
                 else => {},
             }
+            return 0;
+        },
+        // After a press on a bell, no menu: DefWindowProc would send
+        // WM_CONTEXTMENU, and over the caption the bell leaves that is the
+        // system menu.
+        c.WM_RBUTTONUP => {
+            const press = self.bell_rpress orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            self.bell_rpress = null;
+            _ = c.ReleaseCapture();
+            if (self.releasedOnBell(press, lparam)) |id| self.app.waiting.dismiss(self.app, id);
             return 0;
         },
 

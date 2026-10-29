@@ -27,6 +27,7 @@ const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
 const Session = @import("Session.zig");
 const Undo = @import("Undo.zig");
+const Waiting = @import("Waiting.zig");
 const Inspector = @import("Inspector.zig");
 const ConfigEditor = @import("ConfigEditor.zig");
 const wgl = @import("opengl").wgl;
@@ -239,6 +240,8 @@ global_keys: GlobalKeys = undefined,
 undo: Undo = undefined,
 /// Session restore (roadmap 5.10b), set up in init.
 session: Session = undefined,
+/// The panes waiting for their user: the header bars' bells.
+waiting: Waiting = .{},
 /// The id of the pane a restore is making (its history's), which
 /// Surface.init takes; else the pane gets a new one.
 restore_id: ?Session.Id = null,
@@ -502,9 +505,13 @@ pub fn terminate(self: *App) void {
         _ = c.DestroyWindow(self.windows.items[self.windows.items.len - 1].hwnd);
     }
     self.windows.deinit(self.core_app.alloc);
+    // Empty, not freed, for what the shelf's panes do as they go (a bell
+    // leaving the waiting list walks the windows).
+    self.windows = .empty;
     // What undo kept, and the shelf.
     self.undo.deinit();
     self.session.deinit();
+    self.waiting.deinit(self.core_app.alloc);
     // After the windows, whose teardown can still ask for a refresh.
     self.global_keys.deinit();
     self.hidden_windows.deinit(self.core_app.alloc);
@@ -2354,8 +2361,12 @@ pub fn performAction(
         .ring_bell => {
             const window = windowFromTarget(target) orelse return false;
             window.ringBell();
-            // bell-features title (roadmap 3.7a).
-            if (surfaceFromTarget(target)) |s| s.ringBell();
+            // bell-features title (roadmap 3.7a), and the header bars'
+            // bell for a pane without the keyboard.
+            if (surfaceFromTarget(target)) |s| {
+                s.ringBell();
+                self.waiting.add(self, s, null);
+            }
         },
 
         .toggle_visibility => return self.toggleVisibility(),
@@ -2378,6 +2389,7 @@ pub fn performAction(
                 value.title,
                 value.body,
             );
+            if (surface) |s| self.waiting.add(self, s, .{ .title = value.title, .body = value.body });
         },
 
         // Every link is taken, even one that will be blocked: if this
@@ -2687,6 +2699,7 @@ fn commandFinished(self: *App, surface: *Surface, value: apprt.action.CommandFin
     if (action.bell) {
         surface.window.ringBell();
         surface.ringBell();
+        self.waiting.add(self, surface, null);
     }
     if (!action.notify) return;
     const title: [:0]const u8 = if (value.exit_code) |code|
@@ -2700,6 +2713,7 @@ fn commandFinished(self: *App, surface: *Surface, value: apprt.action.CommandFin
     else
         std.fmt.bufPrintSentinel(&buf, "Command took {f}.", .{rounded}, 0)) catch return;
     self.notifications.send(surface.core_surface.id, surface.has_focus, title, body);
+    self.waiting.add(self, surface, .{ .title = title, .body = body });
 }
 
 /// The chrome's colors for `window-theme`, GTK's (roadmap 4.3, the Look
