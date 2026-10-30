@@ -3580,6 +3580,17 @@ free-inside-callback bug.
   development version) and a stale `ghostty` (refused, naming both
   versions); the `cli` scenario checks `+version`'s two versions and the
   version resource.
+  *Released 2026-10-30* (the owner's go-ahead): 0.1.0 as a GitHub
+  pre-release of the public repository, tag `murrtty-v0.1.0` on
+  `2df0a0bef`, unsigned, its notes listing the known risks (AMD and Intel
+  graphics, no OpenGL 4.3, ARM64, Windows 10, real keyboards and IMEs,
+  security software) and recommending a build from source. Built on the
+  owner's desktop with `build-windows.cmd -Package` from the clean tagged
+  tree, as the hosted release job (7.2) isn't built yet: the zip, the
+  symbols zip and `SHA256SUMS.txt`; the unpacked murrtty reported 0.1.0
+  and Defender found nothing in either zip. Its imports are Windows'
+  own DLLs only (no MinGW or Visual C++ runtime), none newer than Windows
+  10 1809. `version` then went to 0.2.0.
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored

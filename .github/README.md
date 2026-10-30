@@ -60,7 +60,9 @@ starting at 0.1.0, each release tagged `murrtty-vX.Y.Z`. While it is 0.x, a
 minor version brings new features or an upstream merge and a patch version
 brings fixes. `murrtty +version` names both versions, as in `murrtty 0.1.0,
 based on Ghostty 1.4.0`; a build of any other commit is a development build
-of the next release, such as `0.1.0-main+1a2b3c4`.
+of the next release, such as `0.2.0-main+1a2b3c4`. The first release,
+[0.1.0](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.1.0), is a
+preview.
 
 ## Status
 
@@ -409,15 +411,17 @@ hosted Windows runner and then the unit tests.
   latest).
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
-- A release to download. The first, 0.1.0, will be a zip without a code
-  signature, so Windows SmartScreen warns before running it the first time.
+- Signed releases. 0.1.0 is out as a
+  [preview](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.1.0):
+  a zip without a code signature, so Windows SmartScreen warns before
+  running it the first time; building from source is recommended.
   Code signing comes later: the SignPath Foundation's free signing for
   open-source projects asks for more public visibility first (it declined
   murrtty in October 2026, days after the repository was published), so
   murrtty will apply again once it has users; a Microsoft Store package,
   which the Store signs, is the other route (see the
   [code signing policy](https://murrtty.org/code-signing)). An installer,
-  winget and update checks follow. Until then murrtty builds from source.
+  winget and update checks follow.
 - A Direct3D 11 renderer, for machines without OpenGL 4.3 (later).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was

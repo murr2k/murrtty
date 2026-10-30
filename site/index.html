@@ -44,18 +44,20 @@
   <h2 id="get-it">Get it</h2>
   <div class="card">
     <p>
-      There is no release to download yet. murrtty builds from source with
-      one command; the builder fetches the Zig compiler it needs, and neither
-      Visual Studio nor the Windows SDK is needed.
-    </p>
-    <p>
-      The first release, 0.1.0, will not be code signed, so Windows
-      SmartScreen warns before running it the first time; the
-      <a href="/code-signing">code signing policy</a> says what comes after.
+      <strong>Build from source</strong> (recommended): one command; the
+      builder fetches the Zig compiler it needs, and neither Visual Studio
+      nor the Windows SDK is needed.
     </p>
 <pre><code>git clone https://github.com/murr2k/murrtty
 cd murrtty
 .\build-windows.cmd</code></pre>
+    <p>
+      <strong>Or download</strong> the
+      <a href="https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.1.0">0.1.0 preview</a>,
+      tested on one machine so far. It is not code signed, so Windows
+      SmartScreen warns before running it the first time; the
+      <a href="/code-signing">code signing policy</a> says what comes after.
+    </p>
     <p>
       It needs Windows 10 (1809 or newer) or Windows 11 on x64, and a graphics
       driver with OpenGL 4.3. The
