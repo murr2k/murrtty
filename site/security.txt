@@ -1,0 +1,7 @@
+# murrtty's security contacts (RFC 9116). Please report privately.
+Contact: https://github.com/murr2k/murrtty/security/advisories/new
+Contact: mailto:security@murrtty.org
+Policy: https://github.com/murr2k/murrtty/security/policy
+Preferred-Languages: en
+Canonical: https://murrtty.org/.well-known/security.txt
+Expires: 2027-10-01T00:00:00.000Z

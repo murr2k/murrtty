@@ -3700,6 +3700,15 @@ Builds deploy the site from the public repository: a push to `main`
 touching `site/` or `images/murrtty/` builds it from `site/wrangler.jsonc`
 (which mirrors the live Worker) and deploys it; the first such build
 (`989e0128d`) produced the module byte for byte as deployed by hand.
+*Hardened the same day* (the owner's choices): DNSSEC on (Cloudflare is
+the registrar, so it publishes the DS record itself); the pages carry
+`Cache-Control: no-transform`, so Cloudflare injects no analytics script
+(one appeared with no Web Analytics site behind it, blocked by the CSP);
+`/.well-known/security.txt` (RFC 9116, expiring 2027-10-01: renew it)
+names the private advisory form and security@murrtty.org; and Email
+Routing forwards security@murrtty.org to the owner, which replaced the
+"no mail" records with Cloudflare's MX, SPF and DKIM ones while DMARC
+stays `reject`. AI crawlers stay allowed (the owner's choice).
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build

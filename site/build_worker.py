@@ -42,6 +42,8 @@ PAGES = {
     '/': ('index.html', 'text/html; charset=utf-8'),
     '/code-signing': ('code-signing.html', 'text/html; charset=utf-8'),
     '/style.css': ('style.css', 'text/css; charset=utf-8'),
+    # RFC 9116; renew its Expires line before it lapses (within a year).
+    '/.well-known/security.txt': ('security.txt', 'text/plain; charset=utf-8'),
 }
 
 METADATA = {
@@ -163,8 +165,10 @@ export default {
     const page = PAGES[path];
     if (page) {
       if (page.type.startsWith('text/html')) count(env, request, 'page', path);
+      // no-transform: Cloudflare then leaves the page as built (no injected
+      // analytics script, which the CSP would block anyway).
       return new Response(request.method === 'HEAD' ? null : page.body, {
-        headers: { ...HEADERS, 'Content-Type': page.type, 'Cache-Control': 'public, max-age=3600' },
+        headers: { ...HEADERS, 'Content-Type': page.type, 'Cache-Control': 'public, max-age=3600, no-transform' },
       });
     }
     const raw = PICTURES[path];
