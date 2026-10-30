@@ -645,14 +645,14 @@ murrtty behaves differently from Ghostty's GTK app, and why.
 
 ## AI assistance
 
-murrtty is developed by the murr2k using Claude Code
+murrtty is developed by murr2k using Claude Code
 (Anthropic's AI coding agent): at murr2k's direction, the agent wrote the
 code, the commit messages and this README, and ran the testing described
 under Status. Ghostty's [AI usage policy](../AI_POLICY.md) governs contributions
 to Ghostty itself; murrtty isn't submitted upstream, and any fix offered
 to Ghostty on its own would have to meet that policy.
 
-Except for this very paragraph,the documentation, code, and deterministic regression tests beyond the fork of Ghostty are entirely authored and maintained by AI and only superficially reviewed by humans.
+Except for this very paragraph, the documentation, code, and deterministic regression tests beyond the fork of Ghostty are entirely authored and maintained by AI and only superficially reviewed by humans.
 
 The roadmap's estimates assumed one experienced engineer working without
 an agent: about 36 to 45 engineer-weeks for its milestones and the work
