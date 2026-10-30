@@ -1,0 +1,32 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > [!IMPORTANT]
+        > Please read the [README](https://github.com/murr2k/murrtty#readme) (what murrtty does, how to build, run and configure it) and check for existing [Discussions](https://github.com/murr2k/murrtty/discussions?discussions_q=) prior to asking.
+        >
+        > Most options come from Ghostty and work as its [configuration reference](https://ghostty.org/docs/config/reference) describes; murrtty is not affiliated with the Ghostty project, so please ask about murrtty here, never there. Something that looks broken goes in [Issue Triage](https://github.com/murr2k/murrtty/discussions/categories/issue-triage).
+  - type: textarea
+    attributes:
+      label: Question
+      description: |
+        Ask your question.  Say what you are trying to do, what you have tried, and what happened.
+      placeholder: |
+        murrtty starts PowerShell 7 for me, but I want Windows PowerShell 5.1 in new tabs.  Which option sets the shell, and how do I write its path?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: murrtty Version
+      description: Paste the output of `murrtty +version` here.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Relevant murrtty Configuration
+      description: |
+        Paste the lines of your configuration that relate to your question, if any (<kbd>ctrl</kbd>+<kbd>,</kbd> opens the file).
+      render: ini
+    validations:
+      required: false

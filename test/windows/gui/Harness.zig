@@ -1893,6 +1893,9 @@ pub const Dump = struct {
         hwnd: u64,
         /// The core surface's id (GHOSTTY_SURFACE_ID), 0 before it exists.
         surface_id: u64 = 0,
+        /// Its picture's number for `saveFrames` (`frame-<n>.bmp`), which
+        /// counts panes in tree order rather than this layout order.
+        frame: u32 = 0,
         rect: [4]i32,
         /// The tab's focused pane.
         focused: bool,

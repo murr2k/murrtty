@@ -172,6 +172,22 @@ Fork items, ahead of the rest of Phase 3:
   as Ghostty's does, in GitHub Discussions (issues opened from them once
   confirmed), so turn Discussions on with categories for questions, issue
   triage and feature requests, and point the issue templates there.
+  *Prepared again 2026-10-29:* a new audit of the 82 commits since found
+  no credentials; the docs no longer name the desktop runner or its
+  scanning exclusions; the commits' author email stays (the owner's
+  choice). Discussion forms modeled on Ghostty's, for the categories "Q&A"
+  (`q-a.yml`), "Issue Triage" (`issue-triage.yml`, its fields made
+  murrtty's: `+version`, Windows build, graphics card and driver, shell,
+  `+crash-report`) and "Feature Requests" (`feature-requests.yml`); the
+  issue chooser offers only those and private vulnerability reporting
+  (`.github/ISSUE_TEMPLATE/config.yml`); `.github/SECURITY.md`; and a new
+  README picture (the opt-in `readme-screenshot` scenario and
+  `test/windows/look/readme_shot.py`). Ghostty's vouch form stays unused
+  (no category for it). Publish day adds, besides the steps above: the
+  three categories with those names (their slugs must match the forms),
+  the `needs-confirmation` label, and private vulnerability reporting
+  turned on; the push comes from a full clone, as this clone is a
+  blobless partial one.
 
 ### Differences from Ghostty's GTK app
 
@@ -944,16 +960,15 @@ Steps:
 on the desktop runner and passes; an injected failure in a scenario turns it
 red with the scenario's logs attached; and the owner sees nothing on screen
 while it runs. Owner decisions besides the account: whether the desktop
-stays awake for runs (queued jobs wait up to 24 hours), whether to exclude
-the runner's folders from Defender scanning (faster builds, less scanning),
-and whether green runs also publish a ReleaseFast `ghostty.exe` (as an
+stays awake for runs (queued jobs wait up to 24 hours), and whether green
+runs also publish a ReleaseFast `ghostty.exe` (as an
 artifact, or installed into the project's `build\`). This also changes 7.3:
 the GUI suite runs on this runner, and Mesa llvmpipe on hosted runners
 becomes optional.
 
 *Decided 2026-10-24:* account A; green runs on `windows-port` install the
 ReleaseFast build into the project's `build\` (skipped while that Ghostty
-runs); the runner's folders are excluded from Defender scanning.
+runs).
 *Changed 2026-10-26 (owner's choice):* the install comes after the GUI
 suite and before the unit tests, so a build is in `build\` about 9 minutes
 after a push instead of 20; the unit tests still decide the run's status.
@@ -962,7 +977,7 @@ It no longer waits for a closed murrtty: the running exe is renamed to
 the copy to roll back to.
 
 *Done 2026-10-24. As built:* runner 2.338.1 (checksum verified) in
-`C:\actions-runner`, registered as `surrey-desktop`, started at logon by the
+`C:\actions-runner`, started at logon by the
 scheduled task `ghostty-windows actions runner` in a headless console (no
 window) at task priority 7, so jobs run below normal. The workflow is
 `windows-port-desktop.yml`; the release prefix comes from the runner's

@@ -13,10 +13,12 @@ features call for it.
 > [Ghostty contributors](https://github.com/ghostty-org/ghostty/graphs/contributors),
 > and most of the code in this repository is theirs. murrtty is not
 > affiliated with or endorsed by the Ghostty project. Please report problems
-> with murrtty in [this repository's issues](https://github.com/murr2k/murrtty/issues),
-> not to Ghostty.
+> with murrtty in this repository's
+> [Discussions](https://github.com/murr2k/murrtty/discussions/categories/issue-triage),
+> not to Ghostty; security problems privately, as [SECURITY.md](SECURITY.md)
+> says.
 
-![murrtty running PowerShell on Windows, with two tabs](../images/windows-port/screenshot.png)
+![murrtty with two tabs, the first split in two running PowerShell 7; the bell in the header bar is the second tab waiting](../images/murrtty/screenshot.png)
 
 ## What this is
 
@@ -63,8 +65,8 @@ the modifier keys set as held where needed, and checked the results with
 window captures, a Debug-build state dump and logs. Those GUI tests are in
 `test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
 desktop. murrtty has not yet had much use on a physical keyboard. Every
-push runs the unit tests (about 4,300) and the GUI tests (109 scenarios,
-13 of them opt-in because they show something on the screen, save
+push runs the unit tests (about 4,300) and the GUI tests (110 scenarios,
+14 of them opt-in because they show something on the screen, save
 pictures, need Clink or run long) on a self-hosted runner on the
 development machine, in a private
 mirror of this repository

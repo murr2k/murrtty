@@ -917,6 +917,17 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             if (s.drop_dir) |dir| @tagName(dir) else "",
             s.dim_color != null,
         });
+        // Its picture's number for saveFrames (`frame-<n>.bmp`), which counts
+        // every pane of every window in tree order, not this layout order.
+        const frame_index = frame: {
+            var n: usize = 0;
+            for (tab.window.app.windows.items) |win| {
+                var it = win.panes();
+                while (it.next()) |p| : (n += 1) if (p == s) break :frame n;
+            }
+            break :frame n;
+        };
+        try out.print(alloc, "\"frame\":{d},", .{frame_index});
         try out.print(alloc, "\"drop_target\":{},\"hwnd\":{d},\"surface_id\":{d},\"rect\":[{d},{d},{d},{d}],\"focused\":{},\"visible\":{}", .{
             s.drop_target != null,
             @intFromPtr(s.hwnd),

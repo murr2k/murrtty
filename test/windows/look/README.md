@@ -39,3 +39,13 @@ These tools measure that rather than judging it by eye.
 The values found this way are written down where they're used (for the
 header bar, in `src/apprt/win32/HeaderBar.zig`) and in the roadmap's 4.3
 notes.
+
+The README's picture (`images/murrtty/screenshot.png`) comes from the
+opt-in `readme-screenshot` scenario (`GHOSTTY_GUI_SNAPSHOT` = a folder),
+which sets up two tabs, the first split running PowerShell 7, the second
+ringing its bell from the background, and writes murrtty's own pixels read
+back on the hidden desktop (each pane's frame, the chrome, the tab's
+container) with the dump that places them; `readme_shot.py <folder>
+<out.png>` (needs Pillow) puts them together, adds the unfocused pane's
+dimming (the frames are read before the present pass draws it) and the
+frame's rounded corners. Nothing shows on the screen.

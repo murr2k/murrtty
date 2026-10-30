@@ -1,0 +1,39 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > [!IMPORTANT]
+        > Please read the [Status](https://github.com/murr2k/murrtty#status) section of the README (what is not implemented yet) and the [roadmap](https://github.com/murr2k/murrtty/blob/main/WINDOWS_ROADMAP.md), and check for existing [Discussions](https://github.com/murr2k/murrtty/discussions?discussions_q=) and [Issues](https://github.com/murr2k/murrtty/issues?q=sort%3Areactions-desc) prior to opening a new Discussion.
+        >
+        > murrtty keeps Ghostty's configuration format: a file it reads must still load in Ghostty, so a request for a new configuration option or key binding action may be answered with another way to reach the same goal.
+  - type: textarea
+    attributes:
+      label: Feature Description
+      description: |
+        Describe the feature you'd like, and the problem it solves for you.
+      placeholder: |
+        I run several shells side by side and want each split to show a name I give it, so I can find the one I want at a glance.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Elsewhere
+      description: |
+        If Ghostty's GTK or macOS app, or another Windows terminal, already has this feature, say which and how it behaves there.  Links and screenshots help.
+      placeholder: |
+        (The app, and how the feature behaves there.)
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Alternatives
+      description: |
+        Describe any workarounds or alternatives you have considered.
+    validations:
+      required: false
+  - type: checkboxes
+    attributes:
+      label: "I acknowledge that:"
+      options:
+        - label: I have searched the murrtty repository (both open and closed Discussions and Issues) and the roadmap, and confirm this is not a duplicate of an existing request or plan.
+          required: true

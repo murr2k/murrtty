@@ -4,7 +4,9 @@ body:
     attributes:
       value: |
         > [!IMPORTANT]
-        > Please read through [the Discussion rules](https://github.com/ghostty-org/ghostty/discussions/6937), review [the FAQs](https://ghostty.org/docs/help#common-issues-and-solutions), and check for both existing [Discussions](https://github.com/ghostty-org/ghostty/discussions?discussions_q=) and [Issues](https://github.com/ghostty-org/ghostty/issues?q=sort%3Areactions-desc) prior to opening a new Discussion.
+        > Please read the [Status](https://github.com/murr2k/murrtty#status) section of the README (what is tested, untested and not implemented yet) and check for both existing [Discussions](https://github.com/murr2k/murrtty/discussions?discussions_q=) and [Issues](https://github.com/murr2k/murrtty/issues?q=sort%3Areactions-desc) prior to opening a new Discussion.
+        >
+        > murrtty is not affiliated with the Ghostty project. Please report murrtty's problems here, never to Ghostty.
   - type: markdown
     attributes:
       value: "# Issue Details"
@@ -20,20 +22,21 @@ body:
         > [!TIP]
         > **Not sure what information to include?**
         > Here are some recommendations:
-        > - **Input issues:** include your keyboard layout, a screenshot of logged keystrokes from the terminal inspector's "Keyboard" tab (Linux: <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>i</kbd>; MacOS: <kbd>cmd</kbd>+<kbd>alt</kbd>+<kbd>i</kbd>), input method, Linux input method engine (IBus, Fcitx 5, or none) and its version.
-        > - **Font issues:** include the problematic character(s), the output of `ghostty +show-face` for these character(s), and if they work in other applications.
+        > - **Input issues:** include your keyboard layout, a screenshot of logged keystrokes from the terminal inspector's "Keyboard" tab (<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>i</kbd>), and your input method (IME) and its version, if any.
+        > - **Font issues:** include the problematic character(s), the output of `murrtty +show-face --string=<characters>` for them, and if they work in other applications.
         > - **Terminal emulation issues (including image rendering issues):** attach an [asciinema](https://docs.asciinema.org/getting-started/) cast file, shell script, or text file for reproduction.
-        > - **Renderer issues:** (Linux) include your OpenGL version, graphics card, driver version.
-        > - **Crashes:** (macOS) include the [Sentry UUID](https://github.com/ghostty-org/ghostty?tab=readme-ov-file#crash-reports); (Linux) try to reproduce using a debug build and provide the stack trace.
+        > - **Shell integration issues:** include your shell and its version (PowerShell 7, Windows PowerShell 5.1, or cmd with or without Clink) and the lines of your profile that change the prompt.
+        > - **Renderer issues:** include your graphics card, its driver version, and the text of murrtty's dialog if it says OpenGL 4.3 is missing.
+        > - **Crashes:** run `murrtty +crash-report` and attach the newest report from `%LOCALAPPDATA%\murrtty\crash`.
       placeholder: |
-        When using SSH to connect to my remote Linux machine from my local macOS device in Ghostty, I try to run `clear`, and the screen does not clear.  Instead, I see the following error message printed to the terminal: `Error opening terminal: xterm-ghostty.`
+        When using SSH to connect to my Linux machine from murrtty, I try to run `clear`, and the screen does not clear.  Instead, I see the following error message printed to the terminal: `Error opening terminal: xterm-ghostty.`
     validations:
       required: true
   - type: textarea
     attributes:
       label: Expected Behavior
       description: |
-        Describe how you expect Ghostty to behave in this situation.  Include any relevant documentation links.
+        Describe how you expect murrtty to behave in this situation.  Include any relevant documentation links.
       placeholder: |
         The screen is cleared and the prompt is redrawn at the top of the window.
     validations:
@@ -42,7 +45,7 @@ body:
     attributes:
       label: Actual Behavior
       description: |
-        Describe how Ghostty actually behaves in this situation.  If it is not immediately obvious how the actual behavior differs from the expected behavior described above, please be sure to mention the deviation specifically.
+        Describe how murrtty actually behaves in this situation.  If it is not immediately obvious how the actual behavior differs from the expected behavior described above, please be sure to mention the deviation specifically.
       placeholder: |
         The screen is not cleared, and an error is printed: `Error opening terminal: xterm-ghostty`.
     validations:
@@ -53,7 +56,7 @@ body:
       description: |
         Provide a detailed set of step-by-step instructions for reproducing this issue.
       placeholder: |
-        1. Open Ghostty.
+        1. Open murrtty.
         2. Connect to a remote server via SSH.
         3. Try to execute `clear`.
         4. Observe `xterm-ghostty` error message above.
@@ -61,62 +64,65 @@ body:
       required: true
   - type: textarea
     attributes:
-      label: Ghostty Logs
+      label: murrtty Logs
       description: |
-        Provide any captured Ghostty logs or stacktraces during your issue reproduction in this field.  On Linux, logs can be found by running `ghostty` from the command-line; on macOS, logs can be viewed with `sudo log stream --level debug --predicate 'subsystem=="com.mitchellh.ghostty"'` from another terminal emulator.
+        Provide any captured murrtty logs during your issue reproduction in this field.  murrtty is a GUI program, so it writes its log only when started from a shell with its errors redirected: `murrtty.exe 2> murrtty.log`.
       render: text
   - type: textarea
     attributes:
-      label: Ghostty Version
-      description: Paste the output of `ghostty +version` here.
+      label: murrtty Version
+      description: Paste the output of `murrtty +version` here.
       placeholder: |
-        Ghostty 1.1.3
+        murrtty, based on Ghostty 1.4.0-windows-port+d448ca7
 
         Version
-          - version: 1.1.3
-          - channel: stable
+          - version: 1.4.0-windows-port+d448ca7
+          - channel: tip
         Build Config
-          - Zig version: 0.13.0
-          - build mode : builtin.OptimizeMode.ReleaseFast
-          - app runtime: apprt.Runtime.none
-          - font engine: font.main.Backend.coretext
-          - renderer   : renderer.Metal
-          - libxev     : main.Backend.kqueue
+          - Zig version   : 0.17.0
+          - build mode    : .fast
+          - app runtime   : .win32
+          - font engine   : .freetype_windows
+          - renderer      : renderer.generic.Renderer(renderer.OpenGL)
+          - libxev        : iocp
       render: text
     validations:
       required: true
   - type: input
     attributes:
-      label: OS Version Information
+      label: Windows Version
       description: |
-        Please tell us what operating system (name and version) you are using.
-      placeholder: Ubuntu 24.04.1 (Noble Numbat)
+        Please tell us which Windows version and build you are using (run `winver`).
+      placeholder: Windows 11 24H2 (OS Build 26100.2314)
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Graphics Card and Driver
+      description: |
+        Please tell us your graphics card and its driver version (Device Manager, Display adapters), and whether murrtty runs over Remote Desktop or in a virtual machine.
+      placeholder: NVIDIA GeForce RTX 2070, driver 566.36
     validations:
       required: true
   - type: dropdown
     attributes:
-      label: (Linux only) Display Server
+      label: Shell
       description: |
-        If you run Linux, please tell us if you use X11 or Wayland. If you aren't sure, you can determine this by running `[ -z "$WAYLAND_DISPLAY" ] && echo X11 || echo Wayland`.
+        Which shell runs in the terminal where you see the issue?
       options:
-        - X11
-        - Wayland
+        - PowerShell 7
+        - Windows PowerShell 5.1
+        - cmd
+        - cmd with Clink
+        - WSL
         - Other
-    validations:
-      required: false
-  - type: input
-    attributes:
-      label: (Linux only) Desktop Environment/Window Manager
-      description: |
-        If you run Linux, please tell us what Desktop Environment/Window Manager you are using (include the name and version).
-      placeholder: GNOME 47.4
     validations:
       required: false
   - type: textarea
     attributes:
-      label: Minimal Ghostty Configuration
+      label: Minimal murrtty Configuration
       description: |
-        Please provide the **minimum** configuration needed to reproduce this issue.  If you can still reproduce the issue with one of the lines removed, do not include that line.  If and **only** if you are not able to determine this, paste the contents of your Ghostty configuration file here.
+        Please provide the **minimum** configuration needed to reproduce this issue.  If you can still reproduce the issue with one of the lines removed, do not include that line.  If and **only** if you are not able to determine this, paste the contents of your configuration file here (<kbd>ctrl</kbd>+<kbd>,</kbd> opens it; murrtty reads `%LOCALAPPDATA%\murrtty\config.ghostty`, or Ghostty's own configuration when it has none).
       placeholder: |
         font-family = CommitMono Nerd Font
         font-family-bold = CommitMono Nerd Font
@@ -133,14 +139,12 @@ body:
     attributes:
       label: Additional Relevant Configuration
       description: |
-        If your issue involves other programs, tools, or applications in addition to Ghostty (e.g. Neovim, tmux, Zellij, etc.), please provide the minimum configuration and versions needed for all relevant programs to reproduce the issue here.  If you use custom CSS or shaders for Ghostty, also include them here, if applicable to your issue.
+        If your issue involves other programs, tools, or applications in addition to murrtty (e.g. Neovim, PSReadLine, Clink, WSL, tmux, etc.), please provide the minimum configuration and versions needed for all relevant programs to reproduce the issue here.  If you use custom shaders for murrtty, also include them here, if applicable to your issue.
       placeholder: |
-        #### `tmux.conf` (tmux 3.5a)
+        #### PowerShell profile (PowerShell 7.5.1, PSReadLine 2.4.5)
         ```
-        set  -g default-terminal "tmux-256color"
-        set-option -sa terminal-overrides ",xterm*:Tc"
-        set  -g base-index      1
-        setw -g pane-base-index 1
+        Set-PSReadLineOption -EditMode Emacs
+        Set-PSReadLineKeyHandler -Chord Ctrl+d -Function DeleteCharOrExit
         ```
     validations:
       required: false
@@ -149,16 +153,16 @@ body:
       value: |
         # User Acknowledgements
         > [!TIP]
-        > Use these links to review the existing Ghostty [Discussions](https://github.com/ghostty-org/ghostty/discussions?discussions_q=) and [Issues](https://github.com/ghostty-org/ghostty/issues?q=sort%3Areactions-desc).
+        > Use these links to review the existing murrtty [Discussions](https://github.com/murr2k/murrtty/discussions?discussions_q=) and [Issues](https://github.com/murr2k/murrtty/issues?q=sort%3Areactions-desc).
   - type: checkboxes
     attributes:
       label: "I acknowledge that:"
       options:
-        - label: I have reviewed the FAQ and confirm that my issue is NOT among them.
+        - label: I have read the README's Status section and confirm that my issue is NOT listed there as not implemented yet or as a known issue.
           required: true
-        - label: I have searched the Ghostty documentation and confirm there doesn't exist a configuration option that solves my issue.
+        - label: I have searched the documentation (murrtty's README and Ghostty's configuration reference) and confirm there doesn't exist a configuration option that solves my issue.
           required: true
-        - label: I have searched the Ghostty repository (both open and closed Discussions and Issues) and confirm this is not a duplicate of an existing issue or discussion.
+        - label: I have searched the murrtty repository (both open and closed Discussions and Issues) and confirm this is not a duplicate of an existing issue or discussion.
           required: true
         - label: I have checked the "Preview" tab on all text fields to ensure that everything looks right, and have wrapped all configuration and code in code blocks with a group of three backticks (` ``` `) on separate lines.
           required: true

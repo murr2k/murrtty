@@ -116,6 +116,7 @@ pub const all = [_]Scenario{
     .{ .name = "quit-after-reload", .about ="20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
+    .{ .name = "readme-screenshot", .about = "the README's picture: two tabs, a split running PowerShell 7, the second tab's waiting bell; the parts read back on the hidden desktop for test/windows/look/readme_shot.py (GHOSTTY_GUI_SNAPSHOT=folder)", .run = readmeScreenshot },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
     .{ .name = "blur-display", .about = "background-blur blurs a striped backdrop seen through the background ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = blurDisplay },
     .{ .name = "taskbar-shown", .about = "OSC 9;4 on a real taskbar button: the button is made (TaskbarButtonCreated) and ITaskbarList3 takes the progress, off-screen on the user's desktop (GHOSTTY_GUI_ONSCREEN=1: a button shows on the taskbar)", .run = taskbarShown },
@@ -258,6 +259,105 @@ fn snapshot(h: *Harness) anyerror!void {
         }
     }.run);
     if (ctx.err) |err| return err;
+}
+
+/// The README's picture (GHOSTTY_GUI_SNAPSHOT = a folder): two tabs, the
+/// first split with PowerShell 7 in each pane, the second ringing its bell
+/// from the background (the header bar's waiting bell). murrtty's own
+/// pixels, read on the hidden desktop: each pane's frame, the chrome and
+/// the tab's container, with the dump that places them, which
+/// `test/windows/look/readme_shot.py` puts together.
+fn readmeScreenshot(h: *Harness) anyerror!void {
+    var dir_w: [260:0]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &dir_w, dir_w.len);
+    if (n == 0 or n >= dir_w.len) return h.skip("set GHOSTTY_GUI_SNAPSHOT to a folder to run it", .{});
+    var dir_buf: [1024]u8 = undefined;
+    const dir = dir_buf[0 .. std.unicode.utf16LeToUtf8(&dir_buf, dir_w[0..n]) catch return h.fail("bad folder name", .{})];
+    // Claude Code's NO_COLOR would have PowerShell drop its colors.
+    var g = try h.launchWith("readme-screenshot", base_config ++
+        "command = pwsh -NoLogo\n" ++
+        "shell-integration = detect\n" ++
+        "working-directory = C:\\\n" ++
+        "window-width = 140\n" ++
+        "window-height = 24\n" ++
+        "cursor-style-blink = false\n" ++
+        "confirm-close-surface = false\n", .{ .unset = &.{"NO_COLOR"} });
+    defer g.deinit();
+    try h.waitText(&g, "PS C:\\>", 1, 20000);
+    const win = try h.mainWindow(&g);
+    const left = try h.surface(&g, win);
+    // Each command fits its pane's row.
+    const lines = [_][]const u8{
+        "\"Unicode: héllo · 日本語 · λ → ✓ · 🚀\"",
+        "$e = [char]27",
+        "$g = 0..47|%{\"$e[48;2;$(40+4*$_);$(90+$_);$(230-4*$_)m \"}",
+        "-join $g + \"$e[0m\"",
+        "-join (0..15|%{\"$e[48;5;${_}m   \"}) + \"$e[0m\"",
+    };
+    for (lines) |line| {
+        try h.typeText(left, line);
+        h.enter(left);
+        w.Sleep(400);
+    }
+    // A split beside it: PowerShell's version table.
+    h.key(left, .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    try waitPaneText(h, &g, 1, "PS C:\\>", 1);
+    const right = right: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{});
+        break :right hwndOf(panes[1].hwnd);
+    };
+    try h.typeText(right, "$PSVersionTable");
+    h.enter(right);
+    w.Sleep(1000);
+    // The second tab rings from the background: a bell in the header bar.
+    h.key(right, .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    try waitActivePaneText(h, &g, win, "PS C:\\>");
+    const second = try h.surface(&g, win);
+    try h.typeText(second, "Start-Sleep 2; [Console]::Write([char]7)");
+    h.enter(second);
+    h.key(second, .{ .ctrl = true, .shift = true }, 0x09);
+    try waitActiveTab(h, &g, win, 0);
+    {
+        var waited: u32 = 0;
+        while (true) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (d.value.waiting.len == 1) break;
+            if (waited >= 10000) return h.fail("the second tab's bell never came", .{});
+            w.Sleep(100);
+        }
+    }
+    // The first pane comes forward, and the window is active (on the hidden
+    // desktop it never is), as on the owner's screen.
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{});
+        h.click(hwndOf(panes[0].hwnd), 40, 40, .left);
+    }
+    var result: usize = 0;
+    _ = w.SendMessageTimeoutW(win, w.WM_NCACTIVATE, 1, 0, w.SMTO_ABORTIFHUNG, 2000, &result);
+    w.Sleep(1500);
+    try h.saveFrames(&g);
+    try h.saveChrome(&g);
+    var d = try h.dump(&g);
+    defer d.deinit();
+    try copyOut(h, &g, "dump.json", dir, "readme-dump.json");
+    try copyOut(h, &g, "chrome-0.bmp", dir, "readme-chrome.bmp");
+    try copyOut(h, &g, "tab-0.bmp", dir, "readme-tab.bmp");
+    for (d.value.windows[0].tabs) |t| for (t.panes orelse &.{}) |p| {
+        if (!p.visible) continue;
+        const from = try std.fmt.allocPrint(h.alloc, "frame-{d}.bmp", .{p.frame});
+        defer h.alloc.free(from);
+        const to = try std.fmt.allocPrint(h.alloc, "readme-frame-{d}.bmp", .{p.frame});
+        defer h.alloc.free(to);
+        try copyOut(h, &g, from, dir, to);
+    };
+    try h.expect(true, "wrote the README picture's parts to {s}", .{dir});
 }
 
 /// frame-tab.bmp: GTK's default font size (12 points, 16 pixels at 96 DPI)
