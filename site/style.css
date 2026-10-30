@@ -1,0 +1,90 @@
+:root {
+  --bg: #fafafa;
+  --fg: #1e1e1e;
+  --muted: #5c5c5c;
+  --card: #ffffff;
+  --border: #dcdcdc;
+  --link: #1c62c9;
+  --code: #f0f0f0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1d1f24;
+    --fg: #e8e8e8;
+    --muted: #a8a8a8;
+    --card: #282c34;
+    --border: #3b3f47;
+    --link: #78aeed;
+    --code: #2e323a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.6 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 40px 16px 56px;
+}
+
+a { color: var(--link); }
+
+header.hero {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 28px;
+}
+
+header.hero img { width: 88px; height: 88px; }
+header.hero h1 { margin: 0; font-size: 2.6rem; line-height: 1.1; }
+header.hero p { margin: 6px 0 0; color: var(--muted); font-size: 1.15rem; }
+
+.shot {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 8px 0 28px;
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.28));
+}
+
+h2 { margin: 36px 0 10px; font-size: 1.35rem; }
+
+ul.features { padding-left: 1.2em; }
+ul.features li { margin: 4px 0; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin: 14px 0;
+}
+
+code, pre {
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  background: var(--code);
+  border-radius: 6px;
+}
+
+code { padding: 1px 5px; font-size: 0.92em; }
+pre { padding: 12px 14px; overflow-x: auto; font-size: 0.92em; }
+pre code { padding: 0; background: none; }
+
+.links { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 10px 0; }
+
+footer {
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.9rem;
+}

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>murrtty: a native Windows terminal</title>
+  <meta name="description" content="murrtty is a native Windows terminal forked from Ghostty: Ghostty's core with a Win32 application around it.">
+  <link rel="icon" type="image/png" href="/icon.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <header class="hero">
+    <img src="/icon.png" alt="murrtty icon">
+    <div>
+      <h1>murrtty</h1>
+      <p>A native Windows terminal, forked from Ghostty.</p>
+    </div>
+  </header>
+
+  <img class="shot" src="/screenshot.png" width="1404" height="554"
+       alt="murrtty with two tabs, the first split in two running PowerShell 7; the bell in the header bar is the second tab waiting">
+
+  <p>
+    murrtty is <a href="https://github.com/ghostty-org/ghostty">Ghostty</a>'s
+    core (terminal emulation, fonts, rendering, configuration) with a Win32
+    application around it, built directly on the Windows API. It looks like
+    Ghostty's GTK app, reads Ghostty's configuration format, and goes its own
+    way where Windows or its own features call for it.
+  </p>
+
+  <h2>What it does</h2>
+  <ul class="features">
+    <li>Tabs and splits, GTK's header bar as the title bar, its menus, dialogs and command palette.</li>
+    <li>Shell integration for PowerShell 7, Windows PowerShell 5.1 and cmd (with Clink): the working directory follows the shell, idle prompts close without asking, jump between prompts.</li>
+    <li>Keys reach console programs whole, as Windows key events; keyboard layouts and input methods.</li>
+    <li>Session restore: windows, tabs, splits and each terminal's command history come back.</li>
+    <li>A bell in the header bar for each terminal waiting for you in the background (an agent asking for input, say): a click goes there.</li>
+    <li>Notifications, taskbar progress, global key bindings, the tray, a quick terminal, drag and drop, undo of closes, the terminal inspector.</li>
+    <li>A configuration editor that edits your Ghostty-format file in place.</li>
+    <li>Screen readers read its terminals through UI Automation.</li>
+  </ul>
+
+  <h2>Get it</h2>
+  <div class="card">
+    <p>
+      There is no release to download yet. murrtty builds from source with
+      one command; the builder fetches the Zig compiler it needs, and neither
+      Visual Studio nor the Windows SDK is needed.
+    </p>
+<pre><code>git clone https://github.com/murr2k/murrtty
+cd murrtty
+.\build-windows.cmd</code></pre>
+    <p>
+      It needs Windows 10 (1809 or newer) or Windows 11 on x64, and a graphics
+      driver with OpenGL 4.3. The
+      <a href="https://github.com/murr2k/murrtty#readme">README</a> says what
+      is tested, what isn't, and what isn't built yet.
+    </p>
+  </div>
+
+  <h2>Links</h2>
+  <div class="links">
+    <a href="https://github.com/murr2k/murrtty">Source on GitHub</a>
+    <a href="https://github.com/murr2k/murrtty/discussions">Questions and reports</a>
+    <a href="https://github.com/murr2k/murrtty/security/policy">Security policy</a>
+    <a href="/code-signing">Code signing policy</a>
+  </div>
+
+  <footer>
+    <p>
+      murrtty is not affiliated with or endorsed by the Ghostty project.
+      Ghostty is created by <a href="https://github.com/mitchellh">Mitchell Hashimoto</a>
+      and the <a href="https://github.com/ghostty-org/ghostty/graphs/contributors">Ghostty contributors</a>,
+      and most of murrtty's code is theirs. Please report problems with
+      murrtty to murrtty, never to Ghostty.
+    </p>
+    <p>
+      MIT License. Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors;
+      copyright (c) 2026 Murray Kopit (murrtty, the Windows fork).
+    </p>
+  </footer>
+</main>
+</body>
+</html>

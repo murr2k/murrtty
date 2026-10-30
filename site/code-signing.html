@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code signing policy: murrtty</title>
+  <meta name="description" content="How murrtty's releases are signed, who approves a signing, and what murrtty does with data.">
+  <link rel="icon" type="image/png" href="/icon.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <p><a href="/">murrtty</a></p>
+  <h1>Code signing policy</h1>
+
+  <div class="card">
+    <p>
+      <strong>Status:</strong> murrtty has no signed release yet. Its releases
+      are to be signed through the
+      <a href="https://signpath.org">SignPath Foundation</a>'s free code
+      signing for open-source projects, which murrtty is applying for. This
+      page says how signing will work; once signing starts it carries
+      SignPath's credit and each release links here.
+    </p>
+  </div>
+
+  <h2>What is signed</h2>
+  <p>
+    Release builds of murrtty: <code>murrtty.exe</code> in the release zip (and
+    the installer, once there is one). Only builds made by GitHub Actions on
+    GitHub's own runners, from a tagged commit of the public repository
+    <a href="https://github.com/murr2k/murrtty">github.com/murr2k/murrtty</a>,
+    are submitted for signing, and each one is approved by hand. Every signed
+    file carries murrtty's product name and the release's version. Nothing
+    built on a developer's machine is signed, and no third-party binary is
+    signed as murrtty's.
+  </p>
+
+  <h2>Team roles</h2>
+  <ul>
+    <li><strong>Authors</strong> (who change the code without further review): <a href="https://github.com/murr2k">Murray Kopit (murr2k)</a></li>
+    <li><strong>Reviewers</strong> (who review changes from anyone else): <a href="https://github.com/murr2k">Murray Kopit (murr2k)</a></li>
+    <li><strong>Approvers</strong> (who approve each signing request by hand): <a href="https://github.com/murr2k">Murray Kopit (murr2k)</a></li>
+  </ul>
+  <p>
+    Every account involved (GitHub, SignPath) uses multi-factor
+    authentication.
+  </p>
+
+  <h2>Privacy policy</h2>
+  <p>
+    This program will not transfer any information to other networked
+    systems unless specifically requested by the user or the person
+    installing or operating it.
+  </p>
+  <p>
+    murrtty makes no network connections of its own. Crash reports are
+    written to <code>%LOCALAPPDATA%\murrtty\crash</code> and stay there:
+    nothing is sent anywhere. A future check for updates will be off unless
+    turned on.
+  </p>
+
+  <h2>Reporting</h2>
+  <p>
+    A signed file that seems not to be murrtty's, or a security problem in
+    murrtty, goes to the
+    <a href="https://github.com/murr2k/murrtty/security/advisories/new">private vulnerability report</a>,
+    never to a public discussion.
+  </p>
+
+  <footer>
+    <p>murrtty is not affiliated with or endorsed by the Ghostty project.</p>
+  </footer>
+</main>
+</body>
+</html>

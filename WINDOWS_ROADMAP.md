@@ -188,6 +188,18 @@ Fork items, ahead of the rest of Phase 3:
   the `needs-confirmation` label, and private vulnerability reporting
   turned on; the push comes from a full clone, as this clone is a
   blobless partial one.
+  *Published 2026-10-29*, on the owner's go: `murr2k/murrtty` is public,
+  with Actions off (upstream's workflows can't run there), Discussions on,
+  private vulnerability reporting on, the `needs-confirmation` label and
+  topics; `windows-port` went up as its `main` from a full bare clone,
+  with no tags or other branches. The clone's remote `public` points at
+  it, and new commits go to both repositories (`private` `windows-port`,
+  `public` `main`). GitHub's API can't create Discussions categories, so
+  "Issue Triage" (`issue-triage`) and "Feature Requests"
+  (`feature-requests`) are the owner's to add in the web UI; until then
+  their forms show nowhere. The private repository stays the CI mirror,
+  and the desktop workflow runs only there. murrtty.org went up the same
+  day (7.6).
 
 ### Differences from Ghostty's GTK app
 
@@ -3499,6 +3511,14 @@ free-inside-callback bug.
   SignPath Foundation", and no malware or undisclosed data collection
   (murrtty makes no network connections; 7.6's check is opt-in). The
   publisher Windows shows is SignPath Foundation.
+  *Prepared 2026-10-29:* the policy page is up
+  (https://murrtty.org/code-signing: what is signed, SignPath's three
+  roles, MFA, its privacy statement), from `site/code-signing.html`.
+  SignPath's terms want the software already released before it signs
+  any, so the first release goes out unsigned (after 7.2's release job
+  and murrtty's own version scheme, below); then the owner applies at
+  signpath.org/apply (the form needs the owner's identity), and once
+  signing starts the page gains the credit line and each release links it.
 - MSIX for the Microsoft Store, later (*decided 2026-10-28 by the
   owner*). The Store signs what it publishes, and a packaged murrtty has a
   package identity, which WinRT toasts (5.2b) and the AppUserModelID
@@ -3591,6 +3611,16 @@ the Cloudflare MCP server): `MX . 0`, `TXT "v=spf1 -all"`, `_dmarc` `TXT
 "v=DMARC1; p=reject; sp=reject; adkim=s; aspf=s"`, Always Use HTTPS on,
 minimum TLS 1.2; the records checked from the zone's own nameserver. The
 zone has no other records yet.
+*Built 2026-10-29:* murrtty.org serves `site/` (the home page and the
+code signing policy) from a Cloudflare Worker, `murrtty-site`, rather
+than Pages: the Cloudflare MCP server deploys a Worker script but can't
+drive Pages' upload, and two pages and a stylesheet fit in the script
+(`site/build_worker.py` packs them; the icon and README picture come from
+the public repository's raw files, cached at the edge). It answers on
+the custom domains `murrtty.org` and `www.murrtty.org` (redirected to the
+apex) with its workers.dev address off, GET and HEAD only, and a strict
+Content-Security-Policy on every response. The appcast becomes a route
+of its own there.
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build

@@ -6,7 +6,7 @@
 [Ghostty](https://github.com/ghostty-org/ghostty).** It is Ghostty's core
 (terminal emulation, fonts, rendering, configuration) with a Win32
 application around it, and it diverges from Ghostty where Windows or its own
-features call for it.
+features call for it. Its site is [murrtty.org](https://murrtty.org).
 
 > Ghostty is created by [Mitchell Hashimoto](https://github.com/mitchellh)
 > and the
@@ -403,8 +403,10 @@ hosted Windows runner and then the unit tests.
   latest).
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
-- A release to download: an installer, code signing, winget and update
-  checks wait for this repository to be published.
+- A release to download, then an installer, code signing (through the
+  SignPath Foundation, as the
+  [code signing policy](https://murrtty.org/code-signing) says), winget
+  and update checks. Until then murrtty builds from source.
 - A Direct3D 11 renderer, for machines without OpenGL 4.3 (later).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was
