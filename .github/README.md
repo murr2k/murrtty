@@ -403,8 +403,7 @@ hosted Windows runner and then the unit tests.
   latest).
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
-- A release to download, then an installer, code signing (through the
-  SignPath Foundation, as the
+- A release to download, then an installer, code signing (as the
   [code signing policy](https://murrtty.org/code-signing) says), winget
   and update checks. Until then murrtty builds from source.
 - A Direct3D 11 renderer, for machines without OpenGL 4.3 (later).

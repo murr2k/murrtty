@@ -3530,6 +3530,20 @@ free-inside-callback bug.
   terms sign a fork only if upstream publishes signed builds and the fork
   is visibly one (a GitHub fork), and neither holds for murrtty as
   written, so its answer on those points decides the plan.
+  *Declined 2026-10-30:* the Foundation program wants public visibility
+  first (stars, forks, contributors, outside articles or discussions,
+  sustained activity), which a project public for a day lacks; SignPath
+  welcomes a new application once murrtty has it, or offers a paid
+  subscription. The site no longer names a provider. What remains, as
+  checked that day: releases go out unsigned at first (SmartScreen warns
+  on them); the Microsoft Store signs the MSIX packages it publishes, and
+  registration there is free for individuals (since 2025-09) and
+  companies (since 2026-05), which brings the MSIX item below forward as
+  the free signed channel (the zip stays unsigned); Azure Artifact
+  Signing would sign the zip too, its docs admitting individuals in the
+  US and Canada (an unofficial answer on Microsoft Q&A says individual
+  onboarding is paused; check in the portal), at a monthly fee; SignPath
+  again once murrtty is known. The owner decides.
 - MSIX for the Microsoft Store, later (*decided 2026-10-28 by the
   owner*). The Store signs what it publishes, and a packaged murrtty has a
   package identity, which WinRT toasts (5.2b) and the AppUserModelID
