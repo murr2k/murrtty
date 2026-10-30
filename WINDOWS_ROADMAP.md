@@ -3685,6 +3685,17 @@ the custom domains `murrtty.org` and `www.murrtty.org` (redirected to the
 apex) with its workers.dev address off, GET and HEAD only, and a strict
 Content-Security-Policy on every response. The appcast becomes a route
 of its own there.
+*Usage statistics, 2026-10-30* (the owner's request, after moving the
+account to Workers Paid): the Worker writes each page view and download
+by a browser to Workers Analytics Engine (dataset `murrtty_site`): the
+page, the referring site's host name, the country and a coarse browser
+type, never an IP address, cookie or full URL, and no bots (by user
+agent). The footers say so. Cloudflare's own zone analytics give counts
+but no referrers on the zone's free plan; Workers Logs were left off, as
+their automatic request records carry more (city, network) than the
+footer promises. `/download` counts a click and redirects to the newest
+release's zip; the page's version and release link come from the newest
+`murrtty-v*` tag at build time.
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build

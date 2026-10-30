@@ -7,11 +7,25 @@ Their addresses name the last commit that changed images/murrtty, so a
 new picture has a new address and no cache serves the old one: push that
 commit to the public repository first, then build and deploy.
 
+The newest murrtty-vX.Y.Z tag is the release the site offers: @RELEASE@
+and @RELEASE_URL@ in the pages become its version and its release page,
+and /download redirects to its zip. Push the tag (and publish the
+release) before building.
+
+Usage statistics: each page view and download by a browser (bots left
+out) is written to Workers Analytics Engine (binding VISITS, dataset
+murrtty_site) with the page, the referring site's host name, the country
+and a coarse browser type. No IP addresses, cookies or full URLs; the
+pages' footers say so.
+
     python build_worker.py <out.js>
 
+writes the module and <out.js>.meta.json, the upload's metadata (main
+module, compatibility date, the Analytics Engine binding).
+
 Routes: / and /code-signing (no .html), /style.css, /icon.png,
-/screenshot.png; www.murrtty.org redirects to murrtty.org; anything else is
-404. Every page carries a strict Content-Security-Policy.
+/screenshot.png, /download; www.murrtty.org redirects to murrtty.org;
+anything else is 404. Every page carries a strict Content-Security-Policy.
 """
 import json
 import os
@@ -26,12 +40,23 @@ PAGES = {
     '/style.css': ('style.css', 'text/css; charset=utf-8'),
 }
 
+METADATA = {
+    'main_module': 'worker.js',
+    'compatibility_date': '2026-10-01',
+    'bindings': [
+        {'type': 'analytics_engine', 'name': 'VISITS', 'dataset': 'murrtty_site'},
+    ],
+}
+
+
+def git(*args):
+    return subprocess.run(['git', '-C', here, *args], capture_output=True,
+                          text=True, check=True).stdout.strip()
+
 
 def pictures():
     images = os.path.join(here, '..', 'images', 'murrtty')
-    ref = subprocess.run(
-        ['git', '-C', here, 'log', '-1', '--format=%H', '--', images],
-        capture_output=True, text=True, check=True).stdout.strip()
+    ref = git('log', '-1', '--format=%H', '--', images)
     if not ref:
         sys.exit('no commit found for images/murrtty')
     raw = f'https://raw.githubusercontent.com/murr2k/murrtty/{ref}/images/murrtty/'
@@ -40,9 +65,22 @@ def pictures():
         '/screenshot.png': raw + 'screenshot.png',
     }
 
+
+def release():
+    tag = git('describe', '--tags', '--abbrev=0', '--match', 'murrtty-v*')
+    version = tag[len('murrtty-v'):]
+    base = 'https://github.com/murr2k/murrtty/releases'
+    return {
+        'version': version,
+        'page': f'{base}/tag/{tag}',
+        'zip': f'{base}/download/{tag}/murrtty-{version}-windows-x86_64.zip',
+    }
+
+
 TEMPLATE = r"""// murrtty.org, built by site/build_worker.py; edit the site's files, not this.
 const PAGES = __PAGES__;
 const PICTURES = __PICTURES__;
+const DOWNLOAD = __DOWNLOAD__;
 
 const HEADERS = {
   'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
@@ -51,8 +89,38 @@ const HEADERS = {
   'Strict-Transport-Security': 'max-age=31536000',
 };
 
+const BOT = /bot|crawl|spider|slurp|preview|scan|monitor|fetch|curl|wget|python|httpclient|okhttp|java\/|go-http|libwww|headless|powershell|facebookexternalhit|embedly|discord|telegram|whatsapp|slack/i;
+
+function browser(ua) {
+  if (ua.includes('murrtty-check')) return 'check';
+  const name = /Edg\//.test(ua) ? 'Edge'
+    : /Firefox\//.test(ua) ? 'Firefox'
+    : /Chrome\//.test(ua) ? 'Chrome'
+    : /Safari\//.test(ua) ? 'Safari'
+    : 'Other';
+  return name + (/Mobi|Android|iPhone|iPad/.test(ua) ? ' mobile' : ' desktop');
+}
+
+// A page view or download by a browser: the page, the referring site's
+// host name, the country and a coarse browser type. No IP addresses,
+// cookies or full URLs; bots are left out.
+function count(env, request, kind, path) {
+  const ua = request.headers.get('User-Agent') || '';
+  if (!env || !env.VISITS || request.method !== 'GET' || !ua || BOT.test(ua)) return;
+  let ref = '(direct)';
+  try {
+    const r = request.headers.get('Referer');
+    if (r) ref = new URL(r).hostname;
+  } catch {}
+  env.VISITS.writeDataPoint({
+    indexes: [kind],
+    blobs: [kind, path, ref, (request.cf && request.cf.country) || '', browser(ua)],
+    doubles: [1],
+  });
+}
+
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     if (url.hostname === 'www.murrtty.org') {
       url.hostname = 'murrtty.org';
@@ -64,8 +132,13 @@ export default {
     let path = url.pathname;
     if (path.endsWith('.html')) path = path.slice(0, -5);
     if (path === '/index') path = '/';
+    if (path === '/download') {
+      count(env, request, 'download', path);
+      return Response.redirect(DOWNLOAD, 302);
+    }
     const page = PAGES[path];
     if (page) {
+      if (page.type.startsWith('text/html')) count(env, request, 'page', path);
       return new Response(request.method === 'HEAD' ? null : page.body, {
         headers: { ...HEADERS, 'Content-Type': page.type, 'Cache-Control': 'public, max-age=3600' },
       });
@@ -89,16 +162,25 @@ export default {
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
+    rel = release()
     pages = {}
     for route, (name, kind) in PAGES.items():
         with open(os.path.join(here, name), encoding='utf-8') as f:
-            pages[route] = {'type': kind, 'body': f.read()}
-    module = TEMPLATE.replace('__PAGES__', json.dumps(pages, indent=1, ensure_ascii=True))
+            body = f.read()
+        body = body.replace('@RELEASE_URL@', rel['page']).replace('@RELEASE@', rel['version'])
+        if '@' in body and ('@RELEASE' in body):
+            sys.exit(f'{name}: an unknown @RELEASE placeholder is left')
+        pages[route] = {'type': kind, 'body': body}
     pics = pictures()
+    module = TEMPLATE.replace('__PAGES__', json.dumps(pages, indent=1, ensure_ascii=True))
     module = module.replace('__PICTURES__', json.dumps(pics, indent=1))
+    module = module.replace('__DOWNLOAD__', json.dumps(rel['zip']))
     with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as f:
         f.write(module)
-    print(f'{sys.argv[1]}: {len(module)} bytes, {len(pages) + len(pics)} routes')
+    with open(sys.argv[1] + '.meta.json', 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(METADATA, f, indent=1)
+    print(f'{sys.argv[1]}: {len(module)} bytes, {len(pages) + len(pics) + 1} routes, '
+          f'release {rel["version"]}')
 
 
 if __name__ == '__main__':
