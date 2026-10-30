@@ -445,8 +445,8 @@ fn bellGlyph(self: *const HeaderBar, hdc: c.HDC, r: c.RECT, color: c.COLORREF) v
     draw.roundRect(hdc, g.rect(6, 13, 10, 16), self.scale(2), color, null, 0);
 }
 
-/// The bell's color: yellow, as the emoji the owner's GTK fork shows
-/// (Adwaita's yellow 2 on a dark bar, its darker yellow 5 on a light one).
+/// The bell's color: yellow, as the bell emoji is drawn (Adwaita's yellow 2
+/// on a dark bar, its darker yellow 5 on a light one).
 fn bellColor(pal: draw.Palette) c.COLORREF {
     const r: u32 = pal.bar & 0xFF;
     const g: u32 = (pal.bar >> 8) & 0xFF;

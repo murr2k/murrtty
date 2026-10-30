@@ -2746,9 +2746,7 @@ the buffer, the untouched system clipboard, and both pastes.
   restore below writes its state. The `session-end` scenario checks the
   answer and that no dialog opens.
 - Then session restore (5.10b), *planned 2026-10-29* from the owner's
-  description of the session restore on their own Linux Ghostty fork
-  (described, never read: that fork is internal to their employer), with
-  the owner's choices on the open points. L, about two weeks.
+  design, with the owner's choices on the open points. L, about two weeks.
   - **What is saved:** every window (its place, size, monitor, maximized
     or fullscreen, its name), its tabs (order, names, the active one),
     each tab's split tree (layout, sizes, the focused pane), each pane's
@@ -3834,10 +3832,9 @@ a search, an edit, a key-binding capture and a save. *Done 2026-10-28*
   one, one with a value, the same keys again replacing their line), and
   the saved file.
 
-**F2 Waiting bells, S.** *The owner's design, 2026-10-29, from their Linux
-Ghostty fork (described, not its code).* The owner runs Claude Code in many
-tabs and splits; when one waits for input from a pane without the
-keyboard, a bell appears in the header bar. A left click dismisses it and
+**F2 Waiting bells, S.** *The owner's design, 2026-10-29.* The owner runs
+Claude Code in many tabs and splits; when one waits for input from a pane
+without the keyboard, a bell appears in the header bar. A left click dismisses it and
 goes to that pane; a right click dismisses it and leaves the keyboard
 where it is. The owner's answers: a bell or a notification (OSC 9 or 777)
 counts; one bell per waiting pane, each with a tooltip naming it, and
@@ -3866,8 +3863,8 @@ every window's bells, and a click raises the pane's window.
   them; the bells take at most the first half of the tabs' span, leaving
   a narrowest tab's room, so many waiting never crowd the tabs out.
 - The bell is GTK's notification shape in yellow (Adwaita's yellow 2 on
-  a dark bar, its yellow 5 on a light one), as the emoji the owner's fork
-  shows.
+  a dark bar, its yellow 5 on a light one), as the bell emoji of the
+  owner's description is drawn.
 - Clicks act as the button comes up over the bell it went down on, still
   standing for the same pane (a window raised on the press could take the
   release, and a pane leaving the list meanwhile slides the next bell

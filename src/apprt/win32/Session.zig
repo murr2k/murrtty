@@ -1,6 +1,5 @@
-//! Session restore (roadmap 5.10b), as the owner's own Linux Ghostty fork
-//! has it (from their description): what the windows hold is saved
-//! whenever it changes and brought back when murrtty starts.
+//! Session restore (roadmap 5.10b, the owner's design): what the windows
+//! hold is saved whenever it changes and brought back when murrtty starts.
 //!
 //! Saved: each window (its restored rectangle, maximized or fullscreen,
 //! its name), its tabs (order, names, the active one) and each tab's split

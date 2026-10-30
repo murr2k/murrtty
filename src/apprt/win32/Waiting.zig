@@ -1,6 +1,5 @@
 //! The panes waiting for their user (murrtty's own, the owner's design of
-//! 2026-10-29, from their Linux Ghostty fork): a bell or a notification
-//! from a pane without the keyboard (an agent asking for input in a
+//! 2026-10-29): a bell or a notification from a pane without the keyboard (an agent asking for input in a
 //! background tab or split, say) puts a bell for it in every window's
 //! header bar (HeaderBar.bellPlace), oldest first. A left click on one goes
 //! to its pane, a right click dismisses it where it is; it goes too when
