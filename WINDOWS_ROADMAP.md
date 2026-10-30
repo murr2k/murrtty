@@ -3695,7 +3695,11 @@ but no referrers on the zone's free plan; Workers Logs were left off, as
 their automatic request records carry more (city, network) than the
 footer promises. `/download` counts a click and redirects to the newest
 release's zip; the page's version and release link come from the newest
-`murrtty-v*` tag at build time.
+`murrtty-v*` tag at build time. Since the same day Cloudflare's Workers
+Builds deploy the site from the public repository: a push to `main`
+touching `site/` or `images/murrtty/` builds it from `site/wrangler.jsonc`
+(which mirrors the live Worker) and deploys it; the first such build
+(`989e0128d`) produced the module byte for byte as deployed by hand.
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build
