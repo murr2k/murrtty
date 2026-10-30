@@ -1064,10 +1064,10 @@ fn linkBlocked(self: *App, owner: ?c.HWND, denial: url.Denial) void {
 pub fn showAbout(self: *App, owner: ?c.HWND) void {
     const alloc = self.core_app.alloc;
     const content = std.fmt.allocPrint(alloc,
-        \\Version {s}
+        \\Version {s}, based on Ghostty {s}
         \\
         \\A native Windows terminal forked from Ghostty, open source under the MIT license. Ghostty is by Mitchell Hashimoto and its contributors; murrtty is not affiliated with the Ghostty project.
-    , .{build_config.version_string}) catch return;
+    , .{ build_config.version_string, build_config.ghostty_version_string }) catch return;
     defer alloc.free(content);
     _ = self.taskDialog(.{
         .owner = owner,

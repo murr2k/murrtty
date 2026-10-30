@@ -1,0 +1,15 @@
+// murrtty's own version (roadmap 7.4), read by src/build/Config.zig.
+//
+// `version` is the release being worked toward. A build of the commit
+// tagged murrtty-v<version> is that release; any other build is a
+// development build of it, <version>-<branch>+<commit>. Bump it in the
+// commit right after tagging a release.
+//
+// `ghostty` is the Ghostty release murrtty last merged (X.Y.Z, or
+// X.Y.Z-dev after a merge of upstream's main). Its X.Y.Z must match
+// build.zig.zon's version, Ghostty's own, which the build checks: update
+// it with each upstream merge.
+.{
+    .version = "0.1.0",
+    .ghostty = "1.4.0",
+}

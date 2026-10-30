@@ -34,7 +34,10 @@ pub fn run(alloc: Allocator) !u8 {
         );
     };
     if (build_config.murrtty) {
-        try stdout.print("murrtty, based on Ghostty {s}\n\n", .{build_config.version_string});
+        try stdout.print("murrtty {s}, based on Ghostty {s}\n\n", .{
+            build_config.version_string,
+            build_config.ghostty_version_string,
+        });
     } else {
         try stdout.print("Ghostty {s}\n\n", .{build_config.version_string});
     }
@@ -42,6 +45,7 @@ pub fn run(alloc: Allocator) !u8 {
 
     try stdout.print("Version\n", .{});
     try stdout.print("  - version: {s}\n", .{build_config.version_string});
+    if (build_config.murrtty) try stdout.print("  - Ghostty: {s}\n", .{build_config.ghostty_version_string});
     try stdout.print("  - channel: {t}\n", .{build_config.release_channel});
 
     try stdout.print("Build Config\n", .{});

@@ -17,6 +17,11 @@ pub const ReleaseChannel = BuildConfig.ReleaseChannel;
 pub const version = options.app_version;
 pub const version_string = options.app_version_string;
 
+/// The Ghostty version this build is based on. For murrtty, whose own
+/// version is `version`, the Ghostty it last merged; otherwise `version`'s
+/// X.Y.Z.
+pub const ghostty_version_string = options.ghostty_version_string;
+
 /// The release channel for this build.
 pub const release_channel = std.meta.stringToEnum(ReleaseChannel, @tagName(options.release_channel)).?;
 

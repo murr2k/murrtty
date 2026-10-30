@@ -4369,7 +4369,8 @@ fn launchContext(h: *Harness) anyerror!void {
 }
 
 /// CLI actions with their output on a pipe, as PowerShell captures it:
-/// +version names murrtty; +validate-config exits 0 and says nothing for a
+/// +version names murrtty's own version and the Ghostty it is based on
+/// (roadmap 7.4); +validate-config exits 0 and says nothing for a
 /// valid file (it exited 1: with nothing written, its writer then tried to
 /// set the pipe's length), and 1 naming the problem for an invalid one.
 fn cli(h: *Harness) anyerror!void {
@@ -4388,11 +4389,20 @@ fn cli(h: *Harness) anyerror!void {
         defer r.deinit();
         try h.expect(r.code == 0 and std.mem.indexOf(u8, r.out, "murrtty") != null, "+version exits 0 and names murrtty (exit {d})", .{r.code});
 
-        // The version Explorer shows is +version's (roadmap 6.5).
-        const marker = "based on Ghostty ";
-        const at = std.mem.indexOf(u8, r.out, marker) orelse return h.fail("+version names no Ghostty version: '{s}'", .{r.out});
-        const rest = r.out[at + marker.len ..];
-        const printed = std.mem.trim(u8, rest[0 .. std.mem.indexOfAny(u8, rest, "\r\n") orelse rest.len], " ");
+        // "murrtty <its version>, based on Ghostty <Ghostty's>" (roadmap
+        // 7.4), and the version Explorer shows is murrtty's own (6.5).
+        const head = "murrtty ";
+        const marker = ", based on Ghostty ";
+        const head_at = std.mem.indexOf(u8, r.out, head) orelse return h.fail("+version names no murrtty version: '{s}'", .{r.out});
+        const line_end = std.mem.indexOfAnyPos(u8, r.out, head_at, "\r\n") orelse r.out.len;
+        const line = r.out[head_at..line_end];
+        const at = std.mem.indexOf(u8, line, marker) orelse return h.fail("+version names no Ghostty version: '{s}'", .{line});
+        const printed = line[head.len..at];
+        const ghostty = std.mem.trim(u8, line[at + marker.len ..], " ");
+        _ = std.SemanticVersion.parse(ghostty) catch return h.fail("+version's Ghostty version '{s}' isn't a version", .{ghostty});
+        const ghostty_line = try std.fmt.allocPrint(h.alloc, "  - Ghostty: {s}", .{ghostty});
+        defer h.alloc.free(ghostty_line);
+        try h.expect(std.mem.indexOf(u8, r.out, ghostty_line) != null, "+version lists the Ghostty version '{s}' under Version", .{ghostty});
         const v = try h.exeVersion();
         defer h.alloc.free(v.text);
         try h.expect(std.mem.eql(u8, v.text, printed), "the version resource's FileVersion is +version's ('{s}', +version '{s}')", .{ v.text, printed });

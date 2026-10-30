@@ -221,8 +221,9 @@ roadmap item behind it.
 - **Identity** (R3): murrtty's own configuration folder,
   `%LOCALAPPDATA%\murrtty`, falling back to an existing Ghostty
   configuration; `TERM_PROGRAM=murrtty` and an XTVERSION of `murrtty`
-  (`TERM` stays `xterm-ghostty`); `+version` says "murrtty, based on
-  Ghostty".
+  (`TERM` stays `xterm-ghostty`); murrtty's own version numbers (7.4) in
+  `+version` ("murrtty 0.1.0, based on Ghostty 1.4.0"), XTVERSION and
+  `TERM_PROGRAM_VERSION`.
 - **Extra split keys** (1.9): `Ctrl+Shift+[` and `]` also go to the previous
   and next split, because Windows holds upstream's `Win+Ctrl+[` and `]`.
 - **Numpad navigation keys** (6.2): with NumLock off, a numpad key without
@@ -3544,14 +3545,41 @@ free-inside-callback bug.
   US and Canada (an unofficial answer on Microsoft Q&A says individual
   onboarding is paused; check in the portal), at a monthly fee; SignPath
   again once murrtty is known. The owner decides.
+  *Decided 2026-10-30 by the owner:* the first releases go out unsigned,
+  after murrtty's own version scheme (below); the Store, Azure and a new
+  SignPath application wait. The README and the policy page say so.
 - MSIX for the Microsoft Store, later (*decided 2026-10-28 by the
   owner*). The Store signs what it publishes, and a packaged murrtty has a
   package identity, which WinRT toasts (5.2b) and the AppUserModelID
   otherwise need registered by hand.
-- murrtty's own version numbers: it reports Ghostty's today (1.4.0 with
-  its branch and commit), and a release tag other than Ghostty's `vX.Y.Z`
-  stops the build (`src/build/Config.zig`), so murrtty's releases need a
-  scheme of their own and that small build change first.
+- murrtty's own version numbers: it reported Ghostty's (1.4.0 with its
+  branch and commit), and a release tag other than Ghostty's `vX.Y.Z`
+  stopped the build (`src/build/Config.zig`). *Built 2026-10-30* (the
+  owner's request: a scheme of its own from the outset, before the first
+  release): semantic versions apart from Ghostty's, from 0.1.0; 0.x while
+  murrtty settles, a minor version for new features or an upstream merge
+  and a patch version for fixes, 1.0.0 when the owner calls it stable.
+  `src/build/murrtty_version.zon` holds `version`, the release being worked
+  toward, and `ghostty`, the Ghostty release last merged (X.Y.Z, or
+  X.Y.Z-dev after a merge of upstream's main); the build refuses a
+  `ghostty` whose X.Y.Z isn't `build.zig.zon`'s (Ghostty's own version,
+  left as upstream bumps it), so each merge updates it. (It sits beside
+  `Config.zig`, which reads it: the build-data tool compiles `Config.zig`
+  with `src/` as its module's root, so an import from `dist/` fails.) A
+  release is the commit tagged `murrtty-vX.Y.Z`, a prefix of its own
+  because the clone carries Ghostty's `vX.Y.Z` tags, which murrtty's would
+  meet at 1.4. A build of it is `X.Y.Z` on the stable channel, any other
+  build `X.Y.Z-<branch>+<commit>` on the tip channel; a `murrtty-v` tag that
+  doesn't match stops the build, and Ghostty's tags are ignored. `version`
+  is bumped in the commit after the tag. murrtty's version is what
+  `+version` (`murrtty 0.1.0, based on Ghostty 1.4.0`, with a `Ghostty:` line
+  under Version), the About box, XTVERSION, `TERM_PROGRAM_VERSION`,
+  Sentry's release, the version resource and the package's name carry.
+  Checked with temporary local tags (`murrtty-v0.1.0` built 0.1.0 on the
+  stable channel, `murrtty-v0.0.9` stopped the build, `v9.9.9` built a
+  development version) and a stale `ghostty` (refused, naming both
+  versions); the `cli` scenario checks `+version`'s two versions and the
+  version resource.
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored

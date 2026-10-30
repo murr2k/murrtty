@@ -16,6 +16,12 @@ const expandPath = @import("../os/path.zig").expand;
 const gtk = @import("gtk.zig");
 const GitVersion = @import("GitVersion.zig");
 
+/// murrtty's own version and the Ghostty it is based on (roadmap 7.4).
+const murrtty_version: struct {
+    version: []const u8,
+    ghostty: []const u8,
+} = @import("murrtty_version.zon");
+
 /// Standard build configuration options.
 optimize: std.lang.Optimize,
 target: std.Build.ResolvedTarget,
@@ -38,6 +44,9 @@ wasm_shared: bool = true,
 /// Ghostty exe properties
 exe_entrypoint: ExeEntrypoint = .ghostty,
 version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 },
+/// The Ghostty version this build is based on: murrtty's from
+/// src/build/murrtty_version.zon, else the build's own.
+ghostty_version: []const u8 = "",
 lib_version: std.SemanticVersion = .{ .major = 0, .minor = 0, .patch = 0 },
 
 /// The absolute path the Ghostty executable is installed at, for the Linux
@@ -290,11 +299,34 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
             "If not specified, git will be used. This must be a semantic version.",
     );
 
+    // murrtty, the Windows fork, numbers its own releases (roadmap 7.4):
+    // src/build/murrtty_version.zon holds its version and the Ghostty it is
+    // based on, and its release tags are murrtty-vX.Y.Z. Ghostty's own
+    // version stays build.zig.zon's, as upstream bumps it.
+    const murrtty = target.result.os.tag == .windows;
+    config.ghostty_version = appVersion;
+    if (murrtty) {
+        const base = std.SemanticVersion.parse(murrtty_version.ghostty) catch
+            @panic("src/build/murrtty_version.zon: ghostty must be a semantic version");
+        const zon = try std.SemanticVersion.parse(appVersion);
+        if (base.major != zon.major or base.minor != zon.minor or base.patch != zon.patch) {
+            std.log.err(
+                "src/build/murrtty_version.zon says murrtty is based on Ghostty {s}, " ++
+                    "but build.zig.zon is Ghostty {s}: update it with the merge",
+                .{ murrtty_version.ghostty, appVersion },
+            );
+            return error.GhosttyVersionMismatch;
+        }
+        config.ghostty_version = murrtty_version.ghostty;
+    }
+
     config.version = if (version_string) |v|
         // If an explicit version is given, we always use it.
         try std.SemanticVersion.parse(v)
     else version: {
-        const app_version = try std.SemanticVersion.parse(appVersion);
+        const app_version = try std.SemanticVersion.parse(
+            if (murrtty) murrtty_version.version else appVersion,
+        );
 
         // Is ghostty a dependency? If so, skip git detection.
         if (is_dep) break :version .{
@@ -320,15 +352,24 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         };
         if (vsn.tag) |tag| {
             // Tip releases behave just like any other pre-release so we skip.
-            if (!std.mem.eql(u8, tag, "tip")) {
-                const expected = b.fmt("v{d}.{d}.{d}", .{
+            // murrtty's releases are its murrtty-v tags; a Ghostty tag on
+            // the commit (a checkout of upstream's release) builds as a
+            // development version.
+            if (!std.mem.eql(u8, tag, "tip") and
+                (!murrtty or std.mem.startsWith(u8, tag, "murrtty-v")))
+            {
+                const expected = b.fmt("{s}{d}.{d}.{d}", .{
+                    if (murrtty) "murrtty-v" else "v",
                     app_version.major,
                     app_version.minor,
                     app_version.patch,
                 });
 
                 if (!std.mem.eql(u8, tag, expected)) {
-                    @panic("tagged releases must be in vX.Y.Z format matching build.zig");
+                    @panic(if (murrtty)
+                        "murrtty's release tags must be murrtty-vX.Y.Z matching src/build/murrtty_version.zon"
+                    else
+                        "tagged releases must be in vX.Y.Z format matching build.zig");
                 }
 
                 break :version .{
@@ -713,6 +754,13 @@ pub fn addOptions(self: *const Config, step: *std.Build.Step.Options) !void {
         &app_version_buf,
         "{f}",
         .{self.version},
+        0,
+    ));
+    var ghostty_version_buf: [256]u8 = undefined;
+    step.addOption([:0]const u8, "ghostty_version_string", try std.mem.printSentinel(
+        &ghostty_version_buf,
+        "{s}",
+        .{self.ghostty_version},
         0,
     ));
     var lib_version_buf: [1024]u8 = undefined;

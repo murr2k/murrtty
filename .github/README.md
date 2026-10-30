@@ -53,8 +53,14 @@ of `murrtty`, while `TERM` stays `xterm-ghostty`, so they still get the
 capabilities the shared core implements.
 
 murrtty merges upstream Ghostty from time to time instead of rebasing onto
-it. It last merged Ghostty 1.4.0 (the release tag `v1.4.0`, October 2026),
-and `murrtty +version` says it is based on that release.
+it. It last merged Ghostty 1.4.0 (the release tag `v1.4.0`, October 2026).
+
+murrtty numbers its own releases, apart from Ghostty's: semantic versions
+starting at 0.1.0, each release tagged `murrtty-vX.Y.Z`. While it is 0.x, a
+minor version brings new features or an upstream merge and a patch version
+brings fixes. `murrtty +version` names both versions, as in `murrtty 0.1.0,
+based on Ghostty 1.4.0`; a build of any other commit is a development build
+of the next release, such as `0.1.0-main+1a2b3c4`.
 
 ## Status
 
@@ -403,9 +409,15 @@ hosted Windows runner and then the unit tests.
   latest).
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
-- A release to download, then an installer, code signing (as the
-  [code signing policy](https://murrtty.org/code-signing) says), winget
-  and update checks. Until then murrtty builds from source.
+- A release to download. The first, 0.1.0, will be a zip without a code
+  signature, so Windows SmartScreen warns before running it the first time.
+  Code signing comes later: the SignPath Foundation's free signing for
+  open-source projects asks for more public visibility first (it declined
+  murrtty in October 2026, days after the repository was published), so
+  murrtty will apply again once it has users; a Microsoft Store package,
+  which the Store signs, is the other route (see the
+  [code signing policy](https://murrtty.org/code-signing)). An installer,
+  winget and update checks follow. Until then murrtty builds from source.
 - A Direct3D 11 renderer, for machines without OpenGL 4.3 (later).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was
@@ -636,7 +648,9 @@ The commit messages explain each change in more detail.
 
 `main` is murrtty: upstream Ghostty's history, the commits that brought it to
 Windows, and murrtty's own since. Upstream itself is
-[ghostty-org/ghostty](https://github.com/ghostty-org/ghostty).
+[ghostty-org/ghostty](https://github.com/ghostty-org/ghostty). Releases are
+the `murrtty-vX.Y.Z` tags; murrtty's version and the Ghostty it last merged
+are in `src/build/murrtty_version.zon`.
 
 Ghostty's maintainers won't add more runtimes to Ghostty, so murrtty is its
 own terminal: a native Windows work-alike of Ghostty that diverges where

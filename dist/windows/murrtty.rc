@@ -10,8 +10,8 @@ RT_MANIFEST 24 "murrtty.manifest"
 #define ID_ICON_MURRTTY 1
 ID_ICON_MURRTTY ICON "murrtty.ico"
 
-// The build passes its version (GhosttyExe.zig): murrtty's is Ghostty's,
-// as +version says.
+// The build passes its version (GhosttyExe.zig): murrtty's own, from
+// src/build/murrtty_version.zon, as +version says.
 #ifndef MURRTTY_VERSION
 #define MURRTTY_VERSION 0,0,0,0
 #define MURRTTY_VERSION_STRING "0.0.0"
