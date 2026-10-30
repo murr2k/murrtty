@@ -21,7 +21,10 @@ pages' footers say so.
     python build_worker.py <out.js>
 
 writes the module and <out.js>.meta.json, the upload's metadata (main
-module, compatibility date, the Analytics Engine binding).
+module, compatibility date, the Analytics Engine binding). Cloudflare's
+Workers Builds run it from wrangler.jsonc's build command on each push to
+main that touches site/ or images/murrtty/, then `wrangler deploy`; the
+metadata file is for deploying by hand through the API.
 
 Routes: / and /code-signing (no .html), /style.css, /icon.png,
 /screenshot.png, /download; www.murrtty.org redirects to murrtty.org;
@@ -31,6 +34,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.request
 
 here = os.path.dirname(os.path.abspath(__file__))
 
@@ -50,11 +54,24 @@ METADATA = {
 
 
 def git(*args):
-    return subprocess.run(['git', '-C', here, *args], capture_output=True,
-                          text=True, check=True).stdout.strip()
+    """git's output, or '' when it fails (no git, no tags in a shallow
+    clone)."""
+    r = subprocess.run(['git', '-C', here, *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ''
+
+
+def github(path):
+    req = urllib.request.Request(
+        'https://api.github.com/repos/murr2k/murrtty' + path,
+        headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'murrtty-site-build'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
 
 
 def pictures():
+    # In a shallow clone (Cloudflare's builds) the oldest commit present
+    # stands in for the history before it: it still holds the current
+    # pictures, so an address pinned to it is right, only changed sooner.
     images = os.path.join(here, '..', 'images', 'murrtty')
     ref = git('log', '-1', '--format=%H', '--', images)
     if not ref:
@@ -68,6 +85,13 @@ def pictures():
 
 def release():
     tag = git('describe', '--tags', '--abbrev=0', '--match', 'murrtty-v*')
+    if not tag:
+        # No tags in the clone: the newest murrtty release on GitHub.
+        tags = [r['tag_name'] for r in github('/releases?per_page=20')
+                if not r.get('draft') and r['tag_name'].startswith('murrtty-v')]
+        if not tags:
+            sys.exit('no murrtty-v release found in git or on GitHub')
+        tag = tags[0]
     version = tag[len('murrtty-v'):]
     base = 'https://github.com/murr2k/murrtty/releases'
     return {

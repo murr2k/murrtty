@@ -1,0 +1,24 @@
+// murrtty.org's Worker, as Cloudflare's Workers Builds deploy it from this
+// folder (root directory "site", deploy command `npx wrangler deploy`).
+// Keep it the same as the live Worker: a name, binding or domain left out
+// here would change what murrtty.org serves on the next build.
+{
+  "name": "murrtty-site",
+  "main": "dist/worker.js",
+  "compatibility_date": "2026-10-01",
+  "build": {
+    "command": "python3 build_worker.py dist/worker.js"
+  },
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "murrtty.org", "custom_domain": true },
+    { "pattern": "www.murrtty.org", "custom_domain": true }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "VISITS", "dataset": "murrtty_site" }
+  ],
+  // No Workers Logs: their request records carry more than the footer's
+  // promise (page, referring site, country, browser type).
+  "observability": { "enabled": false }
+}
