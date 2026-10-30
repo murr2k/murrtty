@@ -3516,9 +3516,14 @@ free-inside-callback bug.
   roles, MFA, its privacy statement), from `site/code-signing.html`.
   SignPath's terms want the software already released before it signs
   any, so the first release goes out unsigned (after 7.2's release job
-  and murrtty's own version scheme, below); then the owner applies at
-  signpath.org/apply (the form needs the owner's identity), and once
-  signing starts the page gains the credit line and each release links it.
+  and murrtty's own version scheme, below). Once signing starts the page
+  gains the credit line and each release links it.
+  *Applied 2026-10-29* by the owner (SignPath acknowledged it, with a
+  reply due within a few business days). The application said plainly
+  that murrtty is a fork of Ghostty, new, with no release yet. SignPath's
+  terms sign a fork only if upstream publishes signed builds and the fork
+  is visibly one (a GitHub fork), and neither holds for murrtty as
+  written, so its answer on those points decides the plan.
 - MSIX for the Microsoft Store, later (*decided 2026-10-28 by the
   owner*). The Store signs what it publishes, and a packaged murrtty has a
   package identity, which WinRT toasts (5.2b) and the AppUserModelID
