@@ -154,9 +154,15 @@ Fork items, ahead of the rest of Phase 3:
   is `murrtty.exe` with `dist/windows/murrtty.rc`, `.ico` and `.manifest`
   (Ghostty's own `ghostty.*` files are back to upstream's text); window
   classes are `Murrtty*`; dialogs and the title fallback say murrtty; the
-  AppUserModelID is `murrtty.murrtty`. The icon is a placeholder ("m" and a
-  block cursor, `images/murrtty/make-icon.ps1`). Clink's script accepts
-  either `TERM_PROGRAM`; its scenario part still needs the owner's run.
+  AppUserModelID is `murrtty.murrtty`. Clink's script accepts either
+  `TERM_PROGRAM`; its scenario part still needs the owner's run.
+  *Icon, 2026-10-29* (the owner's choice; it replaces the stand-in, a
+  ghost with a prompt too close to Ghostty's own mark): a lowercase m
+  drawn as a split view, its stems the frame and the divider, its two
+  counters panes holding a prompt and a block cursor, in amber phosphor
+  (`#FFB000`) on near-black. `images/murrtty/murrtty.svg` is the source;
+  `images/murrtty/make-icon.py` renders it with headless Edge into
+  `images/murrtty/icon.png` and `dist/windows/murrtty.ico` (16 to 256 px).
 - **R4, S.** Publish `murr2k/murrtty`: an audit for secrets and personal
   data, upstream's workflows kept from running there, the desktop workflow
   limited to the private mirror, and pushes going to both repositories.
