@@ -199,6 +199,7 @@ def main():
     module = TEMPLATE.replace('__PAGES__', json.dumps(pages, indent=1, ensure_ascii=True))
     module = module.replace('__PICTURES__', json.dumps(pics, indent=1))
     module = module.replace('__DOWNLOAD__', json.dumps(rel['zip']))
+    os.makedirs(os.path.dirname(os.path.abspath(sys.argv[1])), exist_ok=True)
     with open(sys.argv[1], 'w', encoding='utf-8', newline='\n') as f:
         f.write(module)
     with open(sys.argv[1] + '.meta.json', 'w', encoding='utf-8', newline='\n') as f:
