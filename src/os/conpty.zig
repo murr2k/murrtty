@@ -146,6 +146,9 @@ fn besideExecutable(buf: []u16, name: [:0]const u16) ?[*:0]const u16 {
 }
 
 const HMODULE = *opaque {};
+/// An export, as a function pointer: a function pointer's alignment
+/// (4 on ARM64) can't come from a cast of a byte-aligned pointer.
+const PROC = *const fn () callconv(.winapi) void;
 const INIT_ONCE = extern struct { ptr: ?*anyopaque = null };
 const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100;
 const LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
@@ -157,7 +160,7 @@ extern "kernel32" fn InitOnceExecuteOnce(
     context: ?*?*anyopaque,
 ) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn LoadLibraryExW(name: [*:0]const u16, file: ?*anyopaque, load_flags: u32) callconv(.winapi) ?HMODULE;
-extern "kernel32" fn GetProcAddress(module: HMODULE, name: [*:0]const u8) callconv(.winapi) ?*const anyopaque;
+extern "kernel32" fn GetProcAddress(module: HMODULE, name: [*:0]const u8) callconv(.winapi) ?PROC;
 extern "kernel32" fn FreeLibrary(module: HMODULE) callconv(.winapi) windows.BOOL;
 extern "kernel32" fn GetModuleFileNameW(module: ?HMODULE, buf: [*]u16, size: u32) callconv(.winapi) u32;
 extern "kernel32" fn GetEnvironmentVariableW(name: [*:0]const u16, buf: ?[*]u16, size: u32) callconv(.winapi) u32;
