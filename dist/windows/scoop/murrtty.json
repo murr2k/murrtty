@@ -1,0 +1,46 @@
+{
+    "version": "0.2.0",
+    "description": "A native Windows terminal forked from Ghostty.",
+    "homepage": "https://murrtty.org",
+    "license": "MIT",
+    "notes": "murrtty is a preview and isn't code signed yet. Report problems at https://github.com/murr2k/murrtty/issues",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/murr2k/murrtty/releases/download/murrtty-v0.2.0/murrtty-0.2.0-windows-x86_64.zip",
+            "hash": "647e9a397ebf09f0ec6b70e35fb68dd61e36e566a493d2a3113984d2d12251c2",
+            "extract_dir": "murrtty-0.2.0-windows-x86_64"
+        },
+        "arm64": {
+            "url": "https://github.com/murr2k/murrtty/releases/download/murrtty-v0.2.0/murrtty-0.2.0-windows-aarch64.zip",
+            "hash": "8d0e82410f001e67ba5db853ab65b070c00dce98ef185682cd7c93a5c8895745",
+            "extract_dir": "murrtty-0.2.0-windows-aarch64"
+        }
+    },
+    "bin": "bin\\murrtty.exe",
+    "shortcuts": [
+        [
+            "bin\\murrtty.exe",
+            "murrtty"
+        ]
+    ],
+    "checkver": {
+        "url": "https://api.github.com/repos/murr2k/murrtty/releases",
+        "jsonpath": "$[0].tag_name",
+        "regex": "murrtty-v([\\d.]+)"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/murr2k/murrtty/releases/download/murrtty-v$version/murrtty-$version-windows-x86_64.zip",
+                "extract_dir": "murrtty-$version-windows-x86_64"
+            },
+            "arm64": {
+                "url": "https://github.com/murr2k/murrtty/releases/download/murrtty-v$version/murrtty-$version-windows-aarch64.zip",
+                "extract_dir": "murrtty-$version-windows-aarch64"
+            }
+        },
+        "hash": {
+            "url": "https://github.com/murr2k/murrtty/releases/download/murrtty-v$version/SHA256SUMS.txt"
+        }
+    }
+}

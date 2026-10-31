@@ -1,0 +1,142 @@
+# murrtty through Scoop and winget (WINDOWS_ROADMAP.md 7.6). Started by
+# hand: Actions minutes on a private repository are billed, Windows minutes
+# double.
+#
+# Installs the release the manifests in dist/windows/scoop and
+# dist/windows/winget name, from those manifest files, on clean hosted
+# runners, and checks that what each package manager puts on PATH is
+# murrtty with its own files: `murrtty +version` reports the manifest's
+# version, it finds its themes in share\, and Microsoft's ConPTY sits
+# beside it. Run it before the manifests go to the Scoop bucket and to
+# microsoft/winget-pkgs. The runners have no GPU, so no window opens.
+name: Windows port packages
+
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  guard:
+    name: No other workflow is active
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check workflow states
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          registered=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | "\(.path) \(.state)"')
+          bad=0
+          while read -r path state; do
+            case "$path" in
+              .github/workflows/windows-port*.yml) continue ;;
+              .github/workflows/*) ;;
+              *) continue ;;
+            esac
+            if [ "$state" = active ]; then
+              echo "::error::$path is active. Disable it: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
+              bad=1
+            fi
+          done <<< "$registered"
+          exit $bad
+
+  scoop:
+    name: Scoop
+    needs: guard
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Scoop
+        shell: pwsh
+        run: |
+          Invoke-RestMethod -Uri https://get.scoop.sh -OutFile install-scoop.ps1
+          .\install-scoop.ps1 -RunAsAdmin
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $env:USERPROFILE 'scoop\shims')
+
+      - name: Install murrtty from the manifest and check it
+        shell: pwsh
+        run: |
+          $want = (Get-Content dist\windows\scoop\murrtty.json -Raw | ConvertFrom-Json).version
+          scoop install .\dist\windows\scoop\murrtty.json
+          if ($LASTEXITCODE -ne 0) { throw "scoop install failed ($LASTEXITCODE)" }
+          $app = (scoop prefix murrtty | Out-String).Trim()
+          "installed in $app"
+          Get-ChildItem (Join-Path $app 'bin') | Format-Table Name, Length | Out-String
+          foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
+            if (-not (Test-Path (Join-Path $app "bin\$f"))) { throw "$f isn't beside murrtty.exe" }
+          }
+          # Through Scoop's shim on PATH, as a user types it.
+          $v = murrtty +version 2>&1 | Out-String
+          $v
+          if ($v -notmatch "murrtty $([regex]::Escape($want)),") { throw "murrtty +version didn't report $want" }
+          $themes = @(murrtty +list-themes --plain 2>&1 | Where-Object { $_ -like '*(resources)' }).Count
+          "themes from its share folder: $themes"
+          if ($themes -lt 100) { throw 'murrtty found no themes in its share folder' }
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'Scoop Apps\murrtty.lnk'
+          "Start menu shortcut: $(Test-Path $lnk)"
+          if (-not (Test-Path $lnk)) { throw 'no Start menu shortcut' }
+
+  winget:
+    name: winget
+    needs: guard
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: winget
+        shell: pwsh
+        run: |
+          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Install-PackageProvider -Name NuGet -Force | Out-Null
+            Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery | Out-Null
+            Repair-WinGetPackageManager -AllUsers -Latest
+          }
+          winget --version
+          # Installing from a manifest file, as the winget-pkgs pipeline does.
+          winget settings --enable LocalManifestFiles
+
+      - name: Install murrtty from the manifest and check it
+        shell: pwsh
+        run: |
+          winget validate --manifest dist\windows\winget
+          if ($LASTEXITCODE -ne 0) { throw 'winget validate failed' }
+          $want = ((Get-Content dist\windows\winget\MurrayKopit.murrtty.yaml) -match '^PackageVersion:' -replace 'PackageVersion:\s*', '').Trim()
+          winget install --manifest dist\windows\winget --accept-package-agreements --accept-source-agreements --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw "winget install failed ($LASTEXITCODE)" }
+          # winget puts murrtty's bin folder on the user's PATH (the
+          # manifest's ArchiveBinariesDependOnPath); this shell predates it.
+          $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+          $exe = (Get-Command murrtty -CommandType Application -ErrorAction Stop).Source
+          "murrtty on PATH: $exe"
+          $bin = Split-Path $exe
+          Get-ChildItem $bin | Format-Table Name, Length | Out-String
+          foreach ($f in 'conpty.dll', 'OpenConsole.exe') {
+            if (-not (Test-Path (Join-Path $bin $f))) { throw "$f isn't beside murrtty.exe" }
+          }
+          $v = murrtty +version 2>&1 | Out-String
+          $v
+          if ($v -notmatch "murrtty $([regex]::Escape($want)),") { throw "murrtty +version didn't report $want" }
+          $themes = @(murrtty +list-themes --plain 2>&1 | Where-Object { $_ -like '*(resources)' }).Count
+          "themes from its share folder: $themes"
+          if ($themes -lt 100) { throw 'murrtty found no themes in its share folder' }
+          winget uninstall --id MurrayKopit.murrtty --disable-interactivity
+          if ($LASTEXITCODE -ne 0) { throw "winget uninstall failed ($LASTEXITCODE)" }

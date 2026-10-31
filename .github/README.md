@@ -60,11 +60,11 @@ it. It last merged Ghostty 1.4.0 (the release tag `v1.4.0`, October 2026).
 murrtty numbers its own releases, apart from Ghostty's: semantic versions
 starting at 0.1.0, each release tagged `murrtty-vX.Y.Z`. While it is 0.x, a
 minor version brings new features or an upstream merge and a patch version
-brings fixes. `murrtty +version` names both versions, as in `murrtty 0.1.0,
+brings fixes. `murrtty +version` names both versions, as in `murrtty 0.2.0,
 based on Ghostty 1.4.0`; a build of any other commit is a development build
-of the next release, such as `0.2.0-main+1a2b3c4`. The first release,
-[0.1.0](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.1.0), is a
-preview.
+of the next release, such as `0.3.0-main+1a2b3c4`. The latest release,
+[0.2.0](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.2.0) (x64
+and ARM64), is a preview.
 
 ## Status
 
@@ -417,9 +417,9 @@ hosted Windows runner and then the unit tests.
   latest).
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
-- Signed releases. 0.1.0 is out as a
-  [preview](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.1.0):
-  a zip without a code signature, so Windows SmartScreen warns before
+- Signed releases. 0.2.0 is out as a
+  [preview](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.2.0):
+  zips without a code signature, so Windows SmartScreen warns before
   running it the first time; building from source is recommended.
   Code signing comes later: the SignPath Foundation's free signing for
   open-source projects asks for more public visibility first (it declined

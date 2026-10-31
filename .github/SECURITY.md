@@ -23,7 +23,7 @@ Reports matter most for the parts of murrtty that decide what runs or opens:
 
 ## Supported versions
 
-The latest release (0.1.0, a preview) and the latest commit of `main`.
+The latest release (0.2.0, a preview) and the latest commit of `main`.
 
 ## Ghostty
 

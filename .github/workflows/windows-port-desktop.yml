@@ -140,3 +140,15 @@ jobs:
           $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
           & $zig build test -Dtarget=x86_64-windows-gnu --summary failures
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The ARM64 build (roadmap 7.7) compiles here on every push, so code
+      # only x64 accepts can't wait for a release to show (0.2.0's first
+      # tag never shipped for a cast ARM64's alignment refused). Compile
+      # only: this machine can't run it.
+      - name: ARM64 build
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
+          & $zig build -Dtarget=aarch64-windows-gnu --prefix (Join-Path $env:RUNNER_TEMP 'arm64')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

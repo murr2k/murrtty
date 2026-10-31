@@ -3666,6 +3666,22 @@ free-inside-callback bug.
   and Defender found nothing in either zip. Its imports are Windows'
   own DLLs only (no MinGW or Visual C++ runtime), none newer than Windows
   10 1809. `version` then went to 0.2.0.
+  *0.2.0 released 2026-10-31* (the owner's pick of next steps): the
+  bundled ConPTY (2.6), and the first ARM64 package (7.7), built but not
+  run on ARM hardware (its notes say so). Tag `murrtty-v0.2.0` on
+  `211060edb`: the first tag, on `967f5cc33`, never left this machine,
+  as the ARM64 build stopped on a function-pointer cast x64 allowed
+  (`GetProcAddress` now returns a function pointer), so the desktop CI
+  now compiles the ARM64 build on every push. Both packages from the
+  clean tagged tree, Defender clean, each with its own architecture's
+  ConPTY; `version` then went to 0.3.0. The Scoop manifest
+  (`dist/windows/scoop/murrtty.json`, for a bucket repository) and the
+  winget manifests (`dist/windows/winget/`, `MurrayKopit.murrtty`,
+  `ArchiveBinariesDependOnPath` so murrtty's bin folder goes on PATH with
+  its ConPTY and `share\` beside it, rather than a link elsewhere) are
+  checked by `windows-port-packages.yml`, which installs each on a clean
+  hosted runner; the bucket repository and the winget-pkgs PR are the
+  owner's (a public repository and a public PR).
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored
