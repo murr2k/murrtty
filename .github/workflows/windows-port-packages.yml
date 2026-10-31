@@ -105,10 +105,6 @@ jobs:
       - name: winget
         shell: pwsh
         run: |
-          # The latest winget, which reads the manifests' schema (the
-          # runner image's may be older).
-          Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -Scope AllUsers | Out-Null
-          Repair-WinGetPackageManager -AllUsers -Latest
           winget --version
           # Installing from a manifest file, as the winget-pkgs pipeline does.
           winget settings --enable LocalManifestFiles
@@ -116,10 +112,22 @@ jobs:
       - name: Install murrtty from the manifest and check it
         shell: pwsh
         run: |
-          winget validate --manifest dist\windows\winget
+          # The manifests use the schema winget-pkgs asks for (1.12); a
+          # runner's winget older than that reads a copy marked 1.10, whose
+          # fields are the same (updating winget on the runner fails).
+          $manifest = Join-Path $env:RUNNER_TEMP 'winget'
+          Copy-Item dist\windows\winget $manifest -Recurse
+          $client = [version]((winget --version).Trim().TrimStart('v') -replace '-.*$', '')
+          if ($client -lt [version]'1.12') {
+            "winget $client: testing the manifests marked 1.10.0"
+            Get-ChildItem $manifest -Filter *.yaml | ForEach-Object {
+              (Get-Content $_.FullName -Raw).Replace('1.12.0', '1.10.0') | Set-Content $_.FullName -NoNewline
+            }
+          }
+          winget validate --manifest $manifest
           if ($LASTEXITCODE -ne 0) { throw 'winget validate failed' }
           $want = ((Get-Content dist\windows\winget\MurrayKopit.murrtty.yaml) -match '^PackageVersion:' -replace 'PackageVersion:\s*', '').Trim()
-          winget install --manifest dist\windows\winget --accept-package-agreements --accept-source-agreements --disable-interactivity
+          winget install --manifest $manifest --accept-package-agreements --accept-source-agreements --disable-interactivity
           if ($LASTEXITCODE -ne 0) { throw "winget install failed ($LASTEXITCODE)" }
           # winget puts murrtty's bin folder on the user's PATH (the
           # manifest's ArchiveBinariesDependOnPath); this shell predates it.
@@ -139,7 +147,7 @@ jobs:
           if ($themes -lt 100) { throw 'murrtty found no themes in its share folder' }
           # Installed from a file, it belongs to no source, so it is found by
           # its manifest rather than its id.
-          winget uninstall --manifest dist\windows\winget --accept-source-agreements --disable-interactivity
+          winget uninstall --manifest $manifest --accept-source-agreements --disable-interactivity
           if ($LASTEXITCODE -ne 0) { throw "winget uninstall failed ($LASTEXITCODE)" }
           $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
           if (Get-Command murrtty -CommandType Application -ErrorAction SilentlyContinue) { throw 'murrtty is still on PATH after the uninstall' }
