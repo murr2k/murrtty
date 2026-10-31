@@ -107,8 +107,7 @@ jobs:
         run: |
           # The latest winget, which reads the manifests' schema (the
           # runner image's may be older).
-          Install-PackageProvider -Name NuGet -Force | Out-Null
-          Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery | Out-Null
+          Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery -Scope AllUsers | Out-Null
           Repair-WinGetPackageManager -AllUsers -Latest
           winget --version
           # Installing from a manifest file, as the winget-pkgs pipeline does.
