@@ -138,5 +138,5 @@ jobs:
           $themes = @(murrtty +list-themes --plain 2>&1 | Where-Object { $_ -like '*(resources)' }).Count
           "themes from its share folder: $themes"
           if ($themes -lt 100) { throw 'murrtty found no themes in its share folder' }
-          winget uninstall --id MurrayKopit.murrtty --disable-interactivity
+          winget uninstall --id MurrayKopit.murrtty --accept-source-agreements --disable-interactivity
           if ($LASTEXITCODE -ne 0) { throw "winget uninstall failed ($LASTEXITCODE)" }
