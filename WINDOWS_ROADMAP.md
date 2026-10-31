@@ -3552,6 +3552,31 @@ free-inside-callback bug.
   owner*). The Store signs what it publishes, and a packaged murrtty has a
   package identity, which WinRT toasts (5.2b) and the AppUserModelID
   otherwise need registered by hand.
+  *Prototype, 2026-10-30* (the owner's go-ahead): the Desktop Bridge's
+  usual packaging (`packagedClassicApp`) redirects writes under AppData
+  to a private copy, which would hide `%LOCALAPPDATA%\murrtty`'s config
+  from the user and from Ghostty, and reportedly keeps child processes (the
+  shells) in the package; turning that off needs the restricted capability
+  `unvirtualizedResources`. `dist/windows/msix/AppxManifest.xml` declares
+  `uap10:RuntimeBehavior="win32App"` with `TrustLevel="mediumIL"` instead
+  (Windows 10 2004 or newer): package identity without I/O virtualization.
+  `make-msix.ps1` packs an unpacked release with it (the Windows SDK's
+  makeappx validates the manifest), and the hand-started
+  `windows-port-msix.yml` packs a published release on a hosted runner,
+  installs it unsigned (Microsoft's OID publisher, `Add-AppxPackage
+  -AllowUnsigned`) and runs the CLI through the package's `murrtty` alias.
+  Its first run (0.1.0): the package built and installed (status Ok), the
+  alias ran `+version`, and the packaged murrtty read a config in the real
+  `%LOCALAPPDATA%\murrtty` and wrote its Sentry database there, with no
+  private AppData made: no virtualization. Still open: a window and its
+  shells on a desktop with a GPU (the runner has none; the .msix is the
+  run's artifact); the Store's view of `win32App` and `runFullTrust` (its
+  certification decides); certification on machines without OpenGL 4.3
+  (a bundled software renderer would answer it); murrtty's explicit
+  AppUserModelID (`murrtty.murrtty`), which a packaged murrtty should drop
+  for the package's own; a `resources.pri` for crisp logos at each scale
+  (the logos are 200% images now); and the Store's name and publisher,
+  which come from reserving the name in Partner Center.
 - murrtty's own version numbers: it reported Ghostty's (1.4.0 with its
   branch and commit), and a release tag other than Ghostty's `vX.Y.Z`
   stopped the build (`src/build/Config.zig`). *Built 2026-10-30* (the
