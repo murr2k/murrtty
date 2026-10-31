@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  murrtty's MSIX manifest (WINDOWS_ROADMAP.md 7.4, MSIX); make-msix.ps1
+  fills the @...@ values. RuntimeBehavior win32App with TrustLevel mediumIL
+  gives murrtty package identity without the Desktop Bridge's file and
+  registry virtualization (Windows 10 2004 or newer), so its configuration
+  stays the file Ghostty reads and the shells it starts see the user's real
+  AppData.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 desktop rescap">
+
+  <Identity
+    Name="@NAME@"
+    Publisher="@PUBLISHER@"
+    Version="@VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>murrtty</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>A native Windows terminal, forked from Ghostty.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application
+      Id="murrtty"
+      Executable="bin\murrtty.exe"
+      uap10:RuntimeBehavior="win32App"
+      uap10:TrustLevel="mediumIL">
+      <uap:VisualElements
+        DisplayName="murrtty"
+        Description="A native Windows terminal, forked from Ghostty."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- `murrtty` on PATH, as the zip's users add bin\ themselves. -->
+        <uap3:Extension Category="windows.appExecutionAlias">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="murrtty.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

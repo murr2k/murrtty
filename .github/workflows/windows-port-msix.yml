@@ -1,0 +1,134 @@
+# murrtty as an MSIX package, a prototype (WINDOWS_ROADMAP.md 7.4, MSIX).
+# Started by hand: Actions minutes on a private repository are billed,
+# Windows minutes double.
+#
+# Packs a published release zip (no build) with
+# dist/windows/msix/make-msix.ps1 on a hosted runner, which has the Windows
+# SDK's makeappx; installs the package unsigned (Add-AppxPackage
+# -AllowUnsigned; the runner is an administrator); and runs murrtty's
+# command-line actions through the package's alias. The runner has no GPU,
+# so no window opens: the checks are package identity, the alias, and
+# whether murrtty reads and writes the user's real AppData (no file system
+# virtualization, RuntimeBehavior win32App). The .msix and the checks are
+# kept as an artifact, for a desktop test.
+name: Windows port MSIX
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: murrtty release tag to package
+        required: true
+        default: murrtty-v0.1.0
+
+permissions: {}
+
+jobs:
+  guard:
+    name: No other workflow is active
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check workflow states
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          registered=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | "\(.path) \(.state)"')
+          bad=0
+          while read -r path state; do
+            case "$path" in
+              .github/workflows/windows-port*.yml) continue ;;
+              .github/workflows/*) ;;
+              *) continue ;;
+            esac
+            if [ "$state" = active ]; then
+              echo "::error::$path is active. Disable it: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
+              bad=1
+            fi
+          done <<< "$registered"
+          exit $bad
+
+  msix:
+    name: Pack, install and check the MSIX
+    needs: guard
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RELEASE: ${{ inputs.release }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the release zip
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE -replace '^murrtty-v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Not a murrtty release tag: $env:RELEASE" }
+          $url = "https://github.com/murr2k/murrtty/releases/download/$env:RELEASE/murrtty-$version-windows-x86_64.zip"
+          Invoke-WebRequest -Uri $url -OutFile release.zip
+          Expand-Archive -Path release.zip -DestinationPath release
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Pack
+        shell: pwsh
+        run: |
+          $source = Join-Path release "murrtty-$env:VERSION-windows-x86_64"
+          $msix = & ./dist/windows/msix/make-msix.ps1 -Source $source -Version $env:VERSION -OutDir out -Unsigned |
+            Select-Object -Last 1
+          "MSIX=$msix" >> $env:GITHUB_ENV
+
+      - name: Install unsigned
+        shell: pwsh
+        run: |
+          Add-AppxPackage -Path $env:MSIX -AllowUnsigned
+          Get-AppxPackage -Name murrtty.preview |
+            Format-List Name, PackageFamilyName, Version, InstallLocation, Status, SignatureKind
+
+      - name: Command-line checks through the package
+        shell: pwsh
+        run: |
+          $lines = [System.Collections.Generic.List[string]]::new()
+          function Note([string]$s) { $lines.Add($s); Write-Output $s }
+          $package = Get-AppxPackage -Name murrtty.preview
+          $alias = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\murrtty.exe'
+          Note "package: $($package.PackageFullName)"
+          Note "alias present: $(Test-Path $alias)"
+          if (-not (Test-Path $alias)) { $alias = Join-Path $package.InstallLocation 'bin\murrtty.exe'; Note "using $alias" }
+
+          # A configuration only in the real AppData: does the packaged
+          # murrtty read it?
+          $real = Join-Path $env:LOCALAPPDATA 'murrtty'
+          New-Item -ItemType Directory -Force -Path $real | Out-Null
+          Set-Content -Path (Join-Path $real 'config.ghostty') -Value 'font-size = 17' -Encoding ascii
+
+          $version = & $alias +version 2>&1 | Out-String
+          Note "+version exit $LASTEXITCODE"
+          Note $version.Trim()
+          $config = & $alias +show-config 2>&1 | Out-String
+          Note "+show-config exit $LASTEXITCODE, reads the real AppData config: $($config -match 'font-size = 17')"
+
+          # Where murrtty writes: Sentry's database (made by each CLI action)
+          # in the real AppData, or the package's private copy of it.
+          $private = Join-Path $env:LOCALAPPDATA "Packages\$($package.PackageFamilyName)\LocalCache\Local"
+          Note "sentry database in the real AppData: $(Test-Path (Join-Path $real 'sentry'))"
+          Note "package's private AppData exists: $(Test-Path $private)"
+          if (Test-Path $private) { Get-ChildItem -Recurse -Path $private | ForEach-Object { Note "  private: $($_.FullName)" } }
+
+          $lines | Set-Content -Path out/checks.txt -Encoding utf8
+
+      - name: Keep the package and the checks
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: murrtty-msix-${{ env.VERSION }}
+          path: out/
+          if-no-files-found: warn
