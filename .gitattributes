@@ -32,12 +32,18 @@ Makefile text eol=lf
 *.rc -text
 *.manifest -text
 
+# murrtty: license texts kept byte for byte as fetched (CRLF), whose
+# SHA-256s dist/windows/licenses/README.md records.
+dist/windows/licenses/microsoft-terminal* -text
+
 # Windows scripts - always CRLF (cmd.exe misparses some LF-only batch files)
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 
 # Binary files
 *.png binary
+*.dll binary
+*.exe binary
 *.ico binary
 *.icns binary
 *.ttf binary

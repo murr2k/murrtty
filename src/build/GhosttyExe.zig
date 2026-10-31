@@ -59,6 +59,21 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
                     b.fmt("/dMURRTTY_VERSION_STRING=\"{s}\"", .{rcString(b, b.fmt("{f}", .{v}))}),
                 },
             });
+
+            // Microsoft's ConPTY beside the executable, which the pty
+            // loads from there (src/os/conpty.zig; roadmap 2.6), for the
+            // architectures it is vendored for; others use Windows' own.
+            const conpty_arch: ?[]const u8 = switch (cfg.target.result.cpu.arch) {
+                .x86_64 => "x64",
+                .aarch64 => "arm64",
+                else => null,
+            };
+            if (conpty_arch) |arch| for ([_][]const u8{ "conpty.dll", "OpenConsole.exe" }) |name| {
+                install_step.step.dependOn(&b.addInstallBinFile(
+                    b.path(b.fmt("dist/windows/conpty/{s}/{s}", .{ arch, name })),
+                    name,
+                ).step);
+            };
         },
 
         else => {},

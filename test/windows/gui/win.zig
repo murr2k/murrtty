@@ -311,6 +311,23 @@ pub extern "kernel32" fn SetHandleInformation(HANDLE, DWORD, DWORD) callconv(.wi
 pub const HANDLE_FLAG_INHERIT = 0x00000001;
 pub extern "kernel32" fn TerminateProcess(HANDLE, UINT) callconv(.winapi) BOOL;
 pub extern "kernel32" fn CloseHandle(HANDLE) callconv(.winapi) BOOL;
+// A process's children, by name (the ConPTY hosts, roadmap 2.6).
+pub const TH32CS_SNAPPROCESS = 0x00000002;
+pub const PROCESSENTRY32W = extern struct {
+    dwSize: DWORD = @sizeOf(PROCESSENTRY32W),
+    cntUsage: DWORD = 0,
+    th32ProcessID: DWORD = 0,
+    th32DefaultHeapID: usize = 0,
+    th32ModuleID: DWORD = 0,
+    cntThreads: DWORD = 0,
+    th32ParentProcessID: DWORD = 0,
+    pcPriClassBase: i32 = 0,
+    dwFlags: DWORD = 0,
+    szExeFile: [260]u16 = @splat(0),
+};
+pub extern "kernel32" fn CreateToolhelp32Snapshot(DWORD, DWORD) callconv(.winapi) HANDLE;
+pub extern "kernel32" fn Process32FirstW(HANDLE, *PROCESSENTRY32W) callconv(.winapi) BOOL;
+pub extern "kernel32" fn Process32NextW(HANDLE, *PROCESSENTRY32W) callconv(.winapi) BOOL;
 // The single instance's pipe (roadmap 5.1).
 pub const PROCESS_TERMINATE = 0x0001;
 pub const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -337,6 +354,7 @@ pub extern "kernel32" fn GetTempPathW(DWORD, [*]u16) callconv(.winapi) DWORD;
 pub extern "kernel32" fn CreateDirectoryW(LPCWSTR, ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn RemoveDirectoryW(LPCWSTR) callconv(.winapi) BOOL;
 pub extern "kernel32" fn DeleteFileW(LPCWSTR) callconv(.winapi) BOOL;
+pub extern "kernel32" fn MoveFileW(LPCWSTR, LPCWSTR) callconv(.winapi) BOOL;
 
 pub const HKEY = *opaque {};
 pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);

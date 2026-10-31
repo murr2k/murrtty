@@ -57,6 +57,7 @@ pub const all = [_]Scenario{
     .{ .name = "gl-reset", .about = "after a GPU driver reset (faked), the renderer builds itself in a new OpenGL context and draws the same frame", .run = glReset },
     .{ .name = "gl-missing", .about = "without OpenGL 4.3, murrtty says why at start: Remote Desktop, the basic display adapter, no driver, an old one", .run = glMissing },
     .{ .name = "gl-library", .about = "MURRTTY_OPENGL names the opengl32.dll to use; one that can't load is said so", .run = glLibrary },
+    .{ .name = "conpty", .about = "panes run in the bundled ConPTY (conpty.dll, OpenConsole.exe), which lets kitty graphics through; MURRTTY_CONPTY=system picks Windows' own", .run = conptyBundled },
     .{ .name = "ime-place", .about = "an IME asking where text is (WM_IME_REQUEST) is told the cursor's cell, and follows typing", .run = imePlace },
     .{ .name = "intl-keys", .about = "AltGr and Ctrl+Alt characters, and Alt+Numpad codes, reach a console program as Windows types them", .run = intlKeys },
     .{ .name = "mouse-settings", .about = "Windows' double-click time; a wheel notch scrolls its lines to scroll at a time (a page), which mouse-scroll-multiplier scales; a touchpad's part of a notch its part", .run = mouseSettings },
@@ -3720,7 +3721,13 @@ fn scrollbar(h: *Harness) anyerror!void {
         defer g.deinit();
         const win = try h.mainWindow(&g);
         const surf = try h.surface(&g, win);
-        var sb = try scrollState(h, &g);
+        // The core sends the scrollbar's rows from its first frame drawn,
+        // which can come after the prompt (as with the bundled ConPTY).
+        var sb = try waitScroll(h, &g, struct {
+            fn f(s: ScrollState) bool {
+                return s.len > 0;
+            }
+        }.f, "its rows", 5000);
         try h.expect(sb.len > 0 and sb.total == sb.len and !sb.visible, "no scrollback, no scrollbar ({d} of {d} rows)", .{ sb.len, sb.total });
         const cols = try paneCols(h, &g);
 
@@ -4972,6 +4979,113 @@ fn glMissing(h: *Harness) anyerror!void {
         const code = g.waitExit(10000);
         try h.expect(code != null and code.? != 0, "{s}: murrtty then exits with an error (exit {?d})", .{ case.name, code });
     }
+}
+
+/// Microsoft's ConPTY beside murrtty.exe (roadmap 2.6): the build installs
+/// conpty.dll and OpenConsole.exe in zig-out\bin, panes get it (murrtty's
+/// child host process is OpenConsole.exe, not Windows' conhost.exe), and a
+/// kitty graphics image (an APC sequence, which Windows' own ConPTY drops)
+/// reaches the terminal through it. MURRTTY_CONPTY=system picks Windows'
+/// own (conhost.exe); whether that one passes the image is Windows'
+/// business, so it is only logged.
+fn conptyBundled(h: *Harness) anyerror!void {
+    // A 1x1 red image (RGBA, base64), sent as kitty graphics' APC with
+    // ST; the marker after it is split so the typed line can't match it.
+    const send = "powershell -NoProfile -Command \"[Console]::Write([char]27 + '_Ga=T,f=32,s=1,v=1;/wAA/w==' + [char]27 + '\\'); 'kitty-' + 'sent'\"";
+    const cases = [_]struct { name: []const u8, value: ?[]const u8, want: []const u8, host: []const u8, not_host: []const u8 }{
+        .{ .name = "conpty-bundled", .value = null, .want = "bundled", .host = "OpenConsole.exe", .not_host = "conhost.exe" },
+        .{ .name = "conpty-system", .value = "system", .want = "system", .host = "conhost.exe", .not_host = "OpenConsole.exe" },
+    };
+    for (cases) |case| {
+        var g = if (case.value) |v|
+            try h.launchWith(case.name, base_config, .{ .env = &.{.{ "MURRTTY_CONPTY", v }} })
+        else
+            try h.launch(case.name, base_config);
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(std.mem.eql(u8, d.value.conpty, case.want), "{s}: panes use the {s} ConPTY (got '{s}')", .{ case.name, case.want, d.value.conpty });
+        }
+        // The pane's console host is murrtty's child.
+        const hosts = g.children(case.host);
+        const others = g.children(case.not_host);
+        try h.expect(hosts == 1 and others == 0, "{s}: the pane's console host is {s} ({d}; {d} {s})", .{ case.name, case.host, hosts, others, case.not_host });
+        const pane = try h.surface(&g, try h.mainWindow(&g));
+        try h.typeText(pane, send);
+        h.enter(pane);
+        try h.waitText(&g, "kitty-sent", 1, 20000);
+        var images: u32 = 0;
+        for (0..25) |_| {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{});
+            images = panes[0].images;
+            if (images > 0) break;
+            w.Sleep(200);
+        }
+        if (case.value == null) {
+            try h.expect(images == 1, "{s}: the kitty graphics image reached the terminal ({d} image(s))", .{ case.name, images });
+            // An image moves the cursor here (down past a tall one) without
+            // ConPTY having drawn anything; if ConPTY's own cursor didn't
+            // follow, its later moves (PSReadLine's) would land rows off.
+            // PowerShell reports ConPTY's row before and after a 64 px tall
+            // image (several rows), and each report lands on a row here: the
+            // two must move alike.
+            const tall = "powershell -NoProfile -Command \"'Y0=' + $Host.UI.RawUI.CursorPosition.Y; $b=[Convert]::ToBase64String([byte[]](@(255)*256)); [Console]::Write([char]27+'_Ga=T,f=32,s=1,v=64;'+$b+[char]27+'\\'); 'Y1=' + $Host.UI.RawUI.CursorPosition.Y\"";
+            try h.typeText(pane, tall);
+            h.enter(pane);
+            // The typed line holds "Y1=" too: wait for the report.
+            try h.waitText(&g, "Y1=", 2, 20000);
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const text = d.value.windows[0].tabs[0].text orelse "";
+            var reported: [2]?i64 = .{ null, null };
+            var landed: [2]usize = .{ 0, 0 };
+            var it = std.mem.splitScalar(u8, text, '\n');
+            var row: usize = 0;
+            while (it.next()) |line| : (row += 1) {
+                if (std.mem.indexOf(u8, line, "Host") != null) continue; // the typed line
+                for ([_][]const u8{ "Y0=", "Y1=" }, 0..) |key, i| {
+                    const at = std.mem.indexOf(u8, line, key) orelse continue;
+                    const digits = std.mem.trimEnd(u8, line[at + key.len ..], " \r");
+                    reported[i] = std.fmt.parseInt(i64, digits, 10) catch null;
+                    landed[i] = row;
+                }
+            }
+            const r0 = reported[0] orelse return h.fail("{s}: no Y0 report on screen", .{case.name});
+            const r1 = reported[1] orelse return h.fail("{s}: no Y1 report on screen", .{case.name});
+            const conpty_moved = r1 - r0;
+            const here_moved = @as(i64, @intCast(landed[1])) - @as(i64, @intCast(landed[0]));
+            try h.expect(conpty_moved == here_moved and here_moved > 2, "{s}: across a tall image ConPTY's cursor moves as the terminal's ({d} rows, {d} here)", .{ case.name, conpty_moved, here_moved });
+        } else {
+            h.log("{s}: Windows' own ConPTY {s} the kitty graphics image", .{ case.name, if (images > 0) "passed" else "dropped" });
+        }
+        try quit(h, &g, pane);
+    }
+
+    // OpenConsole.exe gone from beside conpty.dll (an install moving it
+    // aside, a partial copy): conpty.dll would start Windows' conhost.exe
+    // with switches an older one rejects, so murrtty uses Windows' own.
+    const dir_end = (std.mem.lastIndexOfScalar(u16, h.exe, '\\') orelse return h.fail("murrtty.exe's path has no folder", .{})) + 1;
+    const host = try std.mem.concatWithSentinel(h.alloc, u16, &.{ h.exe[0..dir_end], std.unicode.utf8ToUtf16LeStringLiteral("OpenConsole.exe") }, 0);
+    defer h.alloc.free(host);
+    const aside = try std.mem.concatWithSentinel(h.alloc, u16, &.{ h.exe[0..dir_end], std.unicode.utf8ToUtf16LeStringLiteral("OpenConsole.test-aside.exe") }, 0);
+    defer h.alloc.free(aside);
+    if (w.MoveFileW(host.ptr, aside.ptr) == 0) return h.skip("couldn't move OpenConsole.exe aside (in use?)", .{});
+    defer _ = w.MoveFileW(aside.ptr, host.ptr);
+    var g = try h.launch("conpty-no-host", base_config);
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(std.mem.eql(u8, d.value.conpty, "system"), "without OpenConsole.exe, panes use Windows' own ConPTY (got '{s}')", .{d.value.conpty});
+    }
+    const hosts = g.children("conhost.exe");
+    try h.expect(hosts == 1 and g.children("OpenConsole.exe") == 0, "without OpenConsole.exe, the pane's console host is conhost.exe ({d})", .{hosts});
+    try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
 }
 
 /// MURRTTY_OPENGL names the opengl32.dll to load by full path, for a

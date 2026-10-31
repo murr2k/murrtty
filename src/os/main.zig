@@ -19,6 +19,7 @@ const kernel_info = @import("kernel_info.zig");
 
 // Namespaces
 pub const cgroup = @import("cgroup.zig");
+pub const conpty = @import("conpty.zig");
 pub const cwd_report = @import("cwd_report.zig");
 pub const process_cwd = @import("process_cwd.zig");
 pub const default_shell = @import("default_shell.zig");
@@ -78,6 +79,8 @@ test {
 
     if (comptime builtin.target.os.tag == .linux) {
         _ = kernel_info;
+    } else if (comptime builtin.target.os.tag == .windows) {
+        _ = conpty;
     } else if (comptime builtin.target.os.tag.isDarwin()) {
         _ = mach;
         _ = macos;

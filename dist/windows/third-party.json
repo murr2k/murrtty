@@ -352,6 +352,23 @@
       "home": "https://github.com/rcaloras/bash-preexec",
       "pinFiles": ["src/shell-integration/bash/bash-preexec.sh"],
       "texts": [{ "from": "repo", "path": "dist/windows/licenses/bash-preexec.txt" }]
+    },
+    {
+      "name": "ConPTY (Microsoft.Windows.Console.ConPTY)",
+      "version": "1.25.260930003 (Windows Terminal 1.25.2733.0)",
+      "use": "bin\\conpty.dll and bin\\OpenConsole.exe, the pseudo console the shells run in (Microsoft's signed builds, unmodified)",
+      "license": "MIT",
+      "home": "https://github.com/microsoft/terminal",
+      "pinFiles": [
+        "dist/windows/conpty/x64/conpty.dll",
+        "dist/windows/conpty/x64/OpenConsole.exe",
+        "dist/windows/conpty/arm64/conpty.dll",
+        "dist/windows/conpty/arm64/OpenConsole.exe"
+      ],
+      "texts": [
+        { "from": "repo", "path": "dist/windows/licenses/microsoft-terminal.txt" },
+        { "from": "repo", "path": "dist/windows/licenses/microsoft-terminal-NOTICE.md", "title": "Windows Terminal's notices (the third-party code in its builds)" }
+      ]
     }
   ],
   "pins": {
@@ -386,7 +403,11 @@
     "src/font/res/NotoColorEmoji.ttf": "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b",
     "src/font/res/NotoEmoji-Regular.ttf": "cd07743a4c93d8da929afdd28c1d368f11da478a1093146a13610081c2a58440",
     "src/apprt/win32/res/AdwaitaSans-Regular.ttf": "8381c33b9a44f066f2b99dba3d416a2342891e28c956a35dfd8d16ee2987e6d4",
-    "src/shell-integration/bash/bash-preexec.sh": "539ce1317850120403b85b3835c0bf92ee9b36b886101066c0ef643ac910db48"
+    "src/shell-integration/bash/bash-preexec.sh": "539ce1317850120403b85b3835c0bf92ee9b36b886101066c0ef643ac910db48",
+    "dist/windows/conpty/x64/conpty.dll": "feeef341d891643c62d30b6b07800bc70f0bc148f44cb8c3bee84aa557ae805a",
+    "dist/windows/conpty/x64/OpenConsole.exe": "3d66b23d0a71bb8eed2b77edc8b9df9bf54ce6c8fb74c863a30e760997f80586",
+    "dist/windows/conpty/arm64/conpty.dll": "151a02355227710c20c9f8f1eaf68ac4668aa09cdc921adc7ec661804d8eb1bf",
+    "dist/windows/conpty/arm64/OpenConsole.exe": "4313825a3ba634d113cc6ed3bc8ce735e3c19d360cecd985794787479469f91f"
   },
   "excluded": {
     ":zig_objc": "macOS only",

@@ -200,6 +200,27 @@ pub const Ghostty = struct {
         _ = w.WaitForSingleObject(self.proc, ms);
         return self.exitCode();
     }
+
+    /// How many of its child processes run `exe` (a file name, any case),
+    /// such as each pane's console host (roadmap 2.6).
+    pub fn children(self: *const Ghostty, exe: []const u8) usize {
+        const snap = w.CreateToolhelp32Snapshot(w.TH32CS_SNAPPROCESS, 0);
+        if (snap == w.INVALID_HANDLE_VALUE) return 0;
+        defer _ = w.CloseHandle(snap);
+        var entry: w.PROCESSENTRY32W = .{};
+        var n: usize = 0;
+        var more = w.Process32FirstW(snap, &entry) != 0;
+        while (more) : (more = w.Process32NextW(snap, &entry) != 0) {
+            if (entry.th32ParentProcessID != self.pid) continue;
+            const name = std.mem.sliceTo(&entry.szExeFile, 0);
+            if (name.len != exe.len) continue;
+            const same = for (name, exe) |a, b| {
+                if (a > 0x7f or std.ascii.toLower(@intCast(a)) != std.ascii.toLower(b)) break false;
+            } else true;
+            if (same) n += 1;
+        }
+        return n;
+    }
 };
 
 /// Where a launched Ghostty's windows go.
@@ -1588,6 +1609,8 @@ pub const Dump = struct {
     drop_effect: i32 = -1,
     /// Sentry has started (roadmap 7.5).
     sentry_ready: bool = false,
+    /// The ConPTY new panes get: "bundled" or "system" (roadmap 2.6).
+    conpty: []const u8 = "",
     /// show_on_screen_keyboard's requests and the last one's result
     /// (roadmap 6.5), and click-repeat-interval as murrtty has it.
     osk: struct { asks: u32 = 0, hr: i32 = 0, done: bool = false } = .{},
@@ -1929,6 +1952,8 @@ pub const Dump = struct {
         cursor: ?[2]u32 = null,
         semantic: ?[]const u8 = null,
         at_prompt: ?bool = null,
+        /// Kitty graphics images the active screen holds (roadmap 2.6).
+        images: u32 = 0,
         /// Commands the shell reported finished (OSC 133;D after 133;C),
         /// and the last exit code (-1 for none).
         commands: u32 = 0,

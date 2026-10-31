@@ -800,6 +800,8 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     });
     try out.print(alloc, ",\"drop_effect\":{d}", .{app.test_state.drop_effect});
     try out.print(alloc, ",\"sentry_ready\":{}", .{@import("../../crash/main.zig").sentry.ready()});
+    // Which ConPTY new panes get: the bundled one or Windows' own (2.6).
+    try out.print(alloc, ",\"conpty\":\"{t}\"", .{@import("../../os/main.zig").conpty.get().source});
     try out.print(alloc, ",\"osk\":{{\"asks\":{d},\"hr\":{d},\"done\":{}}},\"click_interval\":{d}", .{
         app.test_state.osk_asks,
         app.test_state.osk_hr,
@@ -1026,7 +1028,7 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                 grid.columns,
                 grid.rows,
             });
-            const text, const pwd, const marks, const cursor = text: {
+            const text, const pwd, const marks, const cursor, const images = text: {
                 s.core_surface.renderer_state.mutex.lockUncancelable(global.io());
                 defer s.core_surface.renderer_state.mutex.unlock(global.io());
                 const terminal = &s.core_surface.io.terminal;
@@ -1040,7 +1042,7 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
                     cur.y,
                     @tagName(cur.semantic_content),
                     terminal.cursorIsAtPrompt(),
-                } };
+                }, terminal.screens.active.kitty_images.images.count() };
             };
             defer alloc.free(text);
             defer alloc.free(pwd);
@@ -1059,6 +1061,9 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             try out.print(alloc, ",\"cursor\":[{d},{d}],\"semantic\":\"{s}\",\"at_prompt\":{}", .{
                 cursor[0], cursor[1], cursor[2], cursor[3],
             });
+            // Kitty graphics images the active screen holds (roadmap 2.6:
+            // their APC sequences reach it through the bundled ConPTY).
+            try out.print(alloc, ",\"images\":{d}", .{images});
             // Commands the shell reported finished, and the last exit code
             // (-1 for none, or none given).
             try out.print(alloc, ",\"commands\":{d},\"last_exit\":{d}", .{

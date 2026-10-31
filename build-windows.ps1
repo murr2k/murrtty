@@ -57,8 +57,9 @@
 
 .PARAMETER Package
     Build a release package: ReleaseFast (or the -Optimize given) with
-    symbols kept, then murrtty-<version>-windows-<arch>.zip (bin\murrtty.exe,
-    share\, LICENSE.txt and THIRD-PARTY-NOTICES.txt, written from
+    symbols kept, then murrtty-<version>-windows-<arch>.zip (bin\murrtty.exe
+    with Microsoft's conpty.dll and OpenConsole.exe beside it, share\,
+    LICENSE.txt and THIRD-PARTY-NOTICES.txt, written from
     dist\windows\third-party.json) and a -symbols.zip with murrtty.pdb. The
     package is unpacked and checked (its version, its themes) before the
     zips get their names. -Prefix is then where the zips go (default
@@ -609,6 +610,13 @@ function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
     $dir = Join-Path $Work "tree\$name"
     New-Item -ItemType Directory -Path (Join-Path $dir 'bin') -Force | Out-Null
     Copy-Item -LiteralPath $exe -Destination (Join-Path $dir 'bin')
+    # Microsoft's ConPTY, which murrtty loads from beside itself (roadmap
+    # 2.6); the build installs it from dist\windows\conpty.
+    foreach ($f in @('conpty.dll', 'OpenConsole.exe')) {
+        $p = Join-Path $Stage "bin\$f"
+        if (-not (Test-Path -LiteralPath $p)) { Fail "The build left no $f beside murrtty.exe (dist\windows\conpty)." }
+        Copy-Item -LiteralPath $p -Destination (Join-Path $dir 'bin')
+    }
     # share\ as installed, but for libghostty-vt's pkg-config files: the
     # package has murrtty, not the library.
     Copy-Item -LiteralPath (Join-Path $Stage 'share') -Destination (Join-Path $dir 'share') -Recurse

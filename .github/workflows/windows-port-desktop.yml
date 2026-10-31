@@ -85,7 +85,12 @@ jobs:
       # lets a running exe be renamed (not overwritten), so an open murrtty
       # keeps running and the next launch gets the new build. Copy
       # murrtty.prev.exe back over murrtty.exe to roll back. Older prev
-      # copies go once nothing has them open.
+      # copies go once nothing has them open. Microsoft's ConPTY beside it
+      # (roadmap 2.6) is held the same way while murrtty runs (conpty.dll
+      # loaded, an OpenConsole.exe per pane), so it moves aside too, as
+      # conpty.prev.dll and OpenConsole.prev.exe (copy those back too to
+      # roll back a ConPTY update; a held older one makes the new name
+      # .prev-<stamp>). Any move failing, or the build, puts back what moved.
       - name: Install the release build
         if: success() && github.ref == 'refs/heads/windows-port'
         shell: pwsh
@@ -94,19 +99,38 @@ jobs:
           if (-not $prefix) { "GHOSTTY_INSTALL_PREFIX isn't set on this runner; skipped"; exit 0 }
           $bin = Join-Path $prefix 'bin'
           $exe = Join-Path $bin 'murrtty.exe'
-          Get-ChildItem $bin -Filter 'murrtty.prev*.exe' -ErrorAction SilentlyContinue |
-            ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
-          $prev = $null
-          if (Test-Path $exe) {
-            $prev = Join-Path $bin 'murrtty.prev.exe'
-            if (Test-Path $prev) { $prev = Join-Path $bin ('murrtty.prev-{0:yyyyMMdd-HHmmss}.exe' -f (Get-Date)) }
-            $running = @(Get-Process murrtty -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }).Count -gt 0
-            Move-Item $exe $prev
-            if ($running) { "::notice::murrtty was running; it keeps running, and its next launch gets this build" }
+          foreach ($old in @('murrtty.prev*.exe', 'conpty.prev*.dll', 'OpenConsole.prev*.exe')) {
+            Get-ChildItem $bin -Filter $old -ErrorAction SilentlyContinue |
+              ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
           }
+          $stamp = '{0:yyyyMMdd-HHmmss}' -f (Get-Date)
+          $moved = [System.Collections.Generic.List[object]]::new()
+          function Restore {
+            for ($i = $moved.Count - 1; $i -ge 0; $i--) {
+              $m = $moved[$i]
+              if (-not (Test-Path $m.From)) { Move-Item $m.To $m.From -ErrorAction Continue }
+            }
+          }
+          $running = @(Get-Process murrtty -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }).Count -gt 0
+          try {
+            foreach ($f in @('conpty.dll', 'OpenConsole.exe', 'murrtty.exe')) {
+              $have = Join-Path $bin $f
+              if (-not (Test-Path $have)) { continue }
+              $base = [IO.Path]::GetFileNameWithoutExtension($f)
+              $ext = [IO.Path]::GetExtension($f)
+              $to = Join-Path $bin "$base.prev$ext"
+              if (Test-Path $to) { $to = Join-Path $bin "$base.prev-$stamp$ext" }
+              Move-Item $have $to
+              $moved.Add([pscustomobject]@{ From = $have; To = $to })
+            }
+          } catch {
+            Restore
+            throw
+          }
+          if ($running) { "::notice::murrtty was running; it keeps running, and its next launch gets this build" }
           & .\build-windows.cmd -Prefix $prefix
           $code = $LASTEXITCODE
-          if ($code -ne 0 -and $prev -and -not (Test-Path $exe)) { Move-Item $prev $exe }
+          if ($code -ne 0) { Restore }
           exit $code
 
       - name: Unit tests

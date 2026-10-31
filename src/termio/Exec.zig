@@ -615,6 +615,10 @@ pub const Config = struct {
     resources_dir: ?[]const u8,
     term: []const u8,
 
+    /// How text is measured: on Windows the bundled ConPTY measures it
+    /// the same way (murrtty, roadmap 2.6).
+    grapheme_width_method: configpkg.Config.GraphemeWidthMethod = .unicode,
+
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
 };
@@ -636,6 +640,10 @@ const Subprocess = struct {
     /// process's directory. Read from the app thread, so it is its own
     /// handle (not the process's, which stop closes) and atomic.
     cwd_process: std.atomic.Value(usize) = .init(0),
+
+    /// Windows: how the pty's ConPTY measures text (Config's
+    /// grapheme_width_method).
+    grapheme_width_method: configpkg.Config.GraphemeWidthMethod = .unicode,
 
     rt_pre_exec_info: Command.RtPreExecInfo,
     rt_post_fork_info: Command.RtPostForkInfo,
@@ -923,6 +931,7 @@ const Subprocess = struct {
             .env = env,
             .cwd = cwd,
             .args = args,
+            .grapheme_width_method = cfg.grapheme_width_method,
 
             .rt_pre_exec_info = cfg.rt_pre_exec_info,
             .rt_post_fork_info = cfg.rt_post_fork_info,
@@ -961,12 +970,19 @@ const Subprocess = struct {
         var in_child: bool = false;
 
         // Create our pty
-        var pty = try Pty.open(.{
+        const ws: ptypkg.winsize = .{
             .ws_row = @intCast(self.grid_size.rows),
             .ws_col = @intCast(self.grid_size.columns),
             .ws_xpixel = @intCast(self.screen_size.width),
             .ws_ypixel = @intCast(self.screen_size.height),
-        });
+        };
+        var pty = try if (comptime builtin.target.os.tag == .windows)
+            Pty.openWith(ws, switch (self.grapheme_width_method) {
+                .unicode => .graphemes,
+                .legacy => .wcswidth,
+            })
+        else
+            Pty.open(ws);
         self.pty = pty;
         errdefer if (!in_child) {
             if (comptime builtin.target.os.tag != .windows) {

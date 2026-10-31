@@ -88,7 +88,11 @@ hosted Windows runner and then the unit tests.
 **Tested and working**
 
 - Shells through ConPTY: PowerShell 7 (the default when installed), Windows
-  PowerShell 5.1 and `cmd.exe`, including PSReadLine's colors.
+  PowerShell 5.1 and `cmd.exe`, including PSReadLine's colors. murrtty ships
+  Microsoft's current ConPTY (`conpty.dll` and `OpenConsole.exe` beside
+  `murrtty.exe`, the build Windows Terminal ships), so every Windows version
+  gets the same one, and what Windows' own drops gets through: kitty
+  graphics images show. `MURRTTY_CONPTY=system` uses Windows' own instead.
 - Shell integration for PowerShell 7, Windows PowerShell 5.1 and `cmd`, on by
   default: murrtty knows where each prompt is (`jump_to_prompt` with
   `Ctrl+Shift+Up`/`Down`; closing at an idle prompt doesn't ask), follows the
@@ -527,7 +531,8 @@ comma or a space (`'-Dname=a,b'`). The exceptions:
 
 `.\build-windows.cmd -Package` builds a release package into
 `zig-out\package` (or `-Prefix`): `murrtty-<version>-windows-x86_64.zip`
-holds `bin\murrtty.exe`, `share\`, `LICENSE.txt` and
+holds `bin\murrtty.exe` with Microsoft's ConPTY beside it
+(`dist\windows\conpty`), `share\`, `LICENSE.txt` and
 `THIRD-PARTY-NOTICES.txt` (the licenses of everything murrtty includes,
 written from `dist\windows\third-party.json`), and `-symbols.zip` holds
 `murrtty.pdb`. It checks the package by unpacking it and asking the

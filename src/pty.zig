@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const windows = @import("os/main.zig").windows;
+const conpty = @import("os/main.zig").conpty;
 const posix = std.posix;
 const assert = @import("quirks.zig").inlineAssert;
 
@@ -336,12 +337,21 @@ const WindowsPty = struct {
     out_pipe_pty: windows.HANDLE,
     in_pipe_pty: windows.HANDLE,
     pseudo_console: windows.HPCON,
+    /// The ConPTY that made `pseudo_console`, which alone may resize and
+    /// close it (murrtty bundles Microsoft's, roadmap 2.6).
+    api: *const conpty.Api,
     size: winsize,
 
     pub const OpenError = error{Unexpected};
 
     /// Open a new PTY with the given initial size.
     pub fn open(size: winsize) OpenError!Pty {
+        return openWith(size, .graphemes);
+    }
+
+    /// Open a new PTY with the given initial size, its ConPTY measuring
+    /// text as `width` says (the bundled one; Windows' own has one way).
+    pub fn openWith(size: winsize, width: conpty.GlyphWidth) OpenError!Pty {
         var pty: Pty = undefined;
 
         var pipe_path_buf: [128]u8 = undefined;
@@ -441,13 +451,16 @@ const WindowsPty = struct {
         try SetHandleInformation.f(pty.out_pipe);
         try SetHandleInformation.f(pty.out_pipe_pty);
 
-        const result = windows.exp.kernel32.CreatePseudoConsole(
-            .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },
-            pty.in_pipe_pty,
-            pty.out_pipe_pty,
-            0,
-            &pty.pseudo_console,
-        );
+        const coord: windows.COORD = .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) };
+        pty.api = conpty.get();
+        var result = pty.api.create(coord, pty.in_pipe_pty, pty.out_pipe_pty, conpty.flags(pty.api, width), &pty.pseudo_console);
+        if (result != windows.S_OK and pty.api.source == .bundled) {
+            // Its failure takes nothing (the handles are duplicated only
+            // on success), so Windows' own can have them.
+            log.warn("the bundled ConPTY failed hr=0x{x}; using Windows' own", .{@as(u32, @bitCast(result))});
+            pty.api = &conpty.system;
+            result = pty.api.create(coord, pty.in_pipe_pty, pty.out_pipe_pty, 0, &pty.pseudo_console);
+        }
         if (result != windows.S_OK) return error.Unexpected;
 
         pty.size = size;
@@ -459,7 +472,7 @@ const WindowsPty = struct {
         _ = windows.exp.kernel32.CloseHandle(self.in_pipe);
         _ = windows.exp.kernel32.CloseHandle(self.out_pipe_pty);
         _ = windows.exp.kernel32.CloseHandle(self.out_pipe);
-        _ = windows.exp.kernel32.ClosePseudoConsole(self.pseudo_console);
+        self.api.close(self.pseudo_console);
         self.* = undefined;
     }
 
@@ -474,7 +487,7 @@ const WindowsPty = struct {
 
     /// Set the size of the pty.
     pub fn setSize(self: *Pty, size: winsize) SetSizeError!void {
-        const result = windows.exp.kernel32.ResizePseudoConsole(
+        const result = self.api.resize(
             self.pseudo_console,
             .{ .X = @intCast(size.ws_col), .Y = @intCast(size.ws_row) },
         );
