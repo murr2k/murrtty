@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Windows terminals built from Ghostty: murrtty</title>
+  <meta name="description" content="The Windows terminals built from Ghostty, as of October 2026: what each is built on, what it does and how it ships, and which one suits what.">
+  <link rel="icon" type="image/png" href="/icon.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <p><a href="/">murrtty</a></p>
+  <h1>Windows terminals built from Ghostty</h1>
+
+  <div class="card">
+    <p>
+      Ghostty has no Windows app, and its maintainers point those who want
+      one to Ghostty's VT library or to forking the project. Several people
+      have done one or the other. This page lists the
+      projects we know of as of 31 October 2026: what each is built on, what
+      it does and how it ships. It is written by murrtty's author, so weigh it
+      with that in mind. Each project here is someone's work, given away; if
+      anything below is wrong or out of date, please
+      <a href="https://github.com/murr2k/murrtty/issues/new?title=compare%3A%20">say so</a>
+      and it will be fixed.
+    </p>
+  </div>
+
+  <h2 id="which">Which one suits what</h2>
+  <ul class="features">
+    <li><strong>Ghostty's own app and config file on Windows, current with Ghostty's releases:</strong> <a href="/">murrtty</a>.</li>
+    <li><strong>A polished WinUI interface, signed builds and updates, if you sponsor:</strong> <a href="https://wintty.io">Wintty</a>.</li>
+    <li><strong>Installing from winget, Scoop or Chocolatey today, shell profiles, ARM64:</strong> <a href="https://github.com/amanthanvi/noctty">noctty</a>.</li>
+    <li><strong>A WinUI 3 window over Ghostty's config:</strong> <a href="https://github.com/i999rri/GhosttyWin32">GhosttyWin32</a>.</li>
+    <li><strong>Direct3D rendering in a Win32 port that follows Ghostty closely:</strong> <a href="https://github.com/fukuyori/ghostty">Gooztty</a>.</li>
+    <li><strong>Supervising several AI coding agents side by side:</strong> <a href="https://github.com/Lugia123/polter">Polter</a>.</li>
+    <li><strong>WSL only, with a real Linux terminal behind it:</strong> <a href="https://github.com/Codavo/ghostinthewsl">ghostinthewsl</a>.</li>
+    <li><strong>Lua scripting and workspaces, WezTerm style:</strong> <a href="https://github.com/sudo-tee/hollow">hollow</a>.</li>
+    <li><strong>A light single-window terminal for Windows and macOS:</strong> <a href="https://github.com/missdeer/mostty">Mostty</a>.</li>
+  </ul>
+
+  <h2 id="projects">The projects</h2>
+  <div class="table-scroll">
+    <table class="data">
+      <thead>
+        <tr><th>Project</th><th>Built as</th><th>Window and renderer</th><th>Latest release</th><th class="num">Behind Ghostty</th><th>License</th></tr>
+      </thead>
+      <tbody>
+        <tr class="ours"><td><a href="https://github.com/murr2k/murrtty">murrtty</a></td><td>Fork, Win32 app in Zig</td><td>GDI, Ghostty's GTK look; OpenGL 4.3</td><td>0.1.0 preview, 2026-10-30</td><td class="num">71</td><td>MIT</td></tr>
+        <tr><td><a href="https://wintty.io">Wintty</a></td><td>Fork built as a library, C# WinUI 3 app</td><td>WinUI 3; Direct3D 12</td><td>1.0 rc.8, 2026-10-11, for sponsors</td><td class="num">244</td><td>MIT, plus a paid Pro edition</td></tr>
+        <tr><td><a href="https://github.com/amanthanvi/noctty">noctty</a></td><td>Fork, Win32 app in Zig</td><td>GDI; OpenGL 4.3, Direct3D 11 fallback</td><td>1.3.135, 2026-10-24</td><td class="num">2,805</td><td>MIT</td></tr>
+        <tr><td><a href="https://github.com/i999rri/GhosttyWin32">GhosttyWin32</a></td><td>Fork built as a library, C++ WinUI 3 app</td><td>WinUI 3; Direct3D 11</td><td>0.10.0, 2026-10-25</td><td class="num">764</td><td>MIT</td></tr>
+        <tr><td><a href="https://github.com/fukuyori/ghostty">Gooztty</a></td><td>Fork, Win32 app in Zig</td><td>Win32; Direct3D 11</td><td>1.3.2-windows.17, 2026-10-25</td><td class="num">4</td><td>MIT</td></tr>
+        <tr><td><a href="https://github.com/Lugia123/polter">Polter</a></td><td>Ghostty's core under a Rust app</td><td>Win32; OpenGL 4.3</td><td>0.11.2239, 2026-10-24</td><td class="num">603</td><td>MIT</td></tr>
+        <tr><td><a href="https://github.com/Codavo/ghostinthewsl">ghostinthewsl</a></td><td>Fork, Win32 app in Zig</td><td>Win32; OpenGL 4.3</td><td>0.1.5, 2026-08-02</td><td class="num">737</td><td>MIT</td></tr>
+        <tr><td><a href="https://github.com/sudo-tee/hollow">hollow</a></td><td>Ghostty's VT library, its own app</td><td>Sokol; Direct3D 11</td><td>0.1.4, 2026-10-28</td><td class="num">62</td><td>none stated</td></tr>
+        <tr><td><a href="https://github.com/missdeer/mostty">Mostty</a></td><td>Ghostty's VT library, its own app</td><td>Win32; Direct3D 11</td><td>1.1, 2026-09-08</td><td class="num">453</td><td>GPL-3.0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">
+    Behind Ghostty: commits on Ghostty's main branch the project doesn't have
+    yet (for projects built on Ghostty's VT library, from the commit they
+    use). No longer updated: <a href="https://github.com/mattn/ghostty/tree/win32-apprt">mattn's Win32 port</a>
+    (last change 2026-04-16; ghostinthewsl builds on it),
+    <a href="https://github.com/marler8997/mite">mite</a> (2026-05-17), a small
+    Direct3D 11 example of Ghostty's VT library, and
+    <a href="https://github.com/edbordin/ghostty">edbordin's experiments</a>
+    (2026-04-01).
+  </p>
+
+  <h2 id="features">What they do</h2>
+  <p>
+    The seven that aim to be a whole terminal app, read from their code and
+    documentation (nothing here was run). Unknown means we couldn't tell, not
+    that it's missing.
+  </p>
+  <p class="legend"><span class="m y">yes</span> <span class="m p">partly</span> <span class="m n">no</span> <span class="m u">unknown</span></p>
+  <div class="table-scroll">
+    <table class="data matrix">
+      <thead>
+        <tr><th>Feature</th><th class="ours">murrtty</th><th>Wintty</th><th>noctty</th><th>GhosttyWin32</th><th>Gooztty</th><th>Polter</th><th>ghostinthewsl</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>Tabs, splits, windows</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes, vertical tabs</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes, tear-out</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td></tr>
+        <tr><th>Quick terminal</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m n">no</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td></tr>
+        <tr><th>Command palette, search</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td></tr>
+        <tr><th>Session restore</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m u">unknown</span></td><td><span class="m y">yes</span></td><td><span class="m p">saved projects</span></td><td><span class="m n">no</span></td></tr>
+        <tr><th>Settings window</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m n">no</span></td><td><span class="m u">unknown</span></td><td><span class="m y">yes</span></td><td><span class="m n">no</span></td></tr>
+        <tr><th>PowerShell and cmd integration</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m n">no</span></td><td><span class="m p">directory only</span></td><td><span class="m p">directory, title</span></td><td><span class="m u">unknown</span></td></tr>
+        <tr><th>Shell profiles (WSL, Git Bash, VS)</th><td class="ours"><span class="m n">no</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m u">unknown</span></td><td><span class="m u">unknown</span></td><td><span class="m u">unknown</span></td><td><span class="m p">WSL</span></td></tr>
+        <tr><th>Input methods (IME)</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td></tr>
+        <tr><th>Kitty graphics</th><td class="ours"><span class="m u">untested</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m u">unknown</span></td><td><span class="m y">yes</span></td><td><span class="m u">unknown</span></td><td><span class="m p">in WSL</span></td></tr>
+        <tr><th>Custom shaders</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m p">OpenGL only</span></td><td><span class="m n">no</span></td><td><span class="m n">no</span></td><td><span class="m u">unknown</span></td><td><span class="m u">unknown</span></td></tr>
+        <tr><th>Notifications</th><td class="ours"><span class="m p">balloons</span></td><td><span class="m y">toasts</span></td><td><span class="m y">toasts</span></td><td><span class="m y">toasts</span></td><td><span class="m y">toasts</span></td><td><span class="m y">toasts</span></td><td><span class="m p">balloons</span></td></tr>
+        <tr><th>Taskbar progress</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m p">in the pane</span></td></tr>
+        <tr><th>Transparency and blur</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m p">no blur</span></td><td><span class="m y">yes</span></td><td><span class="m p">blur varies</span></td><td><span class="m n">no</span></td><td><span class="m p">fixed opacity</span></td></tr>
+        <tr><th>Screen readers (UI Automation)</th><td class="ours"><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m p">partly</span></td><td><span class="m u">unknown</span></td><td><span class="m p">partly</span></td><td><span class="m p">partly</span></td><td><span class="m n">no</span></td></tr>
+        <tr><th>Without OpenGL 4.3</th><td class="ours"><span class="m n">no</span></td><td><span class="m y">needs Direct3D 12</span></td><td><span class="m y">Direct3D 11</span></td><td><span class="m y">Direct3D 11</span></td><td><span class="m y">Direct3D 11</span></td><td><span class="m p">software</span></td><td><span class="m n">no</span></td></tr>
+        <tr><th>Newer ConPTY bundled</th><td class="ours"><span class="m n">no</span></td><td><span class="m y">yes</span></td><td><span class="m y">yes</span></td><td><span class="m u">unknown</span></td><td><span class="m y">yes</span></td><td><span class="m n">no</span></td><td><span class="m y">yes</span></td></tr>
+        <tr><th>Config file shared with Ghostty</th><td class="ours"><span class="m y">yes, no extra keys</span></td><td><span class="m p">reads it, adds keys</span></td><td><span class="m p">partly, adds keys</span></td><td><span class="m y">yes, one extra key</span></td><td><span class="m n">its own file</span></td><td><span class="m n">its own file</span></td><td><span class="m n">its own file</span></td></tr>
+        <tr><th>Downloads</th><td class="ours"><span class="m y">free</span></td><td><span class="m p">for sponsors</span></td><td><span class="m y">free</span></td><td><span class="m y">free</span></td><td><span class="m y">free</span></td><td><span class="m y">free</span></td><td><span class="m y">free</span></td></tr>
+        <tr><th>Installer or package manager</th><td class="ours"><span class="m n">zip</span></td><td><span class="m y">installer</span></td><td><span class="m y">winget, Scoop, Chocolatey</span></td><td><span class="m y">MSIX</span></td><td><span class="m y">installer</span></td><td><span class="m n">zip</span></td><td><span class="m y">installer</span></td></tr>
+        <tr><th>Code signed</th><td class="ours"><span class="m n">no</span></td><td><span class="m y">yes</span></td><td><span class="m p">self-signed</span></td><td><span class="m p">self-signed</span></td><td><span class="m y">author's certificate</span></td><td><span class="m n">no</span></td><td><span class="m n">no</span></td></tr>
+        <tr><th>Automatic updates</th><td class="ours"><span class="m n">no</span></td><td><span class="m y">yes</span></td><td><span class="m p">checks</span></td><td><span class="m n">no</span></td><td><span class="m n">no</span></td><td><span class="m p">notifies</span></td><td><span class="m n">no</span></td></tr>
+        <tr><th>ARM64 release</th><td class="ours"><span class="m n">not yet</span></td><td><span class="m n">no</span></td><td><span class="m y">yes</span></td><td><span class="m n">no</span></td><td><span class="m n">no</span></td><td><span class="m n">no</span></td><td><span class="m y">yes</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">
+    Sources: each project's repository, documentation and releases on
+    31 October 2026, and Ghostty's discussions
+    <a href="https://github.com/ghostty-org/ghostty/discussions/2563">#2563</a>
+    and <a href="https://github.com/ghostty-org/ghostty/discussions/12371">#12371</a>,
+    where most of these projects were announced. Missing a project, or found
+    a mistake? <a href="https://github.com/murr2k/murrtty/issues/new?title=compare%3A%20">Tell us</a>.
+  </p>
+
+  <footer>
+    <p>murrtty is not affiliated with or endorsed by the Ghostty project, and neither is any project on this page unless it says so.</p>
+    <p>
+      This site counts page views and downloads (page, referring site,
+      country, browser type) without cookies or personal data.
+    </p>
+  </footer>
+</main>
+</body>
+</html>

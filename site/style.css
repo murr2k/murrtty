@@ -6,6 +6,11 @@
   --border: #dcdcdc;
   --link: #1c62c9;
   --code: #f0f0f0;
+  --ours: #fff4d9;
+  --yes: #2d7a46;
+  --part: #946b00;
+  --no: #8a8a8a;
+  --unk: #5b6fa0;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -17,6 +22,11 @@
     --border: #3b3f47;
     --link: #78aeed;
     --code: #2e323a;
+    --ours: #3a2f14;
+    --yes: #6cc68a;
+    --part: #e0b64e;
+    --no: #8a8a8a;
+    --unk: #93a6d6;
   }
 }
 
@@ -80,6 +90,44 @@ pre { padding: 12px 14px; overflow-x: auto; font-size: 0.92em; }
 pre code { padding: 0; background: none; }
 
 .links { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 10px 0; }
+
+/* The comparison page's tables: they scroll sideways on a phone, the
+   feature column stays put, and murrtty's own column is tinted. */
+.table-scroll {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  margin: 12px 0;
+}
+table.data { border-collapse: collapse; width: 100%; min-width: 44rem; font-size: 0.9rem; }
+table.data th, table.data td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+table.data thead th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+table.data tbody tr:last-child th, table.data tbody tr:last-child td { border-bottom: none; }
+table.data td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.data tr.ours td, table.data .ours { background: var(--ours); }
+table.matrix tbody th {
+  font-weight: 500;
+  position: sticky;
+  left: 0;
+  background: var(--card);
+  min-width: 10rem;
+}
+table.matrix thead th:first-child { position: sticky; left: 0; background: var(--card); }
+table.matrix td { min-width: 7rem; }
+.m::before { display: inline-block; width: 1.1em; }
+.m.y::before { content: "\25CF"; color: var(--yes); }
+.m.p::before { content: "\25D0"; color: var(--part); }
+.m.n::before { content: "\25CB"; color: var(--no); }
+.m.u::before { content: "?"; color: var(--unk); font-weight: 700; }
+.m.n { color: var(--muted); }
+.legend .m { margin-right: 14px; }
+.note { color: var(--muted); font-size: 0.92rem; }
 
 footer {
   margin-top: 48px;

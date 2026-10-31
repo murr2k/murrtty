@@ -3739,6 +3739,15 @@ names the private advisory form and security@murrtty.org; and Email
 Routing forwards security@murrtty.org to the owner, which replaced the
 "no mail" records with Cloudflare's MX, SPF and DKIM ones while DMARC
 stays `reject`. AI crawlers stay allowed (the owner's choice).
+*Comparison page, 2026-10-31* (the owner's request): murrtty.org/compare
+(`site/compare.html`) lists the other Windows terminals built from Ghostty
+(from upstream discussions #2563 and #12371, plus Gooztty from the fork
+network): how each is built, its latest release, how far behind Ghostty's
+main it is, and a feature table of the seven whole apps, read from their
+code and documentation. Facts and a "which one suits what" list only, no
+verdicts on others' work; it says murrtty's author wrote it and asks for
+corrections. It is dated: refresh it, or mark it stale, as the projects
+move.
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build

@@ -6,7 +6,9 @@
 [Ghostty](https://github.com/ghostty-org/ghostty).** It is Ghostty's core
 (terminal emulation, fonts, rendering, configuration) with a Win32
 application around it, and it diverges from Ghostty where Windows or its own
-features call for it. Its site is [murrtty.org](https://murrtty.org).
+features call for it. Its site is [murrtty.org](https://murrtty.org), which
+also [compares it](https://murrtty.org/compare) with the other Windows
+terminals built from Ghostty.
 
 > Ghostty is created by [Mitchell Hashimoto](https://github.com/mitchellh)
 > and the
