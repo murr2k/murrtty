@@ -64,7 +64,15 @@ brings fixes. `murrtty +version` names both versions, as in `murrtty 0.2.0,
 based on Ghostty 1.4.0`; a build of any other commit is a development build
 of the next release, such as `0.3.0-main+1a2b3c4`. The latest release,
 [0.2.0](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.2.0) (x64
-and ARM64), is a preview.
+and ARM64), is a preview. Besides building from source (see [Build](#build))
+and the release zips, it installs with [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add murrtty https://github.com/murr2k/scoop-murrtty
+scoop install murrtty/murrtty
+```
+
+A winget package (`MurrayKopit.murrtty`) is under review.
 
 ## Status
 

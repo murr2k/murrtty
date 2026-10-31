@@ -3680,8 +3680,13 @@ free-inside-callback bug.
   `ArchiveBinariesDependOnPath` so murrtty's bin folder goes on PATH with
   its ConPTY and `share\` beside it, rather than a link elsewhere) are
   checked by `windows-port-packages.yml`, which installs each on a clean
-  hosted runner; the bucket repository and the winget-pkgs PR are the
-  owner's (a public repository and a public PR).
+  hosted runner (the manifests use schema 1.12, as winget-pkgs asks; the
+  runner's winget 1.11 tests a copy marked 1.10, as updating it there
+  fails). With the owner's go-ahead the bucket went up as
+  [murr2k/scoop-murrtty](https://github.com/murr2k/scoop-murrtty) and the
+  winget manifests as
+  [microsoft/winget-pkgs#467277](https://github.com/microsoft/winget-pkgs/pull/467277),
+  from the owner's fork; its CLA is the owner's to sign.
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored
