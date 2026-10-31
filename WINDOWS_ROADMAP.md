@@ -88,8 +88,13 @@ These change the work. Each has a recommendation.
    upstreamable first (Windows `reportPwd`, font style matching). *Decided
    2026-10-26: no.* Ghostty's maintainers said on their Discord that they
    won't add more runtimes to Ghostty and suggested building a Windows
-   terminal on libghostty-vt instead. The owner kept the fork, renamed it
-   murrtty, and lets it diverge (see "The fork").
+   terminal on libghostty-vt instead. Mitchell Hashimoto had said so in
+   public on 2026-10-10: Windows support for core Ghostty is no longer a
+   priority, and the way to Ghostty's GUI on Windows is to fork the project
+   ([#14608](https://github.com/ghostty-org/ghostty/pull/14608#issuecomment-6101144062);
+   upstream's Windows discussion, #2563, was locked the same day). The
+   owner kept the fork, renamed it murrtty, and lets it diverge (see "The
+   fork").
 8. **Visibility.** The repository is private. winget and the update appcast
    (7.4, 7.6) need publicly downloadable artifacts. *Decide before M3* whether
    the repository goes public then, or releases are hosted elsewhere. Going
