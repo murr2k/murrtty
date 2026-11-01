@@ -3864,6 +3864,16 @@ verbose log will name. A run takes about 45 minutes with its builds.
   winget manifests as
   [microsoft/winget-pkgs#467277](https://github.com/microsoft/winget-pkgs/pull/467277),
   from the owner's fork; its CLA is the owner's to sign.
+  *0.3.0 released 2026-11-01* (the owner's go-ahead): murrtty's software
+  OpenGL (6.3b), notifications as WinRT toasts (5.2b), the prompt kept on
+  a resize, an inactive blurred window kept see-through (4.2), and the
+  ARM64 inspector fix found by the hosted GUI suite (7.3), whose ARM64
+  runs are the first of murrtty on ARM64 (software rendering, no GPU).
+  Tag `murrtty-v0.3.0` on `bdec22bfd`; both packages from the clean
+  tagged tree, Defender clean, the x64 one with `bin\mesa` and the toasts'
+  icon (`share\ghostty\murrtty.png`). `version` then went to 0.4.0, and
+  the Scoop and winget manifests to 0.3.0 (winget's 0.3.0 waits for
+  #467277, the first submission, still in review).
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored

@@ -10,6 +10,6 @@
 // build.zig.zon's version, Ghostty's own, which the build checks: update
 // it with each upstream merge.
 .{
-    .version = "0.3.0",
+    .version = "0.4.0",
     .ghostty = "1.4.0",
 }
