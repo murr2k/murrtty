@@ -454,7 +454,8 @@ hosted Windows runner and then the unit tests.
   which the Store signs, is the other route (see the
   [code signing policy](https://murrtty.org/code-signing)). An installer,
   winget and update checks follow.
-- A Direct3D 11 renderer, for machines without OpenGL 4.3 (later).
+- A Direct3D 11 renderer, for machines without OpenGL 4.3 (planned:
+  roadmap 7.8).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was
 built and why, and plans what is left: the items above, tests on hosted CI,

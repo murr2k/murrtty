@@ -554,6 +554,12 @@ roadmap item behind it.
 
 *Decided, not built yet:*
 
+- **Direct3D 11 instead of OpenGL** (7.8, planned 2026-11-01): murrtty
+  will draw with Direct3D 11, and without a GPU with Windows' WARP in the
+  same process, where GTK's app draws with OpenGL. It looks the same: its
+  frames are compared with the OpenGL backend's pixel by pixel. It ends
+  6.3b's Mesa and second start.
+
 ## Rules every item keeps
 
 The port's existing invariants (see the project notes and commit messages)
@@ -588,6 +594,7 @@ apply to all new code:
 | **S4** many contexts, part of 1.4 | 16 panes, each flooding output: steady frames, no stale-frame recurrence, linear memory, on two vendors | Whether per-pane contexts scale. *Run 2026-10-24 on NVIDIA (RTX 2070), scenario `stress-panes`:* every pane kept presenting (1,030 to 1,210 frames each in 13 s, Debug build); memory flat while flooding; per added pane 4 threads, 31 MB resident, 90 MB committed, 64 MB of it Zig's thread stacks (0.15; three threads, 48 MB, by its count of 2026-10-28; since its fix, 42 MB a pane, most of the rest the GL driver's per-context buffers). They scale. AMD and Intel not yet run. *Re-run 2026-10-25 at the end of Phase 1 (15 panes dimmed by 1.7's overlay):* the slowest pane presented 994 frames in 13 s; memory per pane unchanged, and 49 MB of growth in 15 s of flooding (scrollback). |
 | **S5** reparenting, part of 4.5 | Does a GL child window keep rendering after `SetParent` to another top-level window, on NVIDIA, AMD and Intel? | Tab tear-off design. *Run 2026-10-27 on NVIDIA (RTX 2070), on the hidden desktop (`tab-drag`):* after its tab's container moved to another window the pane kept presenting frames (the renderer's count and read-back) and taking input. What the display shows wasn't checked (no monitor on); AMD and Intel not yet run. |
 | **S6** OpenGL elsewhere, 1 day | What does Microsoft's OpenGL compatibility pack expose on Snapdragon X and in VMs: 4.3 core with fragment SSBOs and sRGB framebuffers? | ARM64 (7.7) and software fallback (6.3) |
+| **S7** Direct3D 11 present path, 2 to 3 days, before 7.8's code | For a composition swap chain on a composition target on each pane's window (not topmost) and, as the fallback, a blt-model swap chain with blur-behind: does it present on the GUI suite's hidden desktop, which DWM doesn't compose? Microsoft documents nothing there, flip model never reports occlusion, and the frame-latency wait must still return (wait with a timeout); if it can't, the suite needs another way to run, which decides the design. Do layered child overlays stay above it and clean (S1's `overlay-host`)? Per-pixel alpha with blur-behind and the system backdrop (S2's `transparency`, with the owner)? The frame top-left through a live resize (composition swap chains must stretch; what that does to a visual's content isn't documented)? `PrintWindow` captures? Does a composition swap chain work on WARP (Microsoft rules out only the reference driver)? On the hosted runners: WARP's frame time against llvmpipe's, and whether `d3dcompiler_47.dll` is there natively on the ARM64 one. One pane's device commit, hardware and WARP. | 7.8's present path, and per-pane or shared devices |
 
 ---
 
@@ -4090,11 +4097,181 @@ compatibility pack gives on Snapdragon X: 4.3 core, fragment SSBOs, sRGB
 framebuffers) and the suites on GitHub's Windows ARM runners (7.2, once
 the repository is public) are still to come.
 
-**7.8 Direct3D 11 renderer, XL, future.** A `d3d11` renderer backend with
-HLSL ports of the shaders, WARP for GPU-less machines, and native
-DirectComposition transparency. It removes the OpenGL 4.3 requirement, which
-is expected to be the main cause of start failures (VMs, Remote Desktop,
-Windows on ARM).
+**7.8 Direct3D 11 renderer, XL.** *Planned 2026-11-01; the owner chose
+the native backend as the best technical solution, over Mesa's Direct3D
+12 driver behind the software fallback (the quickest: it reports OpenGL
+4.6 since late 2023, but keeps the second start and a GL context per
+pane) and ANGLE (OpenGL ES 3.0 on its Direct3D 11 backend: no storage
+buffers, no `sampler2DRect`).* A `d3d11` backend for Ghostty's generic
+renderer, beside OpenGL and Metal, that becomes the Windows default once
+it matches OpenGL; then the WGL code and the bundled Mesa go. For users:
+no OpenGL 4.3 driver needed (Remote Desktop, virtual machines with a
+partitioned GPU, Windows on ARM and old drivers draw on the card through
+Direct3D); without a GPU, Windows' own WARP draws in the same process (no
+second start, no Mesa, a smaller download); per-pixel alpha through
+DirectComposition. Machines without a GPU still draw on the CPU: the large
+gain is on those with a card but no OpenGL driver.
+- **What the backend implements** (mapped 2026-11-01):
+  `src/renderer/D3D11.zig` and `src/renderer/d3d11/`, the contract
+  `generic.zig` asks of `GraphicsAPI`: `Device`, `Target`, `Frame`,
+  `RenderPass`, `Pipeline`, `Buffer`, `Texture`, `Sampler` and the
+  `shaders` module (its `Uniforms`, `CellText`, `CellBg`, `Image` and
+  `BgImage` are OpenGL's, unchanged), the buffer, texture and sampler
+  option functions, `beginFrame`, `initTarget`, `initAtlasTexture`,
+  `surfaceSize`, and the optional hooks it needs: `threadEnter` and
+  `threadExit`, `setViewport`, and murrtty's `contextLost`,
+  `replaceContext` and `dropLostContext`. `ExportedFrame` is left out
+  (only GTK's apprt takes frames). `Frame.complete` presents and calls
+  `frameCompleted` exactly once, or the swap chain's semaphore blocks the
+  next frame. Bindings as Metal's: the Globals constant buffer at b1, kept
+  bound for the whole pass (the image steps pass no uniforms and rely on
+  it); the per-instance vertex buffer at slot 0; textures at t0 and t1;
+  storage buffers as `StructuredBuffer<uint>` at t2 on; point and linear
+  clamp samplers made and bound by the backend (HLSL declares
+  `SamplerState` objects, but their state comes only from the API; Metal's
+  `constexpr sampler` has no counterpart). Premultiplied blending (ONE, ONE_MINUS_SRC_ALPHA), off for
+  `bg_color`. Feature level 11_0 at least (structured buffers in the
+  vertex stage); WARP has it.
+- **Shaders:** the nine GLSL programs ported by hand to HLSL (shader model
+  5.0), from `shaders.metal` (explicit bindings, the closer template),
+  about 500 lines, compiled to DXBC at build time by a small host tool that
+  loads System32's `d3dcompiler_47.dll` (no Windows SDK: every murrtty
+  build host is Windows, and DXBC is the same for x64 and ARM64), embedded
+  as Metal's metallib is (`DxbcStep`, after `MetallibStep`); the build
+  records the compiler's version, which follows the build host's Windows
+  and can change the bytes. Known traps: `sampler2DRect` becomes
+  `Texture2D.Load` with pixel coordinates (0 out of range, where clamping
+  repeated the edge); `image.v`'s z of -1 falls outside Direct3D's 0 to 1
+  depth range (use 0, as Metal does). Custom shaders (`custom-shader`) gain an `hlsl` target
+  in `shadertoy.zig`: glslang to SPIR-V as now, spirv-cross's HLSL backend
+  (built with `spirv_hlsl.cpp` and `SPIRV_CROSS_C_API_HLSL`, shader model
+  50), then `D3DCompile` at run time; `custom_shader_y_is_down` true, as
+  Metal's.
+- **Colors (the Look rule):** the backend reproduces OpenGL's pixels, not
+  Metal's: murrtty looks like GTK's app, which draws with OpenGL. Targets
+  and the color atlas are sRGB formats (`R8G8B8A8_UNORM_SRGB`,
+  `B8G8R8A8_UNORM_SRGB`; the grayscale atlas `R8_UNORM`), blended as
+  OpenGL blends them in each `alpha-blending` mode, and `render-parity`
+  (below) compares the two frame by frame.
+- **Presenting:** a flip-model swap chain per pane (two buffers,
+  `B8G8R8A8_UNORM`, since flip model takes no `_SRGB` format; an sRGB
+  render-target view on it for the composite and a plain one for the
+  shapes, as OpenGL toggles `GL_FRAMEBUFFER_SRGB`), presented with sync
+  interval 0 (which never tears in flip model: a newer frame replaces a
+  queued one) and a frame-latency waitable object (latency 1), for input
+  latency. Per-pixel alpha (4.1) needs DirectComposition: a swap chain
+  made for a window can't carry alpha (DXGI refuses one), so it is made
+  for composition (`CreateSwapChainForComposition`: flip model,
+  premultiplied, `DXGI_SCALING_STRETCH`) and shown by a visual on a
+  composition target on the pane's own window, made with `topmost` false:
+  composition then sits above the window's own content and below its child
+  windows, so the layered overlays stay on top. A target on the top-level
+  window can't serve: not topmost, the panes' windows hide its visuals;
+  topmost, its visuals cover every child window (overlays, the search
+  field, the palette). Whether a blt-model swap chain with blur-behind
+  (what WGL does today; Microsoft documents nothing on it) is the fallback
+  is S7's question. The present pass keeps
+  `presentWgl`'s job as its spec: the premultiplied frame over the opaque
+  background (its own alpha when translucent), top-left while a resize is
+  in flight, then the shapes (`setOverlay`'s up to 48 rectangles: dimming,
+  the scrollbar, progress, the bars' shade, the drag handle and drop
+  half), whose interface the apprt keeps. A resize calls `ResizeBuffers`
+  on the render thread, the views released first.
+- **Devices:** an `ID3D11Device` and its immediate context per pane, used
+  only on the pane's render thread (made in `init` on the UI thread, as the
+  WGL context is); the app's `Device` keeps the DXGI factory, the adapter
+  choice (hardware or WARP) and the compiled bytecode. That is
+  OpenGL's model: no locks between the panes' render threads, and a lost
+  device handled per pane through the existing rebuild. One shared device
+  under `ID3D11Multithread` protection is the alternative if S7 finds a
+  pane's device costly (a pane's GL context commits most of its 51 MB
+  today, 0.15).
+- **No GPU, and losing one:** hardware first; WARP
+  (`D3D_DRIVER_TYPE_WARP`) when no adapter gives feature level 11_0 or the
+  adapter is Microsoft's Basic Render Driver, with today's "drawing in
+  software" notice. `MURRTTY_D3D=warp` forces it (an environment variable:
+  the config file stays Ghostty's). A lost device shows as
+  `DXGI_ERROR_DEVICE_REMOVED` or `_RESET` from Present or ResizeBuffers;
+  any other failure is checked with `GetDeviceRemovedReason` (an upload's
+  Map doesn't report it). Then `contextLost` says so and `replaceContext`
+  makes a new device on the adapter chosen again (the factory made anew
+  once `IsCurrent` says it is stale; WARP if the card is gone), and with it
+  a new composition device, target and visual, the old target released
+  first (a window holds one per layer); generic's rebuild uploads the
+  atlases, images and background image again, and `dropLostContext` lets
+  the rest go. The start dialog shrinks to "no Direct3D 11 device", which
+  takes a broken Windows.
+- **The inspector:** Dear ImGui's DX11 backend (`imgui_impl_dx11.cpp`,
+  already in the fetched source; dcimgui gains a `backend-dx11` option and
+  its externs) on a device of its own on the UI thread, with a swap chain
+  on the inspector's window. Its `D3DCompile` call goes to a murrtty
+  function that loads `d3dcompiler_47.dll` from System32 by full path when
+  first needed (it isn't a KnownDLL), so nothing imports it at start;
+  custom shaders use the same.
+- **COM:** hand-written vtables, as `dwrite.zig` does (translate-c can't
+  serve: `dcomp.h`'s C vtables leave out the base interfaces' slots; its
+  overloaded methods sit in the order of mingw's non-MSVC branch, the
+  animation overload first, as in `SetOffsetX`), the
+  GUIDs in Zig (mingw has no uuid library for these), in a module the
+  renderer owns (`src/renderer/d3d11/com.zig`), with unit tests calling
+  every slot used. d3d11, dxgi and dcomp link through mingw's import
+  libraries (`lib-common`, so x64 and ARM64 alike).
+- **One seam first:** the apprt and test hooks name OpenGL today
+  (`renderer.OpenGL.Overlay`, and `api.wgl_state` for the translucency
+  flag, the presented count, the probes, the read-back, the faked reset and
+  the context count). A backend-neutral Windows present state that both
+  backends implement comes first, as a refactor on OpenGL with the suite
+  green.
+- **Tests:** the GUI suite, built with `-Drenderer=d3d11`, is the
+  acceptance test. Its text checks carry over as they are. The read-back
+  hooks (`pixel`, `probe`, `frames`, `saveFrames`) are rebuilt (a copy to a
+  staging texture after the shapes and before Present, alpha kept), and
+  `present`, `resize`, `search`, `scrollbar`, `progress`, `split-dim`,
+  `shade`, `translucent` and the frame counts must pass unchanged.
+  Rewritten: `gl-reset` (a faked device removal, background image
+  included), `gl-fallback` (WARP in the same process, `#282c34` exact, the
+  notice) and `gl-missing` (the one "no device" dialog). Retired:
+  `gl-library` and the second start's checks. Run again as gates:
+  `overlay-host` (layered children over the new surface) and the owner's
+  on-screen `transparency` and `blur-display`. New: `render-parity`, the
+  snapshot and README scenes plus images, a custom shader and each
+  `alpha-blending` mode, drawn by an OpenGL build and a Direct3D 11 build
+  and compared pixel by pixel (within 1 per channel), so the two can't
+  drift while both exist. `pane-commit` re-baselined. The question
+  `readme_shot.py` raises (whether the read-back frame comes before the
+  dimming) is settled on OpenGL first.
+- **Steps:**
+  1. **S7, the present path (2 to 3 days),** before any backend code (see
+     "Spikes").
+  2. **The seam (1 to 2 days).**
+  3. **Bring-up (about a week):** the COM bindings, `DxbcStep`, the
+     backend under `-Drenderer=d3d11`, the swap chain and present pass,
+     `bg_color`, `cell_bg` and `cell_text`. Done when the suite's text
+     checks pass on Direct3D 11.
+  4. **Parity (1.5 to 2 weeks):** images, the background image, custom
+     shaders, the shapes, translucency and blur, the blending modes,
+     resizing, the read-back hooks. Done when the suite passes but for the
+     `gl-*` scenarios, and `render-parity` passes.
+  5. **Robustness (about a week):** WARP and its notice, device removal,
+     the start dialog, the inspector on DX11, ARM64 on the hosted runner,
+     `pane-commit`, key-to-present latency against OpenGL here (the
+     `perf-trace` marks); the owner's on-screen runs on NVIDIA, AMD and
+     Intel where there are machines.
+  6. **The switch (a few days):** Direct3D 11 becomes the Windows default
+     (`backend.zig`); the hosted CI drops `MURRTTY_OPENGL` and runs on
+     WARP; the desktop CI also builds OpenGL (compile only); README, site,
+     Differences; then a release, with the owner's go-ahead.
+  7. **Retirement, a release later:** the WGL branches of `OpenGL.zig`
+     and `pkg/opengl/wgl.zig`'s use, `software_gl.zig`, most of
+     `gl_diagnosis.zig`, the Mesa packages and `bin\mesa` with their
+     notices and licenses, `MURRTTY_OPENGL`, the OpenGL invariants in the
+     project notes. Archiving `murr2k/murrtty-mesa` is the owner's call.
+
+  About 4 to 6 weeks of focused work in all.
+- **Upstream merges:** the backend is murrtty's own code beside
+  upstream's, so merges stay cheap, at one new cost: a merge that changes
+  a shader, a pipeline or the backend contract ports the HLSL side in the
+  same merge, and `render-parity` catches what slips.
 
 **7.9 Upstreaming.** *Dropped 2026-10-26 (decision 7):* Ghostty won't take
 another runtime. A fix that matters to Ghostty itself can still be offered
