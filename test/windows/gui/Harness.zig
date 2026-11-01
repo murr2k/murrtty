@@ -1615,6 +1615,8 @@ pub const Dump = struct {
     drop_effect: i32 = -1,
     /// Sentry has started (roadmap 7.5).
     sentry_ready: bool = false,
+    /// toggle_background_opacity made the windows opaque (4.1).
+    force_opaque: bool = false,
     /// The ConPTY new panes get: "bundled" or "system" (roadmap 2.6).
     conpty: []const u8 = "",
     /// The opengl32 loaded ("system", "variable" for MURRTTY_OPENGL's,
@@ -1942,6 +1944,11 @@ pub const Dump = struct {
         /// resets.
         gl_contexts: u32 = 0,
         gl_robust: bool = false,
+        /// Its font size in points, whether a binding set it (not
+        /// inherited), and the core's read-only mode (5.10b keeps them).
+        font_size: f32 = 0,
+        font_adjusted: bool = false,
+        core_readonly: bool = false,
         /// OSC 9;4's progress (roadmap 5.4): its value (-1 while the bar
         /// pulses), error and paused states and the pulsing block's place.
         progress: ?struct { value: i32, err: bool, paused: bool, pulse: f32 } = null,

@@ -294,7 +294,9 @@ hosted Windows runner and then the unit tests.
   nothing, and one with a command (`murrtty -e ...`) opens it as a new
   tab in the front window. `--class=` keeps separate instances apart.
 - Session restore: the windows, their tabs and splits, sizes, names and
-  each terminal's directory are saved as they change (to `session.json`
+  each terminal's directory, font size (Ctrl+= and Ctrl+-) and read-only
+  mode, a zoomed split, a window's always-on-top and decorations toggles
+  and the opacity toggle are saved as they change (to `session.json`
   in `%LOCALAPPDATA%\murrtty`) and come back when murrtty starts, each
   terminal a fresh shell in its folder, however murrtty was closed (Quit,
   the last window's X, `exit` in the last shell); `window-save-state =

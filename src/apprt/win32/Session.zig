@@ -87,6 +87,8 @@ pub const State = struct {
     version: u32 = format_version,
     /// The window in front, by index.
     front: ?u32 = null,
+    /// toggle_background_opacity made the windows opaque (app-wide, 4.1).
+    background_opaque: ?bool = null,
     windows: []const SavedWindow = &.{},
 };
 
@@ -102,6 +104,11 @@ pub const SavedWindow = struct {
     bottom: i32 = 0,
     maximized: bool = false,
     fullscreen: bool = false,
+    /// Kept above other windows (float_window, 4.6).
+    floating: ?bool = null,
+    /// toggle_window_decorations' override (4.4): a WindowDecoration's
+    /// name, so a value an older murrtty lacks drops only itself.
+    decoration: ?[]const u8 = null,
     active: u32 = 0,
     tabs: []const SavedTab = &.{},
 };
@@ -110,6 +117,8 @@ pub const SavedTab = struct {
     name: ?[]const u8 = null,
     /// The focused pane, by node.
     focused: u32 = 0,
+    /// The zoomed node (toggle_split_zoom), by node.
+    zoomed: ?u32 = null,
     /// The split tree's nodes as SplitTree holds them, the root first.
     nodes: []const SavedNode = &.{},
 };
@@ -133,6 +142,13 @@ pub const SavedPane = struct {
     /// pwsh) rather than the configured `command`.
     program: ?SavedProgram = null,
     name: ?[]const u8 = null,
+    /// Its font size in points, where it isn't the config's: set by a
+    /// binding (`font_size_adjusted`, which a config reload keeps), or
+    /// taken from the pane it was split from (window-inherit-font-size).
+    font_size: ?f32 = null,
+    font_size_adjusted: ?bool = null,
+    /// toggle_readonly's mode.
+    readonly: ?bool = null,
 };
 
 pub const SavedProgram = union(enum) {
@@ -544,6 +560,12 @@ fn load(self: *Session) void {
     };
     self.pending = parsed;
     self.noteSaved(parsed.value);
+    // toggle_background_opacity's state, for the windows made from now on
+    // (and any made already). Only where there is something to toggle.
+    if ((parsed.value.background_opaque orelse false) and self.app.config.@"background-opacity" < 1) {
+        self.app.force_opaque = true;
+        for (self.app.windows.items) |w| w.syncTranslucent();
+    }
     const windows = parsed.value.windows;
     for (windows, 0..) |w, i| {
         if (w.quick) {
@@ -684,6 +706,10 @@ const Gone = struct {
 
 fn restoreWindow(self: *Session, a: Allocator, sw: SavedWindow) !*Window {
     const window = try Window.createForRestore(self.app, placementOf(sw));
+    // Before its tabs, so their panes open at the client size it gives.
+    if (sw.decoration) |d| if (std.meta.stringToEnum(configpkg.WindowDecoration, d)) |v| {
+        window.restoreDecoration(v);
+    };
     var gone: Gone = .{};
     for (sw.tabs[0..@min(sw.tabs.len, max_tabs)]) |st| self.restoreTab(a, window, st, &gone) catch |err| {
         log.warn("a saved tab wasn't restored err={}", .{err});
@@ -694,6 +720,7 @@ fn restoreWindow(self: *Session, a: Allocator, sw: SavedWindow) !*Window {
     }
     if (sw.name) |n| window.setTitleOverride(n);
     window.showRestored(sw.maximized, sw.fullscreen, @min(sw.active, window.tabs.items.len - 1));
+    if (sw.floating orelse false) window.setFloat(.on);
     gone.tell(window);
     return window;
 }
@@ -708,13 +735,82 @@ fn restoreTab(self: *Session, a: Allocator, window: *Window, st: SavedTab, gone:
     const first = leftmost(nodes, 0);
     made[first] = try self.makePane(a, nodes[first].pane.?, gone, window, null);
     const tab = window.activeTab() orelse return error.NoTab;
-    try self.build(a, tab, nodes, 0, made, gone, 0);
+    // A split that fails (a pane's OpenGL, say) leaves the tab with the
+    // panes made so far, finished like a whole one.
+    self.build(a, tab, nodes, 0, made, gone, 0) catch |err| {
+        log.warn("a saved tab came back in part err={}", .{err});
+    };
     if (st.focused < nodes.len) if (made[st.focused]) |s| {
         tab.focused = s;
     };
+    // What each pane was given while it ran, once the tree is whole: a
+    // split took its parent's font size as it was made (the config's then).
+    for (nodes, made) |n, m| if (n.pane) |pane| if (m) |s| restorePaneState(s, pane);
+    // A zoom is always the focused pane's (toggle_split_zoom zooms it, and
+    // focusing a pane outside a zoom ends it): anything else in the file
+    // is dropped.
+    if (st.zoomed) |z| zoom: {
+        if (!tab.tree.isSplit()) break :zoom;
+        const h = restoredHandle(&tab.tree, nodes, z) orelse break :zoom;
+        const f = tab.tree.locate(tab.focused) orelse break :zoom;
+        if (h != f) break :zoom;
+        tab.tree.zoom(h);
+    }
     if (st.name) |n| tab.setTitleOverride(n);
     tab.layoutPanes();
     window.tabChanged(tab);
+}
+
+/// A restored pane's font size and read-only mode, as saved.
+fn restorePaneState(s: *Surface, pane: SavedPane) void {
+    if (!s.core_initialized) return;
+    const core = &s.core_surface;
+    if (pane.font_size) |points| if (std.math.isFinite(points)) {
+        const clamped = std.math.clamp(points, 1.0, 255.0);
+        if (pane.font_size_adjusted orelse false) {
+            // As the binding did it: a config reload keeps it.
+            _ = core.performBindingAction(.{ .set_font_size = clamped }) catch |err| {
+                log.warn("a restored pane's font size wasn't set err={}", .{err});
+            };
+        } else {
+            // As inheriting did it (Surface.init): a reload replaces it.
+            var size = core.font_size;
+            size.points = clamped;
+            core.setFontSize(size) catch |err| log.warn("a restored pane's font size wasn't set err={}", .{err});
+        }
+    };
+    if ((pane.readonly orelse false) and !core.readonly) {
+        _ = core.performBindingAction(.toggle_readonly) catch |err| {
+            log.warn("a restored pane's read-only mode wasn't set err={}", .{err});
+        };
+    }
+}
+
+/// The restored tree's handle for saved node `target`: build made the
+/// same shape, so the two trees are walked side by side from their roots.
+fn restoredHandle(tree: *const Tab.Tree, nodes: []const SavedNode, target: u32) ?Tab.Tree.Node.Handle {
+    if (target >= nodes.len or tree.nodes.len == 0) return null;
+    const Pair = struct { saved: usize, handle: Tab.Tree.Node.Handle };
+    var stack: [max_nodes]Pair = undefined;
+    var len: usize = 1;
+    stack[0] = .{ .saved = 0, .handle = .root };
+    var steps: usize = 0;
+    while (len > 0) : (steps += 1) {
+        if (steps > nodes.len) return null;
+        len -= 1;
+        const p = stack[len];
+        if (p.saved == target) return p.handle;
+        const s = nodes[p.saved].split orelse continue;
+        const r = switch (tree.nodes[p.handle.idx()]) {
+            .split => |r| r,
+            .leaf => return null,
+        };
+        if (len + 2 > stack.len or s.left >= nodes.len or s.right >= nodes.len) return null;
+        stack[len] = .{ .saved = s.left, .handle = r.left };
+        stack[len + 1] = .{ .saved = s.right, .handle = r.right };
+        len += 2;
+    }
+    return null;
 }
 
 fn build(self: *Session, a: Allocator, tab: *Tab, nodes: []const SavedNode, at: usize, made: []?*Surface, gone: *Gone, depth: usize) !void {
@@ -1092,7 +1188,11 @@ fn snapshot(self: *Session, a: Allocator, read: Read) !State {
             try windows.append(a, saved[i]);
         };
     }
-    return .{ .front = front, .windows = windows.items };
+    return .{
+        .front = front,
+        .background_opaque = if (self.app.force_opaque) true else null,
+        .windows = windows.items,
+    };
 }
 
 /// Whether a window (not the quick terminal) with this id is open. Ids
@@ -1148,6 +1248,9 @@ fn saveWindow(a: Allocator, w: *Window, read: Read) !SavedWindow {
         out.bottom = r.bottom;
         out.maximized = wp.showCmd == c.SW_SHOWMAXIMIZED or
             (wp.showCmd == c.SW_SHOWMINIMIZED and wp.flags & c.WPF_RESTORETOMAXIMIZED != 0);
+        // What was asked (Windows refuses topmost without the foreground).
+        if (w.floating) out.floating = true;
+        if (w.decoration_override) |d| out.decoration = @tagName(d);
     }
     const tabs = try a.alloc(SavedTab, w.tabs.items.len);
     for (w.tabs.items, tabs) |t, *st| st.* = try saveTab(a, t, read);
@@ -1168,6 +1271,7 @@ fn saveTab(a: Allocator, t: *Tab, read: Read) !SavedTab {
     };
     var out: SavedTab = .{ .nodes = nodes };
     if (t.tree.locate(t.focused)) |h| out.focused = @intCast(h.idx());
+    if (t.tree.zoomed) |z| out.zoomed = @intCast(z.idx());
     if (t.title_override) |n| out.name = try a.dupe(u8, n);
     return out;
 }
@@ -1186,6 +1290,15 @@ fn savePane(a: Allocator, s: *Surface, read: Read) !SavedPane {
     }
     if (s.session_dir) |d| out.directory = try a.dupe(u8, d);
     if (s.title_override) |n| out.name = try a.dupe(u8, n);
+    if (s.core_initialized) {
+        const core = &s.core_surface;
+        const points = core.font_size.points;
+        if (core.font_size_adjusted or points != core.config.original_font_size) {
+            out.font_size = points;
+            if (core.font_size_adjusted) out.font_size_adjusted = true;
+        }
+        if (core.readonly) out.readonly = true;
+    }
     if (s.program) |p| if (ownShell(p)) {
         out.program = switch (p) {
             .shell => |v| .{ .shell = try a.dupe(u8, v) },

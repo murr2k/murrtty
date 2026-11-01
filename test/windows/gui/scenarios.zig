@@ -115,6 +115,7 @@ pub const all = [_]Scenario{
     .{ .name = "clink-history", .about = "a cmd pane with Clink gets its own Clink history (CLINK_HISTORY_LABEL), and after murrtty quits and restarts, Up in the restored pane brings back its command (GHOSTTY_GUI_CLINK=folder)", .run = clinkHistory },
     .{ .name = "session-save", .about = "the session saved as it changes (session.json): the window, a tab and its pane's directory, a new tab, the tab in front, a split; a move saved as it ends, a divider as it is let go; a drag Esc cancels or murrtty ending mid-drag saves nothing; an unwritable state folder said once", .run = sessionSave },
     .{ .name = "session-close", .about = "the session comes back however murrtty closed (the owner's rule): a window closed while another stays leaves the file; the last window's X and the last shell's exit leave it as it was, the pane's folder included, and the next start brings the window back", .run = sessionClose },
+    .{ .name = "session-settings", .about = "what was changed while murrtty ran comes back: a pane's font size set by a binding and a split's inherited one, read-only, the zoomed split, the window's float and decorations (its size kept), the opacity toggle", .run = sessionSettings },
     .{ .name = "session-restore",.about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-numbers", .about = "the configuration editor's numbers: a percentage on a slider (pressed, dragged, Escape), shown in the terminals before a save and put back by Discard, stepped with the arrow keys, typed in percent and refused past its range; spin rows in their unit, stepped by their buttons, saved as Ghostty's numbers", .run = configEditorNumbers },
     .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
@@ -12524,6 +12525,7 @@ fn selectionScenario(h: *Harness) anyerror!void {
 const SavedSession = struct {
     version: u32 = 0,
     front: ?u32 = null,
+    background_opaque: ?bool = null,
     windows: []const Win = &.{},
 
     const Win = struct {
@@ -12535,12 +12537,15 @@ const SavedSession = struct {
         bottom: i32 = 0,
         maximized: bool = false,
         fullscreen: bool = false,
+        floating: ?bool = null,
+        decoration: ?[]const u8 = null,
         active: u32 = 0,
         tabs: []const Tab = &.{},
     };
     const Tab = struct {
         name: ?[]const u8 = null,
         focused: u32 = 0,
+        zoomed: ?u32 = null,
         nodes: []const Node = &.{},
     };
     const Node = struct {
@@ -12558,6 +12563,9 @@ const SavedSession = struct {
         directory: ?[]const u8 = null,
         program: ?Program = null,
         name: ?[]const u8 = null,
+        font_size: ?f32 = null,
+        font_size_adjusted: ?bool = null,
+        readonly: ?bool = null,
     };
     const Program = struct {
         direct: ?[]const []const u8 = null,
@@ -13728,6 +13736,114 @@ fn sessionClose(h: *Harness) anyerror!void {
         var g = try h.launchWith("session-close-again", config, .{ .env = env });
         defer g.deinit();
         try h.waitText(&g, "\\work>", 1, 20000);
+    }
+}
+
+/// Roadmap 5.10b: what was changed while murrtty ran comes back with the
+/// session. A pane's font size set by a binding (which a config reload
+/// keeps) and the one a split took from it (window-inherit-font-size: a
+/// reload replaces it), read-only mode, the zoomed split, the window's
+/// float and decorations (its rectangle kept), the opacity toggle.
+fn sessionSettings(h: *Harness) anyerror!void {
+    const class = try ipcClass(h, "session-settings");
+    defer h.alloc.free(class);
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\session-settings", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    const state = try std.fmt.allocPrint(h.alloc, "{s}\\state", .{dir});
+    defer h.alloc.free(state);
+    try h.makeDirAt(dir);
+    try h.makeDirAt(state);
+    const session_path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\session-{s}.json", .{ state, class });
+    defer h.alloc.free(session_path);
+    const config = try std.fmt.allocPrint(h.alloc, "{s}class = {s}\nfont-size = 12\nbackground-opacity = 0.9\n" ++
+        "keybind = ctrl+shift+f5=set_font_size:18\n" ++
+        "keybind = ctrl+shift+f6=new_split:right\n" ++
+        "keybind = ctrl+shift+f7=toggle_split_zoom\n" ++
+        "keybind = ctrl+shift+f8=toggle_window_float_on_top\n" ++
+        "keybind = ctrl+shift+f9=toggle_window_decorations\n" ++
+        "keybind = ctrl+shift+f11=toggle_background_opacity\n" ++
+        "keybind = ctrl+shift+f12=toggle_readonly\n", .{ base_config, class });
+    defer h.alloc.free(config);
+    const env: []const [2][]const u8 = &.{.{ "XDG_STATE_HOME", state }};
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+
+    // All of it, as the file has it: the pane set by the binding (18,
+    // adjusted), the split off it (18, inherited, read-only and zoomed),
+    // the window floating without decorations, the windows opaque.
+    const Saved = struct {
+        fn ok(_: void, s: SavedSession) bool {
+            if (!(s.background_opaque orelse false) or s.windows.len != 1) return false;
+            const win = s.windows[0];
+            if (!(win.floating orelse false) or !std.mem.eql(u8, win.decoration orelse "", "none") or win.tabs.len != 1) return false;
+            const tab = win.tabs[0];
+            const z = tab.zoomed orelse return false;
+            if (z >= tab.nodes.len) return false;
+            const zoomed = tab.nodes[z].pane orelse return false;
+            if (!(zoomed.readonly orelse false) or (zoomed.font_size orelse 0) != 18 or (zoomed.font_size_adjusted orelse false)) return false;
+            for (tab.nodes) |n| if (n.pane) |p| if (p.font_size_adjusted orelse false) {
+                return (p.font_size orelse 0) == 18 and !(p.readonly orelse false);
+            };
+            return false;
+        }
+    };
+
+    var rect: [4]i32 = .{ 0, 0, 0, 0 };
+    {
+        var g = try h.launchWith("session-settings", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        const win = try h.mainWindow(&g);
+        const a = try h.surface(&g, win);
+        h.key(a, cs, w.VK_F5);
+        h.key(a, cs, w.VK_F6);
+        try waitPanes(h, &g, 2);
+        // The split took the first pane's size as it was made.
+        var waited: u32 = 0;
+        while (waited < 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const p = d.value.windows[0].tabs[0].panes orelse &.{};
+            if (p.len == 2 and p[1].font_size == 18) break;
+            w.Sleep(100);
+        }
+        const b = try paneHwnd(h, &g, 1);
+        for ([_]u8{ w.VK_F7, w.VK_F8, w.VK_F9, w.VK_F11, w.VK_F12 }) |vk| h.key(b, cs, vk);
+        {
+            var s = try waitSession(h, session_path, 10000, {}, Saved.ok);
+            defer s.deinit();
+            try h.expect(Saved.ok({}, s.value), "saved: the first pane's 18 points (a binding's), the split's 18 (inherited) with read-only and its zoom, the window floating without decorations, the windows opaque", .{});
+        }
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            rect = d.value.windows[0].rect;
+        }
+        try quit(h, &g, b);
+    }
+
+    // Back at the next start, all of it.
+    {
+        var g = try h.launchWith("session-settings-again", config, .{ .env = env });
+        defer g.deinit();
+        try waitPanes(h, &g, 2);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.force_opaque, "the windows come back opaque (toggle_background_opacity)", .{});
+        const win = d.value.windows[0];
+        try h.expect(!win.translucent, "so the window isn't translucent", .{});
+        try h.expect(win.floating, "the window floats again", .{});
+        try h.expect(std.mem.eql(u8, win.decoration, "none") and win.captionless, "without decorations ({s}, captionless {})", .{ win.decoration, win.captionless });
+        const r = win.rect;
+        try h.expect(r[2] - r[0] == rect[2] - rect[0] and r[3] - r[1] == rect[3] - rect[1], "at its size ({d}x{d}, was {d}x{d})", .{ r[2] - r[0], r[3] - r[1], rect[2] - rect[0], rect[3] - rect[1] });
+        const tab = win.tabs[0];
+        try h.expect(tab.zoomed orelse false, "the split is zoomed again", .{});
+        const p = tab.panes orelse &.{};
+        if (p.len != 2) return h.fail("{d} panes, not 2", .{p.len});
+        try h.expect(p[0].font_size == 18 and p[0].font_adjusted and !p[0].core_readonly, "the first pane at 18 points, as a binding set them ({d}, adjusted {})", .{ p[0].font_size, p[0].font_adjusted });
+        const badge = if (p[1].status) |st| st.readonly else false;
+        try h.expect(p[1].font_size == 18 and !p[1].font_adjusted, "the split at 18 points, inherited ({d}, adjusted {})", .{ p[1].font_size, p[1].font_adjusted });
+        try h.expect(p[1].core_readonly and badge, "the split read-only, with its badge (core {}, badge {})", .{ p[1].core_readonly, badge });
+        try quit(h, &g, hwndOf(p[1].hwnd));
     }
 }
 

@@ -1410,6 +1410,16 @@ pub fn inTopBand(self: *const Window, screen: c.POINT) bool {
     return pt.y >= 0 and pt.y < self.frameY();
 }
 
+/// A restored window's toggle_window_decorations override (roadmap
+/// 5.10b), set while it is hidden and has no tab: the frame changes, the
+/// window's rectangle (the saved one) stays.
+pub fn restoreDecoration(self: *Window, value: configpkg.WindowDecoration) void {
+    if (self.quick != null) return;
+    self.decoration_override = value;
+    self.applyChrome();
+    self.layout();
+}
+
 /// toggle_window_decorations, as GTK's: from window-decoration = none to
 /// auto, from anything else to none, and back to the config's on the next
 /// toggle. The terminal area keeps its size, so the grid doesn't change,

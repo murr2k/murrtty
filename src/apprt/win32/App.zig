@@ -2410,6 +2410,7 @@ pub fn performAction(
         .toggle_window_decorations => {
             const window = windowFromTarget(target) orelse return false;
             window.toggleDecorations();
+            self.session.changed();
         },
 
         // As macOS (GTK leaves it out): every window at once, and new ones
@@ -2418,6 +2419,7 @@ pub fn performAction(
             if (self.config.@"background-opacity" >= 1) return false;
             self.force_opaque = !self.force_opaque;
             for (self.windows.items) |w| w.syncTranslucent();
+            self.session.changed();
         },
 
         .initial_size => {
@@ -2436,6 +2438,7 @@ pub fn performAction(
         .float_window => {
             const window = windowFromTarget(target) orelse return false;
             window.setFloat(value);
+            self.session.changed();
         },
         .reset_window_size => {
             const window = windowFromTarget(target) orelse return false;
@@ -2455,11 +2458,13 @@ pub fn performAction(
         },
 
         // The font size or the DPI changed the pane's cells, and with them
-        // its minimum: lay its tab out again.
+        // its minimum: lay its tab out again. The session keeps a font
+        // size (5.10b).
         .cell_size => {
             const surface = surfaceFromTarget(target) orelse return false;
             const window = surface.window;
             if (window.tabIndexOf(surface)) |i| window.tabs.items[i].layoutPanes();
+            self.session.changed();
         },
 
         .new_split => {
@@ -2476,7 +2481,9 @@ pub fn performAction(
 
         .toggle_split_zoom => {
             const surface = surfaceFromTarget(target) orelse return false;
-            return surface.window.toggleSplitZoom(surface);
+            const zoomed = surface.window.toggleSplitZoom(surface);
+            if (zoomed) self.session.changed();
+            return zoomed;
         },
 
         .equalize_splits => {
@@ -2645,6 +2652,7 @@ pub fn performAction(
         .readonly => {
             const surface = surfaceFromTarget(target) orelse return false;
             surface.setReadonly(value == .on);
+            self.session.changed();
         },
         .key_sequence => {
             const surface = surfaceFromTarget(target) orelse return false;

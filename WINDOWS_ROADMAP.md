@@ -420,7 +420,10 @@ roadmap item behind it.
   release), not at exit, and comes back however murrtty was closed, its
   last window's X and its last shell's `exit` included (5.10c; macOS
   keeps it only through Quit). GTK ignores the option (macOS has it, saved
-  at exit). A restored pane runs a fresh shell with no scrollback.
+  at exit). A restored pane runs a fresh shell with no scrollback. What
+  bindings changed comes back too: a pane's font size and read-only mode,
+  a zoomed split, a window's float and decorations toggle, the opacity
+  toggle (macOS keeps none of them).
 - **Single instance by default** (5.10b): `gtk-single-instance` defaults
   to `true`, `-e` doesn't turn it off, and a second plain launch brings
   the running murrtty's windows to the front without opening a window,
@@ -3178,6 +3181,22 @@ last window's X and the last shell's `exit` keep it, folder and all, and
 the next start brings it back) and `pane-history` (the last window's X
 keeps the pane's history; Up brings its last command back), both failing
 without the change.
+
+*Settings kept, 2026-11-01 (the owner's request: font size, "some other
+user parameters too"):* what a binding changed while murrtty ran comes
+back with the session. Per pane its font size, whether a binding set it
+(a config reload keeps it, as before) or a split took it from the pane
+it came from (`window-inherit-font-size`; a reload replaces it, and the
+restored one behaves the same), and read-only mode; per tab the zoomed
+pane (only the focused one, as a zoom always is); per window float
+(always on top) and the `toggle_window_decorations` override, set before
+its tabs so the window keeps its saved rectangle; and the opacity
+toggle, app-wide. The file names a decoration by its name, so a value an
+older murrtty lacks drops only itself. Colors are not kept: the config
+holds the configured ones, and those a program set (OSC 4, 10, 11) went
+with its shell. Scenario `session-settings` (bindings change it all,
+quit, the next start has it all back) fails with the restore side
+disabled.
 
 **5.11 Undo and redo of closes, L.** Keep closed panes, tabs and windows
 parked (hidden, process running) until `undo-timeout`. Undo and redo enter

@@ -847,6 +847,8 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     });
     try out.print(alloc, ",\"drop_effect\":{d}", .{app.test_state.drop_effect});
     try out.print(alloc, ",\"sentry_ready\":{}", .{@import("../../crash/main.zig").sentry.ready()});
+    // toggle_background_opacity's state (4.1), app-wide.
+    try out.print(alloc, ",\"force_opaque\":{}", .{app.force_opaque});
     // Which ConPTY new panes get: the bundled one or Windows' own (2.6).
     try out.print(alloc, ",\"conpty\":\"{t}\"", .{@import("../../os/main.zig").conpty.get().source});
     // Which opengl32 is loaded ("" before any), what its first context
@@ -1072,6 +1074,14 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             try out.print(alloc, ",\"gl_contexts\":{d},\"gl_robust\":{}", .{
                 wgl_state.contexts.load(.monotonic),
                 wgl_state.robust,
+            });
+            // The font size in points, whether it was adjusted (a binding,
+            // not inherited), and the core's read-only mode (5.10b keeps
+            // them).
+            try out.print(alloc, ",\"font_size\":{d:.2},\"font_adjusted\":{},\"core_readonly\":{}", .{
+                s.core_surface.font_size.points,
+                s.core_surface.font_size_adjusted,
+                s.core_surface.readonly,
             });
             try out.print(alloc, ",\"core_focused\":{},\"selection\":{},\"frames\":{d},\"probe\":{d},\"frame_ready\":{},\"shade\":{d:.3},\"keys\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
                 s.core_surface.focused,
