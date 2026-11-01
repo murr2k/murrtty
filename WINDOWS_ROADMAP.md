@@ -438,6 +438,11 @@ roadmap item behind it.
   llvmpipe it ships in `bin\mesa` and says in its window that it draws in
   software, where GTK's app has no fallback of its own (on Linux the
   system's Mesa already falls back to llvmpipe when there is no driver).
+- **The prompt on a resize** (2.2, 2.3): a resize keeps the prompt's rows and
+  reflows them like any text. GTK's clears them for the shell to redraw
+  (OSC 133's `redraw` defaults to on there, and its shells redraw on
+  SIGWINCH); no shell behind ConPTY redraws (cmd and PowerShell never do),
+  so murrtty takes `redraw=0` unless a shell sends `133;A;redraw=1`.
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -1276,6 +1281,18 @@ themselves. The `pwsh-integration` scenario runs every *Done when* item in
 both PowerShells, plus the title following `cd` and the running command, and
 an idle Ctrl+Shift+Q quitting without a dialog. S3 found no reason to bundle
 `OpenConsole` on Windows 11.
+
+*Fixed 2026-10-31:* with the integration on, a window resize, a pane's
+resize or a new split blanked the prompt until the next one (the owner's
+report). The core clears a prompt's rows on a resize for the shell to
+redraw (`Terminal.flags.shell_redraws_prompt`, `.true` by default), and
+neither shell redraws behind ConPTY, which sends no cells it thinks
+unchanged. Exec now sets the terminal's `default_shell_redraws_prompt`
+(a port addition, restored on RIS) to `.false` on Windows; a shell can
+still opt in with `133;A;redraw=1`. The suite missed it because its base
+config turns the integration off; `prompt-resize` types at an integrated
+cmd's and PowerShell 5.1's prompt and checks the line stays through a
+window resize and a split.
 
 *Mid-phase review 2026-10-25* (2.1 and 2.2; five reviewers and a skeptic
 per finding, 20 of 23 findings confirmed), fixed:

@@ -80,6 +80,15 @@ pub fn initTerminal(self: *Exec, term: *terminal.Terminal) void {
     // the prompt's text lands on instead.
     if (comptime builtin.target.os.tag == .windows) term.flags.defer_prompt_mark = true;
 
+    // No shell behind ConPTY redraws its prompt on a resize (cmd and
+    // PowerShell never do, and ConPTY sends no cells it thinks unchanged),
+    // so a resize must not clear the prompt for them: it stayed blank until
+    // the next prompt. A shell can still opt in with OSC 133;A;redraw=1.
+    if (comptime builtin.target.os.tag == .windows) {
+        term.default_shell_redraws_prompt = .false;
+        term.flags.shell_redraws_prompt = .false;
+    }
+
     // Setup our initial grid/screen size from the terminal. This
     // can't fail because the pty should not exist at this point.
     self.resize(.{

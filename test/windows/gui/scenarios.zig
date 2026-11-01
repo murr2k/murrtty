@@ -34,6 +34,7 @@ pub const all = [_]Scenario{
     .{ .name = "present", .about = "background-opacity doesn't darken an opaque (toggled) window; exact background pixels; translucent, premultiplied", .run = present },
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
     .{ .name = "resize", .about = "resizing relays out the terminal, and the edge stays the background color", .run = resize },
+    .{ .name = "prompt-resize", .about = "with shell integration (cmd, PowerShell 5.1), the prompt and its typed line stay on screen through a window resize and a split", .run = promptResize },
     .{ .name = "resize-overlay", .about = "the grid size shows while a pane resizes: after-first, never, always, position, duration", .run = resizeOverlay },
     .{ .name = "context-menu", .about = "right-click opens GTK's menu with bindings and grayed entries; Copy, Paste, New Tab, Close Tab (which asks)", .run = contextMenu },
     .{ .name = "search", .about = "Ctrl+Shift+F search box: counter, Enter/Shift+Enter and buttons, Escape, reopening, search_selection", .run = search },
@@ -1588,6 +1589,50 @@ fn resize(h: *Harness) anyerror!void {
         try h.expect(px == 0x282c34, "the corner is the background after resizing (#{x:0>6})", .{px});
     }
     try quit(h, &g, try h.surface(&g, win));
+}
+
+/// With shell integration on, the prompt and the line typed at it stay on
+/// screen through a window resize and a new split. The core clears a
+/// prompt's rows on resize for a shell that redraws it, and no shell
+/// behind ConPTY does (cmd and PowerShell never redraw on a resize, and
+/// ConPTY sends no cells it thinks unchanged): the prompt vanished until
+/// Enter (the owner's report, 2026-10-31).
+fn promptResize(h: *Harness) anyerror!void {
+    try promptResizeIn(h, "prompt-resize", "shell-integration = detect\n", ">", ">typed-here");
+    try promptResizeIn(h, "prompt-resize-pwsh", "command = powershell.exe -NoLogo -NoProfile\nshell-integration = detect\n", "PS ", "> typed-here");
+}
+
+fn promptResizeIn(h: *Harness, name: []const u8, comptime config: []const u8, prompt: []const u8, line: []const u8) !void {
+    var g = try start(h, name, config ++ "confirm-close-surface = false\n", prompt);
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const first = try h.surface(&g, win);
+    // A new pane's first sizes come before its prompt is settled.
+    w.Sleep(500);
+    try h.typeText(first, "typed-here");
+    try waitPaneText(h, &g, 0, line, 1);
+
+    const before = try gridOf(h, &g);
+    try h.dragResize(&g, 160, 80);
+    var waited: u32 = 0;
+    while ((try gridOf(h, &g))[0] == before[0] and waited < 5000) : (waited += 200) w.Sleep(200);
+    w.Sleep(1000);
+    try h.expect(try paneShows(h, &g, 0, line), "{s}: the prompt and its line stay after a window resize", .{name});
+
+    h.key(first, .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    w.Sleep(1500);
+    try h.expect(try paneShows(h, &g, 0, line), "{s}: and in the first pane after a split beside it", .{name});
+}
+
+/// Whether pane `i` of the first window's active tab shows `needle` now.
+fn paneShows(h: *Harness, g: *Harness.Ghostty, i: usize, needle: []const u8) !bool {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    const p = dw.tabs[dw.active].panes orelse return false;
+    if (i >= p.len) return false;
+    return std.mem.indexOf(u8, p[i].text orelse "", needle) != null;
 }
 
 /// Button ids of the config errors dialog (src/apprt/win32/App.zig).

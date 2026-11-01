@@ -90,6 +90,12 @@ cursor: Cursor = .{},
 /// variant is in `flags.xt_checksum`.
 default_xt_checksum: xt_checksum.Flags = .{},
 
+/// What `flags.shell_redraws_prompt` starts as and returns to on RIS. A pty
+/// whose shells never redraw their prompt on a resize (Windows' ConPTY)
+/// sets it to `.false`, or each resize would clear a prompt no shell
+/// redraws. A shell can still opt in with OSC 133;A;redraw=1.
+default_shell_redraws_prompt: osc.semantic_prompt.Redraw = .true,
+
 /// The most recently set mouse shape for the terminal.
 mouse_shape: mouse.Shape = .text,
 
@@ -5161,6 +5167,7 @@ pub fn fullReset(self: *Terminal) void {
         .win32_input_mode = self.flags.win32_input_mode,
 
         .xt_checksum = self.default_xt_checksum,
+        .shell_redraws_prompt = self.default_shell_redraws_prompt,
     };
     self.modes.reset();
     self.tabstops.reset(TABSTOP_INTERVAL);
@@ -15876,6 +15883,36 @@ test "Terminal: deferred prompt mark lands on the prompt text's row" {
     for ("> ") |c| try t.print(c);
     try testing.expectEqual(.none, testRowPrompt(&t, 4));
     try testing.expectEqual(.prompt, testRowPrompt(&t, 2));
+}
+
+test "Terminal: a resize keeps the prompt when the shell doesn't redraw it" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+    t.default_shell_redraws_prompt = .false;
+    t.flags.shell_redraws_prompt = .false;
+
+    // Through a reset, as ConPTY's shells never redraw.
+    t.fullReset();
+    try testing.expectEqual(osc.semantic_prompt.Redraw.false, t.flags.shell_redraws_prompt);
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("> ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input_terminate_eol));
+    for ("echo") |c| try t.print(c);
+    try t.resize(alloc, .{ .cols = 12, .rows = 5 });
+    {
+        const str = try t.plainString(alloc);
+        defer alloc.free(str);
+        try testing.expectEqualStrings("> echo", str);
+    }
+
+    // A shell saying it redraws still gets its prompt cleared, until RIS.
+    var cmd: osc.Command.SemanticPrompt = .init(.fresh_line_new_prompt);
+    cmd.options_unvalidated = "redraw=1";
+    try t.semanticPrompt(cmd);
+    try testing.expectEqual(osc.semantic_prompt.Redraw.true, t.flags.shell_redraws_prompt);
+    t.fullReset();
+    try testing.expectEqual(osc.semantic_prompt.Redraw.false, t.flags.shell_redraws_prompt);
 }
 
 test "Terminal: deferred prompt mark with no prompt text is dropped" {
