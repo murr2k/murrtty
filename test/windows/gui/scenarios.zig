@@ -13826,6 +13826,18 @@ fn sessionSettings(h: *Harness) anyerror!void {
         var g = try h.launchWith("session-settings-again", config, .{ .env = env });
         defer g.deinit();
         try waitPanes(h, &g, 2);
+        // A dump is a sent message, which murrtty can answer while it is
+        // still restoring (the panes made, the window not yet shown and
+        // set): wait for the end, then check each on a dump of its own.
+        var waited: u32 = 0;
+        while (waited < 10000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const dw = d.value.windows[0];
+            const p = dw.tabs[0].panes orelse &.{};
+            if (dw.visible and dw.floating and (dw.tabs[0].zoomed orelse false) and p.len == 2 and p[1].core_readonly) break;
+            w.Sleep(100);
+        }
         var d = try h.dump(&g);
         defer d.deinit();
         try h.expect(d.value.force_opaque, "the windows come back opaque (toggle_background_opacity)", .{});

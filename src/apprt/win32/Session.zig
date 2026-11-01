@@ -719,8 +719,9 @@ fn restoreWindow(self: *Session, a: Allocator, sw: SavedWindow) !*Window {
         return error.NoTab;
     }
     if (sw.name) |n| window.setTitleOverride(n);
-    window.showRestored(sw.maximized, sw.fullscreen, @min(sw.active, window.tabs.items.len - 1));
+    // Above the others from its first show.
     if (sw.floating orelse false) window.setFloat(.on);
+    window.showRestored(sw.maximized, sw.fullscreen, @min(sw.active, window.tabs.items.len - 1));
     gone.tell(window);
     return window;
 }
