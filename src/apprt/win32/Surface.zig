@@ -1920,6 +1920,7 @@ fn contextMenu(self: *Surface, x: c_int, y: c_int) void {
         .notify_next => self.notify_next_command = !self.notify_next_command,
         .config_editor => self.app.openConfigEditor(),
         .fit_screen => self.window.fitToScreen(),
+        .close_all_but => if (self.core_initialized) self.app.request(.{ .close_all_but = self.core_surface.id }),
         .about => {},
     }
 }

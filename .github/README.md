@@ -211,7 +211,10 @@ hosted Windows runner and then the unit tests.
   `resize-overlay-duration`).
 - The right-click menu, as in Ghostty's GTK app: Copy, Paste, Clear, Reset
   and Split, Tab, Window and Config submenus, each entry with its key
-  binding; entries murrtty can't perform yet are grayed. A right-click
+  binding; entries murrtty can't perform yet are grayed. murrtty adds
+  Close All but This (there and in the main menu): every other pane, tab
+  and window closes, asking once if something still runs there, and Undo
+  brings them back. A right-click
   selects the word under the mouse first; a program using the mouse gets
   the click instead. `right-click-action = copy-or-paste` (copy if there is
   a selection, otherwise paste, as in Windows Terminal) or `paste` replace

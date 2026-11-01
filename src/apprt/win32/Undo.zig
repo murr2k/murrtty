@@ -24,7 +24,7 @@ const log = std.log.scoped(.win32_undo);
 pub const timer_id = 0x5B11;
 
 /// What an entry undoes, as macOS names them.
-pub const Name = enum { close_terminal, close_tab, close_tabs, close_window, close_all_windows };
+pub const Name = enum { close_terminal, close_tab, close_tabs, close_window, close_all_windows, close_all_but };
 
 app: *App,
 /// Where parked tabs live; made at the first park (Window.createShelf).

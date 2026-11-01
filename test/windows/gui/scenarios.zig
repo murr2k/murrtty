@@ -81,7 +81,8 @@ pub const all = [_]Scenario{
     .{ .name = "tab-drag-close", .about = "a tab closing while another is dragged: the drag goes on with the tab pressed", .run = tabDragClose },
     .{ .name = "tab-drag", .about = "tabs reorder live as they are dragged, tear off into a new window, move onto another window's bar (an emptied window closes); move_tab_to_new_window", .run = tabDrag },
     .{ .name = "inspector", .about = "the terminal inspector: Ctrl+Shift+I opens a window for the pane that draws, with the core's inspector on; the mouse reaches it; the toggle, its close and the pane's close end it; its Terminal IO export writes the events", .run = inspectorScenario },
-    .{ .name = "undo", .about = "undo and redo of closes (macOS's): a pane back where it was, still running, a tab, closed tabs together, a window where it was; not a pane whose program ended; a parked pane's program ending; expiry; quitting with the last window", .run = undoCloses },
+    .{ .name = "close-all-but", .about = "Close All but This (the owner's ask): grayed with one pane; from a pane's menu, its tab's other pane, its window's other tab and the other window close, one entry for undo, which brings them back", .run = closeAllButScenario },
+    .{ .name = "undo",.about = "undo and redo of closes (macOS's): a pane back where it was, still running, a tab, closed tabs together, a window where it was; not a pane whose program ended; a parked pane's program ending; expiry; quitting with the last window", .run = undoCloses },
     .{ .name = "pane-drag", .about = "panes move by their drag handle onto a half of another pane, in the tab, into a hovered tab, into another window (an emptied window closes); Escape cancels", .run = paneDrag },
     .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
     .{ .name = "blur", .about = "background-blur: Acrylic (DWM's system backdrop) on Windows 11 22H2+, else the accent policy (also forced); none when opaque, off or at opacity 1", .run = blurScenario },
@@ -1767,14 +1768,15 @@ fn contextMenu(h: *Harness) anyerror!void {
     {
         const items = try h.menuItems(menu);
         defer h.freeMenuItems(items);
-        try h.expect(items.len == 12, "twelve entries (got {d})", .{items.len});
+        try h.expect(items.len == 13, "thirteen entries (got {d})", .{items.len});
         // Copy is bound to Ctrl+Shift+C and Ctrl+Insert; the core's reverse
         // map keeps the binding added last, as GTK's menu shows too.
         try h.expect(std.mem.startsWith(u8, items[0].text, "&Copy\tCtrl+") and !items[0].grayed, "Copy, with its binding, enabled over a selection ('{s}')", .{items[0].text});
         try h.expect(std.mem.startsWith(u8, items[1].text, "&Paste\t") and !items[1].grayed, "Paste, enabled with text on the clipboard ('{s}')", .{items[1].text});
         try h.expect(std.mem.eql(u8, items[2].text, "&Notify on Next Command Finish") and !items[2].grayed and !items[2].checked, "Notify on Next Command Finish, enabled and unchecked ('{s}')", .{items[2].text});
-        try h.expect(items[3].separator and items[6].separator and items[10].separator, "separators where GTK has them", .{});
-        try h.expect(items[7].submenu and items[8].submenu and items[9].submenu and items[11].submenu, "Split, Tab, Window and Config submenus", .{});
+        try h.expect(items[3].separator and items[6].separator and items[11].separator, "separators where GTK has them", .{});
+        try h.expect(items[7].submenu and items[8].submenu and items[9].submenu and items[12].submenu, "Split, Tab, Window and Config submenus", .{});
+        try h.expect(std.mem.eql(u8, items[10].text, "Close &All but This") and items[10].grayed, "then murrtty's Close All but This, grayed with one pane ('{s}')", .{items[10].text});
     }
     h.menuKey(menu, 'c');
     try waitNoMenu(h, &g);
@@ -2683,12 +2685,13 @@ fn tabButtons(h: *Harness) anyerror!void {
     {
         const items = try h.menuItems(menu);
         defer h.freeMenuItems(items);
-        try h.expect(items.len == 21, "GTK's main menu: 21 entries with separators (got {d})", .{items.len});
-        if (items.len == 21) {
+        try h.expect(items.len == 22, "GTK's main menu and murrtty's Close All but This: 22 entries with separators (got {d})", .{items.len});
+        if (items.len == 22) {
             try h.expect(std.mem.startsWith(u8, items[0].text, "&Copy") and std.mem.startsWith(u8, items[8].text, "&New Tab"), "Copy first, New Tab with the tab's items", .{});
             try h.expect(items[10].submenu and std.mem.eql(u8, items[10].text, "&Split"), "a Split submenu", .{});
-            try h.expect(std.mem.startsWith(u8, items[16].text, "Terminal &Inspector") and !items[16].grayed, "Terminal Inspector (roadmap 5.12)", .{});
-            try h.expect(std.mem.eql(u8, items[19].text, "Abo&ut murrtty") and std.mem.startsWith(u8, items[20].text, "&Quit"), "About murrtty, then Quit", .{});
+            try h.expect(std.mem.eql(u8, items[11].text, "Close All but T&his"), "Close All but This after it ('{s}')", .{items[11].text});
+            try h.expect(std.mem.startsWith(u8, items[17].text, "Terminal &Inspector") and !items[17].grayed, "Terminal Inspector (roadmap 5.12)", .{});
+            try h.expect(std.mem.eql(u8, items[20].text, "Abo&ut murrtty") and std.mem.startsWith(u8, items[21].text, "&Quit"), "About murrtty, then Quit", .{});
         }
     }
     h.menuKey(menu, 'n');
@@ -8207,6 +8210,71 @@ fn waitClassCount(h: *Harness, g: *Harness.Ghostty, comptime class: []const u8, 
         if (found.len == count) return h.expect(true, what, .{});
         if (waited >= 5000) return h.fail(what ++ ": {d} windows of {s}", .{ found.len, class });
         w.Sleep(100);
+    }
+}
+
+/// Close All but This (the owner's ask, 2026-11-01), from the terminal's
+/// menu: grayed while the pane is all there is; else everything but the
+/// pane right-clicked closes (its tab's other pane, its window's other
+/// tab, the other window), one entry for undo, which brings it all back.
+fn closeAllButScenario(h: *Harness) anyerror!void {
+    const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    var g = try start(h, "close-all-but", "undo-timeout = 60s\n" ++ undo_binds, ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const a = try h.surface(&g, win);
+    h.rightPress(a, 60, 40);
+    {
+        const menu = try h.waitMenu(&g, 1, 5000);
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        const at = for (items, 0..) |it, i| {
+            if (std.mem.eql(u8, it.text, "Close &All but This")) break i;
+        } else return h.fail("no Close All but This in the terminal's menu", .{});
+        try h.expect(items[at].grayed, "Close All but This is grayed while the pane is all there is", .{});
+        _ = w.PostMessageW(menu, w.WM_KEYDOWN, w.VK_ESCAPE, 1);
+    }
+    try waitNoMenu(h, &g);
+
+    // A split, a second tab, a second window.
+    try splitPane(h, &g, 0, 'O');
+    h.key(a, cs, 'T');
+    try waitWindowTabs(h, &g, win, 2);
+    const second_tab = try paneHwnd(h, &g, 0);
+    h.key(second_tab, cs, 'N');
+    try waitWindowCount(h, &g, 2);
+    w.Sleep(300);
+
+    // From the first pane's menu.
+    h.rightPress(a, 60, 40);
+    {
+        const menu = try h.waitMenu(&g, 1, 5000);
+        h.menuKey(menu, 'a');
+    }
+    try waitNoMenu(h, &g);
+    try waitWindowCount(h, &g, 1);
+    try waitWindowTabs(h, &g, win, 1);
+    try waitPanes(h, &g, 1);
+    try expectTabPanes(h, &g, 0, &.{@intFromPtr(a)}, "only the pane right-clicked is left");
+    try expectUndo(h, &g, &.{"close_all_but"}, &.{}, 3, "one entry for undo, the pane, the tab and the window parked");
+
+    // Undo brings it all back.
+    h.key(a, cs, w.VK_F11);
+    try waitWindowCount(h, &g, 2);
+    try waitWindowTabs(h, &g, win, 2);
+    {
+        var waited: u32 = 0;
+        var panes: usize = 0;
+        while (waited <= 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            for (d.value.windows) |dw| if (hwndOf(dw.hwnd) == win) {
+                panes = if (dw.tabs[0].panes) |p| p.len else 0;
+            };
+            if (panes == 2) break;
+            w.Sleep(100);
+        }
+        try h.expect(panes == 2, "undo brings back the window, the tab and the split ({d} panes in the first tab)", .{panes});
     }
 }
 

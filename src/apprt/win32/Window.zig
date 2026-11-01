@@ -829,6 +829,53 @@ fn removeTab(self: *Window, index: usize, park: bool) enum { removed, window_des
     return .removed;
 }
 
+/// Close All but This, for this window (App.closeAllBut): how much of it
+/// closes, the other panes of `keep`'s tab and the other tabs, and whether
+/// a process runs in any of them.
+pub fn othersOf(self: *Window, keep: *Surface) struct { count: usize, confirm: bool } {
+    const index = self.tabIndexOf(keep) orelse return .{ .count = 0, .confirm = false };
+    var count: usize = 0;
+    var confirm = false;
+    for (self.tabs.items, 0..) |t, i| {
+        if (i != index) {
+            count += 1;
+            confirm = confirm or self.tabNeedsConfirm(t);
+            continue;
+        }
+        var it = t.panes();
+        while (it.next()) |e| if (e.view != keep) {
+            count += 1;
+            confirm = confirm or self.needsConfirm(e.view);
+        };
+    }
+    return .{ .count = count, .confirm = confirm };
+}
+
+/// Whether a process runs in any of the window's panes (requestClose's
+/// question).
+pub fn anyNeedsConfirm(self: *Window) bool {
+    var it = self.panes();
+    while (it.next()) |s| if (self.needsConfirm(s)) return true;
+    return false;
+}
+
+/// Close everything of this window but `keep`, without asking (App asked),
+/// each close kept for undo in the caller's group: the other tabs, then the
+/// other panes of `keep`'s tab, which then holds it alone.
+pub fn closeOthersNow(self: *Window, keep: *Surface) void {
+    self.closeTabsNow(keep, .other);
+    const index = self.tabIndexOf(keep) orelse return;
+    const alloc = self.app.core_app.alloc;
+    var others: std.ArrayList(*Surface) = .empty;
+    defer others.deinit(alloc);
+    var it = self.tabs.items[index].panes();
+    while (it.next()) |e| if (e.view != keep) others.append(alloc, e.view) catch return;
+    for (others.items) |s| {
+        if (self.tabIndexOf(s) == null) continue;
+        self.closeSurface(s, false);
+    }
+}
+
 fn tabNeedsConfirm(self: *Window, tab: *const Tab) bool {
     var it = tab.panes();
     while (it.next()) |entry| if (self.needsConfirm(entry.view)) return true;
@@ -1215,10 +1262,7 @@ fn onDestroy(self: *Window) void {
 /// Close the window, confirming if a process is running. Only call this
 /// from the message loop (see App.Request).
 pub fn requestClose(self: *Window) void {
-    var confirm = false;
-    var it = self.panes();
-    while (it.next()) |s| confirm = confirm or self.needsConfirm(s);
-    if (confirm and !self.app.confirmClose(self.hwnd, .window)) return;
+    if (self.anyNeedsConfirm() and !self.app.confirmClose(self.hwnd, .window)) return;
     self.closeNow();
 }
 
@@ -2068,6 +2112,7 @@ fn runChoice(self: *Window, surface: *Surface, choice: ContextMenu.Choice) void 
         .notify_next => surface.notify_next_command = !surface.notify_next_command,
         .config_editor => self.app.openConfigEditor(),
         .fit_screen => self.fitToScreen(),
+        .close_all_but => if (surface.core_initialized) self.app.request(.{ .close_all_but = surface.core_surface.id }),
     }
 }
 

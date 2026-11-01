@@ -422,6 +422,13 @@ roadmap item behind it.
 - **Fit Window to Screen** (5.10b): an item in the terminal's Window
   submenu and the system menu sizing the window to its monitor's work
   area, not maximized; GTK has none.
+- **Close All but This** (the owner's ask, 2026-11-01): an item of the
+  terminal's menu and the main menu closing everything but the pane it
+  was opened on (its tab's other panes, its window's other tabs, the
+  other windows; not the quick terminal), asking once if a process runs
+  in any of it, and undone as one close; grayed when the pane is all
+  there is. GTK has none. With 5.10c, what is left is what the next start
+  brings back however murrtty is then closed.
 - **Each pane's command history** (5.10b part C): a restored pane's shell
   gets back its own command lines for up-arrow (PowerShell through
   PSReadLine's history file, cmd with Clink through a history label of

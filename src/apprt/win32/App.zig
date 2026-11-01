@@ -79,6 +79,8 @@ pub const Request = union(enum) {
     /// Close a window, confirming if a process is running.
     close_window: u64,
     close_all_windows,
+    /// Close All but This: every pane but this one (a pane's core id).
+    close_all_but: u64,
     quit,
     open_url: OpenUrl,
     /// Open the config file in an editor (see openConfig).
@@ -129,7 +131,8 @@ const id_ignore_config = 112;
 const id_close = c.IDYES;
 
 /// What a close confirmation is for: GTK's targets (app, window, tab,
-/// split), and murrtty's for closing all windows and several tabs at once.
+/// split), and murrtty's for closing all windows, several tabs at once,
+/// and all but one pane.
 pub const CloseTarget = enum {
     app,
     all_windows,
@@ -137,6 +140,7 @@ pub const CloseTarget = enum {
     tab,
     tabs,
     split,
+    all_but,
 
     /// GTK's heading.
     pub fn heading(self: CloseTarget) []const u8 {
@@ -147,6 +151,7 @@ pub const CloseTarget = enum {
             .tab => "Close Tab?",
             .tabs => "Close Tabs?",
             .split => "Close Split?",
+            .all_but => "Close All but This?",
         };
     }
 
@@ -158,6 +163,7 @@ pub const CloseTarget = enum {
             .tab => "All terminal sessions in this tab will be terminated.",
             .tabs => "All terminal sessions in these tabs will be terminated.",
             .split => "The currently running process in this split will be terminated.",
+            .all_but => "All other terminal sessions will be terminated.",
         };
     }
 };
@@ -969,6 +975,7 @@ fn runRequests(self: *App) void {
             .close_tabs => |v| if (self.findSurface(v.id)) |s| s.window.closeTabs(s, v.mode),
             .close_window => |id| if (self.findWindow(id)) |w| w.requestClose(),
             .close_all_windows => if (self.confirmCloseAll(.all_windows)) self.closeAllWindows(true),
+            .close_all_but => |id| if (self.findSurface(id)) |s| self.closeAllBut(s),
             .quit => self.quit(),
             .open_config => {
                 // The shell can show dialogs of its own.
@@ -1765,7 +1772,7 @@ pub fn trayMenu(self: *App, owner: c.HWND, at: c.POINT) void {
     switch (ContextMenu.trackTray(self, owner, at) orelse return) {
         .action => |action| self.runAppAction(action),
         .config_editor => self.openConfigEditor(),
-        .about, .notify_next, .fit_screen => {},
+        .about, .notify_next, .fit_screen, .close_all_but => {},
     }
 }
 
@@ -1870,6 +1877,45 @@ fn exportTerminalIo(self: *App, id: u64, contents: []const u8) void {
 
 /// Close every window, kept for undo as one close if `park` (roadmap 5.11;
 /// not when quitting).
+/// What Close All but This would close for `keep`: the other panes of its
+/// tab, its window's other tabs, and the other windows (not the quick
+/// terminal, which opens again from its toggle); and whether a process
+/// runs in any of them.
+pub fn othersOf(self: *App, keep: *Surface) struct { count: usize, confirm: bool } {
+    const own = keep.window.othersOf(keep);
+    var count = own.count;
+    var ask = own.confirm;
+    for (self.windows.items) |w| {
+        if (w == keep.window or w.quick != null) continue;
+        count += 1;
+        ask = ask or w.anyNeedsConfirm();
+    }
+    return .{ .count = count, .confirm = ask };
+}
+
+/// Close All but This (the owner's ask, 2026-11-01; the terminal's menu and
+/// the main menu): everything but `keep` closes, asking once if a process
+/// runs in any of it, kept for undo as one close. From the message loop
+/// (Request.close_all_but).
+fn closeAllBut(self: *App, keep: *Surface) void {
+    const others = self.othersOf(keep);
+    if (others.count == 0) return;
+    const window = keep.window;
+    if (others.confirm and !self.confirmClose(window.hwnd, .all_but)) return;
+    self.undo.begin(.close_all_but);
+    defer self.undo.end();
+    var i = self.windows.items.len;
+    while (i > 0) {
+        i -= 1;
+        if (i >= self.windows.items.len) continue;
+        const w = self.windows.items[i];
+        if (w == window or w.quick != null) continue;
+        w.closeNow();
+    }
+    window.closeOthersNow(keep);
+    window.presentSurface(keep);
+}
+
 fn closeAllWindows(self: *App, park: bool) void {
     self.closing_all = true;
     defer self.closing_all = false;
