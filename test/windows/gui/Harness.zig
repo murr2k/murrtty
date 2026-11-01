@@ -2012,25 +2012,29 @@ pub fn dump(self: *Harness, g: *const Ghostty) !std.json.Parsed(Dump) {
 }
 
 /// The color of the pixel at client (`x`, `y`) of the active tab, as the
-/// renderer next presents it. Ghostty reads it back in Debug builds, so
-/// this works on the hidden desktop, where captures don't.
+/// renderer presents it in a frame drawn after asking. Ghostty reads it
+/// back in Debug builds, so this works on the hidden desktop, where
+/// captures don't.
+///
+/// Asked twice: the first answer comes from the next present, whose frame
+/// may have read the terminal before the ask (a slow renderer, llvmpipe's,
+/// is often mid-frame); frames run one after another, so the second comes
+/// from a frame begun after the first answer.
 pub fn probe(self: *Harness, g: *const Ghostty, x: u32, y: u32) !u32 {
-    var d = try self.dumpWith(g, 1, @bitCast(@as(usize, y << 16 | x)));
-    d.deinit();
-    var waited: u32 = 0;
-    while (waited <= 5000) : (waited += 100) {
-        var dd = try self.dump(g);
-        defer dd.deinit();
-        const win = dd.value.windows[0];
-        if (win.tabs[win.active].probe) |v| if (v & (1 << 24) != 0) return v & 0xFFFFFF;
-        w.Sleep(100);
-    }
-    return self.fail("no frame was presented after asking for pixel ({d},{d})", .{ x, y });
+    _ = try self.probeOnce(g, null, x, y);
+    return self.probeOnce(g, null, x, y);
 }
 
 /// The pixel at (x, y) of pane `i` of the first window's active tab, read
-/// back from the next frame it presents (every pane is asked).
+/// back as `probe` does (every pane is asked).
 pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u32 {
+    _ = try self.probeOnce(g, i, x, y);
+    return self.probeOnce(g, i, x, y);
+}
+
+/// One ask, answered by the next present: of the active tab (`pane` null)
+/// or of its pane `pane`.
+fn probeOnce(self: *Harness, g: *const Ghostty, pane: ?usize, x: u32, y: u32) !u32 {
     var d = try self.dumpWith(g, 1, @bitCast(@as(usize, y << 16 | x)));
     d.deinit();
     var waited: u32 = 0;
@@ -2038,12 +2042,16 @@ pub fn probePane(self: *Harness, g: *const Ghostty, i: usize, x: u32, y: u32) !u
         var dd = try self.dump(g);
         defer dd.deinit();
         const win = dd.value.windows[0];
-        if (win.tabs[win.active].panes) |p| if (i < p.len) if (p[i].probe) |v| {
-            if (v & (1 << 24) != 0) return v & 0xFFFFFF;
-        };
+        const tab = win.tabs[win.active];
+        const value: ?u32 = if (pane) |i| v: {
+            const p = tab.panes orelse break :v null;
+            break :v if (i < p.len) p[i].probe else null;
+        } else tab.probe;
+        if (value) |v| if (v & (1 << 24) != 0) return v & 0xFFFFFF;
         w.Sleep(100);
     }
-    return self.fail("pane {d} presented no frame after asking for pixel ({d},{d})", .{ i, x, y });
+    if (pane) |i| return self.fail("pane {d} presented no frame after asking for pixel ({d},{d})", .{ i, x, y });
+    return self.fail("no frame was presented after asking for pixel ({d},{d})", .{ x, y });
 }
 
 /// Have every pane read back the whole frame it presents next and write the

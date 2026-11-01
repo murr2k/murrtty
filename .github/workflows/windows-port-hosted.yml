@@ -92,6 +92,50 @@ jobs:
         shell: cmd
         run: .\build-windows.cmd -SetupOnly
 
+      # The runners' display starts at 1024x768, too small for scenarios
+      # that place a window beside another or type a long line (undo,
+      # window-options, bell): take its largest mode, as Display Settings
+      # would.
+      - name: Display
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @'
+          using System.Runtime.InteropServices;
+          public static class Display {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+              public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+              public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels;
+              public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+              public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+            }
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool EnumDisplaySettingsW(string device, int mode, ref DEVMODE dm);
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int ChangeDisplaySettingsW(ref DEVMODE dm, int flags);
+          }
+          '@
+          function Mode([int]$i) {
+            $dm = New-Object Display+DEVMODE
+            $dm.dmSize = [Runtime.InteropServices.Marshal]::SizeOf($dm)
+            if ([Display]::EnumDisplaySettingsW($null, $i, [ref]$dm)) { return $dm } else { return $null }
+          }
+          $current = Mode -1
+          "display: $($current.dmPelsWidth)x$($current.dmPelsHeight)"
+          $best = $current
+          for ($i = 0; ($m = Mode $i) -ne $null; $i++) {
+            if ($m.dmBitsPerPel -eq $current.dmBitsPerPel -and $m.dmPelsWidth * $m.dmPelsHeight -gt $best.dmPelsWidth * $best.dmPelsHeight) { $best = $m }
+          }
+          if ($best.dmPelsWidth -ne $current.dmPelsWidth -or $best.dmPelsHeight -ne $current.dmPelsHeight) {
+            $best.dmFields = 0x80000 -bor 0x100000   # DM_PELSWIDTH | DM_PELSHEIGHT
+            $r = [Display]::ChangeDisplaySettingsW([ref]$best, 0)
+            "ChangeDisplaySettings to $($best.dmPelsWidth)x$($best.dmPelsHeight): $r (0 is success)"
+            $now = Mode -1
+            "display: $($now.dmPelsWidth)x$($now.dmPelsHeight)"
+          }
+
       - name: GUI suite
         id: gui
         if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
@@ -104,15 +148,19 @@ jobs:
         run: |
           $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
           if ($scenarioArgs.Count -eq 0) { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }
-          & .\test\windows\gui\run.cmd @scenarioArgs
+          & .\test\windows\gui\run.cmd --verbose @scenarioArgs
           exit $LASTEXITCODE
 
+      # With murrtty's symbols, for a crash report's addresses.
       - name: Upload failed GUI runs
         if: ${{ failure() && steps.gui.outcome == 'failure' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gui-tests-${{ matrix.arch }}
-          path: ${{ runner.temp }}\gui
+          path: |
+            ${{ runner.temp }}\gui
+            zig-out\bin\murrtty.exe
+            zig-out\bin\murrtty.pdb
           retention-days: 7
           if-no-files-found: ignore
 

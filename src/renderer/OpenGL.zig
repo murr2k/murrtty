@@ -630,6 +630,14 @@ pub fn present(
 fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     const ctx = &gl.glad.context;
     const state = &self.wgl_state;
+    // The tests' probe is answered by a present begun after it was asked
+    // for, which then sees everything set before the ask (a toggled
+    // opacity's `transparent`, say): one already under way, which a slow
+    // renderer (llvmpipe's) makes likely, read what was set before.
+    const probe_point: u32 = if (comptime builtin.mode == .debug and is_windows)
+        (if (state.sampling) state.probe_point.swap(Wgl.no_probe, .acquire) else Wgl.no_probe)
+    else
+        Wgl.no_probe;
     const p = state.present orelse made: {
         const program = try gl.Program.createVF(present_vertex, present_fragment);
         errdefer program.destroy();
@@ -711,12 +719,15 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     if (comptime builtin.mode == .debug) if (state.sampling) {
         _ = state.frames.fetchAdd(1, .monotonic);
         state.sample.store(readPixel(@max(win_w - 6, 0), 6), .monotonic);
-        const point = state.probe_point.load(.monotonic);
-        if (point != Wgl.no_probe) {
-            const x: gl.c.GLint = @intCast(point & 0xFFFF);
-            const y: gl.c.GLint = @intCast(point >> 16);
+        if (probe_point != Wgl.no_probe) {
+            const x: gl.c.GLint = @intCast(probe_point & 0xFFFF);
+            const y: gl.c.GLint = @intCast(probe_point >> 16);
             if (x < win_w and y < win_h) {
                 state.probe.store(readPixel(x, win_h - 1 - y) | Wgl.probe_read, .monotonic);
+            } else {
+                // Off this frame (a resize under way): the next one answers,
+                // unless the tests asked again meanwhile.
+                _ = state.probe_point.cmpxchgStrong(Wgl.no_probe, probe_point, .monotonic, .monotonic);
             }
         }
         if (state.frame_wanted.swap(false, .acquire)) readFrame(state, win_w, win_h);

@@ -3535,16 +3535,18 @@ fn titles(h: *Harness) anyerror!void {
     const win = try h.mainWindow(&g);
     const surf = try h.surface(&g, win);
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
+    const one = cmdTitle("program-one");
+    const two = cmdTitle("program-two");
 
     try h.typeText(surf, "title program-one");
     h.enter(surf);
-    _ = try waitTitles(h, &g, "program-one", "program-one");
+    _ = try waitTitles(h, &g, one, one);
 
     // Rename the tab: the prompt runs in a modal scope (closes wait), and
     // Enter in its field is OK (the dialog's own handling).
     h.key(surf, cs, w.VK_F2);
     var dlg = try h.waitDialog(&g, 5000);
-    try expectTitleDialog(h, dlg, "Change Tab Title", "program-one");
+    try expectTitleDialog(h, dlg, "Change Tab Title", one);
     {
         var d = try h.dump(&g);
         defer d.deinit();
@@ -3559,7 +3561,7 @@ fn titles(h: *Harness) anyerror!void {
     // The program's next title doesn't replace the name.
     try h.typeText(surf, "title program-two");
     h.enter(surf);
-    var t = try waitProgramTitle(h, &g, "program-two");
+    var t = try waitProgramTitle(h, &g, two);
     try h.expect(std.mem.eql(u8, t.label(), "renamed") and std.mem.eql(u8, t.caption(), "renamed"), "the tab keeps its name while the program sets titles ('{s}')", .{t.label()});
 
     // A blank name restores the program's.
@@ -3569,7 +3571,7 @@ fn titles(h: *Harness) anyerror!void {
     try setDialogText(h, dlg, "");
     h.answer(&g, dlg, w.IDOK);
     try waitNoDialog(h, &g);
-    _ = try waitTitles(h, &g, "program-two", "program-two");
+    _ = try waitTitles(h, &g, two, two);
 
     // Cancel changes nothing.
     h.key(surf, cs, w.VK_F2);
@@ -3578,7 +3580,7 @@ fn titles(h: *Harness) anyerror!void {
     h.answer(&g, dlg, w.IDCANCEL);
     try waitNoDialog(h, &g);
     t = try titleState(h, &g);
-    try h.expect(std.mem.eql(u8, t.label(), "program-two"), "Cancel keeps the title ('{s}')", .{t.label()});
+    try h.expect(std.mem.eql(u8, t.label(), two), "Cancel keeps the title ('{s}')", .{t.label()});
 
     // Enter clicks the button with the keyboard, as in GTK's dialogs: Tab
     // from the field to Cancel, then Enter cancels (Windows would take
@@ -3593,18 +3595,18 @@ fn titles(h: *Harness) anyerror!void {
     _ = w.PostMessageW(cancel, w.WM_KEYDOWN, w.VK_RETURN, 0);
     try waitNoDialog(h, &g);
     t = try titleState(h, &g);
-    try h.expect(std.mem.eql(u8, t.label(), "program-two"), "Enter on Cancel cancels ('{s}')", .{t.label()});
+    try h.expect(std.mem.eql(u8, t.label(), two), "Enter on Cancel cancels ('{s}')", .{t.label()});
 
     // The window's name: the caption only; empty clears it.
     h.key(surf, cs, w.VK_F3);
-    _ = try waitTitles(h, &g, "program-two", "win-title");
+    _ = try waitTitles(h, &g, two, "win-title");
     h.key(surf, cs, w.VK_F4);
-    _ = try waitTitles(h, &g, "program-two", "program-two");
+    _ = try waitTitles(h, &g, two, two);
 
     // The pane's name, through its prompt.
     h.key(surf, cs, w.VK_F5);
     dlg = try h.waitDialog(&g, 5000);
-    try expectTitleDialog(h, dlg, "Change Terminal Title", "program-two");
+    try expectTitleDialog(h, dlg, "Change Terminal Title", two);
     try setDialogText(h, dlg, "pane-name");
     h.answer(&g, dlg, w.IDOK);
     try waitNoDialog(h, &g);
@@ -3692,6 +3694,12 @@ fn titleState(h: *Harness, g: *Harness.Ghostty) !TitleState {
     r.label_len = copyInto(&r.label_buf, tab.label);
     r.caption_len = copyInto(&r.caption_buf, dw.caption);
     return r;
+}
+
+/// The title cmd's `title name` sets: in an elevated console (the hosted
+/// CI runners run elevated) cmd puts "Administrator:  " before it.
+fn cmdTitle(comptime name: []const u8) []const u8 {
+    return if (w.IsUserAnAdmin() != 0) "Administrator:  " ++ name else name;
 }
 
 fn copyInto(buf: []u8, s: []const u8) usize {
@@ -7599,7 +7607,7 @@ fn tabDrag(h: *Harness) anyerror!void {
     try h.typeText(torn, "echo moved-tab");
     h.enter(torn);
     try h.waitText(&g, "moved-tab", 2, 10000);
-    try h.expect(try paneFrames(h, &g, torn) > frames, "the moved pane keeps presenting frames", .{});
+    try h.expect(try panePresents(h, &g, torn, frames, 5000), "the moved pane keeps presenting frames", .{});
 
     // Onto the new window's bar: the first window's first tab moves there.
     var bar: w.POINT = .{ .x = 200, .y = 8 };
@@ -8498,7 +8506,19 @@ fn paneFrames(h: *Harness, g: *Harness.Ghostty, pane: w.HWND) !u32 {
     };
     return h.fail("no such pane", .{});
 }
-const toggle_decorations = "keybind = ctrl+shift+f4=toggle_window_decorations\n";
+
+/// Whether `pane` presents a frame past its `since`th within `ms`: its text
+/// can be in the dump before its frame is presented, by a while on a slow
+/// renderer (llvmpipe's).
+fn panePresents(h: *Harness, g: *Harness.Ghostty, pane: w.HWND, since: u32, ms: u32) !bool {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        if (try paneFrames(h, g, pane) > since) return true;
+        w.Sleep(100);
+    }
+    return false;
+}
+const toggle_decorations ="keybind = ctrl+shift+f4=toggle_window_decorations\n";
 
 /// window-decoration = none (roadmap 4.4): no caption and no header bar,
 /// the client reaching the window's top; its top resize band still

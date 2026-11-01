@@ -449,6 +449,8 @@ pub const VS_FIXEDFILEINFO = extern struct {
 // shell32
 pub extern "shell32" fn CommandLineToArgvW(LPCWSTR, *c_int) callconv(.winapi) ?[*]LPWSTR;
 pub const SHCNE_ASSOCCHANGED = 0x08000000;
+/// Whether the process runs elevated (as the hosted CI runners do).
+pub extern "shell32" fn IsUserAnAdmin() callconv(.winapi) BOOL;
 pub extern "shell32" fn SHChangeNotify(c_long, UINT, ?*const anyopaque, ?*const anyopaque) callconv(.winapi) void;
 
 // user32

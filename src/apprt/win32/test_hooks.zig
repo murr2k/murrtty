@@ -392,7 +392,9 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
                 if (!s.core_initialized) continue;
                 const state = &s.core_surface.renderer.api.wgl_state;
                 state.probe.store(0, .monotonic);
-                state.probe_point.store(point, .monotonic);
+                // Release: the present taking it sees what this thread set
+                // before (OpenGL.presentWgl).
+                state.probe_point.store(point, .release);
                 redraw(s);
             }
         }

@@ -3588,6 +3588,27 @@ the harness: the process that loads OpenGL is the one that needs it. *Done
 when:* the suite runs in under 5 minutes and fails on an injected
 free-inside-callback bug.
 
+*Started 2026-10-31:* `.github/workflows/windows-port-hosted.yml` runs the
+GUI suite and then the unit tests on GitHub's hosted runners, x64
+(windows-2025) and ARM64 natively (windows-11-arm, the x64 harness
+emulated), started by hand. It runs in the public repository, whose
+minutes are free and which gets the ARM64 runners; Actions there allow
+GitHub-owned actions only, every upstream workflow is disabled, and a
+guard job checks that. With no GPU, murrtty draws with its own Mesa
+(6.3b), named by `MURRTTY_OPENGL` so no launch starts itself again; the
+scenarios of the driver's OpenGL (`gl-missing`, `gl-library`,
+`gl-fallback`) are left out. The runners' display starts at 1024x768,
+where windows placed side by side and long typed lines don't fit, so the
+workflow takes its largest mode first. The first run (x64 88 of 109
+scenarios, ARM64 86) found: pixel probes answered by a frame begun before
+the ask, which llvmpipe's slow frames exposed (a present now takes the ask
+as it starts, and `Harness.probe` asks twice); a tab torn off on llvmpipe
+presenting its first frame late (`tab-drag` waits for it); and cmd's
+"Administrator:  " title prefix on the elevated runners (`titles`). Open:
+the inspector crashing on ARM64's llvmpipe, and ARM64's thread stacks
+committing 5 MB each (`pane-commit`), which the failed runs' symbols and
+verbose log will name. A run takes about 45 minutes with its builds.
+
 **7.4 Packaging and signing, L.**
 - A zip of `bin` plus `share` (themes, shell integration, terminfo), LICENSE
   and complete third-party notices (FreeType, HarfBuzz and the rest), with
