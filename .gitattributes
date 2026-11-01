@@ -35,6 +35,8 @@ Makefile text eol=lf
 # murrtty: license texts kept byte for byte as fetched (CRLF), whose
 # SHA-256s dist/windows/licenses/README.md records.
 dist/windows/licenses/microsoft-terminal* -text
+# Mesa's, as fetched (LF), like the .txt texts.
+dist/windows/licenses/mesa-license.rst text eol=lf
 
 # Windows scripts - always CRLF (cmd.exe misparses some LF-only batch files)
 *.cmd text eol=crlf
