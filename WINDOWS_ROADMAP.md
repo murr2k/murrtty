@@ -3637,9 +3637,13 @@ GitHub-owned actions only, every upstream workflow is disabled, and a
 guard job checks that. With no GPU, murrtty draws with its own Mesa
 (6.3b), named by `MURRTTY_OPENGL` so no launch starts itself again; the
 scenarios of the driver's OpenGL (`gl-missing`, `gl-library`,
-`gl-fallback`) are left out. The runners' display starts at 1024x768,
-where windows placed side by side and long typed lines don't fit, so the
-workflow takes its largest mode first. The first run (x64 88 of 109
+`gl-fallback`) are left out. The runners' screen is 1024x768 and stays so
+(their GUI session has no display mode to change, and DWM drives no
+display there): the scenarios fit it (`window-options`' window, `bell`'s
+typed line, `undo`'s second window kept on its monitor), and `tab-drag`
+skips its drops onto another window's bar when the first window covers
+it. The
+first run (x64 88 of 109
 scenarios, ARM64 86) found: pixel probes answered by a frame begun before
 the ask, which llvmpipe's slow frames exposed (a present now takes the ask
 as it starts, and `Harness.probe` asks twice); a tab torn off on llvmpipe

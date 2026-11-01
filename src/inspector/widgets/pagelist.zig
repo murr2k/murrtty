@@ -456,7 +456,13 @@ fn trackedPinsTable(pages: *const PageList) void {
 
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
         if (pin.garbage) {
-            cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.5, .z = 0.3, .w = 1.0 }, "(%d, %d)", pin.x, pin.y);
+            // Not ImGui_TextColored: a struct of floats through a variadic C
+            // call goes in the wrong registers on Windows ARM64, where the
+            // variadic convention differs from the plain one, and ImGui
+            // then read its format from garbage (murrtty, roadmap 7.7).
+            cimgui.c.ImGui_PushStyleColorImVec4(cimgui.c.ImGuiCol_Text, .{ .x = 1.0, .y = 0.5, .z = 0.3, .w = 1.0 });
+            cimgui.c.ImGui_Text("(%d, %d)", pin.x, pin.y);
+            cimgui.c.ImGui_PopStyleColor();
         } else {
             cimgui.c.ImGui_Text("(%d, %d)", pin.x, pin.y);
         }
@@ -478,7 +484,7 @@ fn trackedPinsTable(pages: *const PageList) void {
             const dirty = page.dirty or
                 page.getRowAndCell(pin.x, pin.y).row.dirty;
             if (dirty) {
-                cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, "dirty");
+                cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, "dirty");
             } else {
                 cimgui.c.ImGui_TextDisabled("clean");
             }
@@ -490,11 +496,11 @@ fn trackedPinsTable(pages: *const PageList) void {
 
         _ = cimgui.c.ImGui_TableSetColumnIndex(4);
         if (pin.eql(active_pin)) {
-            cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "active top");
+            cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "active top");
         } else if (pin.eql(viewport_pin)) {
-            cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "viewport top");
+            cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "viewport top");
         } else if (pin.garbage) {
-            cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.5, .z = 0.3, .w = 1.0 }, "garbage");
+            cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 1.0, .y = 0.5, .z = 0.3, .w = 1.0 }, "garbage");
         } else if (tracked == pages.viewport_pin) {
             cimgui.c.ImGui_Text("viewport pin");
         } else {
@@ -969,23 +975,23 @@ pub const CellInfo = struct {
             const row = cell.row;
             if (row.wrap or row.wrap_continuation or row.grapheme or row.styled or row.hyperlink) {
                 if (row.wrap) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "wrap");
+                    cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "wrap");
                     cimgui.c.ImGui_SameLine();
                 }
                 if (row.wrap_continuation) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "cont");
+                    cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "cont");
                     cimgui.c.ImGui_SameLine();
                 }
                 if (row.grapheme) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.9, .y = 0.7, .z = 0.3, .w = 1.0 }, "grapheme");
+                    cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.9, .y = 0.7, .z = 0.3, .w = 1.0 }, "grapheme");
                     cimgui.c.ImGui_SameLine();
                 }
                 if (row.styled) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.7, .y = 0.9, .z = 0.5, .w = 1.0 }, "styled");
+                    cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.7, .y = 0.9, .z = 0.5, .w = 1.0 }, "styled");
                     cimgui.c.ImGui_SameLine();
                 }
                 if (row.hyperlink) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.8, .y = 0.6, .z = 1.0, .w = 1.0 }, "link");
+                    cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.8, .y = 0.6, .z = 1.0, .w = 1.0 }, "link");
                     cimgui.c.ImGui_SameLine();
                 }
             } else {

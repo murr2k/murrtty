@@ -200,17 +200,17 @@ fn screensTable(
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             if (is_active) {
-                cimgui.c.ImGui_TextColored(
+                cimgui.c.ImGui_TextColoredUnformatted(
                     .{ .x = 0.4, .y = 1.0, .z = 0.4, .w = 1.0 },
                     "active",
                 );
             } else if (is_initialized) {
-                cimgui.c.ImGui_TextColored(
+                cimgui.c.ImGui_TextColoredUnformatted(
                     .{ .x = 0.6, .y = 0.6, .z = 0.6, .w = 1.0 },
                     "initialized",
                 );
             } else {
-                cimgui.c.ImGui_TextColored(
+                cimgui.c.ImGui_TextColoredUnformatted(
                     .{ .x = 0.4, .y = 0.4, .z = 0.4, .w = 1.0 },
                     "(not initialized)",
                 );

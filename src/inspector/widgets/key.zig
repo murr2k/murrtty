@@ -329,7 +329,7 @@ pub const Stream = struct {
                 .release => .{ .x = 0.6, .y = 0.6, .z = 1.0, .w = 1.0 }, // Blue
                 .repeat => .{ .x = 1.0, .y = 1.0, .z = 0.4, .w = 1.0 }, // Yellow
             };
-            cimgui.c.ImGui_TextColored(action_text_color, "%s", @tagName(ev.event.action).ptr);
+            cimgui.c.ImGui_TextColoredUnformatted(action_text_color, @tagName(ev.event.action).ptr);
 
             // Key column with consistent key coloring
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -344,12 +344,12 @@ pub const Stream = struct {
                 .z = @as(f32, @floatFromInt((key_rgba >> 16) & 0xFF)) / 255.0,
                 .w = 1.0,
             };
-            cimgui.c.ImGui_TextColored(key_color, "%s", key_name.ptr);
+            cimgui.c.ImGui_TextColoredUnformatted(key_color, key_name.ptr);
 
             // Composing indicator
             if (ev.event.composing) {
                 cimgui.c.ImGui_SameLine();
-                cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.6, .z = 0.0, .w = 1.0 }, "*");
+                cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 1.0, .y = 0.6, .z = 0.0, .w = 1.0 }, "*");
                 if (cimgui.c.ImGui_IsItemHovered(cimgui.c.ImGuiHoveredFlags_None)) {
                     cimgui.c.ImGui_SetTooltip("Composing (dead key)");
                 }

@@ -2204,7 +2204,8 @@ fn bell(h: *Harness) anyerror!void {
     const cs: Harness.Mods = .{ .ctrl = true, .shift = true };
 
     // The pane with the keyboard: nothing.
-    try h.typeText(first, "powershell -NoProfile -Command \"[Console]::Write([char]7)\" & echo rang-here");
+    // Short enough not to wrap on a 1024 px screen (the hosted runners').
+    try h.typeText(first, "powershell -nop -c \"[Console]::Write([char]7)\" & echo rang-here");
     h.enter(first);
     try h.waitText(&g, "rang-here", 2, 15000);
     // The bell reaches the app thread through the core's mailbox, which can
@@ -4988,15 +4989,23 @@ fn glResetCase(h: *Harness, name: []const u8, extra: []const u8) !void {
     }
     try h.expect(made, "{s}: a new context was made and drawn with ({d} frames)", .{ name, frames });
 
-    try h.saveFrames(&g);
-    var second = try h.loadPicture(&g, "frame-0.bmp");
-    defer second.deinit();
-    var differ: usize = 0;
-    if (first.width == second.width and first.height == second.height) {
-        for (first.pixels, second.pixels) |a, b| {
-            if (a & 0xFFFFFF != b & 0xFFFFFF) differ += 1;
-        }
-    } else differ = std.math.maxInt(usize);
+    // The new context's first frames can come before what it draws is
+    // whole again (the background image uploaded anew; slow on llvmpipe):
+    // read frames until one is the one before, for a while.
+    var differ: usize = std.math.maxInt(usize);
+    for (0..20) |_| {
+        try h.saveFrames(&g);
+        var second = try h.loadPicture(&g, "frame-0.bmp");
+        defer second.deinit();
+        differ = 0;
+        if (first.width == second.width and first.height == second.height) {
+            for (first.pixels, second.pixels) |a, b| {
+                if (a & 0xFFFFFF != b & 0xFFFFFF) differ += 1;
+            }
+        } else differ = std.math.maxInt(usize);
+        if (differ == 0) break;
+        w.Sleep(150);
+    }
     try h.expect(differ == 0, "{s}: the frame after the reset is the frame before it ({d} pixels differ)", .{ name, differ });
 
     // And it goes on drawing what comes.
@@ -6307,6 +6316,12 @@ fn paneCommit(h: *Harness) anyerror!void {
         stacks.committed >> 10,
         stacks.largest >> 10,
     });
+    // Whose threads use their stacks most (the threads' start addresses).
+    for (stacks.big[0..stacks.big_len]) |b| {
+        var name_buf: [64]u8 = undefined;
+        const at = moduleAt(&g, b.start, &name_buf);
+        h.log("  {d} KB: a thread started at {s}+0x{x}", .{ b.committed >> 10, at.name, at.offset });
+    }
     try h.expect(stacks.count >= 3 * (added + 1), "the threads' stacks are found (got {d})", .{stacks.count});
     try h.expect(
         stacks.committed < stacks.count * (1 << 20),
@@ -6324,40 +6339,84 @@ fn paneCommit(h: *Harness) anyerror!void {
     try h.expect(per_pane < 80 << 20, "a pane adds under 80 MB of commit charge (got {d} MB)", .{per_pane >> 20});
 }
 
-const ThreadStacks = struct { count: usize = 0, committed: usize = 0, largest: usize = 0 };
+const ThreadStacks = struct {
+    count: usize = 0,
+    committed: usize = 0,
+    largest: usize = 0,
+    /// Stacks over 1 MB: what they commit, and their thread's start.
+    big: [8]struct { committed: usize, start: usize } = undefined,
+    big_len: usize = 0,
+};
 
-/// Ghostty's thread stacks, from its address space: every thread reserves
-/// the exe's stack reserve (16 MB) as a private allocation of its own,
-/// and commits what the stack has used (all of it, before 0.15).
+/// Ghostty's thread stacks, found from its threads: each thread's TEB
+/// names its stack's top (NT_TIB.StackBase, 8 bytes in), and the
+/// allocation holding it is the stack, whose committed pages are what it
+/// has used (all of it, before 0.15). Other allocations of the stack's
+/// size (llvmpipe's on ARM64) are not stacks.
 fn threadStacks(g: *Harness.Ghostty) ThreadStacks {
-    const reserve = 16 << 20;
-    const Allocation = struct { base: usize = 0, reserved: usize = 0, committed: usize = 0, private: bool = false };
     var out: ThreadStacks = .{};
-    var current: Allocation = .{};
-    var addr: usize = 0;
+    const snap = w.CreateToolhelp32Snapshot(w.TH32CS_SNAPTHREAD, 0);
+    if (snap == w.INVALID_HANDLE_VALUE) return out;
+    defer _ = w.CloseHandle(snap);
+    var entry: w.THREADENTRY32 = .{};
+    var more = w.Thread32First(snap, &entry) != 0;
+    while (more) : (more = w.Thread32Next(snap, &entry) != 0) {
+        if (entry.th32OwnerProcessID != g.pid) continue;
+        const thread = w.OpenThread(w.THREAD_QUERY_INFORMATION, w.FALSE, entry.th32ThreadID) orelse continue;
+        defer _ = w.CloseHandle(thread);
+        var basic: w.THREAD_BASIC_INFORMATION = .{};
+        if (w.NtQueryInformationThread(thread, 0, &basic, @sizeOf(w.THREAD_BASIC_INFORMATION), null) < 0) continue;
+        var stack_top: usize = 0;
+        if (w.ReadProcessMemory(g.proc, basic.TebBaseAddress + 8, &stack_top, @sizeOf(usize), null) == 0 or stack_top == 0) continue;
+        var info: w.MEMORY_BASIC_INFORMATION = .{};
+        if (w.VirtualQueryEx(g.proc, stack_top - 1, &info, @sizeOf(w.MEMORY_BASIC_INFORMATION)) == 0) continue;
+        const committed = allocationCommitted(g, info.AllocationBase);
+        out.count += 1;
+        out.committed += committed;
+        out.largest = @max(out.largest, committed);
+        if (committed > 1 << 20 and out.big_len < out.big.len) {
+            var start_addr: usize = 0;
+            _ = w.NtQueryInformationThread(thread, 9, &start_addr, @sizeOf(usize), null);
+            out.big[out.big_len] = .{ .committed = committed, .start = start_addr };
+            out.big_len += 1;
+        }
+    }
+    return out;
+}
+
+/// What the allocation at `base` has committed.
+fn allocationCommitted(g: *Harness.Ghostty, base: usize) usize {
+    var committed: usize = 0;
+    var addr = base;
     while (true) {
         var info: w.MEMORY_BASIC_INFORMATION = .{};
         if (w.VirtualQueryEx(g.proc, addr, &info, @sizeOf(w.MEMORY_BASIC_INFORMATION)) == 0) break;
-        if (info.State != w.MEM_FREE) {
-            if (info.AllocationBase != current.base) {
-                if (current.private and current.reserved == reserve) {
-                    out.count += 1;
-                    out.committed += current.committed;
-                    out.largest = @max(out.largest, current.committed);
-                }
-                current = .{ .base = info.AllocationBase, .private = info.Type == w.MEM_PRIVATE };
-            }
-            current.reserved += info.RegionSize;
-            if (info.State == w.MEM_COMMIT) current.committed += info.RegionSize;
-        }
+        if (info.AllocationBase != base) break;
+        if (info.State == w.MEM_COMMIT) committed += info.RegionSize;
         addr = info.BaseAddress + info.RegionSize;
     }
-    if (current.private and current.reserved == reserve) {
-        out.count += 1;
-        out.committed += current.committed;
-        out.largest = @max(out.largest, current.committed);
+    return committed;
+}
+
+/// The module of Ghostty's that holds `addr`, and the offset in it ("?" if
+/// none does).
+fn moduleAt(g: *Harness.Ghostty, addr: usize, buf: []u8) struct { name: []const u8, offset: usize } {
+    const snap = w.CreateToolhelp32Snapshot(w.TH32CS_SNAPMODULE, g.pid);
+    if (snap == w.INVALID_HANDLE_VALUE) return .{ .name = "?", .offset = addr };
+    defer _ = w.CloseHandle(snap);
+    var entry: w.MODULEENTRY32W = .{};
+    var more = w.Module32FirstW(snap, &entry) != 0;
+    while (more) : (more = w.Module32NextW(snap, &entry) != 0) {
+        if (addr < entry.modBaseAddr or addr >= entry.modBaseAddr + entry.modBaseSize) continue;
+        var n: usize = 0;
+        for (std.mem.sliceTo(&entry.szModule, 0)) |unit| {
+            if (n == buf.len) break;
+            buf[n] = if (unit < 0x80) @intCast(unit) else '?';
+            n += 1;
+        }
+        return .{ .name = buf[0..n], .offset = addr - entry.modBaseAddr };
     }
-    return out;
+    return .{ .name = "?", .offset = addr };
 }
 
 /// Wait until each of the first window's tabs shows cmd's prompt.
@@ -7610,6 +7669,16 @@ fn tabDrag(h: *Harness) anyerror!void {
     try h.expect(try panePresents(h, &g, torn, frames, 5000), "the moved pane keeps presenting frames", .{});
 
     // Onto the new window's bar: the first window's first tab moves there.
+    // A drop finds its window under the mouse, so the new window's bar must
+    // be what is there, which a small screen (the hosted runners'
+    // 1024x768), the first window over it, may not give.
+    {
+        var at: w.POINT = .{ .x = 200, .y = 8 };
+        _ = w.ClientToScreen(new_win, &at);
+        const there = w.WindowFromPoint(at);
+        const root = if (there) |u| w.GetAncestor(u, w.GA_ROOT) else null;
+        if (root != new_win) return h.skip("the rest needs the new window's bar uncovered; the screen has no room for both windows", .{});
+    }
     var bar: w.POINT = .{ .x = 200, .y = 8 };
     _ = w.ClientToScreen(new_win, &bar);
     _ = w.ScreenToClient(win, &bar);
@@ -7866,8 +7935,12 @@ fn undoCloses(h: *Harness) anyerror!void {
         try waitWindowTabs(h, &g, win, 3);
         try expectTabPanes(h, &g, 0, &.{ @intFromPtr(a), @intFromPtr(c_pane), @intFromPtr(d_pane) }, "undo brings both back in their places");
 
-        // A window: back where it was, its pane the same.
+        // A window: back where it was, its pane the same. Wholly on its
+        // monitor first, as undo puts a window back on one (a 1024 px
+        // screen, the hosted runners', has no room beside the first).
         const second = try sideWindow(h, &g, win, d_pane);
+        keepOnScreen(second.window);
+        h.sync(second.window);
         var before: w.RECT = .{};
         _ = w.GetWindowRect(second.window, &before);
         h.key(second.pane, cs, w.VK_F9);
@@ -8176,6 +8249,18 @@ fn sideWindow(h: *Harness, g: *Harness.Ghostty, win: w.HWND, from: w.HWND) !stru
     return .{ .window = window, .pane = hwndOf((try tabPanes(h, g, 1)).at(0)) };
 }
 
+/// Move `win` into its monitor's work area, at its top left and half its
+/// size, unless it is wholly there already.
+fn keepOnScreen(win: w.HWND) void {
+    var r: w.RECT = .{};
+    _ = w.GetWindowRect(win, &r);
+    var mi: w.MONITORINFO = .{};
+    if (w.MonitorFromWindow(win, w.MONITOR_DEFAULTTONEAREST)) |m| _ = w.GetMonitorInfoW(m, &mi);
+    const work = mi.rcWork;
+    if (r.left >= work.left and r.top >= work.top and r.right <= work.right and r.bottom <= work.bottom) return;
+    _ = w.SetWindowPos(win, null, work.left + 40, work.top + 40, @divTrunc(work.right - work.left, 2), @divTrunc(work.bottom - work.top, 2), w.SWP_NOZORDER | w.SWP_NOACTIVATE);
+}
+
 /// The key events `pane` has passed to its terminal.
 fn paneKeys(h: *Harness, g: *Harness.Ghostty, pane: w.HWND) !u32 {
     var d = try h.dump(g);
@@ -8280,20 +8365,22 @@ fn captureOf(hwnd: w.HWND) ?w.HWND {
 fn windowOptions(h: *Harness) anyerror!void {
     const binds = "keybind = ctrl+shift+f7=toggle_window_float_on_top\nkeybind = ctrl+shift+f8=reset_window_size\nkeybind = ctrl+shift+f9=increase_font_size:2\n";
     {
-        // No padding, so whole cells fill the pane exactly.
-        const config = "window-position-x = 200\nwindow-position-y = 150\nwindow-step-resize = true\n" ++
-            "window-padding-x = 0\nwindow-padding-y = 0\nwindow-width = 90\nwindow-height = 26\n" ++ binds;
+        // No padding, so whole cells fill the pane exactly. Small enough,
+        // grown and with a larger font too, for a 1024x768 screen (the
+        // hosted runners').
+        const config = "window-position-x = 40\nwindow-position-y = 30\nwindow-step-resize = true\n" ++
+            "window-padding-x = 0\nwindow-padding-y = 0\nwindow-width = 70\nwindow-height = 20\n" ++ binds;
         var g = try start(h, "window-options", config, ">");
         defer g.deinit();
         const win = try h.mainWindow(&g);
         const surf = try h.surface(&g, win);
         // What reset_window_size comes back to.
         const opening = try gridOf(h, &g);
-        try h.expect(opening[0] == 90 and opening[1] == 26, "it opens at window-width x -height ({d}x{d})", .{ opening[0], opening[1] });
-        try expectVisibleAt(h, win, 200, 150, "the window's frame is at window-position-x, -y");
+        try h.expect(opening[0] == 70 and opening[1] == 20, "it opens at window-width x -height ({d}x{d})", .{ opening[0], opening[1] });
+        try expectVisibleAt(h, win, 40, 30, "the window's frame is at window-position-x, -y");
         h.key(surf, .{ .ctrl = true, .shift = true }, 'N');
         try waitWindowCount(h, &g, 2);
-        try expectVisibleAt(h, try windowOf(h, &g, 1), 200, 150, "and so is the next window's, as on macOS");
+        try expectVisibleAt(h, try windowOf(h, &g, 1), 40, 30, "and so is the next window's, as on macOS");
 
         h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F7);
         try expectFloating(h, &g, win, true);

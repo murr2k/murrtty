@@ -328,6 +328,48 @@ pub const PROCESSENTRY32W = extern struct {
 pub extern "kernel32" fn CreateToolhelp32Snapshot(DWORD, DWORD) callconv(.winapi) HANDLE;
 pub extern "kernel32" fn Process32FirstW(HANDLE, *PROCESSENTRY32W) callconv(.winapi) BOOL;
 pub extern "kernel32" fn Process32NextW(HANDLE, *PROCESSENTRY32W) callconv(.winapi) BOOL;
+// A process's threads and their stacks (pane-commit).
+pub const TH32CS_SNAPTHREAD = 0x00000004;
+pub const TH32CS_SNAPMODULE = 0x00000008;
+pub const THREADENTRY32 = extern struct {
+    dwSize: DWORD = @sizeOf(THREADENTRY32),
+    cntUsage: DWORD = 0,
+    th32ThreadID: DWORD = 0,
+    th32OwnerProcessID: DWORD = 0,
+    tpBasePri: i32 = 0,
+    tpDeltaPri: i32 = 0,
+    dwFlags: DWORD = 0,
+};
+pub extern "kernel32" fn Thread32First(HANDLE, *THREADENTRY32) callconv(.winapi) BOOL;
+pub extern "kernel32" fn Thread32Next(HANDLE, *THREADENTRY32) callconv(.winapi) BOOL;
+pub const MODULEENTRY32W = extern struct {
+    dwSize: DWORD = @sizeOf(MODULEENTRY32W),
+    th32ModuleID: DWORD = 0,
+    th32ProcessID: DWORD = 0,
+    GlblcntUsage: DWORD = 0,
+    ProccntUsage: DWORD = 0,
+    modBaseAddr: usize = 0,
+    modBaseSize: DWORD = 0,
+    hModule: ?*anyopaque = null,
+    szModule: [256]u16 = @splat(0),
+    szExePath: [260]u16 = @splat(0),
+};
+pub extern "kernel32" fn Module32FirstW(HANDLE, *MODULEENTRY32W) callconv(.winapi) BOOL;
+pub extern "kernel32" fn Module32NextW(HANDLE, *MODULEENTRY32W) callconv(.winapi) BOOL;
+pub const THREAD_QUERY_INFORMATION = 0x0040;
+pub extern "kernel32" fn OpenThread(DWORD, BOOL, DWORD) callconv(.winapi) ?HANDLE;
+/// NtQueryInformationThread's ThreadBasicInformation (class 0); class 9
+/// (ThreadQuerySetWin32StartAddress) gives the start address.
+pub const THREAD_BASIC_INFORMATION = extern struct {
+    ExitStatus: i32 = 0,
+    TebBaseAddress: usize = 0,
+    ClientId: [2]usize = .{ 0, 0 },
+    AffinityMask: usize = 0,
+    Priority: i32 = 0,
+    BasePriority: i32 = 0,
+};
+pub extern "ntdll" fn NtQueryInformationThread(HANDLE, u32, *anyopaque, u32, ?*u32) callconv(.winapi) i32;
+pub extern "kernel32" fn ReadProcessMemory(HANDLE, usize, *anyopaque, usize, ?*usize) callconv(.winapi) BOOL;
 // The single instance's pipe (roadmap 5.1).
 pub const PROCESS_TERMINATE = 0x0001;
 pub const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;

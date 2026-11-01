@@ -118,7 +118,7 @@ pub const Info = struct {
 
         // Show warning if viewing an inactive screen
         if (data.key != data.active_key) {
-            cimgui.c.ImGui_TextColored(
+            cimgui.c.ImGui_TextColoredUnformatted(
                 .{ .x = 1.0, .y = 0.8, .z = 0.0, .w = 1.0 },
                 "⚠ Viewing inactive screen",
             );

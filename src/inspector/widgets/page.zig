@@ -76,19 +76,19 @@ pub fn treeNode(state: struct {
     // Labels
     if (state.active) {
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "active");
+        cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "active");
     }
     if (state.viewport) {
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "viewport");
+        cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "viewport");
     }
     if (state.compressed) {
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_TextColored(.{ .x = 0.8, .y = 0.6, .z = 1.0, .w = 1.0 }, "compressed");
+        cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.8, .y = 0.6, .z = 1.0, .w = 1.0 }, "compressed");
     }
     if (state.dirty orelse false) {
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, "dirty");
+        cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, "dirty");
     }
 
     return open;
@@ -431,7 +431,7 @@ fn hyperlinksList(page: *const Page) void {
 
 fn flagCell(value: bool) void {
     if (value) {
-        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "yes");
+        cimgui.c.ImGui_TextColoredUnformatted(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "yes");
     } else {
         cimgui.c.ImGui_TextDisabled("-");
     }
