@@ -402,7 +402,8 @@ roadmap item behind it.
   libadwaita's dialogs are, which lists only monospaced fonts, and a new
   binding's keys are pressed in a capture box. Numbers (F1d) show in their
   unit, a fraction as a percentage, on a slider or a spin row, and a
-  slider's value shows in the terminals before it is saved.
+  slider's value shows in the terminals before it is saved; `command`
+  offers the installed shells and `working-directory` a folder (F1e).
 - **Session restore** (5.10b, the owner's design): `window-save-state`
   (`default` or `always`) restores the windows, tabs, splits, names and
   directories at start, or with `initial-window = false` on the first
@@ -4279,24 +4280,56 @@ as 0.0 to 1.0 was not intuitive):*
   repeat, each grayed at its end of the range. On a selected row Left and
   Right step it, Ctrl a tenth of a step, Shift ten.
 - A value is typed in the shown unit ("94.5", "94.5%", "13 pt", "0.5 MB",
-  or `unlimited` for a limit), and one past the range the loader clamps
-  to is refused, the status line naming the range ("from 0% to 100%")
-  instead of the loader silently clamping it.
+  or `unlimited` for a limit) and kept to the places typed (13.25 pt
+  stays 13.25), and one past the range the loader clamps to is refused,
+  the status line naming the range ("from 0% to 100%") instead of the
+  loader silently clamping it. Steps keep to the range, not the slider's
+  ends (background-image-opacity goes on past 200%), and a step or a
+  click that changes nothing writes nothing.
 - Preview: a slider's value shows in the terminals at once, while it is
   dragged (at most one every 33 ms) and as it is stepped or typed:
   `App.previewConfig` takes the configuration in use, parses the value in
-  (`option_list.apply`) and applies it as a reload does. Nothing is
-  written until Save; closing the editor without saving reloads the
-  files (`App.revertConfigPreview`, which doesn't show known errors
-  again). Opacity is the opacity Ghostty means (100% solid, lower showing
+  (`option_list.apply`, its replay step dropped so none pile up) and
+  hands it to the windows, without a reload's "Reloaded the
+  configuration" toast or its tray, hot key and session work
+  (`App.config_preview`). Nothing is written until Save; closing the
+  editor without saving reloads the files quietly
+  (`App.revertConfigPreview`), and a drag ends untaken when the editor
+  closes or another dialog comes up mid-drag. Opacity is the opacity Ghostty means (100% solid, lower showing
   what is behind), so 94.5% leaves the desktop faintly visible.
 - GUI scenario `config-editor-numbers`: the slider pressed, dragged past
   its end and Escaped, then taken at its middle (the window turning
   translucent before any save), the arrow keys (Right a step, Ctrl+Left a
   tenth: 50.9%, `0.509`), 94.5 typed as `0.945`, 150 refused with the
   range, Discard putting the window back to opaque with the file
-  unchanged, and font-size's spin buttons saving `font-size = 12`.
+  unchanged, and font-size's spin buttons saving `font-size = 12`; the
+  knob clicked in place writes nothing, and a preview shows no toast.
   `config-editor-look` adds pictures of the sliders and of spin rows.
+
+*F1e built 2026-11-01, menus beside text fields:* a chevron at the end of
+a text value's field opens a menu, the field still taking anything typed
+(an editable combo box's two parts).
+- `command` and `initial-command`: the shells installed here
+  (`shells.zig`): PowerShell 7 (found as murrtty finds the shell it starts
+  with `command` unset), Windows PowerShell, the Command Prompt
+  (`COMSPEC`), each WSL distribution (HKCU's Lxss, at its Linux home with
+  `--cd ~`) and Git Bash, then "Choose a Program..." (the file dialog,
+  programs first). Each is written as a `direct:` command naming its
+  program by full path, quoted, so no search for a bare name runs and a
+  path with spaces stays one argument; PowerShell gets `-NoLogo`, which
+  keeps its shell integration injected.
+- `working-directory`: `home`, `inherit`, or "Choose a Folder...":
+  Windows' own folder dialog (`file_dialog.zig`, IFileOpenDialog with
+  FOS_PICKFOLDERS: GetOpenFileNameW has no folder mode), opened in the
+  folder the value names.
+- `background-blur`: `false` or `true` (a radius or macOS's glass styles
+  are typed; any blur is the system's here, 4.2), previewed in the
+  terminals as the opacities are.
+- Unit tests: every shell found is a value the loader takes, a program
+  path with spaces parses as one argument, and the folder dialog's
+  vtable slots (all but Show). `config-editor-pages` picks the Command
+  Prompt, a folder (the dialog stood in for by `GHOSTTY_WIN32_TEST_PICK`)
+  and `background-blur = true`, and checks the saved lines.
 
 **F2 Waiting bells, S.** *The owner's design, 2026-10-29.* The owner runs
 Claude Code in many tabs and splits; when one waits for input from a pane

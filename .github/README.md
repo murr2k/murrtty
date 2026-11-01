@@ -312,7 +312,9 @@ hosted Windows runner and then the unit tests.
   percentages on a slider whose value shows in the terminals while it
   moves (saved only on Save), sizes in points, cells or megabytes with a
   step down and up, and a value past the range refused rather than
-  clamped.
+  clamped. Menus beside text fields: the installed shells (PowerShell,
+  cmd, each WSL distribution, Git Bash) for `command`, home, inherit or a
+  folder for `working-directory`, and `background-blur`.
 - Desktop notifications from programs (OSC 9, OSC 777;notify), as
   Windows toasts, each kept in the notification center: a click brings
   its terminal forward, and a terminal's go once it has the keyboard or
@@ -631,7 +633,7 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
 | `src/apprt/win32/Session.zig` | Session restore: what is saved, when, and its restore; each pane's command history files |
 | `src/apprt/win32/Notifications.zig`, `toast.zig`, `taskbar.zig`, `GlobalKeys.zig`, `QuickTerminal.zig` | Notifications (toasts, balloons) and the tray, taskbar progress, global key bindings, the quick terminal |
 | `src/apprt/win32/Undo.zig`, `Inspector.zig`, `Uia.zig`, `uia_text.zig` | Undo of closes, the terminal inspector, UI Automation for screen readers |
-| `src/apprt/win32/ConfigEditor.zig`, `src/config/EditableFile.zig`, `src/config/option_list.zig` | The configuration editor, and the in-place editing of the config file behind it |
+| `src/apprt/win32/ConfigEditor.zig`, `src/config/EditableFile.zig`, `src/config/option_list.zig`, `src/apprt/win32/shells.zig`, `src/apprt/win32/file_dialog.zig` | The configuration editor, the in-place editing of the config file behind it, and its shell and folder pickers |
 | `src/font/dwrite.zig` | Font discovery through DirectWrite (FreeType still draws) |
 | `src/apprt/win32/gl_diagnosis.zig` | Says at start why OpenGL 4.3 is missing |
 | `src/apprt/win32/software_gl.zig` | Starts murrtty again on its Mesa (`bin\mesa`) when OpenGL 4.3 is missing |

@@ -291,6 +291,13 @@ taskbar_list: ?*taskbar.List = null,
 /// The configuration editor (roadmap F1), while it is open; it keeps
 /// murrtty running (checkQuit).
 config_editor: ?*ConfigEditor = null,
+/// The config editor's preview is being applied (roadmap F1d): the config
+/// change only takes the configuration and redraws the windows, with no
+/// "Reloaded" toast, errors, tray, hot keys or session work, as it comes
+/// at up to 30 a second while a slider moves. Its revert (the files read
+/// again, which may have changed since) runs the whole change, only
+/// without the toast.
+config_preview: enum { off, preview, revert } = .off,
 
 /// The GUI test harness's state dump (Debug builds only; see test_hooks).
 test_state: test_hooks.State = .{},
@@ -1613,24 +1620,34 @@ pub fn previewConfig(self: *App, name: []const u8, value: []const u8) void {
         return;
     };
     defer config.deinit();
+    // The value goes in without a replay step: steps would pile up, one per
+    // preview, in every clone after (and after a `-e`'s marker they would
+    // fold into initial-command). A light/dark switch mid-preview rebuilds
+    // from the files' steps, without it, until the next preview.
+    const steps = config._replay_steps.items.len;
     configpkg.option_list.apply(alloc, &config, name, value) catch |err| {
         log.warn("error previewing {s}={s} err={}", .{ name, value, err });
         return;
     };
+    config._replay_steps.shrinkRetainingCapacity(steps);
+    self.config_preview = .preview;
+    defer self.config_preview = .off;
     self.core_app.updateConfig(self, &config) catch |err| {
         log.warn("error previewing the configuration err={}", .{err});
     };
 }
 
 /// The config editor closed without saving what it previewed: the files'
-/// configuration back. Errors already shown aren't shown again, as this
-/// isn't a reload the user asked for.
+/// configuration back, quietly (no "Reloaded" toast, no errors shown again),
+/// as this isn't a reload the user asked for.
 pub fn revertConfigPreview(self: *App) void {
     var config = Config.load(self.core_app.alloc) catch |err| {
         log.warn("error reloading the configuration err={}", .{err});
         return;
     };
     defer config.deinit();
+    self.config_preview = .revert;
+    defer self.config_preview = .off;
     self.core_app.updateConfig(self, &config) catch |err| {
         log.warn("error reloading the configuration err={}", .{err});
     };
@@ -2500,9 +2517,12 @@ pub fn performAction(
                     var it = w.panes();
                     while (it.next()) |s| s.scrollbar.settingsChanged(s);
                     // GTK's toast, in every window, for a reload of any
-                    // kind (the light/dark switch reloads it too).
-                    if (self.config.@"app-notifications".@"config-reload") w.showToast("Reloaded the configuration");
+                    // kind (the light/dark switch reloads it too), but not
+                    // the config editor's preview.
+                    if (self.config_preview == .off and self.config.@"app-notifications".@"config-reload") w.showToast("Reloaded the configuration");
                 }
+                // A preview changes only what its window draws.
+                if (self.config_preview == .preview) return true;
                 // window-theme may now force a different scheme.
                 self.reportColorScheme();
                 self.queueConfigErrors();

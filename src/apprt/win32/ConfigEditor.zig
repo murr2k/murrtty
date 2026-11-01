@@ -50,6 +50,9 @@ const key_util = @import("key.zig");
 const input = @import("../../input.zig");
 const dwrite = @import("../../font/dwrite.zig");
 const theme_paths = @import("../../config/theme.zig");
+const global = @import("../../global.zig");
+const file_dialog = @import("file_dialog.zig");
+const shells = @import("shells.zig");
 
 const log = std.log.scoped(.win32_config_editor);
 
@@ -207,8 +210,10 @@ const Part = enum { row, control, reset, picker, slider, minus, plus };
 
 /// What a row's picker opens: Windows' color dialog (from the swatch), its
 /// file dialog, a chooser of the installed fonts or of the themes, or a
-/// new key binding's keys and action.
-const Picker = enum { none, color, path, font, theme, keybind };
+/// new key binding's keys and action; or a menu (roadmap F1e) of the
+/// installed shells, of the working directory's keywords and a folder, or
+/// of a text value's common keywords, the field still taking any other.
+const Picker = enum { none, color, path, font, theme, keybind, shell, folder, keyword };
 
 fn pickerOf(o: *const option_list.Option) Picker {
     if (o.kind == .color) return .color;
@@ -216,7 +221,26 @@ fn pickerOf(o: *const option_list.Option) Picker {
     if (std.mem.startsWith(u8, o.name, "font-family") or std.mem.eql(u8, o.name, "window-title-font-family")) return .font;
     if (std.mem.eql(u8, o.name, "theme")) return .theme;
     if (std.mem.eql(u8, o.name, "keybind")) return .keybind;
+    if (std.mem.eql(u8, o.name, "command") or std.mem.eql(u8, o.name, "initial-command")) return .shell;
+    if (std.mem.eql(u8, o.name, "working-directory")) return .folder;
+    if (keywordsOf(o.name).len > 0) return .keyword;
     return .none;
+}
+
+/// A text option's common values, which its picker's menu offers.
+fn keywordsOf(name: []const u8) []const []const u8 {
+    // A radius or macOS's glass styles are typed; on Windows any blur is
+    // the system's (roadmap 4.2).
+    if (std.mem.eql(u8, name, "background-blur")) return &.{ "false", "true" };
+    return &.{};
+}
+
+/// Whether a change to `o` shows in the terminals before it is saved
+/// (roadmap F1d): a slider's, and background-blur's, which goes with the
+/// opacity it blurs behind.
+fn previews(o: *const option_list.Option) bool {
+    if (scaleFor(o)) |s| return s.slider;
+    return std.mem.eql(u8, o.name, "background-blur");
 }
 
 app: *App,
@@ -272,6 +296,9 @@ tracking: bool = false,
 /// A slider being dragged (roadmap F1d): its option and the value under
 /// the mouse, shown and previewed, taken on release.
 drag: ?struct { option: u16, value: f64 } = null,
+/// The drag's preview timer is armed (SetTimer again would restart it, and
+/// a moving mouse would hold the preview back until it stopped).
+preview_pending: bool = false,
 /// A spin button held down: its option and which way it steps.
 repeat: ?struct { option: u16, part: Part } = null,
 /// A slider's value is shown in the terminals before it is saved (the
@@ -1015,9 +1042,7 @@ fn commit(self: *ConfigEditor, option: u16, value: ?[]const u8) bool {
 /// A slider's value in the terminals now, before it is saved (roadmap
 /// F1d): the app's configuration with the value the editor shows for it.
 fn previewIfSlider(self: *ConfigEditor, option: u16) void {
-    const o = &option_list.all[option];
-    const s = scaleFor(o) orelse return;
-    if (!s.slider) return;
+    if (!previews(&option_list.all[option])) return;
     var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
     defer arena.deinit();
     self.previewValue(option, self.valueOf(arena.allocator(), option));
@@ -1039,10 +1064,12 @@ fn stepOption(self: *ConfigEditor, option: u16, steps: f64) void {
     const a = arena.allocator();
     const n = self.numberNow(a, option) orelse return;
     const next = option_list.stepped(s, o.integer, n, steps * s.step);
-    if (next == n and self.session.isSet(o.name)) return;
+    // At an end (a grayed button): nothing changes, set or not.
+    if (next == n) return;
     var buf: [64]u8 = undefined;
+    var now_buf: [64]u8 = undefined;
     const v = option_list.fileValue(&buf, s, o.integer, next);
-    if (self.session.isSet(o.name) and std.mem.eql(u8, v, self.valueOf(a, option))) return;
+    if (std.mem.eql(u8, v, option_list.fileValue(&now_buf, s, o.integer, n))) return;
     _ = self.commit(option, v);
 }
 
@@ -1084,13 +1111,18 @@ fn moveDrag(self: *ConfigEditor, x: c_int) void {
     self.schedulePreview();
 }
 
-/// The drag's value in the terminals, at most once per timer tick.
+/// The drag's value in the terminals, at most once per timer tick: armed
+/// once, not again on every move (which would restart it).
 fn schedulePreview(self: *ConfigEditor) void {
-    if (self.list) |l| _ = c.SetTimer(l, timer_preview, 33, null);
+    if (self.preview_pending) return;
+    if (self.list) |l| self.preview_pending = c.SetTimer(l, timer_preview, 33, null) != 0;
 }
 
 fn previewDrag(self: *ConfigEditor) void {
     if (self.list) |l| _ = c.KillTimer(l, timer_preview);
+    self.preview_pending = false;
+    // A dialog came up mid-drag: the drag ends, its value not taken.
+    if (self.app.modal_depth > 0) return self.endDrag(.cancel);
     const d = self.drag orelse return;
     const o = &option_list.all[d.option];
     var buf: [64]u8 = undefined;
@@ -1103,19 +1135,24 @@ fn endDrag(self: *ConfigEditor, how: EndHow) void {
     const d = self.drag orelse return;
     // Before ReleaseCapture, whose WM_CAPTURECHANGED would end it again.
     self.drag = null;
+    self.preview_pending = false;
     if (self.list) |l| {
         _ = c.KillTimer(l, timer_preview);
         if (c.GetCapture() == l) _ = c.ReleaseCapture();
         _ = c.InvalidateRect(l, null, c.FALSE);
     }
     const o = &option_list.all[d.option];
+    const s = scaleFor(o).?;
     var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
     defer arena.deinit();
     const a = arena.allocator();
     var buf: [64]u8 = undefined;
-    const v = option_list.fileValue(&buf, scaleFor(o).?, o.integer, d.value);
-    const unchanged = self.session.isSet(o.name) and std.mem.eql(u8, v, self.valueOf(a, d.option));
-    if (how == .commit and !unchanged and self.commit(d.option, v)) return;
+    var now_buf: [64]u8 = undefined;
+    const v = option_list.fileValue(&buf, s, o.integer, d.value);
+    // Released where it was (the knob clicked in place), set or not: nothing
+    // to write. A release inside another dialog's loop takes nothing.
+    const unchanged = if (self.numberNow(a, d.option)) |n| std.mem.eql(u8, v, option_list.fileValue(&now_buf, s, o.integer, n)) else false;
+    if (how == .commit and !unchanged and self.app.modal_depth == 0 and self.commit(d.option, v)) return;
     // Nothing taken: the terminals back to the value the editor holds.
     if (self.previewed) self.previewIfSlider(d.option);
 }
@@ -1136,6 +1173,7 @@ fn beginRepeat(self: *ConfigEditor, item: usize, part: Part) void {
 fn repeatTick(self: *ConfigEditor) void {
     const r = self.repeat orelse return;
     const list = self.list orelse return;
+    if (self.app.modal_depth > 0) return self.endRepeat();
     _ = c.SetTimer(list, timer_repeat, repeat_ms, null);
     // Only while the mouse is still over the button.
     var p: c.POINT = .{};
@@ -1236,8 +1274,109 @@ fn pick(self: *ConfigEditor, item: usize) void {
         .font => self.pickFont(option),
         .theme => self.pickTheme(option),
         .keybind => self.pickBinding(option),
+        .shell => self.pickShell(option),
+        .folder => self.pickFolder(option),
+        .keyword => self.pickKeyword(option),
     }
     if (self.list) |l| _ = c.InvalidateRect(l, null, c.FALSE);
+}
+
+/// Where a row's picker menu opens: under its control, in screen pixels.
+fn menuPoint(self: *const ConfigEditor, option: u16) ?c.POINT {
+    const i = self.indexOfOption(option) orelse return null;
+    const r = self.rectsOf(self.items.items[i]).control;
+    return self.screenPoint(r.left, r.bottom);
+}
+
+/// The installed shells (shells.zig), then "Choose a Program..." for one
+/// of the user's from the file dialog; the choice is the command, as a
+/// `direct:` one naming the program's full path.
+fn pickShell(self: *ConfigEditor, option: u16) void {
+    const o = &option_list.all[option];
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env = global.environMap() catch return;
+    defer env.deinit();
+    const found = shells.list(a, &env) catch return;
+    const current = if (self.session.isSet(o.name)) self.valueOf(a, option) else "";
+    const labels = a.alloc([]const u8, found.len + 1) catch return;
+    const checked = a.alloc(bool, found.len + 1) catch return;
+    for (found, labels[0..found.len], checked[0..found.len]) |s, *l, *ck| {
+        l.* = s.label;
+        ck.* = std.mem.eql(u8, s.value, current);
+    }
+    labels[found.len] = "Choose a Program\u{2026}";
+    checked[found.len] = false;
+    const at = self.menuPoint(option) orelse return;
+    const chosen = ContextMenu.pick(self.app, self.hwnd, at, labels, checked) orelse return;
+    if (chosen < found.len) {
+        _ = self.commit(option, found[chosen].value);
+        return;
+    }
+    const program: []const u8 = program: {
+        if (testPick(a)) |v| break :program v;
+        const file = a.alloc(u16, 32 * 1024) catch return;
+        @memset(file, 0);
+        var ofn: c.OPENFILENAMEW = .{
+            .hwndOwner = self.hwnd,
+            .lpstrFilter = c.L("Programs\x00*.exe\x00All files\x00*.*\x00"),
+            .lpstrFile = file.ptr,
+            .nMaxFile = @intCast(file.len),
+            .lpstrTitle = c.L("Choose a Program"),
+            .Flags = c.OFN_EXPLORER | c.OFN_FILEMUSTEXIST | c.OFN_PATHMUSTEXIST | c.OFN_NOCHANGEDIR,
+        };
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        if (c.GetOpenFileNameW(&ofn) == 0) return;
+        break :program std.unicode.utf16LeToUtf8Alloc(a, std.mem.sliceTo(file, 0)) catch return;
+    };
+    // A path holding a quote can't be quoted (command.zig has no escape).
+    if (std.mem.indexOfScalar(u8, program, '"') != null) return;
+    _ = self.commit(option, shells.direct(a, program, "") catch return);
+}
+
+/// working-directory: home, inherit, or a folder from Windows' folder
+/// dialog, opened in the folder the value names.
+fn pickFolder(self: *ConfigEditor, option: u16) void {
+    const o = &option_list.all[option];
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const keywords = [_][]const u8{ "home", "inherit" };
+    const current = if (self.session.isSet(o.name)) self.valueOf(a, option) else "";
+    const labels = [_][]const u8{ keywords[0], keywords[1], "Choose a Folder\u{2026}" };
+    const checked = [_]bool{ std.mem.eql(u8, current, keywords[0]), std.mem.eql(u8, current, keywords[1]), false };
+    const at = self.menuPoint(option) orelse return;
+    const chosen = ContextMenu.pick(self.app, self.hwnd, at, &labels, &checked) orelse return;
+    if (chosen < keywords.len) {
+        _ = self.commit(option, keywords[chosen]);
+        return;
+    }
+    const folder: []const u8 = folder: {
+        if (testPick(a)) |v| break :folder v;
+        const start: ?[]const u8 = if (checked[0] or checked[1]) null else current;
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        break :folder file_dialog.pickFolder(a, self.hwnd, c.L("Choose a Folder"), start) orelse return;
+    };
+    _ = self.commit(option, folder);
+}
+
+/// A text option's common values (keywordsOf) in a menu.
+fn pickKeyword(self: *ConfigEditor, option: u16) void {
+    const o = &option_list.all[option];
+    const keywords = keywordsOf(o.name);
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const current = self.valueOf(a, option);
+    const checked = a.alloc(bool, keywords.len) catch return;
+    for (keywords, checked) |k, *ck| ck.* = std.mem.eql(u8, k, current);
+    const at = self.menuPoint(option) orelse return;
+    const chosen = ContextMenu.pick(self.app, self.hwnd, at, keywords, checked) orelse return;
+    if (self.session.isSet(o.name) and std.mem.eql(u8, keywords[chosen], current)) return;
+    _ = self.commit(option, keywords[chosen]);
 }
 
 /// A new key binding: the keys, pressed in a capture box; then the
@@ -2059,7 +2198,7 @@ fn scaledValue(self: *ConfigEditor, a: Allocator, o: *const option_list.Option, 
         return null;
     }
     const buf = a.alloc(u8, 64) catch return null;
-    return option_list.fileValue(buf, s, o.integer, n);
+    return option_list.fileValueTyped(buf, s, o.integer, n);
 }
 
 /// How a list's field shows the empty value, which resets the list in a
@@ -2496,14 +2635,20 @@ fn paintControl(self: *ConfigEditor, dc: c.HDC, a: Allocator, it: Item, idx: usi
         // ellipsis for a file or a theme.
         if (picker_hovered) draw.roundRect(dc, p, self.scale(field_radius), pal.pressed, null, 0);
         draw.fill(dc, .{ .left = p.left, .top = p.top + self.scale(7), .right = p.left + @max(1, self.scale(1)), .bottom = p.bottom - self.scale(7) }, pal.separator);
-        const glyph = switch (pickerOf(o)) {
-            .font => c.L("Aa"),
-            .keybind => c.L("+"),
-            else => c.L("\u{2026}"),
-        };
-        var gr = p;
-        _ = c.SetTextColor(dc, pal.text);
-        _ = c.DrawTextW(dc, glyph.ptr, @intCast(glyph.len), &gr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
+        switch (pickerOf(o)) {
+            // A menu (F1e): its chevron.
+            .shell, .folder, .keyword => draw.triangleDown(dc, @divTrunc(p.left + p.right, 2), @divTrunc(p.top + p.bottom, 2), self.scale(4), self.scale(4), pal.text),
+            else => {
+                const glyph = switch (pickerOf(o)) {
+                    .font => c.L("Aa"),
+                    .keybind => c.L("+"),
+                    else => c.L("\u{2026}"),
+                };
+                var gr = p;
+                _ = c.SetTextColor(dc, pal.text);
+                _ = c.DrawTextW(dc, glyph.ptr, @intCast(glyph.len), &gr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
+            },
+        }
         tr.right = p.left - self.scale(6);
     }
     const chevron = (o.kind == .choice or o.kind == .flags or o.kind == .list) and r.picker == null;
@@ -2788,6 +2933,11 @@ fn listProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callc
             self.endRepeat();
             return 0;
         },
+        c.WM_CANCELMODE => {
+            self.endDrag(.cancel);
+            self.endRepeat();
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
+        },
         c.WM_TIMER => {
             switch (wparam) {
                 timer_preview => self.previewDrag(),
@@ -3009,7 +3159,19 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
         c.WM_DESTROY => {
             self.endMenuModal();
+            // The list goes next, releasing its capture: nothing may act on
+            // that (murrtty quitting mid-drag destroys it unasked).
+            self.drag = null;
+            self.repeat = null;
+            self.preview_pending = false;
             return 0;
+        },
+        // Something else takes the mouse (a dialog, the window disabled):
+        // a drag or a held button ends, untaken.
+        c.WM_CANCELMODE => {
+            self.endDrag(.cancel);
+            self.endRepeat();
+            return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_ACTIVATE => {
             // The keyboard back where it was.
@@ -3024,6 +3186,10 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
         c.WM_CLOSE => {
             if (self.app.modal_depth > 0) return 0;
+            // Alt+F4 or a quit mid-drag: the drag ends untaken first, so
+            // no release after the revert commits or previews it.
+            self.endDrag(.cancel);
+            self.endRepeat();
             if (self.confirmClose()) {
                 // What was previewed and not saved: the files' values back.
                 if (self.previewed) self.app.revertConfigPreview();

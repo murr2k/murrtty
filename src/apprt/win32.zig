@@ -36,6 +36,8 @@ test {
     _ = @import("win32/TabBar.zig");
     _ = @import("win32/text.zig");
     _ = @import("win32/toast.zig");
+    _ = @import("win32/file_dialog.zig");
+    _ = @import("win32/shells.zig");
     _ = @import("win32/uia_text.zig");
     _ = @import("win32/Uia.zig");
     _ = @import("win32/url.zig");

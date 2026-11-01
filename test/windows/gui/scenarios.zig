@@ -6240,6 +6240,77 @@ fn configEditorPages(h: *Harness) anyerror!void {
     }{}, "it opens");
     try editorClick(h, &g2, "bell-audio-path", .picker);
     try waitEditor(h, &g2, rowValue("bell-audio-path", chimes), "the file button's dialog sets bell-audio-path");
+
+    // Menus beside a text field (F1e): the installed shells for command,
+    // home, inherit or a folder (the folder dialog stood in for) for
+    // working-directory, and background-blur's false and true.
+    const folder = "C:\\Windows";
+    var g3 = try h.launchWith("config-editor-pages-menus", base_config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_PICK", folder }} });
+    defer g3.deinit();
+    try h.waitText(&g3, ">", 1, 20000);
+    const path3 = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\config.ghostty", .{g3.dir});
+    defer h.alloc.free(path3);
+    try h.openConfigEditor(&g3);
+    try waitEditor(h, &g3, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200;
+        }
+    }{}, "it opens");
+    try editorClick(h, &g3, "command", .picker);
+    {
+        const menu = try h.waitMenu(&g3, 1, 5000);
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        var cmd: ?usize = null;
+        for (items, 0..) |it, i| {
+            if (std.mem.eql(u8, it.text, "Command Prompt")) cmd = i;
+        }
+        try h.expect(cmd != null and std.mem.startsWith(u8, items[items.len - 1].text, "Choose a Program"), "the shells' menu lists the Command Prompt and ends with Choose a Program ({d} items)", .{items.len});
+        h.menuChoose(menu, cmd.?);
+    }
+    try waitEditor(h, &g3, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("command") orelse return false;
+            return r.set and std.mem.startsWith(u8, r.value, "direct:\"") and std.ascii.endsWithIgnoreCase(r.value, "\\cmd.exe\"");
+        }
+    }{}, "the Command Prompt is written as a direct: command with cmd.exe's path quoted");
+    try editorClick(h, &g3, "working-directory", .picker);
+    {
+        const menu = try h.waitMenu(&g3, 1, 5000);
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        try h.expect(items.len == 3 and std.mem.eql(u8, items[0].text, "home") and std.mem.eql(u8, items[1].text, "inherit"), "working-directory's menu: home, inherit, a folder ({d} items)", .{items.len});
+        h.menuChoose(menu, 2);
+    }
+    try waitEditor(h, &g3, rowValue("working-directory", folder), "the folder dialog's choice sets working-directory");
+    try editorClick(h, &g3, "background-blur", .picker);
+    {
+        const menu = try h.waitMenu(&g3, 1, 5000);
+        const items = try h.menuItems(menu);
+        defer h.freeMenuItems(items);
+        try h.expect(items.len == 2 and std.mem.eql(u8, items[1].text, "true") and items[0].checked, "background-blur's menu: false (checked), true", .{});
+        h.menuChoose(menu, 1);
+    }
+    try waitEditor(h, &g3, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("background-blur") orelse return false;
+            return std.mem.eql(u8, r.value, "true") and e.previewed;
+        }
+    }{}, "background-blur = true, shown in the terminals before a save");
+    const now3 = try editorNow(h, &g3, "background-blur");
+    h.key(now3.list, .{ .ctrl = true }, 'S');
+    try waitEditor(h, &g3, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return !e.dirty and std.mem.startsWith(u8, e.status, "Saved");
+        }
+    }{}, "Ctrl+S saves");
+    {
+        const saved = h.readFileOrNull(path3) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(saved);
+        try h.expect(std.mem.indexOf(u8, saved, "command = direct:\"") != null, "the file says command = direct:\"...\"", .{});
+        try h.expect(std.mem.indexOf(u8, saved, "working-directory = C:\\Windows\n") != null, "and working-directory = C:\\Windows", .{});
+        try h.expect(std.mem.indexOf(u8, saved, "background-blur = true\n") != null, "and background-blur = true", .{});
+    }
 }
 
 /// Show only `name`'s row (Escape empties the search first) and return its
@@ -6330,6 +6401,18 @@ fn configEditorNumbers(h: *Harness) anyerror!void {
     const list = (try editorNow(h, &g, "background-opacity")).list;
     const cx = @divTrunc(slider[0] + slider[2], 2);
     const cy = @divTrunc(slider[1] + slider[3], 2);
+    // The knob clicked where it sits (100%, the right end): nothing written.
+    w.Sleep(50);
+    h.press(list, slider[2] - 1, cy);
+    w.Sleep(50);
+    h.release(list, slider[2] - 1, cy);
+    w.Sleep(300);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const e = d.value.config_editor.?;
+        try h.expect(!e.dirty and !e.dragging, "the knob clicked in place changes nothing (dirty {})", .{e.dirty});
+    }
     w.Sleep(50);
     h.press(list, cx, cy);
     try waitEditor(h, &g, struct {
@@ -6339,6 +6422,12 @@ fn configEditorNumbers(h: *Harness) anyerror!void {
         }
     }{}, "a press at the slider's middle shows 50%");
     try waitTranslucent(h, &g, true, "the terminals show 50% while it is dragged, unsaved");
+    {
+        // A preview isn't a reload: no "Reloaded the configuration".
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.windows[0].toast.len == 0, "a preview shows no toast ('{s}')", .{d.value.windows[0].toast});
+    }
     // Dragged to the left end, then Escape: the value before the drag back.
     h.move(list, slider[0] - 20, cy, true);
     try waitEditor(h, &g, rowValue("background-opacity", "0%"), "a drag past the left end shows 0%");

@@ -541,15 +541,23 @@ pub fn fileValue(buf: []u8, scale: Scale, integer: bool, n: f64) []const u8 {
     return formatFixed(buf, roundTo(n, decimals), decimals) catch "";
 }
 
-/// `n` moved by `delta` (a step, or a part of one), kept to the slider's
-/// ends or the range, and rounded to what the file keeps.
+/// `n` moved by `delta` (a step, or a part of one), kept to the range (not
+/// the slider's ends: background-image-opacity steps on past 200%), and
+/// rounded to what the file keeps.
 pub fn stepped(scale: Scale, integer: bool, n: f64, delta: f64) f64 {
-    const lo, const hi = scale.ends();
     var v = n + delta;
     // A value already past an end (a file's own) moves back toward it, never further.
-    if (v > hi) v = if (delta > 0) @max(n, hi) else hi;
-    if (v < lo) v = if (delta < 0) @min(n, lo) else lo;
+    if (v > scale.max) v = if (delta > 0) @max(n, scale.max) else scale.max;
+    if (v < scale.min) v = if (delta < 0) @min(n, scale.min) else scale.min;
     return roundTo(v, fileDecimals(scale, integer));
+}
+
+/// What was typed, as the file spells it: a whole number for an integer
+/// type, else to six places (13.25 pt stays 13.25, though shown 13.3), so a
+/// typed value Ghostty takes isn't rounded unasked.
+pub fn fileValueTyped(buf: []u8, scale: Scale, integer: bool, n: f64) []const u8 {
+    if (integer) return fileValue(buf, scale, true, n);
+    return formatFixed(buf, roundTo(n, 6), 6) catch "";
 }
 
 fn roundTo(v: f64, decimals: u8) f64 {
@@ -566,7 +574,8 @@ fn formatFixed(buf: []u8, v: f64, decimals: u8) ![]const u8 {
         1 => try std.fmt.bufPrint(buf, "{d:.1}", .{v}),
         2 => try std.fmt.bufPrint(buf, "{d:.2}", .{v}),
         3 => try std.fmt.bufPrint(buf, "{d:.3}", .{v}),
-        else => try std.fmt.bufPrint(buf, "{d:.4}", .{v}),
+        4 => try std.fmt.bufPrint(buf, "{d:.4}", .{v}),
+        else => try std.fmt.bufPrint(buf, "{d:.6}", .{v}),
     };
     if (std.mem.indexOfScalar(u8, text, '.') == null) return text;
     var end = text.len;
@@ -1154,6 +1163,16 @@ test "option_list: numbers as the editor shows them and the file keeps them" {
     try testing.expectEqual(@as(f64, 1.5), stepped(opacity, false, 1.5, 0.01));
     try testing.expectEqual(@as(f64, 1), stepped(opacity, false, 1.5, -0.01));
     try testing.expectEqual(@as(f64, 14), stepped(scaleOf("font-size").?, false, 13, 1));
+    // Past the slider's end where the range goes on.
+    const image = scaleOf("background-image-opacity").?;
+    try testing.expectEqual(@as(f64, 3.01), stepped(image, false, 3, 0.01));
+    try testing.expectEqual(@as(f64, 2.99), stepped(image, false, 3, -0.01));
+
+    // Typed values keep their places.
+    try testing.expectEqualStrings("13.25", fileValueTyped(&buf, scaleOf("font-size").?, false, 13.25));
+    try testing.expectEqualStrings("0.9455", fileValueTyped(&buf, opacity, false, 0.9455));
+    try testing.expectEqualStrings("0.945", fileValueTyped(&buf, opacity, false, 0.945));
+    try testing.expectEqualStrings("14", fileValueTyped(&buf, scaleOf("window-width").?, true, 13.6));
 }
 
 test "option_list: apply takes a value as a file's line" {

@@ -205,6 +205,7 @@ pub const WM_XBUTTONDOWN = 0x020B;
 pub const WM_XBUTTONUP = 0x020C;
 pub const WM_MOUSEHWHEEL = 0x020E;
 pub const WM_CAPTURECHANGED = 0x0215;
+pub const WM_CANCELMODE = 0x001F;
 pub const WM_MOUSELEAVE = 0x02A3;
 pub const WM_DPICHANGED = 0x02E0;
 pub const WM_PRINTCLIENT = 0x0318;
@@ -1491,6 +1492,16 @@ pub extern "ole32" fn ReleaseStgMedium(*STGMEDIUM) callconv(.winapi) void;
 pub extern "ole32" fn OleGetClipboard(*?*anyopaque) callconv(.winapi) HRESULT;
 pub extern "shell32" fn DragQueryFileW(*anyopaque, UINT, ?[*]u16, UINT) callconv(.winapi) UINT;
 pub extern "ole32" fn OleUninitialize() callconv(.winapi) void;
+
+// The config editor's pickers (roadmap F1e): a key's subkeys (WSL's
+// distributions), and Windows' folder dialog (file_dialog.zig).
+pub const KEY_READ: DWORD = 0x20019;
+pub extern "advapi32" fn RegOpenKeyExW(HKEY, LPCWSTR, DWORD, DWORD, *?HKEY) callconv(.winapi) c_long;
+pub extern "advapi32" fn RegEnumKeyExW(HKEY, DWORD, [*]u16, *DWORD, ?*DWORD, ?[*]u16, ?*DWORD, ?*anyopaque) callconv(.winapi) c_long;
+pub extern "advapi32" fn RegCloseKey(HKEY) callconv(.winapi) c_long;
+pub extern "ole32" fn CoTaskMemFree(?*anyopaque) callconv(.winapi) void;
+pub extern "shell32" fn SHCreateItemFromParsingName(LPCWSTR, ?*anyopaque, *const GUID, *?*anyopaque) callconv(.winapi) HRESULT;
+pub extern "kernel32" fn GetSystemDirectoryW([*]u16, UINT) callconv(.winapi) UINT;
 
 // advapi32
 pub extern "advapi32" fn RegGetValueW(
