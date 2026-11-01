@@ -1855,17 +1855,19 @@ pub fn syncTranslucent(self: *Window) void {
 /// (toggled, or at an opacity of 1) has none. Windows draws Acrylic in its
 /// solid color while the window is inactive (documented for background
 /// acrylic; kitty's and PowerToys' Windows ports met it), where GTK's blur
-/// stays, so an inactive window takes the accent policy's plain blur
-/// instead. That one lags while a window is dragged or resized on 22H2
-/// and later, which only an active window is.
+/// stays, and on 22H2 and later the accent policy's blur draws black, the
+/// window over nothing, active or not (build 26200, checked on screen
+/// 2026-11-01). So an inactive window there, or one refused Acrylic, goes
+/// unblurred, its backdrop seen through as without background-blur: of
+/// the three, the one that stays see-through like GTK's.
 pub fn syncBlur(self: *Window) void {
     const method = self.app.blurMethod();
     // The test hooks can ask for Acrylic while inactive, to see it.
     const keep_acrylic = if (comptime test_hooks.enabled) self.app.test_state.force_blur == .acrylic else false;
     const want: Blur = if (!self.translucent or !self.app.config.@"background-blur".enabled())
         .none
-    else if (method == .backdrop and !keep_acrylic and (!self.active_window or self.acrylic_refused) and App.accentFn() != null)
-        .accent
+    else if (method == .backdrop and !keep_acrylic and (!self.active_window or self.acrylic_refused))
+        .none
     else
         method;
     if (want == self.blur) return;
@@ -1880,12 +1882,12 @@ pub fn syncBlur(self: *Window) void {
     self.blur = .none;
     switch (want) {
         .none => {},
-        // Acrylic refused: the accent policy's blur, where there is one.
+        // Acrylic refused: unblurred from now on (the accent policy's blur
+        // draws black where Acrylic is the way).
         .backdrop => if (self.setBackdrop(c.DWMSBT_TRANSIENTWINDOW)) {
             self.blur = .backdrop;
         } else {
             self.acrylic_refused = true;
-            if (self.setAccent(c.ACCENT_ENABLE_BLURBEHIND)) self.blur = .accent;
         },
         .accent => if (self.setAccent(c.ACCENT_ENABLE_BLURBEHIND)) {
             self.blur = .accent;

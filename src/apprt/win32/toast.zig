@@ -62,12 +62,14 @@ var combase: ?Combase = null;
 fn loadCombase() ?Combase {
     if (combase) |api| return api;
     const lib = c.LoadLibraryExW(c.L("combase.dll"), null, c.LOAD_LIBRARY_SEARCH_SYSTEM32) orelse return null;
+    // @alignCast too: GetProcAddress's pointer is byte-aligned, a
+    // function's isn't on ARM64.
     const api: Combase = .{
-        .create_string = @ptrCast(c.GetProcAddress(lib, "WindowsCreateString") orelse return null),
-        .delete_string = @ptrCast(c.GetProcAddress(lib, "WindowsDeleteString") orelse return null),
-        .raw_buffer = @ptrCast(c.GetProcAddress(lib, "WindowsGetStringRawBuffer") orelse return null),
-        .get_factory = @ptrCast(c.GetProcAddress(lib, "RoGetActivationFactory") orelse return null),
-        .activate = @ptrCast(c.GetProcAddress(lib, "RoActivateInstance") orelse return null),
+        .create_string = @ptrCast(@alignCast(c.GetProcAddress(lib, "WindowsCreateString") orelse return null)),
+        .delete_string = @ptrCast(@alignCast(c.GetProcAddress(lib, "WindowsDeleteString") orelse return null)),
+        .raw_buffer = @ptrCast(@alignCast(c.GetProcAddress(lib, "WindowsGetStringRawBuffer") orelse return null)),
+        .get_factory = @ptrCast(@alignCast(c.GetProcAddress(lib, "RoGetActivationFactory") orelse return null)),
+        .activate = @ptrCast(@alignCast(c.GetProcAddress(lib, "RoActivateInstance") orelse return null)),
     };
     combase = api;
     return api;

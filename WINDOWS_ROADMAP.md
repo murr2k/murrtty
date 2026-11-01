@@ -266,10 +266,12 @@ roadmap item behind it.
   sent. GTK's builds have Sentry off (its reports carried little on Linux).
 - **Background blur** (4.2): Windows' own: Acrylic, its documented
   backdrop (tinted for the light or dark theme, with its grain), in an
-  active window from Windows 11 22H2, and otherwise a plain blur through
-  the undocumented accent policy (Windows draws Acrylic solid in an
-  inactive window). GTK's blur is the compositor's (KWin's, or
-  `ext-background-effect-v1`); both ignore the intensity.
+  active window from Windows 11 22H2; an inactive window there goes
+  unblurred, still see-through (Windows draws Acrylic solid in an
+  inactive window, and the accent policy's blur black); before 22H2 a
+  plain blur through the undocumented accent policy. GTK's blur is the
+  compositor's (KWin's, or `ext-background-effect-v1`), kept while
+  inactive; both ignore the intensity.
 - **No decorations** (4.4): `window-decoration = none` keeps Windows'
   resize borders, its shadow and rounded corners, and a resize band along
   the top (with no tab row above them, it takes the top few pixels of the
@@ -2128,6 +2130,21 @@ switches); that blur lags while dragging or resizing on 22H2, which only
 an active window does. `blur-display` repaints its stripes red to check
 the blur follows the backdrop rather than a solid fallback.
 
+*On screen 2026-11-01 (build 26200, NVIDIA, the owner at the screen):*
+`transparency` passed whole (the backdrop through half, #14951a; header,
+dividers and layered children opaque), and `blur-display`'s active
+Acrylic blurred and followed the stripes. Inactive, the accent policy's
+blur drew black: the window over nothing (green #19 where the background
+alone is #16, not following the stripes). Forced from the start, the
+accent policy drew black in an active window too, `ACCENT_ENABLE_ACRYLICBLURBEHIND`
+as well; Acrylic kept while inactive drew solid (#40), and an unblurred
+translucent window, inactive, showed the stripes through as an active one
+does. So from 22H2 an inactive window (or one refused Acrylic) goes
+unblurred, the one of the three that stays see-through as GTK's does;
+`blur-display` now checks the stripes show through it and follow it, and
+`blur` its state. The accent policy stays the way before 22H2, untested
+(no such machine).
+
 **4.3 Tabs in the title bar, L.** Windows Terminal-style integrated caption:
 - Keep `WS_OVERLAPPEDWINDOW` (snap, animations, rounded corners and shadow
   stay), remove the caption in `WM_NCCALCSIZE`, and draw caption buttons with
@@ -3641,8 +3658,8 @@ scenarios of the driver's OpenGL (`gl-missing`, `gl-library`,
 (their GUI session has no display mode to change, and DWM drives no
 display there): the scenarios fit it (`window-options`' window, `bell`'s
 typed line, `undo`'s second window kept on its monitor), and `tab-drag`
-skips its drops onto another window's bar when the first window covers
-it. The
+skips its drop onto another window's bar when the new window covers the
+first window's tabs. The
 first run (x64 88 of 109
 scenarios, ARM64 86) found: pixel probes answered by a frame begun before
 the ask, which llvmpipe's slow frames exposed (a present now takes the ask

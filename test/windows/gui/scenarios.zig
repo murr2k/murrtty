@@ -6934,8 +6934,18 @@ fn blurOnScreen(h: *Harness) !void {
     // Inactive: the backdrop takes the foreground, then goes back under.
     _ = Harness.bringToFront(backdrop.hwnd);
     _ = w.SetWindowPos(backdrop.hwnd, win, 0, 0, 0, 0, w.SWP_NOMOVE | w.SWP_NOSIZE | w.SWP_NOACTIVATE);
+    // Unblurred there from 22H2 (Acrylic draws solid, the accent policy
+    // black): the stripes seen through as before the blur, following them.
     const inactive = try waitBlurNot(h, &g, active);
-    try expectBlurred(h, &g, &backdrop, client, y, sharp, inactive, "inactive");
+    {
+        const ig, const ir = try blurReadings(h, &g, &backdrop, client, y, "inactive");
+        std.debug.print("    inactive ({s}): green {x:0>2}..{x:0>2} (mean {x:0>2}); red stripes: green mean {x:0>2}, red mean {x:0>2}\n", .{ inactive, ig.min, ig.max, ig.mean, ir[1].mean, ir[0].mean });
+        if (Harness.windowsBuild() >= 22621) {
+            try h.expect(std.mem.eql(u8, inactive, "none"), "inactive: unblurred ({s})", .{inactive});
+            try h.expect(ig.max - ig.min > 0x60, "inactive: the stripes show through (swing {x})", .{ig.max - ig.min});
+            try h.expect(follows(ig, ir), "inactive: what shows through follows the backdrop (red stripes: green {x} from {x}, red {x})", .{ ir[1].mean, ig.mean, ir[0].mean });
+        } else try expectBlurred(h, &g, &backdrop, client, y, sharp, inactive, "inactive");
+    }
 
     // Acrylic kept while inactive, reported only.
     try h.forceAcrylic(&g, true);
@@ -7669,15 +7679,21 @@ fn tabDrag(h: *Harness) anyerror!void {
     try h.expect(try panePresents(h, &g, torn, frames, 5000), "the moved pane keeps presenting frames", .{});
 
     // Onto the new window's bar: the first window's first tab moves there.
-    // A drop finds its window under the mouse, so the new window's bar must
-    // be what is there, which a small screen (the hosted runners'
-    // 1024x768), the first window over it, may not give.
+    // The drag and the drop go by the window under the mouse, so the first
+    // window's tab must be what is under the press and the new window's bar
+    // under the drop, which a small screen (the hosted runners' 1024x768,
+    // the new window over the first) may not give.
     {
-        var at: w.POINT = .{ .x = 200, .y = 8 };
-        _ = w.ClientToScreen(new_win, &at);
-        const there = w.WindowFromPoint(at);
-        const root = if (there) |u| w.GetAncestor(u, w.GA_ROOT) else null;
-        if (root != new_win) return h.skip("the rest needs the new window's bar uncovered; the screen has no room for both windows", .{});
+        const tab0 = try tabMid(h, &g, 0, 0);
+        var press_at: w.POINT = .{ .x = tab0[0], .y = tab0[1] };
+        _ = w.ClientToScreen(win, &press_at);
+        var drop_at: w.POINT = .{ .x = 200, .y = 8 };
+        _ = w.ClientToScreen(new_win, &drop_at);
+        const under_press = if (w.WindowFromPoint(press_at)) |u| w.GetAncestor(u, w.GA_ROOT) else null;
+        const under_drop = if (w.WindowFromPoint(drop_at)) |u| w.GetAncestor(u, w.GA_ROOT) else null;
+        if (under_press != win or under_drop != new_win) {
+            return h.skip("the rest needs the first window's tab and the new window's bar both uncovered; the screen has no room for both windows", .{});
+        }
     }
     var bar: w.POINT = .{ .x = 200, .y = 8 };
     _ = w.ClientToScreen(new_win, &bar);
@@ -8803,10 +8819,11 @@ fn blurScenario(h: *Harness) anyerror!void {
     const surf = try h.surface(&g, win);
     try expectBlur(h, &g, &.{native});
 
-    // Windows draws Acrylic solid in an inactive window: there the accent
-    // policy's blur, as WM_NCACTIVATE tells the window.
+    // Windows draws Acrylic solid in an inactive window, and the accent
+    // policy's blur black: there it goes unblurred, as WM_NCACTIVATE tells
+    // the window.
     if (build >= 22621) {
-        for ([_]struct { usize, []const u8 }{ .{ 0, "accent" }, .{ 1, "backdrop" } }) |step| {
+        for ([_]struct { usize, []const u8 }{ .{ 0, "none" }, .{ 1, "backdrop" } }) |step| {
             var result: usize = 0;
             _ = w.SendMessageTimeoutW(win, w.WM_NCACTIVATE, step[0], 0, w.SMTO_ABORTIFHUNG, 2000, &result);
             try expectBlur(h, &g, &.{step[1]});
@@ -8845,7 +8862,7 @@ fn blurScenario(h: *Harness) anyerror!void {
 /// The blur a translucent window has on Windows build `build`, active or
 /// not (App.blurMethod, Window.syncBlur).
 fn nativeBlur(build: u32, active: bool) []const u8 {
-    if (build >= 22621) return if (active) "backdrop" else "accent";
+    if (build >= 22621) return if (active) "backdrop" else "none";
     return if (build >= 17763) "accent" else "none";
 }
 
