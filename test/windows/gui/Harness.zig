@@ -1658,6 +1658,10 @@ pub const Dump = struct {
         expanded: []const u8 = "",
         /// The option a field is open for.
         editing: []const u8 = "",
+        /// A slider's value shows in the terminals unsaved (F1d), and one
+        /// is being dragged.
+        previewed: bool = false,
+        dragging: bool = false,
         status_error: bool = false,
         status: []const u8 = "",
         /// The opened file, then those it includes.
@@ -1681,6 +1685,13 @@ pub const Dump = struct {
             reset: [4]i32 = .{ 0, 0, 0, 0 },
             /// Its picker button (F1c), where it has one.
             picker: ?[4]i32 = null,
+            /// A scaled number's slider, or its spin buttons (F1d).
+            slider: ?[4]i32 = null,
+            minus: ?[4]i32 = null,
+            plus: ?[4]i32 = null,
+            /// Its value as the file spells it (`value` is what it shows:
+            /// 94.5% for the file's 0.945).
+            raw: []const u8 = "",
         };
 
         pub fn find(self: Editor, name: []const u8) ?Row {

@@ -308,7 +308,11 @@ hosted Windows runner and then the unit tests.
   own syntax, then reloads. Pickers for colors and files (Windows' own
   dialogs), fonts (the installed monospaced ones, each shown in itself),
   themes (with a sample of their colors) and key bindings (press the
-  keys, choose the action).
+  keys, choose the action). Numbers in their unit: opacities as
+  percentages on a slider whose value shows in the terminals while it
+  moves (saved only on Save), sizes in points, cells or megabytes with a
+  step down and up, and a value past the range refused rather than
+  clamped.
 - Desktop notifications from programs (OSC 9, OSC 777;notify), as
   Windows toasts, each kept in the notification center: a click brings
   its terminal forward, and a terminal's go once it has the keyboard or

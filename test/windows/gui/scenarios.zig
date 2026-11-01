@@ -113,7 +113,8 @@ pub const all = [_]Scenario{
     .{ .name = "clink-history", .about = "a cmd pane with Clink gets its own Clink history (CLINK_HISTORY_LABEL), and after murrtty quits and restarts, Up in the restored pane brings back its command (GHOSTTY_GUI_CLINK=folder)", .run = clinkHistory },
     .{ .name = "session-save", .about = "the session saved as it changes (session.json): the window, a tab and its pane's directory, a new tab, the tab in front, a split; a move saved as it ends, a divider as it is let go; a drag Esc cancels or murrtty ending mid-drag saves nothing; an unwritable state folder said once", .run = sessionSave },
     .{ .name = "session-restore", .about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
-    .{ .name = "config-editor-look", .about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
+    .{ .name = "config-editor-numbers", .about = "the configuration editor's numbers: a percentage on a slider (pressed, dragged, Escape), shown in the terminals before a save and put back by Discard, stepped with the arrow keys, typed in percent and refused past its range; spin rows in their unit, stepped by their buttons, saved as Ghostty's numbers", .run = configEditorNumbers },
+    .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "pwsh-typeahead", .about = "task 42: PowerShell 7 and 5.1 with integration, commands typed ahead (during a slowed prompt; in pairs after a Ctrl+C) all run (GHOSTTY_GUI_STRESS=1; GHOSTTY_PTY_LOG for a trace)", .run = pwshTypeahead },
     .{ .name = "quit-after-reload", .about ="20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
@@ -5643,7 +5644,7 @@ fn configEditor(h: *Harness) anyerror!void {
         try h.expect(std.ascii.eqlIgnoreCase(e.path, path), "it edits murrtty's file ({s})", .{e.path});
         try h.expect(!e.dirty, "nothing changed yet", .{});
         const size = e.find("font-size") orelse return h.fail("no font-size row", .{});
-        try h.expect(std.mem.eql(u8, size.value, "13") and size.set and size.source == 0, "font-size shows the file's 13 (got '{s}', set {})", .{ size.value, size.set });
+        try h.expect(std.mem.eql(u8, size.value, "13 pt") and std.mem.eql(u8, size.raw, "13") and size.set and size.source == 0, "font-size shows the file's 13 (got '{s}', set {})", .{ size.value, size.set });
         const style = e.find("cursor-style") orelse return h.fail("no cursor-style row", .{});
         try h.expect(!style.set and style.value.len > 0, "cursor-style, unset, shows its default ('{s}')", .{style.value});
     }
@@ -5687,7 +5688,7 @@ fn configEditor(h: *Harness) anyerror!void {
         try h.typeText(edit_hwnd, "15");
         h.key(edit_hwnd, .{}, w.VK_RETURN);
     }
-    try waitEditor(h, &g, rowValue("font-size", "15"), "Enter takes 15");
+    try waitEditor(h, &g, rowValue("font-size", "15 pt"), "Enter takes 15");
     try editorClick(h, &g, "font-size", .control);
     try waitEditor(h, &g, struct {
         fn ok(_: @This(), e: Harness.Dump.Editor) bool {
@@ -5704,7 +5705,7 @@ fn configEditor(h: *Harness) anyerror!void {
     try waitEditor(h, &g, struct {
         fn ok(_: @This(), e: Harness.Dump.Editor) bool {
             const r = e.find("font-size") orelse return false;
-            return e.status_error and std.mem.indexOf(u8, e.status, "font-size") != null and std.mem.eql(u8, r.value, "15");
+            return e.status_error and std.mem.indexOf(u8, e.status, "font-size") != null and std.mem.eql(u8, r.value, "15 pt");
         }
     }{}, "'big' is refused with the loader's message, 15 kept");
 
@@ -5875,7 +5876,7 @@ fn configEditor(h: *Harness) anyerror!void {
         try h.typeText(edit_hwnd, "16");
         h.key(edit_hwnd, .{}, w.VK_RETURN);
     }
-    try waitEditor(h, &g, rowValue("font-size", "16"), "16 taken");
+    try waitEditor(h, &g, rowValue("font-size", "16 pt"), "16 taken");
     now = try editorNow(h, &g, "font-size");
     _ = w.PostMessageW(now.hwnd, w.WM_CLOSE, 0, 0);
     var dlg = try h.waitDialog(&g, 5000);
@@ -5977,7 +5978,7 @@ fn configEditor(h: *Harness) anyerror!void {
         try h.typeText(edit_hwnd, "14");
         h.key(edit_hwnd, .{}, w.VK_RETURN);
     }
-    try waitEditor(h, &g2, rowValue("font-size", "14"), "14 taken");
+    try waitEditor(h, &g2, rowValue("font-size", "14 pt"), "14 taken");
     now = try editorNow(h, &g2, "font-size");
     h.key(now.list, .{ .ctrl = true }, 'S');
     try waitEditor(h, &g2, struct {
@@ -6241,9 +6242,231 @@ fn configEditorPages(h: *Harness) anyerror!void {
     try waitEditor(h, &g2, rowValue("bell-audio-path", chimes), "the file button's dialog sets bell-audio-path");
 }
 
+/// Show only `name`'s row (Escape empties the search first) and return its
+/// places (its strings would outlive the dump they came from; read those
+/// from a dump of the caller's).
+fn editorShow(h: *Harness, g: *Harness.Ghostty, name: []const u8) !struct { slider: ?[4]i32, minus: ?[4]i32, plus: ?[4]i32 } {
+    const now = try editorNow(h, g, name);
+    h.key(now.search, .{}, w.VK_ESCAPE);
+    try h.typeText(now.search, name);
+    try waitEditor(h, g, struct {
+        name: []const u8,
+        fn ok(self: @This(), e: Harness.Dump.Editor) bool {
+            return std.mem.eql(u8, e.query, self.name) and e.find(self.name) != null;
+        }
+    }{ .name = name }, "the search shows the row");
+    const row = (try editorNow(h, g, name)).row.?;
+    return .{ .slider = row.slider, .minus = row.minus, .plus = row.plus };
+}
+
+/// `name`'s row shows `value` (`raw` in the file) and whether a file sets
+/// it, checked against a dump now.
+fn expectRow(h: *Harness, g: *Harness.Ghostty, name: []const u8, value: []const u8, raw: []const u8, set: bool) !void {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const e = d.value.config_editor orelse return h.fail("the config editor isn't open", .{});
+    const r = e.find(name) orelse return h.fail("no {s} row", .{name});
+    try h.expect(std.mem.eql(u8, r.value, value) and std.mem.eql(u8, r.raw, raw) and r.set == set, "{s} shows '{s}' (file '{s}', set {}): got '{s}' ('{s}', set {})", .{ name, value, raw, set, r.value, r.raw, r.set });
+}
+
+/// A row's value, as shown and as the file spells it.
+fn rowShown(name: []const u8, value: []const u8, raw: []const u8) struct {
+    name: []const u8,
+    value: []const u8,
+    raw: []const u8,
+    fn ok(self: @This(), e: Harness.Dump.Editor) bool {
+        const r = e.find(self.name) orelse return false;
+        return std.mem.eql(u8, r.value, self.value) and std.mem.eql(u8, r.raw, self.raw);
+    }
+} {
+    return .{ .name = name, .value = value, .raw = raw };
+}
+
+/// Wait until the first window is translucent (`want`) or not.
+fn waitTranslucent(h: *Harness, g: *Harness.Ghostty, want: bool, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.windows.len > 0 and d.value.windows[0].translucent == want) return;
+        w.Sleep(100);
+    }
+    return h.fail(what ++ " (the window is {s}translucent)", .{if (want) "not " else ""});
+}
+
+/// Roadmap F1d: numbers in the configuration editor. A fraction shows as a
+/// percentage to a tenth (the file's 0.945 is 94.5%) and is set with a
+/// slider: a press there takes the value under it, a drag follows the
+/// mouse, and the terminals show it at once (the window turns translucent
+/// with background-opacity under 100% before anything is saved); Escape
+/// mid-drag puts the value back. The arrow keys step it, Ctrl a tenth of a
+/// step. A value is typed in the shown unit, and one past the range the
+/// loader clamps to is refused with the range. Closing without saving puts
+/// the files' values back in the terminals. Other numbers are spin rows in
+/// their unit (13 pt), their buttons stepping, a zero with a meaning of its
+/// own named (window-width's Default); saving writes Ghostty's numbers.
+fn configEditorNumbers(h: *Harness) anyerror!void {
+    const config = try std.mem.concat(h.alloc, u8, &.{ base_config, "font-size = 13\n" });
+    defer h.alloc.free(config);
+    var g = try h.launchWith("config-editor-numbers", config, .{});
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\config.ghostty", .{g.dir});
+    defer h.alloc.free(path);
+    const original = h.readFileOrNull(path) orelse return h.fail("no configuration file at {s}", .{path});
+    defer h.alloc.free(original);
+    try h.openConfigEditor(&g);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200;
+        }
+    }{}, "it opens");
+    try waitTranslucent(h, &g, false, "the window starts opaque");
+
+    // A percentage on a slider.
+    var row = try editorShow(h, &g, "background-opacity");
+    try expectRow(h, &g, "background-opacity", "100%", "1", false);
+    const slider = row.slider orelse return h.fail("background-opacity has no slider", .{});
+    const list = (try editorNow(h, &g, "background-opacity")).list;
+    const cx = @divTrunc(slider[0] + slider[2], 2);
+    const cy = @divTrunc(slider[1] + slider[3], 2);
+    w.Sleep(50);
+    h.press(list, cx, cy);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("background-opacity") orelse return false;
+            return e.dragging and std.mem.eql(u8, r.value, "50%");
+        }
+    }{}, "a press at the slider's middle shows 50%");
+    try waitTranslucent(h, &g, true, "the terminals show 50% while it is dragged, unsaved");
+    // Dragged to the left end, then Escape: the value before the drag back.
+    h.move(list, slider[0] - 20, cy, true);
+    try waitEditor(h, &g, rowValue("background-opacity", "0%"), "a drag past the left end shows 0%");
+    h.key(list, .{}, w.VK_ESCAPE);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("background-opacity") orelse return false;
+            return !e.dragging and !r.set and std.mem.eql(u8, r.value, "100%");
+        }
+    }{}, "Escape ends the drag, 100% kept");
+    try waitTranslucent(h, &g, false, "and the terminals show 100% again");
+    h.release(list, slider[0] - 20, cy);
+    // Pressed and released at the middle: 50% taken.
+    w.Sleep(50);
+    h.press(list, cx, cy);
+    w.Sleep(50);
+    h.release(list, cx, cy);
+    try waitEditor(h, &g, rowShown("background-opacity", "50%", "0.5"), "released at the middle, 0.5 is taken");
+    try waitTranslucent(h, &g, true, "and shows in the terminals");
+
+    // The arrow keys: a step, a tenth of one with Ctrl.
+    h.key(list, .{}, w.VK_RIGHT);
+    try waitEditor(h, &g, rowShown("background-opacity", "51%", "0.51"), "Right steps 1%");
+    h.key(list, .{ .ctrl = true }, w.VK_LEFT);
+    try waitEditor(h, &g, rowShown("background-opacity", "50.9%", "0.509"), "Ctrl+Left steps a tenth");
+
+    // Typed in percent; past 100% refused, with the range.
+    try editorClick(h, &g, "background-opacity", .control);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0 and std.mem.eql(u8, e.editing, "background-opacity");
+        }
+    }{}, "a click on the value puts a field over it");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const edit_hwnd = hwndOf(d.value.config_editor.?.edit);
+        try h.typeText(edit_hwnd, "94.5");
+        h.key(edit_hwnd, .{}, w.VK_RETURN);
+    }
+    try waitEditor(h, &g, rowShown("background-opacity", "94.5%", "0.945"), "94.5 typed is the file's 0.945");
+    try editorClick(h, &g, "background-opacity", .control);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0;
+        }
+    }{}, "the field again");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const edit_hwnd = hwndOf(d.value.config_editor.?.edit);
+        try h.typeText(edit_hwnd, "150");
+        h.key(edit_hwnd, .{}, w.VK_RETURN);
+    }
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("background-opacity") orelse return false;
+            return e.status_error and std.mem.indexOf(u8, e.status, "from 0% to 100%") != null and std.mem.eql(u8, r.raw, "0.945");
+        }
+    }{}, "150 is refused, saying the range, 94.5% kept");
+
+    // Closing without saving: the files' 100% back in the terminals.
+    var now = try editorNow(h, &g, "background-opacity");
+    _ = w.PostMessageW(now.hwnd, w.WM_CLOSE, 0, 0);
+    const dlg = try h.waitDialog(&g, 5000);
+    h.answer(&g, dlg, 201);
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        if (d.value.config_editor == null) break;
+        w.Sleep(100);
+    }
+    try waitTranslucent(h, &g, false, "Discard puts the files' opacity back");
+    {
+        const saved = h.readFileOrNull(path) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(saved);
+        try h.expect(std.mem.eql(u8, saved, original), "and writes nothing", .{});
+    }
+
+    // Spin rows: in their unit, the buttons stepping, a zero named.
+    try h.openConfigEditor(&g);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200;
+        }
+    }{}, "it opens again");
+    _ = try editorShow(h, &g, "window-width");
+    try expectRow(h, &g, "window-width", "Default", "0", false);
+    row = try editorShow(h, &g, "font-size");
+    try expectRow(h, &g, "font-size", "13 pt", "13", true);
+    const plus = row.plus orelse return h.fail("font-size has no spin buttons", .{});
+    const minus = row.minus.?;
+    now = try editorNow(h, &g, "font-size");
+    w.Sleep(50);
+    h.press(now.list, @divTrunc(plus[0] + plus[2], 2), @divTrunc(plus[1] + plus[3], 2));
+    h.release(now.list, @divTrunc(plus[0] + plus[2], 2), @divTrunc(plus[1] + plus[3], 2));
+    try waitEditor(h, &g, rowShown("font-size", "14 pt", "14"), "+ steps to 14 pt");
+    for (0..2) |_| {
+        w.Sleep(50);
+        h.press(now.list, @divTrunc(minus[0] + minus[2], 2), @divTrunc(minus[1] + minus[3], 2));
+        h.release(now.list, @divTrunc(minus[0] + minus[2], 2), @divTrunc(minus[1] + minus[3], 2));
+    }
+    try waitEditor(h, &g, rowShown("font-size", "12 pt", "12"), "- twice steps to 12 pt");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!d.value.config_editor.?.previewed, "a spin row previews nothing", .{});
+    }
+    h.key(now.list, .{ .ctrl = true }, 'S');
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return !e.dirty and std.mem.startsWith(u8, e.status, "Saved");
+        }
+    }{}, "Ctrl+S saves");
+    {
+        const saved = h.readFileOrNull(path) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(saved);
+        const want = try std.mem.replaceOwned(u8, h.alloc, original, "font-size = 13\n", "font-size = 12\n");
+        defer h.alloc.free(want);
+        try h.expect(std.mem.eql(u8, saved, want), "the file says font-size = 12, Ghostty's number", .{});
+    }
+}
+
 /// Pictures of the configuration editor (roadmap F1), as its WM_PAINT draws
 /// it: dark, then light, with a row's documentation opened, copied into
-/// GHOSTTY_GUI_SNAPSHOT as `editor-<look>-bar.bmp` and `-list.bmp`.
+/// GHOSTTY_GUI_SNAPSHOT as `editor-<look>-bar.bmp` and `-list.bmp`, and the
+/// opacities' sliders (F1d) as `editor-<look>-numbers.bmp`.
 fn configEditorLook(h: *Harness) anyerror!void {
     var out_buf: [512]u16 = undefined;
     const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &out_buf, out_buf.len);
@@ -6251,8 +6474,8 @@ fn configEditorLook(h: *Harness) anyerror!void {
     const out_dir = try std.unicode.utf16LeToUtf8Alloc(h.alloc, out_buf[0..n]);
     defer h.alloc.free(out_dir);
     for ([_]struct { []const u8, []const u8 }{
-        .{ "dark", "window-theme = dark\nfont-size = 13\nkeybind = ctrl+a=copy_to_clipboard\n" },
-        .{ "light", "window-theme = light\nfont-size = 13\n" },
+        .{ "dark", "window-theme = dark\nfont-size = 13\nbackground-opacity = 0.945\nkeybind = ctrl+a=copy_to_clipboard\n" },
+        .{ "light", "window-theme = light\nfont-size = 13\nbackground-opacity = 0.945\n" },
     }) |look| {
         const name = try std.fmt.allocPrint(h.alloc, "config-editor-look-{s}", .{look[0]});
         defer h.alloc.free(name);
@@ -6278,6 +6501,21 @@ fn configEditorLook(h: *Harness) anyerror!void {
             const data = h.readFileOrNull(src) orelse return h.fail("no {s}", .{src});
             defer h.alloc.free(data);
             const dst = try std.fmt.allocPrint(h.alloc, "{s}\\editor-{s}-{s}.bmp", .{ out_dir, look[0], part });
+            defer h.alloc.free(dst);
+            try h.writeFileAt(dst, data);
+        }
+        // Numbers (F1d): the opacities' sliders in percent, one the file
+        // sets, then the limits' spin rows in megabytes.
+        for ([_]struct { []const u8, []const u8 }{ .{ "opacity", "numbers" }, .{ "limit", "spins" } }) |view| {
+            h.key(now.search, .{}, w.VK_ESCAPE);
+            try h.typeText(now.search, view[0]);
+            w.Sleep(300);
+            try h.snapshotConfigEditor(&g);
+            const src = try std.fmt.allocPrint(h.alloc, "{s}\\editor-list-0.bmp", .{g.dir});
+            defer h.alloc.free(src);
+            const data = h.readFileOrNull(src) orelse return h.fail("no {s}", .{src});
+            defer h.alloc.free(data);
+            const dst = try std.fmt.allocPrint(h.alloc, "{s}\\editor-{s}-{s}.bmp", .{ out_dir, look[0], view[1] });
             defer h.alloc.free(dst);
             try h.writeFileAt(dst, data);
         }

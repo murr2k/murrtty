@@ -58,6 +58,13 @@ pub const Option = struct {
     /// Whether an empty value unsets it.
     optional: bool,
 
+    /// For a `number`, whether the file holds a whole number (an integer
+    /// type, or a limit).
+    integer: bool = false,
+
+    /// For a `number`, whether `unlimited` is a value it takes (a limit).
+    unlimited: bool = false,
+
     /// Its documentation as written above it (Markdown), or above the
     /// option it is grouped under (`font-family-bold` under
     /// `font-family`).
@@ -134,6 +141,8 @@ const options: [option_count]Option = options: {
             .names = namesOf(V),
             .flag_defaults = flagDefaultsOf(V),
             .optional = optional,
+            .integer = integerOf(V),
+            .unlimited = kindOf(V) == .number and @typeInfo(V) == .@"struct",
             .doc = doc,
         };
         i += 1;
@@ -219,6 +228,16 @@ fn kindOf(comptime T: type) Kind {
         },
         else => return .text,
     }
+}
+
+/// Whether a number's file value is a whole number: an integer type, or a
+/// limit of one (`Limit(usize, ...)`).
+fn integerOf(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .int => true,
+        .@"struct" => kindOf(T) == .number and @typeInfo(@FieldType(T, "value")) == .int,
+        else => false,
+    };
 }
 
 fn namesOf(comptime T: type) []const []const u8 {
@@ -321,6 +340,239 @@ pub fn check(alloc: Allocator, name: []const u8, value: ?[]const u8) Allocator.E
     const found = config._diagnostics.items();
     if (found.len == 0) return null;
     return try alloc.dupe(u8, found[0].message);
+}
+
+/// Take `value` for `name` into `config` as a file's line would (the config
+/// editor's preview, roadmap F1d). The caller has checked it (`check`).
+pub fn apply(alloc: Allocator, config: *Config, name: []const u8, value: []const u8) !void {
+    const arg = try std.fmt.allocPrint(alloc, "--{s}={s}", .{ name, value });
+    defer alloc.free(arg);
+    var iter = args.sliceIterator(&.{arg});
+    try args.parse(Config, alloc, config, &iter);
+}
+
+/// The unit a number shows in (roadmap F1d): a fraction as a percentage,
+/// bytes as megabytes, else what its documentation measures it in.
+pub const Unit = enum {
+    percent,
+    points,
+    columns,
+    rows,
+    lines,
+    pixels,
+    milliseconds,
+    seconds,
+    /// Millions of bytes (`scrollback-limit-bytes`' default is 50 MB).
+    megabytes,
+    /// 2^20 bytes (`clipboard-write-limit-bytes`' default is 64 MiB).
+    mebibytes,
+    /// A contrast ratio, `4.5:1`.
+    ratio,
+    plain,
+
+    /// A file's number as shown, and back: each by one multiplication or
+    /// division by a whole number, so 94.5% is the file's 0.945 and 0.5 MB
+    /// its 500000 exactly.
+    pub fn toShown(self: Unit, n: f64) f64 {
+        return switch (self) {
+            .percent => n * 100,
+            .megabytes => n / 1e6,
+            .mebibytes => n / 1048576,
+            else => n,
+        };
+    }
+
+    pub fn fromShown(self: Unit, n: f64) f64 {
+        return switch (self) {
+            .percent => n / 100,
+            .megabytes => n * 1e6,
+            .mebibytes => n * 1048576,
+            else => n,
+        };
+    }
+
+    /// The decimals shown.
+    pub fn decimals(self: Unit) u8 {
+        return switch (self) {
+            .percent, .points, .megabytes, .mebibytes, .ratio => 1,
+            .seconds => 2,
+            else => 0,
+        };
+    }
+
+    /// What follows the shown number `n`.
+    pub fn suffix(self: Unit, n: f64) []const u8 {
+        const one = n == 1;
+        return switch (self) {
+            .percent => "%",
+            .points => " pt",
+            .columns => if (one) " column" else " columns",
+            .rows => if (one) " row" else " rows",
+            .lines => if (one) " line" else " lines",
+            .pixels => " px",
+            .milliseconds => " ms",
+            .seconds => " s",
+            .megabytes => " MB",
+            .mebibytes => " MiB",
+            .ratio => ":1",
+            .plain => "",
+        };
+    }
+};
+
+/// How the editor shows and edits a number (roadmap F1d): its unit, a
+/// slider for a bounded range or a field with a step down and up
+/// (libadwaita's spin row), and the values it takes.
+pub const Scale = struct {
+    unit: Unit,
+    slider: bool = false,
+    /// The least and the most it takes, in the file's numbers: the loader
+    /// clamps a value beyond them, or it means nothing (a 0 pt font), so the
+    /// editor refuses one rather than write what the file wouldn't mean.
+    min: f64 = -std.math.inf(f64),
+    max: f64 = std.math.inf(f64),
+    /// A slider's right end, for a range with no most
+    /// (`background-image-opacity` goes past 100%).
+    slider_max: ?f64 = null,
+    /// A step of the buttons and the arrow keys, in the file's numbers.
+    step: f64,
+    /// What 0 shows as, where it means something of its own.
+    zero: ?[]const u8 = null,
+
+    /// The slider's ends.
+    pub fn ends(self: Scale) struct { f64, f64 } {
+        return .{ self.min, self.slider_max orelse self.max };
+    }
+
+    pub fn takes(self: Scale, n: f64) bool {
+        return n >= self.min and n <= self.max;
+    }
+};
+
+/// The numbers the editor shows as more than their text, from their
+/// documentation (the core clamps the opacities and the contrast).
+const scales = [_]struct { []const u8, Scale }{
+    .{ "background-opacity", .{ .unit = .percent, .slider = true, .min = 0, .max = 1, .step = 0.01 } },
+    .{ "background-image-opacity", .{ .unit = .percent, .slider = true, .min = 0, .slider_max = 2, .step = 0.01 } },
+    .{ "cursor-opacity", .{ .unit = .percent, .slider = true, .min = 0, .max = 1, .step = 0.01 } },
+    .{ "faint-opacity", .{ .unit = .percent, .slider = true, .min = 0, .max = 1, .step = 0.01 } },
+    .{ "unfocused-split-opacity", .{ .unit = .percent, .slider = true, .min = 0.15, .max = 1, .step = 0.01 } },
+    .{ "bell-audio-volume", .{ .unit = .percent, .slider = true, .min = 0, .max = 1, .step = 0.01 } },
+    .{ "minimum-contrast", .{ .unit = .ratio, .slider = true, .min = 1, .max = 21, .step = 0.1 } },
+    .{ "font-thicken-strength", .{ .unit = .plain, .slider = true, .min = 0, .max = 255, .step = 1 } },
+    .{ "font-size", .{ .unit = .points, .min = 1, .step = 1 } },
+    .{ "window-width", .{ .unit = .columns, .min = 0, .step = 1, .zero = "Default" } },
+    .{ "window-height", .{ .unit = .rows, .min = 0, .step = 1, .zero = "Default" } },
+    .{ "window-position-x", .{ .unit = .pixels, .step = 10 } },
+    .{ "window-position-y", .{ .unit = .pixels, .step = 10 } },
+    .{ "click-repeat-interval", .{ .unit = .milliseconds, .min = 0, .step = 50, .zero = "System setting" } },
+    .{ "abnormal-command-exit-runtime", .{ .unit = .milliseconds, .min = 0, .step = 50, .zero = "Off" } },
+    .{ "quick-terminal-animation-duration", .{ .unit = .seconds, .min = 0, .step = 0.05, .zero = "Off" } },
+    .{ "image-storage-limit", .{ .unit = .megabytes, .min = 0, .step = 10e6, .zero = "Off" } },
+    .{ "scrollback-limit-bytes", .{ .unit = .megabytes, .min = 0, .step = 10e6 } },
+    .{ "scrollback-limit-lines", .{ .unit = .lines, .min = 0, .step = 1000 } },
+    .{ "clipboard-write-limit-bytes", .{ .unit = .mebibytes, .min = 0, .step = 1048576 } },
+};
+
+/// `name`'s scale, if the editor shows it as more than its text.
+pub fn scaleOf(name: []const u8) ?Scale {
+    for (scales) |s| if (std.mem.eql(u8, s[0], name)) return s[1];
+    return null;
+}
+
+/// A file's value as a number, or null (not one: `unlimited`, a typo).
+pub fn numberOf(value: []const u8) ?f64 {
+    const n = std.fmt.parseFloat(f64, std.mem.trim(u8, value, " \t")) catch return null;
+    return if (std.math.isFinite(n)) n else null;
+}
+
+/// `n`, a file's number, as `scale` shows it: in its unit, rounded to the
+/// unit's decimals, trailing zeros dropped (94.5%, 100%), with the unit's
+/// name or (for a field to type in) bare.
+pub fn formatShown(buf: []u8, scale: Scale, n: f64, with_unit: bool) []const u8 {
+    if (n == 0 and with_unit) if (scale.zero) |z| return z;
+    const decimals = scale.unit.decimals();
+    const shown = roundTo(scale.unit.toShown(n), decimals);
+    const text = formatFixed(buf, shown, decimals) catch return "";
+    if (!with_unit) return text;
+    const unit = scale.unit.suffix(shown);
+    if (text.len + unit.len > buf.len) return text;
+    @memcpy(buf[text.len..][0..unit.len], unit);
+    return buf[0 .. text.len + unit.len];
+}
+
+/// What was typed into a number's field, in its unit ("94.5", "94.5 %",
+/// "13pt"), as a file's number; null if it isn't a number.
+pub fn parseShown(scale: Scale, text: []const u8) ?f64 {
+    var t = std.mem.trim(u8, text, " \t");
+    const unit = std.mem.trim(u8, scale.unit.suffix(2), " ");
+    const one = std.mem.trim(u8, scale.unit.suffix(1), " ");
+    for ([_][]const u8{ unit, one }) |u| {
+        if (u.len > 0 and t.len >= u.len and std.ascii.eqlIgnoreCase(t[t.len - u.len ..], u)) {
+            t = std.mem.trimEnd(u8, t[0 .. t.len - u.len], " \t");
+            break;
+        }
+    }
+    const n = std.fmt.parseFloat(f64, t) catch return null;
+    if (!std.math.isFinite(n)) return null;
+    return scale.unit.fromShown(n);
+}
+
+/// The decimals a file keeps of a number: a whole number for an integer
+/// type, else the shown decimals' worth (94.5% is 0.945).
+fn fileDecimals(scale: Scale, integer: bool) u8 {
+    if (integer) return 0;
+    const extra: u8 = switch (scale.unit) {
+        .percent => 2,
+        else => 0,
+    };
+    return scale.unit.decimals() + extra;
+}
+
+/// `n` as the file spells it for an option of `scale`, rounded to what the
+/// file keeps (`fileDecimals`), trailing zeros dropped.
+pub fn fileValue(buf: []u8, scale: Scale, integer: bool, n: f64) []const u8 {
+    if (integer) {
+        const r = std.math.clamp(@round(n), -9.2e18, 1.8e19);
+        if (r < 0) return std.fmt.bufPrint(buf, "{d}", .{@as(i64, @intFromFloat(r))}) catch "";
+        return std.fmt.bufPrint(buf, "{d}", .{@as(u64, @intFromFloat(r))}) catch "";
+    }
+    const decimals = fileDecimals(scale, integer);
+    return formatFixed(buf, roundTo(n, decimals), decimals) catch "";
+}
+
+/// `n` moved by `delta` (a step, or a part of one), kept to the slider's
+/// ends or the range, and rounded to what the file keeps.
+pub fn stepped(scale: Scale, integer: bool, n: f64, delta: f64) f64 {
+    const lo, const hi = scale.ends();
+    var v = n + delta;
+    // A value already past an end (a file's own) moves back toward it, never further.
+    if (v > hi) v = if (delta > 0) @max(n, hi) else hi;
+    if (v < lo) v = if (delta < 0) @min(n, lo) else lo;
+    return roundTo(v, fileDecimals(scale, integer));
+}
+
+fn roundTo(v: f64, decimals: u8) f64 {
+    const p = std.math.pow(f64, 10, @floatFromInt(decimals));
+    const r = @round(v * p) / p;
+    // No "-0".
+    return if (r == 0) 0 else r;
+}
+
+/// `v` to `decimals` places, its trailing zeros (and point) dropped.
+fn formatFixed(buf: []u8, v: f64, decimals: u8) ![]const u8 {
+    const text = switch (decimals) {
+        0 => try std.fmt.bufPrint(buf, "{d:.0}", .{v}),
+        1 => try std.fmt.bufPrint(buf, "{d:.1}", .{v}),
+        2 => try std.fmt.bufPrint(buf, "{d:.2}", .{v}),
+        3 => try std.fmt.bufPrint(buf, "{d:.3}", .{v}),
+        else => try std.fmt.bufPrint(buf, "{d:.4}", .{v}),
+    };
+    if (std.mem.indexOfScalar(u8, text, '.') == null) return text;
+    var end = text.len;
+    while (text[end - 1] == '0') end -= 1;
+    if (text[end - 1] == '.') end -= 1;
+    return text[0..end];
 }
 
 /// The editor's pages, named as a preferences window's would be. Labels
@@ -809,4 +1061,107 @@ test "option_list: check parses as the loader does" {
         return error.TestUnexpectedResult;
     }
     try testing.expect((try check(alloc, "keybind", "ctrl+b=paste_from_clipboard")) == null);
+}
+
+test "option_list: every scale is a number's, its range one the file takes" {
+    for (scales) |s| {
+        const o = find(s[0]) orelse {
+            std.debug.print("scale for no option: {s}\n", .{s[0]});
+            return error.TestUnexpectedResult;
+        };
+        testing.expectEqual(Kind.number, o.kind) catch |err| {
+            std.debug.print("{s}: {t}\n", .{ s[0], o.kind });
+            return err;
+        };
+        const lo, const hi = s[1].ends();
+        try testing.expect(lo < hi);
+        if (s[1].slider) try testing.expect(std.math.isFinite(lo) and std.math.isFinite(hi));
+        try testing.expect(s[1].step > 0);
+        // A step either way from the default is a value the loader takes,
+        // as the file spells it.
+        var defaults: Config = try .default(testing.allocator);
+        defer defaults.deinit();
+        const d = try values(testing.allocator, &defaults, s[0]);
+        defer freeValues(testing.allocator, d);
+        if (d.len == 0) continue;
+        const n = numberOf(d[0]) orelse continue;
+        for ([_]f64{ -s[1].step, s[1].step }) |delta| {
+            var buf: [64]u8 = undefined;
+            const v = fileValue(&buf, s[1], o.integer, stepped(s[1], o.integer, n, delta));
+            if (try check(testing.allocator, s[0], v)) |message| {
+                defer testing.allocator.free(message);
+                std.debug.print("{s} = {s}: {s}\n", .{ s[0], v, message });
+                return error.TestUnexpectedResult;
+            }
+        }
+    }
+    try testing.expect(find("font-thicken-strength").?.integer);
+    try testing.expect(find("window-width").?.integer);
+    try testing.expect(!find("background-opacity").?.integer);
+    try testing.expect(find("scrollback-limit-bytes").?.integer);
+    try testing.expect(find("scrollback-limit-bytes").?.unlimited);
+    try testing.expect(!find("window-width").?.unlimited);
+    try testing.expect(scaleOf("background-opacity").?.slider);
+    try testing.expect(scaleOf("title") == null);
+}
+
+test "option_list: numbers as the editor shows them and the file keeps them" {
+    var buf: [64]u8 = undefined;
+    const opacity = scaleOf("background-opacity").?;
+    try testing.expectEqualStrings("94.5%", formatShown(&buf, opacity, 0.945, true));
+    try testing.expectEqualStrings("94.5", formatShown(&buf, opacity, 0.945, false));
+    try testing.expectEqualStrings("100%", formatShown(&buf, opacity, 1, true));
+    try testing.expectEqualStrings("100%", formatShown(&buf, opacity, 0.99999, true));
+    try testing.expectEqualStrings("0%", formatShown(&buf, opacity, 0, true));
+    try testing.expectEqualStrings("0%", formatShown(&buf, opacity, -0.0001, true));
+    try testing.expectEqualStrings("0.945", fileValue(&buf, opacity, false, 0.945));
+    try testing.expectEqualStrings("0.95", fileValue(&buf, opacity, false, 0.95));
+    try testing.expectEqualStrings("1", fileValue(&buf, opacity, false, 1));
+    try testing.expectEqualStrings("0.945", fileValue(&buf, opacity, false, 0.94500000001));
+
+    try testing.expectEqualStrings("Default", formatShown(&buf, scaleOf("window-width").?, 0, true));
+    try testing.expectEqualStrings("0", formatShown(&buf, scaleOf("window-width").?, 0, false));
+    try testing.expectEqualStrings("80 columns", formatShown(&buf, scaleOf("window-width").?, 80, true));
+    try testing.expectEqualStrings("1 row", formatShown(&buf, scaleOf("window-height").?, 1, true));
+    try testing.expectEqualStrings("4.5:1", formatShown(&buf, scaleOf("minimum-contrast").?, 4.5, true));
+    try testing.expectEqualStrings("320 MB", formatShown(&buf, scaleOf("image-storage-limit").?, 320e6, true));
+    try testing.expectEqualStrings("64 MiB", formatShown(&buf, scaleOf("clipboard-write-limit-bytes").?, 64 * 1048576, true));
+    try testing.expectEqualStrings("0.2 s", formatShown(&buf, scaleOf("quick-terminal-animation-duration").?, 0.2, true));
+    try testing.expectEqualStrings("13.5 pt", formatShown(&buf, scaleOf("font-size").?, 13.5, true));
+    try testing.expectEqualStrings("-20 px", formatShown(&buf, scaleOf("window-position-x").?, -20, true));
+
+    // Typed in the shown unit, with or without its name.
+    try testing.expectEqual(@as(?f64, 0.945), parseShown(opacity, "94.5"));
+    try testing.expectEqual(@as(?f64, 0.945), parseShown(opacity, " 94.5 % "));
+    try testing.expectEqual(@as(?f64, 13.5), parseShown(scaleOf("font-size").?, "13.5pt"));
+    try testing.expectEqual(@as(?f64, 1), parseShown(scaleOf("window-height").?, "1 row"));
+    try testing.expectEqual(@as(?f64, 500000), parseShown(scaleOf("image-storage-limit").?, "0.5 MB"));
+    try testing.expectEqual(@as(?f64, null), parseShown(opacity, "lots"));
+    try testing.expectEqual(@as(?f64, null), parseShown(opacity, "inf"));
+    try testing.expectEqual(@as(?f64, null), parseShown(opacity, ""));
+    try testing.expectEqualStrings("500000", fileValue(&buf, scaleOf("image-storage-limit").?, true, 500000.4));
+    try testing.expectEqualStrings("-20", fileValue(&buf, scaleOf("window-position-x").?, true, -20));
+
+    try testing.expect(opacity.takes(0) and opacity.takes(1) and !opacity.takes(1.01));
+    try testing.expect(!scaleOf("unfocused-split-opacity").?.takes(0.1));
+
+    // Steps stay within the slider, rounded to what the file keeps.
+    try testing.expectEqual(@as(f64, 0.955), stepped(opacity, false, 0.945, 0.01));
+    try testing.expectEqual(@as(f64, 1), stepped(opacity, false, 0.995, 0.01));
+    try testing.expectEqual(@as(f64, 0), stepped(opacity, false, 0.004, -0.01));
+    try testing.expectEqual(@as(f64, 0.946), stepped(opacity, false, 0.945, 0.001));
+    // A file's value past the end only moves back toward it.
+    try testing.expectEqual(@as(f64, 1.5), stepped(opacity, false, 1.5, 0.01));
+    try testing.expectEqual(@as(f64, 1), stepped(opacity, false, 1.5, -0.01));
+    try testing.expectEqual(@as(f64, 14), stepped(scaleOf("font-size").?, false, 13, 1));
+}
+
+test "option_list: apply takes a value as a file's line" {
+    var config: Config = try .default(testing.allocator);
+    defer config.deinit();
+    try apply(testing.allocator, &config, "background-opacity", "0.945");
+    try testing.expectEqual(@as(f64, 0.945), config.@"background-opacity");
+    try apply(testing.allocator, &config, "window-width", "120");
+    try testing.expectEqual(@as(u32, 120), config.@"window-width");
+    try testing.expectEqual(0, config._diagnostics.items().len);
 }

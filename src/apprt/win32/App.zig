@@ -1603,6 +1603,39 @@ pub fn reloadConfigFiles(self: *App) void {
     };
 }
 
+/// The config editor's preview (roadmap F1d): the configuration in use
+/// with `name` taken as `value` (checked by the editor), applied as a
+/// reload applies one, while no file holds it yet.
+pub fn previewConfig(self: *App, name: []const u8, value: []const u8) void {
+    const alloc = self.core_app.alloc;
+    var config = self.config.clone(alloc) catch |err| {
+        log.warn("error previewing the configuration err={}", .{err});
+        return;
+    };
+    defer config.deinit();
+    configpkg.option_list.apply(alloc, &config, name, value) catch |err| {
+        log.warn("error previewing {s}={s} err={}", .{ name, value, err });
+        return;
+    };
+    self.core_app.updateConfig(self, &config) catch |err| {
+        log.warn("error previewing the configuration err={}", .{err});
+    };
+}
+
+/// The config editor closed without saving what it previewed: the files'
+/// configuration back. Errors already shown aren't shown again, as this
+/// isn't a reload the user asked for.
+pub fn revertConfigPreview(self: *App) void {
+    var config = Config.load(self.core_app.alloc) catch |err| {
+        log.warn("error reloading the configuration err={}", .{err});
+        return;
+    };
+    defer config.deinit();
+    self.core_app.updateConfig(self, &config) catch |err| {
+        log.warn("error reloading the configuration err={}", .{err});
+    };
+}
+
 /// The tray (roadmap 5.6), while murrtty can run with no window:
 /// quit-after-last-window-closed = false or initial-window = false.
 fn syncTray(self: *App) void {

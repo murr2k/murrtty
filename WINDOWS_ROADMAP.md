@@ -400,7 +400,9 @@ roadmap item behind it.
   dialog (GTK's own dialogs would be its color and file choosers); fonts,
   themes and a key binding's action come from a chooser drawn as
   libadwaita's dialogs are, which lists only monospaced fonts, and a new
-  binding's keys are pressed in a capture box.
+  binding's keys are pressed in a capture box. Numbers (F1d) show in their
+  unit, a fraction as a percentage, on a slider or a spin row, and a
+  slider's value shows in the terminals before it is saved.
 - **Session restore** (5.10b, the owner's design): `window-save-state`
   (`default` or `always`) restores the windows, tabs, splits, names and
   directories at start, or with `initial-window = false` on the first
@@ -4256,6 +4258,45 @@ a search, an edit, a key-binding capture and a save. *Done 2026-10-28*
   bindings (a bound key's current action, Alt+1 as `alt+digit_1`, a new
   one, one with a value, the same keys again replacing their line), and
   the saved file.
+
+*F1d built 2026-11-01, numbers (the owner's ask: background-opacity read
+as 0.0 to 1.0 was not intuitive):*
+- `option_list.scaleOf` gives 20 numbers a scale from their documentation:
+  a unit (percent, points, columns and rows, pixels, milliseconds,
+  seconds, megabytes, mebibytes, lines, a contrast ratio), a slider or a
+  spin row, a step, the range the loader clamps to, and a name for a 0
+  with a meaning of its own (window-width's Default, click-repeat-interval's
+  System setting). The file keeps Ghostty's numbers: 94.5% is `0.945`,
+  0.5 MB is `500000`, converted by one multiplication or division by a
+  whole number so they come back exactly; a value is shown to its unit's
+  decimals (a percentage to a tenth), and an integer type is written whole.
+- The fractions (background-, background-image-, cursor-, faint- and
+  unfocused-split-opacity, bell-audio-volume), minimum-contrast and
+  font-thicken-strength are libadwaita's scale beside the value's box: a
+  press takes the value under it (snapped to a step, a tenth of one with
+  Shift), a drag follows, Escape mid-drag puts it back. The other numbers
+  are spin rows: the value's field, then a step down and up, held to
+  repeat, each grayed at its end of the range. On a selected row Left and
+  Right step it, Ctrl a tenth of a step, Shift ten.
+- A value is typed in the shown unit ("94.5", "94.5%", "13 pt", "0.5 MB",
+  or `unlimited` for a limit), and one past the range the loader clamps
+  to is refused, the status line naming the range ("from 0% to 100%")
+  instead of the loader silently clamping it.
+- Preview: a slider's value shows in the terminals at once, while it is
+  dragged (at most one every 33 ms) and as it is stepped or typed:
+  `App.previewConfig` takes the configuration in use, parses the value in
+  (`option_list.apply`) and applies it as a reload does. Nothing is
+  written until Save; closing the editor without saving reloads the
+  files (`App.revertConfigPreview`, which doesn't show known errors
+  again). Opacity is the opacity Ghostty means (100% solid, lower showing
+  what is behind), so 94.5% leaves the desktop faintly visible.
+- GUI scenario `config-editor-numbers`: the slider pressed, dragged past
+  its end and Escaped, then taken at its middle (the window turning
+  translucent before any save), the arrow keys (Right a step, Ctrl+Left a
+  tenth: 50.9%, `0.509`), 94.5 typed as `0.945`, 150 refused with the
+  range, Discard putting the window back to opaque with the file
+  unchanged, and font-size's spin buttons saving `font-size = 12`.
+  `config-editor-look` adds pictures of the sliders and of spin rows.
 
 **F2 Waiting bells, S.** *The owner's design, 2026-10-29.* The owner runs
 Claude Code in many tabs and splits; when one waits for input from a pane

@@ -9,7 +9,13 @@
 //! too (roadmap F1c): a color's swatch opens Windows' color dialog, a
 //! path's button its file dialog, and a font's or the theme's a chooser
 //! (Chooser.zig) listing the installed fonts or the themes with their
-//! colors.
+//! colors. A number with a scale (roadmap F1d, `option_list.scaleOf`)
+//! shows in its unit, a fraction as a percentage (the file's 0.945 is
+//! 94.5%), and is edited with a slider, for a bounded range, or a field
+//! with a step down and up; what is typed is in that unit, and a value the
+//! loader would clamp is refused. A slider's value shows in the terminals
+//! at once (`App.previewConfig`), while it is dragged; closing without
+//! saving puts the files' values back.
 //!
 //! It edits the files the loader reads at start (`edit.defaultFiles`:
 //! murrtty's own, else Ghostty's), with the one `open_config` opens as the
@@ -86,6 +92,18 @@ const reset_size = 26;
 const swatch_size = 18;
 const doc_pad = 10;
 const list_edit_height = 150;
+/// A number's slider (roadmap F1d), libadwaita's scale: a trough 4 tall, a
+/// knob 20 across, and the value's box beside it.
+const trough_height = 4;
+const knob_size = 20;
+const value_box_width = 76;
+
+/// The list's timers: a slider's preview, at most one every 33 ms while
+/// dragging, and a spin button held down, repeating.
+const timer_preview = 1;
+const timer_repeat = 2;
+const repeat_first_ms = 400;
+const repeat_ms = 60;
 
 /// How far one notch of the wheel or an arrow of the scroll bar moves.
 const line_step = 40;
@@ -183,8 +201,9 @@ const Item = struct {
     last: bool = false,
 };
 
-/// What a click lands on.
-const Part = enum { row, control, reset, picker };
+/// What a click lands on: a number's slider, or its spin buttons (roadmap
+/// F1d), among the rest.
+const Part = enum { row, control, reset, picker, slider, minus, plus };
 
 /// What a row's picker opens: Windows' color dialog (from the swatch), its
 /// file dialog, a chooser of the installed fonts or of the themes, or a
@@ -250,6 +269,14 @@ menu_modal: ?App.Modal = null,
 hover_item: ?usize = null,
 hover_part: ?Part = null,
 tracking: bool = false,
+/// A slider being dragged (roadmap F1d): its option and the value under
+/// the mouse, shown and previewed, taken on release.
+drag: ?struct { option: u16, value: f64 } = null,
+/// A spin button held down: its option and which way it steps.
+repeat: ?struct { option: u16, part: Part } = null,
+/// A slider's value is shown in the terminals before it is saved (the
+/// app's configuration holds it); closing without saving reloads the files.
+previewed: bool = false,
 
 pub fn registerClass(instance: c.HINSTANCE) !void {
     for ([_]struct { c.LPCWSTR, c.WNDPROC }{
@@ -812,8 +839,24 @@ fn reveal(self: *ConfigEditor, option: u16) void {
 
 /// A row's rectangles, in the list's client pixels: the row, its value's
 /// control, its reset button, and its picker (inside the control: a
-/// color's swatch at its left, else a square at its right).
-const Rects = struct { row: c.RECT, control: c.RECT, reset: c.RECT, picker: ?c.RECT };
+/// color's swatch at its left, else a square at its right). A number with a
+/// scale (roadmap F1d) has a slider, the control then being the value's box
+/// to its right, or spin buttons, two squares at the control's right end.
+const Rects = struct {
+    row: c.RECT,
+    control: c.RECT,
+    reset: c.RECT,
+    picker: ?c.RECT,
+    slider: ?c.RECT = null,
+    minus: ?c.RECT = null,
+    plus: ?c.RECT = null,
+};
+
+/// `o`'s scale, for a number the editor shows as more than its text.
+fn scaleFor(o: *const option_list.Option) ?option_list.Scale {
+    if (o.kind != .number) return null;
+    return option_list.scaleOf(o.name);
+}
 
 fn rectsOf(self: *const ConfigEditor, it: Item) Rects {
     const page = self.pageX();
@@ -837,12 +880,32 @@ fn rectsOf(self: *const ConfigEditor, it: Item) Rects {
         const sh = self.scale(switch_height);
         control = .{ .left = cright - sw, .top = top + @divTrunc(head_h - sh, 2), .right = cright, .bottom = top + @divTrunc(head_h - sh, 2) + sh };
     }
+    if (scaleFor(&option_list.all[it.option])) |s| {
+        if (s.slider) {
+            // The value's box at the right; the slider fills the rest.
+            const vw = @min(self.scale(value_box_width), @divTrunc(control.right - control.left, 2));
+            const box: c.RECT = .{ .left = control.right - vw, .top = control.top, .right = control.right, .bottom = control.bottom };
+            const slider: c.RECT = .{ .left = control.left, .top = top, .right = box.left - self.scale(10), .bottom = top + head_h };
+            return .{ .row = row, .control = box, .reset = reset, .picker = null, .slider = slider };
+        }
+        const sq = control.bottom - control.top;
+        const plus: c.RECT = .{ .left = control.right - sq, .top = control.top, .right = control.right, .bottom = control.bottom };
+        const minus: c.RECT = .{ .left = plus.left - sq, .top = control.top, .right = plus.left, .bottom = control.bottom };
+        return .{ .row = row, .control = control, .reset = reset, .picker = null, .minus = minus, .plus = plus };
+    }
     const picker: ?c.RECT = switch (pickerOf(&option_list.all[it.option])) {
         .none => null,
         .color => .{ .left = control.left, .top = control.top, .right = control.left + self.scale(9) + self.scale(swatch_size) + self.scale(4), .bottom = control.bottom },
         else => .{ .left = control.right - (control.bottom - control.top), .top = control.top, .right = control.right, .bottom = control.bottom },
     };
     return .{ .row = row, .control = control, .reset = reset, .picker = picker };
+}
+
+/// A slider's trough, from the knob's center at the least value to its
+/// center at the most.
+fn trough(self: *const ConfigEditor, slider: c.RECT) struct { left: c_int, right: c_int } {
+    const r = @divTrunc(self.scale(knob_size), 2);
+    return .{ .left = slider.left + r, .right = @max(slider.left + r + 1, slider.right - r) };
 }
 
 /// What is at (x, y) in the list's client pixels.
@@ -853,6 +916,9 @@ fn hit(self: *const ConfigEditor, x: c_int, y: c_int) ?struct { item: usize, par
         if (!draw.contains(r.row, x, y)) continue;
         if (self.session.isSet(option_list.all[it.option].name) and draw.contains(r.reset, x, y)) return .{ .item = i, .part = .reset };
         if (r.picker) |p| if (draw.contains(p, x, y)) return .{ .item = i, .part = .picker };
+        if (r.slider) |s| if (draw.contains(s, x, y)) return .{ .item = i, .part = .slider };
+        if (r.minus) |m| if (draw.contains(m, x, y)) return .{ .item = i, .part = .minus };
+        if (r.plus) |p| if (draw.contains(p, x, y)) return .{ .item = i, .part = .plus };
         if (draw.contains(r.control, x, y)) return .{ .item = i, .part = .control };
         return .{ .item = i, .part = .row };
     }
@@ -884,8 +950,30 @@ fn display(self: *const ConfigEditor, alloc: Allocator, option: u16) []const u8 
         }
         return std.fmt.allocPrint(alloc, "{d} {s}", .{ entries.len, if (entries.len == 1) "entry" else "entries" }) catch "";
     }
+    if (self.drag) |d| if (d.option == option) {
+        // The value under the mouse, while a slider is dragged.
+        const buf = alloc.alloc(u8, 64) catch return "";
+        return option_list.formatShown(buf, scaleFor(o).?, d.value, true);
+    };
     const v = self.valueOf(alloc, option);
-    return if (v.len == 0) "None" else v;
+    if (v.len == 0) return "None";
+    if (scaleFor(o)) |s| {
+        if (o.unlimited and std.mem.eql(u8, v, "unlimited")) return "Unlimited";
+        // A number in its unit; anything else (a typo in the file) as it is.
+        const n = option_list.numberOf(v) orelse return v;
+        const buf = alloc.alloc(u8, 64) catch return v;
+        return option_list.formatShown(buf, s, n, true);
+    }
+    return v;
+}
+
+/// A scaled number's value as a number: the file's, or the default's; null
+/// for `unlimited`, or a value that isn't a number. An unset optional one
+/// (`window-position-x`) counts from 0.
+fn numberNow(self: *const ConfigEditor, alloc: Allocator, option: u16) ?f64 {
+    const v = self.valueOf(alloc, option);
+    if (v.len == 0 and option_list.all[option].optional) return 0;
+    return option_list.numberOf(v);
 }
 
 /// The subtitle: where the value comes from when an included file sets it,
@@ -920,7 +1008,151 @@ fn commit(self: *ConfigEditor, option: u16, value: ?[]const u8) bool {
         return false;
     };
     self.noteChange(o);
+    self.previewIfSlider(option);
     return true;
+}
+
+/// A slider's value in the terminals now, before it is saved (roadmap
+/// F1d): the app's configuration with the value the editor shows for it.
+fn previewIfSlider(self: *ConfigEditor, option: u16) void {
+    const o = &option_list.all[option];
+    const s = scaleFor(o) orelse return;
+    if (!s.slider) return;
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    self.previewValue(option, self.valueOf(arena.allocator(), option));
+}
+
+fn previewValue(self: *ConfigEditor, option: u16, value: []const u8) void {
+    if (value.len == 0) return;
+    self.app.previewConfig(option_list.all[option].name, value);
+    self.previewed = true;
+}
+
+/// Step a scaled number `steps` of its step (a fraction for a fine step,
+/// negative down), and take it.
+fn stepOption(self: *ConfigEditor, option: u16, steps: f64) void {
+    const o = &option_list.all[option];
+    const s = scaleFor(o) orelse return;
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const n = self.numberNow(a, option) orelse return;
+    const next = option_list.stepped(s, o.integer, n, steps * s.step);
+    if (next == n and self.session.isSet(o.name)) return;
+    var buf: [64]u8 = undefined;
+    const v = option_list.fileValue(&buf, s, o.integer, next);
+    if (self.session.isSet(o.name) and std.mem.eql(u8, v, self.valueOf(a, option))) return;
+    _ = self.commit(option, v);
+}
+
+/// A slider's value at `x`, snapped to its step (a tenth of it with Shift
+/// held, for 94.5%), in the file's numbers.
+fn sliderValue(self: *const ConfigEditor, option: u16, slider: c.RECT, x: c_int) f64 {
+    const o = &option_list.all[option];
+    const s = scaleFor(o).?;
+    const t = self.trough(slider);
+    const lo, const hi = s.ends();
+    const frac = std.math.clamp(@as(f64, @floatFromInt(x - t.left)) / @as(f64, @floatFromInt(t.right - t.left)), 0, 1);
+    const step = if (c.GetKeyState(c.VK_SHIFT) < 0) s.step / 10 else s.step;
+    const snapped = lo + @round(frac * (hi - lo) / step) * step;
+    return option_list.stepped(s, o.integer, std.math.clamp(snapped, lo, hi), 0);
+}
+
+fn beginDrag(self: *ConfigEditor, item: usize, x: c_int) void {
+    const it = self.items.items[item];
+    const r = self.rectsOf(it);
+    const slider = r.slider orelse return;
+    self.endEdit(.commit);
+    self.selected = it.option;
+    self.drag = .{ .option = it.option, .value = self.sliderValue(it.option, slider, x) };
+    if (self.list) |l| {
+        _ = c.SetCapture(l);
+        _ = c.InvalidateRect(l, null, c.FALSE);
+    }
+    self.schedulePreview();
+}
+
+fn moveDrag(self: *ConfigEditor, x: c_int) void {
+    const d = self.drag orelse return;
+    const i = self.indexOfOption(d.option) orelse return self.endDrag(.cancel);
+    const slider = self.rectsOf(self.items.items[i]).slider orelse return;
+    const v = self.sliderValue(d.option, slider, x);
+    if (v == d.value) return;
+    self.drag.?.value = v;
+    if (self.list) |l| _ = c.InvalidateRect(l, null, c.FALSE);
+    self.schedulePreview();
+}
+
+/// The drag's value in the terminals, at most once per timer tick.
+fn schedulePreview(self: *ConfigEditor) void {
+    if (self.list) |l| _ = c.SetTimer(l, timer_preview, 33, null);
+}
+
+fn previewDrag(self: *ConfigEditor) void {
+    if (self.list) |l| _ = c.KillTimer(l, timer_preview);
+    const d = self.drag orelse return;
+    const o = &option_list.all[d.option];
+    var buf: [64]u8 = undefined;
+    self.previewValue(d.option, option_list.fileValue(&buf, scaleFor(o).?, o.integer, d.value));
+}
+
+/// The drag ends: its value taken (`commit`, on release), or the value
+/// before it back (`cancel`, Escape).
+fn endDrag(self: *ConfigEditor, how: EndHow) void {
+    const d = self.drag orelse return;
+    // Before ReleaseCapture, whose WM_CAPTURECHANGED would end it again.
+    self.drag = null;
+    if (self.list) |l| {
+        _ = c.KillTimer(l, timer_preview);
+        if (c.GetCapture() == l) _ = c.ReleaseCapture();
+        _ = c.InvalidateRect(l, null, c.FALSE);
+    }
+    const o = &option_list.all[d.option];
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var buf: [64]u8 = undefined;
+    const v = option_list.fileValue(&buf, scaleFor(o).?, o.integer, d.value);
+    const unchanged = self.session.isSet(o.name) and std.mem.eql(u8, v, self.valueOf(a, d.option));
+    if (how == .commit and !unchanged and self.commit(d.option, v)) return;
+    // Nothing taken: the terminals back to the value the editor holds.
+    if (self.previewed) self.previewIfSlider(d.option);
+}
+
+/// A spin button pressed: one step now, then more while it is held.
+fn beginRepeat(self: *ConfigEditor, item: usize, part: Part) void {
+    const option = self.items.items[item].option;
+    self.endEdit(.commit);
+    self.selected = option;
+    self.repeat = .{ .option = option, .part = part };
+    self.stepOption(option, if (part == .minus) -1 else 1);
+    if (self.list) |l| {
+        _ = c.SetCapture(l);
+        _ = c.SetTimer(l, timer_repeat, repeat_first_ms, null);
+    }
+}
+
+fn repeatTick(self: *ConfigEditor) void {
+    const r = self.repeat orelse return;
+    const list = self.list orelse return;
+    _ = c.SetTimer(list, timer_repeat, repeat_ms, null);
+    // Only while the mouse is still over the button.
+    var p: c.POINT = .{};
+    _ = c.GetCursorPos(&p);
+    _ = c.ScreenToClient(list, &p);
+    const h = self.hit(p.x, p.y) orelse return;
+    if (self.items.items[h.item].option != r.option or h.part != r.part) return;
+    self.stepOption(r.option, if (r.part == .minus) -1 else 1);
+}
+
+fn endRepeat(self: *ConfigEditor) void {
+    if (self.repeat == null) return;
+    self.repeat = null;
+    if (self.list) |l| {
+        _ = c.KillTimer(l, timer_repeat);
+        if (c.GetCapture() == l) _ = c.ReleaseCapture();
+    }
 }
 
 /// Take `entries` for list `option` as the opened file's lines, each tried
@@ -962,6 +1194,7 @@ fn resetOption(self: *ConfigEditor, option: u16) void {
         return;
     };
     self.noteChange(o);
+    self.previewIfSlider(option);
 }
 
 /// Act on a row's control: flip a switch, open a choice's or flags' menu,
@@ -1693,15 +1926,26 @@ fn beginEdit(self: *ConfigEditor, option: u16) void {
             initial.appendSlice(a, "\r\n") catch {};
         }
     } else if (self.session.isSet(o.name)) {
-        initial.appendSlice(a, self.valueOf(a, option)) catch {};
+        initial.appendSlice(a, self.fieldText(a, option)) catch {};
     } else {
-        const v = self.valueOf(a, option);
+        const v = if (scaleFor(o) != null) self.display(a, option) else self.valueOf(a, option);
         if (text_util.utf16Lossy(a, v) catch null) |cue| _ = c.SendMessageW(edit, c.EM_SETCUEBANNER, 1, @bitCast(@intFromPtr(cue.ptr)));
     }
     if (text_util.utf16Lossy(a, initial.items) catch null) |w| _ = c.SetWindowTextW(edit, w.ptr);
     _ = c.SendMessageW(edit, c.EM_SETSEL, 0, -1);
     self.placeEdit();
     _ = c.SetFocus(edit);
+}
+
+/// What the field holds for `option`'s value: a scaled number in its shown
+/// unit, bare (94.5 for the file's 0.945), else the value as the file has it.
+fn fieldText(self: *const ConfigEditor, a: Allocator, option: u16) []const u8 {
+    const o = &option_list.all[option];
+    const v = self.valueOf(a, option);
+    const s = scaleFor(o) orelse return v;
+    const n = option_list.numberOf(v) orelse return v;
+    const buf = a.alloc(u8, 64) catch return v;
+    return option_list.formatShown(buf, s, n, false);
 }
 
 /// The field's place: over the value's box, or under an opened list's
@@ -1724,7 +1968,7 @@ fn placeEdit(self: *ConfigEditor) void {
     const line = self.lineHeight(self.fonts.title) + 2;
     const swatch: c_int = if (o.kind == .color) self.scale(swatch_size) + self.scale(8) else 0;
     const ctl = r.control;
-    const square: c_int = if (r.picker != null and o.kind != .color) ctl.bottom - ctl.top else 0;
+    const square: c_int = if (r.minus) |m| ctl.right - m.left else if (r.picker != null and o.kind != .color) ctl.bottom - ctl.top else 0;
     _ = c.SetWindowPos(edit, null, ctl.left + inset + swatch, ctl.top + @divTrunc(ctl.bottom - ctl.top - line, 2), ctl.right - ctl.left - 2 * inset - swatch - square, line, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
 }
 
@@ -1777,9 +2021,45 @@ fn commitField(self: *ConfigEditor, edit: c.HWND, option: u16) bool {
     // Unchanged, or emptied while unset: nothing to write.
     var arena: std.heap.ArenaAllocator = .init(alloc);
     defer arena.deinit();
-    if (self.session.isSet(o.name) and std.mem.eql(u8, text, self.valueOf(arena.allocator(), option))) return true;
+    const a = arena.allocator();
+    if (self.session.isSet(o.name) and std.mem.eql(u8, text, self.fieldText(a, option))) return true;
     if (!self.session.isSet(o.name) and text.len == 0) return true;
+    if (scaleFor(o)) |s| if (text.len > 0) {
+        const value = self.scaledValue(a, o, s, text) orelse return false;
+        if (self.session.isSet(o.name) and std.mem.eql(u8, value, self.valueOf(a, option))) return true;
+        return self.commit(option, value);
+    };
     return self.commit(option, text);
+}
+
+/// What was typed for a scaled number, in its shown unit, as the file
+/// spells it; null, with the reason in the status line, for text that
+/// isn't a number or one out of its range (which the loader would clamp).
+fn scaledValue(self: *ConfigEditor, a: Allocator, o: *const option_list.Option, s: option_list.Scale, text: []const u8) ?[]const u8 {
+    const t = std.mem.trim(u8, text, " \t");
+    if (o.unlimited and std.ascii.eqlIgnoreCase(t, "unlimited")) return "unlimited";
+    const n = option_list.parseShown(s, t) orelse {
+        self.setStatus(true, "{s}: {s} isn't a number", .{ o.name, t });
+        return null;
+    };
+    if (!s.takes(n)) {
+        var lo_buf: [64]u8 = undefined;
+        var hi_buf: [64]u8 = undefined;
+        // The range's ends as numbers, not as what 0 means (`zero`).
+        const bare: option_list.Scale = .{ .unit = s.unit, .step = s.step };
+        const lo = option_list.formatShown(&lo_buf, bare, s.min, true);
+        const hi = option_list.formatShown(&hi_buf, bare, s.max, true);
+        if (std.math.isInf(s.max)) {
+            self.setStatus(true, "{s}: at least {s}", .{ o.name, lo });
+        } else if (std.math.isInf(s.min)) {
+            self.setStatus(true, "{s}: at most {s}", .{ o.name, hi });
+        } else {
+            self.setStatus(true, "{s}: from {s} to {s}", .{ o.name, lo, hi });
+        }
+        return null;
+    }
+    const buf = a.alloc(u8, 64) catch return null;
+    return option_list.fileValue(buf, s, o.integer, n);
 }
 
 /// How a list's field shows the empty value, which resets the list in a
@@ -1917,6 +2197,8 @@ fn save(self: *ConfigEditor) void {
     }
     self.changed.clearRetainingCapacity();
     self.app.reloadConfigFiles();
+    // The files now hold what was previewed.
+    self.previewed = false;
     const when: []const u8 = if (later) |r| switch (r) {
         .live => "",
         .new_terminals => " Some changes apply to terminals opened from now on.",
@@ -2113,7 +2395,7 @@ fn paintRow(self: *ConfigEditor, dc: c.HDC, a: Allocator, it: Item, idx: usize) 
     if (!it.first) draw.fill(dc, .{ .left = r.row.left, .top = r.row.top, .right = r.row.right, .bottom = r.row.top + @max(1, self.scale(1)) }, pal.separator);
 
     // Title and subtitle, clear of the control.
-    const text_right = r.control.left - self.scale(12);
+    const text_right = (if (r.slider) |s| s.left else r.control.left) - self.scale(12);
     {
         const old = if (self.fonts.title) |f| c.SelectObject(dc, f) else null;
         defer if (old) |ob| {
@@ -2183,6 +2465,7 @@ fn paintControl(self: *ConfigEditor, dc: c.HDC, a: Allocator, it: Item, idx: usi
         },
         else => {},
     }
+    if (scaleFor(o)) |s| return self.paintNumber(dc, a, it, idx, r, s);
     // The editing field draws its own text over the box.
     draw.roundRect(dc, ctl, self.scale(field_radius), if (hovered) pal.pressed else pal.field, null, 0);
     if (self.edit_option == it.option and o.kind != .list) return;
@@ -2233,6 +2516,68 @@ fn paintControl(self: *ConfigEditor, dc: c.HDC, a: Allocator, it: Item, idx: usi
         const cy = @divTrunc(ctl.top + ctl.bottom, 2);
         draw.triangleDown(dc, ctl.right - self.scale(12), cy, self.scale(4), self.scale(4), pal.text);
     }
+}
+
+/// A scaled number's control (roadmap F1d): libadwaita's scale (a trough
+/// filled with the accent up to a white knob) and the value's box beside
+/// it, or its spin row (the value's field, then a step down and up, each
+/// grayed at its end of the range).
+fn paintNumber(self: *ConfigEditor, dc: c.HDC, a: Allocator, it: Item, idx: usize, r: Rects, s: option_list.Scale) void {
+    const pal = self.pal;
+    const o = &option_list.all[it.option];
+    const dragging = if (self.drag) |d| d.option == it.option else false;
+    const lo, const hi = s.ends();
+    const n: ?f64 = if (dragging) self.drag.?.value else self.numberNow(a, it.option);
+    if (r.slider) |slider| {
+        const t = self.trough(slider);
+        const cy = @divTrunc(slider.top + slider.bottom, 2);
+        const th = @max(2, self.scale(trough_height));
+        const frac = std.math.clamp(((n orelse lo) - lo) / (hi - lo), 0, 1);
+        const kx = t.left + @as(c_int, @intFromFloat(@round(frac * @as(f64, @floatFromInt(t.right - t.left)))));
+        const bar: c.RECT = .{ .left = t.left, .top = cy - @divTrunc(th, 2), .right = t.right, .bottom = cy - @divTrunc(th, 2) + th };
+        draw.roundRect(dc, bar, @divTrunc(th, 2), pal.switch_off, null, 0);
+        if (kx > t.left) draw.roundRect(dc, .{ .left = t.left, .top = bar.top, .right = kx, .bottom = bar.bottom }, @divTrunc(th, 2), pal.accent, null, 0);
+        const ks = self.scale(knob_size);
+        const half = @divTrunc(ks, 2);
+        const knob: c.RECT = .{ .left = kx - half, .top = cy - half, .right = kx - half + ks, .bottom = cy - half + ks };
+        const active = dragging or (self.hover_item == idx and self.hover_part == .slider);
+        draw.roundRect(dc, knob, half, pal.knob, if (active) pal.accent else pal.separator, @max(1, self.scale(if (active) 2 else 1)));
+    }
+    const ctl = r.control;
+    const hovered = self.hover_item == idx and self.hover_part == .control;
+    draw.roundRect(dc, ctl, self.scale(field_radius), if (hovered) pal.pressed else pal.field, null, 0);
+    const old = if (self.fonts.title) |f| c.SelectObject(dc, f) else null;
+    defer if (old) |ob| {
+        _ = c.SelectObject(dc, ob);
+    };
+    var tr = ctl;
+    tr.left += self.scale(9);
+    tr.right -= self.scale(9);
+    if (r.minus) |minus| {
+        const plus = r.plus.?;
+        tr.right = minus.left - self.scale(4);
+        const at_lo = if (n) |v| v <= lo else true;
+        const at_hi = if (n) |v| v >= hi else true;
+        for ([_]struct { c.RECT, Part, [:0]const u16, bool }{
+            .{ minus, .minus, c.L("\u{2212}"), at_lo },
+            .{ plus, .plus, c.L("+"), at_hi },
+        }) |b| {
+            const pressed = if (self.repeat) |rp| rp.option == it.option and rp.part == b[1] else false;
+            if (!b[3] and (pressed or (self.hover_item == idx and self.hover_part == b[1]))) {
+                draw.roundRect(dc, b[0], self.scale(field_radius), if (pressed) pal.separator else pal.pressed, null, 0);
+            }
+            draw.fill(dc, .{ .left = b[0].left, .top = b[0].top + self.scale(7), .right = b[0].left + @max(1, self.scale(1)), .bottom = b[0].bottom - self.scale(7) }, pal.separator);
+            var gr = b[0];
+            _ = c.SetTextColor(dc, if (b[3]) pal.separator else pal.text);
+            _ = c.DrawTextW(dc, b[2].ptr, @intCast(b[2].len), &gr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
+        }
+    }
+    // The editing field draws its own text over the box.
+    if (self.edit_option == it.option) return;
+    const shown = self.display(a, it.option);
+    const w = text_util.utf16Lossy(a, shown) catch return;
+    _ = c.SetTextColor(dc, if (self.session.isSet(o.name) or dragging) pal.text else pal.subtitle);
+    _ = c.DrawTextW(dc, w.ptr, @intCast(w.len), &tr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_NOPREFIX | c.DT_END_ELLIPSIS);
 }
 
 // ---------------------------------------------------------------- input
@@ -2317,8 +2662,22 @@ fn commonKey(self: *ConfigEditor, key: c.WPARAM) bool {
 }
 
 fn listKey(self: *ConfigEditor, key: c.WPARAM) bool {
+    if (self.drag != null) {
+        if (key == c.VK_ESCAPE) self.endDrag(.cancel);
+        return true;
+    }
     if (self.commonKey(key)) return true;
     switch (key) {
+        // A number's step down or up (roadmap F1d): Ctrl a tenth of one
+        // (94.5%), Shift ten.
+        c.VK_LEFT, c.VK_RIGHT => {
+            const s = self.selected orelse return true;
+            if (scaleFor(&option_list.all[s]) == null) return false;
+            const sign: f64 = if (key == c.VK_LEFT) -1 else 1;
+            const size: f64 = if (c.GetKeyState(c.VK_CONTROL) < 0) 0.1 else if (c.GetKeyState(c.VK_SHIFT) < 0) 10 else 1;
+            self.stepOption(s, sign * size);
+            return true;
+        },
         c.VK_UP => self.moveSelection(-1),
         c.VK_DOWN => self.moveSelection(1),
         c.VK_PRIOR => self.moveSelection(-8),
@@ -2407,6 +2766,8 @@ fn listProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callc
                 .reset => self.resetOption(option),
                 .picker => self.pick(h.item),
                 .control => self.activate(h.item),
+                .slider => self.beginDrag(h.item, x),
+                .minus, .plus => self.beginRepeat(h.item, h.part),
                 .row => {
                     self.selected = option;
                     self.toggleExpanded(option);
@@ -2415,7 +2776,31 @@ fn listProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callc
             _ = c.InvalidateRect(hwnd, null, c.FALSE);
             return 0;
         },
+        c.WM_LBUTTONUP => {
+            if (self.drag != null) self.endDrag(.commit);
+            self.endRepeat();
+            return 0;
+        },
+        // The capture lost (another window took the mouse): a drag keeps
+        // what it reached, as a release would.
+        c.WM_CAPTURECHANGED => {
+            if (self.drag != null) self.endDrag(.commit);
+            self.endRepeat();
+            return 0;
+        },
+        c.WM_TIMER => {
+            switch (wparam) {
+                timer_preview => self.previewDrag(),
+                timer_repeat => self.repeatTick(),
+                else => {},
+            }
+            return 0;
+        },
         c.WM_MOUSEMOVE => {
+            if (self.drag != null) {
+                self.moveDrag(c.xParam(lparam));
+                return 0;
+            }
             if (!self.tracking) {
                 var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE, .hwndTrack = hwnd };
                 _ = c.TrackMouseEvent(&tme);
@@ -2639,7 +3024,11 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         },
         c.WM_CLOSE => {
             if (self.app.modal_depth > 0) return 0;
-            if (self.confirmClose()) _ = c.DestroyWindow(hwnd);
+            if (self.confirmClose()) {
+                // What was previewed and not saved: the files' values back.
+                if (self.previewed) self.app.revertConfigPreview();
+                _ = c.DestroyWindow(hwnd);
+            }
             return 0;
         },
         c.WM_NCDESTROY => {
@@ -2723,7 +3112,7 @@ pub fn writeDump(self: *const ConfigEditor, alloc: Allocator, out: *std.ArrayLis
     try writeString(alloc, out, if (self.expanded) |e| option_list.all[e].name else "");
     try out.appendSlice(alloc, ",\"editing\":");
     try writeString(alloc, out, if (self.edit_option) |e| option_list.all[e].name else "");
-    try out.print(alloc, ",\"status_error\":{},\"status\":", .{self.status_error});
+    try out.print(alloc, ",\"previewed\":{},\"dragging\":{},\"status_error\":{},\"status\":", .{ self.previewed, self.drag != null, self.status_error });
     try writeString(alloc, out, self.status[0..self.status_len]);
     try out.appendSlice(alloc, ",\"files\":[");
     for (self.session.files.items, 0..) |f, i| {
@@ -2751,6 +3140,13 @@ pub fn writeDump(self: *const ConfigEditor, alloc: Allocator, out: *std.ArrayLis
         if (r.picker) |p| {
             try out.print(alloc, ",\"picker\":[{d},{d},{d},{d}]", .{ p.left, p.top, p.right, p.bottom });
         }
+        // A scaled number's parts (roadmap F1d), and its value as the file
+        // spells it (`value` is what the row shows).
+        for ([_]struct { []const u8, ?c.RECT }{ .{ "slider", r.slider }, .{ "minus", r.minus }, .{ "plus", r.plus } }) |part| {
+            if (part[1]) |p| try out.print(alloc, ",\"{s}\":[{d},{d},{d},{d}]", .{ part[0], p.left, p.top, p.right, p.bottom });
+        }
+        try out.appendSlice(alloc, ",\"raw\":");
+        try writeString(alloc, out, self.valueOf(a, it.option));
         try out.print(alloc, ",\"kind\":\"{t}\",\"set\":{},\"source\":{d},\"row\":[{d},{d},{d},{d}],\"control\":[{d},{d},{d},{d}],\"reset\":[{d},{d},{d},{d}]}}", .{
             o.kind,
             self.session.isSet(o.name),

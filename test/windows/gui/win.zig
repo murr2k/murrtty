@@ -207,6 +207,7 @@ pub const VK_NEXT = 0x22;
 pub const VK_END = 0x23;
 pub const VK_INSERT = 0x2D;
 pub const VK_LEFT = 0x25;
+pub const VK_RIGHT = 0x27;
 pub const VK_SPACE = 0x20;
 pub const VK_F2 = 0x71;
 pub const VK_F3 = 0x72;
