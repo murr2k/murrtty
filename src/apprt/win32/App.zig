@@ -47,9 +47,11 @@ const log = std.log.scoped(.win32);
 
 const wakeup_class_name = c.L("MurrttyWakeup");
 
-/// The taskbar groups windows, and pins shortcuts, by this. Never change
-/// it: pinned taskbar icons would stop matching.
-const app_user_model_id = c.L("murrtty.murrtty");
+/// The taskbar groups windows, and pins shortcuts, by this, and toasts go
+/// under it (roadmap 5.2b). Never change it: pinned taskbar icons would
+/// stop matching.
+pub const app_user_model_id_utf8 = "murrtty.murrtty";
+pub const app_user_model_id = c.L(app_user_model_id_utf8);
 const WM_WAKEUP = c.WM_APP + 1;
 const WM_RUN_REQUESTS = c.WM_APP + 2;
 const WM_RAISE_MODAL = c.WM_APP + 3;

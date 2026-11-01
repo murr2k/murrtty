@@ -310,10 +310,10 @@ hosted Windows runner and then the unit tests.
   themes (with a sample of their colors) and key bindings (press the
   keys, choose the action).
 - Desktop notifications from programs (OSC 9, OSC 777;notify), as
-  Windows toasts, with an icon in the notification area while one waits;
-  a click brings the terminal forward, and a notification goes once its
-  terminal has the keyboard (`desktop-notifications = false` turns them
-  off). One at a time stands for them all, for now.
+  Windows toasts, each kept in the notification center: a click brings
+  its terminal forward, and a terminal's go once it has the keyboard or
+  closes (`desktop-notifications = false` turns them off). Where Windows
+  offers no toasts, balloons of a notification-area icon instead.
 - Global key bindings (`keybind = global:ctrl+backquote=...`) that work
   whatever program has the keyboard, as Windows hot keys; one that can't
   be had (Windows or another program uses it, say) is reported by a
@@ -408,8 +408,8 @@ hosted Windows runner and then the unit tests.
 - New Window in the taskbar's Jump List (right-click murrtty's taskbar
   button), set up by release builds. The tests check the list Windows
   takes, not the taskbar showing it.
-- Clicking a notification's toast or icon: the tests click through the
-  icon's message, and check that Windows takes a real one.
+- Clicking a notification's toast: the tests click through the message a
+  click posts, and check that Windows takes a real toast.
 - Surviving a graphics driver reset (Windows restarting a hung GPU):
   murrtty draws again in a new OpenGL context, and shows the renderer's
   failure panel until it can. The tests fake the reset.
@@ -426,9 +426,6 @@ hosted Windows runner and then the unit tests.
 **Not implemented yet**
 
 - The bell's `audio` and `border` features.
-- Notifications as Windows' own toasts, each kept in the Action Center and
-  withdrawn on its own (today one notification-area entry stands for the
-  latest).
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
 - Signed releases. 0.2.0 is out as a
@@ -628,7 +625,7 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
 | `src/apprt/win32/ContextMenu.zig`, `AlertDialog.zig`, `CommandPalette.zig`, `SearchBox.zig` | Menus as libadwaita's popovers, its alert dialogs, the command palette and search |
 | `src/apprt/win32/ipc.zig` | The single instance: a pipe only the user's own processes can use, for `+new-window`, `+new-tab` and second launches |
 | `src/apprt/win32/Session.zig` | Session restore: what is saved, when, and its restore; each pane's command history files |
-| `src/apprt/win32/Notifications.zig`, `taskbar.zig`, `GlobalKeys.zig`, `QuickTerminal.zig` | Notifications and the tray, taskbar progress, global key bindings, the quick terminal |
+| `src/apprt/win32/Notifications.zig`, `toast.zig`, `taskbar.zig`, `GlobalKeys.zig`, `QuickTerminal.zig` | Notifications (toasts, balloons) and the tray, taskbar progress, global key bindings, the quick terminal |
 | `src/apprt/win32/Undo.zig`, `Inspector.zig`, `Uia.zig`, `uia_text.zig` | Undo of closes, the terminal inspector, UI Automation for screen readers |
 | `src/apprt/win32/ConfigEditor.zig`, `src/config/EditableFile.zig`, `src/config/option_list.zig` | The configuration editor, and the in-place editing of the config file behind it |
 | `src/font/dwrite.zig` | Font discovery through DirectWrite (FreeType still draws) |

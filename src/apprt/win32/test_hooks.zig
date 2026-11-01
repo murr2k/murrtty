@@ -67,6 +67,9 @@ pub const State = if (enabled) struct {
     /// instead of shown unless GHOSTTY_WIN32_TEST_NOTIFY is set.
     notifications: std.ArrayList(Notified) = .empty,
     record_notifications: bool = true,
+    /// Balloons even where Windows has toasts (GHOSTTY_WIN32_TEST_BALLOONS;
+    /// roadmap 5.2b), so the fallback runs here too.
+    force_balloons: bool = false,
     /// Whether murrtty counts as in front for toggle_visibility (dump
     /// wparam 16): on the hidden desktop the foreground window is always
     /// the user desktop's.
@@ -90,7 +93,7 @@ pub const State = if (enabled) struct {
 pub const Notified = struct {
     /// The pane's core id, 0 for murrtty's own.
     surface: u64,
-    /// As the balloon shows them, cut to its fields.
+    /// As they show: a toast's whole, a balloon's cut to its fields.
     title: []u8,
     body: []u8,
 };
@@ -167,6 +170,7 @@ pub fn init(alloc: Allocator) State {
         .path = path,
         .record_launches = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_LAUNCH"), null, 0) == 0,
         .record_notifications = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_NOTIFY"), null, 0) == 0,
+        .force_balloons = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_BALLOONS"), null, 0) != 0,
         .record_osk = c.GetEnvironmentVariableW(c.L("GHOSTTY_WIN32_TEST_OSK"), null, 0) == 0,
     };
 }
@@ -177,7 +181,28 @@ pub fn recordsNotifications(state: *const State) bool {
     return state.msg != 0 and state.record_notifications;
 }
 
-/// Record a notification as it shows (its title and body as UTF-16, cut).
+/// Whether notifications go as balloons where Windows has toasts.
+pub fn forcesBalloons(state: *const State) bool {
+    if (comptime !enabled) return false;
+    return state.msg != 0 and state.force_balloons;
+}
+
+/// Record a toast as it shows (its title and body whole).
+pub fn recordNotificationText(state: *State, alloc: Allocator, surface: ?u64, title: []const u8, body: []const u8) void {
+    if (comptime !enabled) return;
+    if (state.msg == 0) return;
+    const t = alloc.dupe(u8, title) catch return;
+    const b = alloc.dupe(u8, body) catch {
+        alloc.free(t);
+        return;
+    };
+    state.notifications.append(alloc, .{ .surface = surface orelse 0, .title = t, .body = b }) catch {
+        alloc.free(t);
+        alloc.free(b);
+    };
+}
+
+/// Record a balloon as it shows (its title and body as UTF-16, cut).
 pub fn recordNotification(state: *State, alloc: Allocator, surface: ?u64, title: []const u16, body: []const u16) void {
     if (comptime !enabled) return;
     if (state.msg == 0) return;
@@ -379,11 +404,9 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         2 => .no,
         else => .real,
     };
-    if (wparam == 15) if (app.notifications.hwnd) |hwnd| {
-        if (lparam == 0) {
-            _ = c.SendMessageW(hwnd, Notifications.WM_ICON, 0, c.NIN_BALLOONUSERCLICK);
-        } else app.notifications.withdraw();
-    };
+    if (wparam == 15) {
+        if (lparam == 0) app.notifications.clickLatest() else app.notifications.withdraw();
+    }
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
         for (app.windows.items) |w| {
@@ -756,11 +779,19 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try writeString(alloc, out, n.body);
         try out.append(alloc, '}');
     }
-    try out.print(alloc, "],\"notify_icon\":{},\"notify_pending\":{},\"notify_surface\":{d}", .{
+    try out.print(alloc, "],\"notify_icon\":{},\"notify_pending\":{},\"notify_surface\":{d},\"notify_toasts\":{}", .{
         app.notifications.shown,
-        app.notifications.pending,
-        app.notifications.surface orelse 0,
+        app.notifications.anyPending(),
+        app.notifications.latestSurface(),
+        app.notifications.use_toasts,
     });
+    // The toasts standing (roadmap 5.2b), oldest first.
+    try out.appendSlice(alloc, ",\"toasts\":[");
+    for (app.notifications.standing.items, 0..) |t, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.print(alloc, "{{\"surface\":{d},\"tag\":\"{s}\",\"expires\":{}}}", .{ t.surface orelse 0, &t.tag, t.expires != null });
+    }
+    try out.append(alloc, ']');
     // The panes waiting for their user, oldest first (the header bars'
     // bells).
     try out.appendSlice(alloc, ",\"waiting\":[");

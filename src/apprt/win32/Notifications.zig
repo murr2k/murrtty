@@ -1,10 +1,17 @@
-//! Desktop notifications (roadmap 5.2): OSC 9 and OSC 777 as balloons of a
-//! notification-area icon, which Windows 10 and 11 show as toasts. GTK's
-//! stay until their pane gets the keyboard (3 s, for one sent while it had
-//! it), and a click presents the pane. A balloon carries no id of its own,
-//! so here the icon stands for the latest notification: it comes with it
-//! and goes when that one's pane gets the keyboard or closes, when its 3 s
-//! pass, or when it is clicked, which takes the toast out of the
+//! Desktop notifications (roadmap 5.2, 5.2b): OSC 9 and OSC 777 as
+//! Windows' toasts (toast.zig), each its own in the notification center,
+//! grouped by pane. GTK's stay until their pane gets the keyboard (3 s, for
+//! one sent while it had it), and a click presents the pane; here a pane's
+//! toasts go together when it gets the keyboard or closes, one sent while
+//! it had the keyboard goes 3 s later, the same text from the same pane
+//! replaces its toast, and a click presents the pane. Those left go when
+//! murrtty quits.
+//!
+//! Where Windows has no toasts, balloons of a notification-area icon
+//! instead, which Windows also shows as toasts. A balloon carries no id of
+//! its own, so the icon stands for the latest notification: it comes with
+//! it and goes when that one's pane gets the keyboard or closes, when its
+//! 3 s pass, or when it is clicked, which takes the toast out of the
 //! notification center too. Without the tray the icon is there only while
 //! a notification is; as the tray (roadmap 5.6) it stays, a click on it
 //! brings murrtty forward and its menu offers New Window, Config and Quit,
@@ -16,8 +23,10 @@ const std = @import("std");
 const c = @import("c.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
+const global = @import("../../global.zig");
 const test_hooks = @import("test_hooks.zig");
 const text_util = @import("text.zig");
+const toast = @import("toast.zig");
 
 const log = std.log.scoped(.win32_notifications);
 
@@ -25,16 +34,21 @@ const class_name = c.L("MurrttyNotify");
 /// The icon's messages (NOTIFYICON_VERSION_4: the event in lparam's low
 /// word). The GUI tests' hooks send one to click.
 pub const WM_ICON = c.WM_APP + 1;
+/// A toast was clicked (toast.Target's parameters), posted from Windows'
+/// thread.
+pub const WM_TOAST = c.WM_APP + 2;
 const icon_id = 1;
+/// The balloon's 3 s, and the toasts'.
 const focused_timer = 1;
+const toast_timer = 2;
 /// GTK takes back a notification sent to the pane with the keyboard after
 /// this.
 const focused_timeout_ms = 3000;
 
 app: *App,
 /// A hidden top-level window (a message-only one would miss Explorer's
-/// TaskbarCreated) that the icon's messages go to; null if it couldn't be
-/// made, and then nothing is shown.
+/// TaskbarCreated) that the icon's and toasts' messages go to; null if it
+/// couldn't be made, and then nothing is shown.
 hwnd: ?c.HWND = null,
 small_icon: ?c.HICON = null,
 big_icon: ?c.HICON = null,
@@ -43,14 +57,45 @@ taskbar_created: c.UINT = 0,
 shown: bool = false,
 /// Whether it is the tray, there whether or not a notification is.
 tray: bool = false,
-/// Whether a notification is pending (the latest stands until it goes).
+/// Whether a balloon notification is pending (the latest stands until it
+/// goes).
 pending: bool = false,
-/// The latest notification's pane, by core id; null for one of the app's.
+/// The latest balloon's pane, by core id; null for one of the app's.
 surface: ?u64 = null,
 /// Inside a call to Explorer, which runs the messages sent meanwhile: a
 /// click then waits (`WM_ICON` is posted again).
 busy: bool = false,
 warned: bool = false,
+
+/// Windows' toasts, made at the first notification (a launch that only
+/// hands off to the running murrtty never pays for them).
+toasts: ?toast.Toasts = null,
+/// Whether making them was tried since they were last let go.
+toasts_tried: bool = false,
+/// Whether notifications go as toasts: Windows', or, while the GUI tests'
+/// hooks record notifications, as if they were. Balloons otherwise.
+use_toasts: bool = false,
+warned_toast: bool = false,
+/// Whether this test murrtty registered its own identity (removed at the
+/// end).
+test_identity: bool = false,
+/// The toasts standing, oldest first.
+standing: std.ArrayList(Standing) = .empty,
+/// The most kept in `standing`: Windows keeps fewer in its notification
+/// center, so older ones are gone there, and a chatty pane in the
+/// background can't grow the list.
+const max_standing = 32;
+
+pub const Standing = struct {
+    /// The pane's core id; null for one of murrtty's own.
+    surface: ?u64,
+    /// The toast's tag in its pane's group: its title and body hashed, so
+    /// the same text replaces it.
+    tag: [16]u8,
+    /// When it goes (GetTickCount64), for one sent to the pane with the
+    /// keyboard.
+    expires: ?u64,
+};
 
 pub fn registerClass(instance: c.HINSTANCE) !void {
     const wc: c.WNDCLASSEXW = .{
@@ -77,11 +122,87 @@ pub fn init(self: *Notifications, app: *App) void {
         if (msg != 0) _ = c.ChangeWindowMessageFilterEx(hwnd, msg, c.MSGFLT_ALLOW, null);
     }
     self.loadIcons();
+    // Toasts, unless the GUI tests ask for balloons, or Windows turns out
+    // to have none.
+    self.use_toasts = !test_hooks.forcesBalloons(&app.test_state);
+}
+
+/// Windows' toasts, made now if they aren't; false if Windows has none
+/// (the balloons then). While the GUI tests' hooks record notifications,
+/// none are needed.
+fn ensureToasts(self: *Notifications) bool {
+    if (test_hooks.recordsNotifications(&self.app.test_state)) return true;
+    if (self.toasts != null) return true;
+    if (self.toasts_tried) return false;
+    self.toasts_tried = true;
+    const hwnd = self.hwnd orelse return false;
+    // A test murrtty (the on-screen scenario's) shows its toasts as an
+    // identity of its own, leaving the user's murrtty's registration alone,
+    // and removes it as it goes.
+    const testing = test_hooks.active();
+    const app_id: []const u16 = if (testing) test_app_id else App.app_user_model_id;
+    self.toasts = toast.Toasts.init(app_id, hwnd, WM_TOAST) orelse {
+        self.use_toasts = false;
+        return false;
+    };
+    if (testing) {
+        self.registerIdentity(test_app_id_utf8, "murrtty (GUI test)");
+        self.test_identity = true;
+    } else self.registerIdentity(App.app_user_model_id_utf8, "murrtty");
+    return true;
+}
+
+const test_app_id_utf8 = "murrtty.gui-test";
+const test_app_id = c.L(test_app_id_utf8);
+
+/// Let Windows' toasts go after a failure (the notification service may
+/// have restarted): the next notification makes them again.
+fn dropToasts(self: *Notifications) void {
+    if (self.toasts) |*t| t.deinit();
+    self.toasts = null;
+    self.toasts_tried = false;
+}
+
+/// `name` and murrtty's icon on `app_id`'s toasts, without which Windows
+/// shows none (toast.register): the icon is `murrtty.png` in the
+/// resources (share\ghostty).
+fn registerIdentity(self: *Notifications, app_id: []const u8, name: []const u8) void {
+    const alloc = self.app.core_app.alloc;
+    var icon: ?[]u8 = null;
+    defer if (icon) |path| alloc.free(path);
+    if (global.resourcesDir().app()) |dir| icon: {
+        const path = std.fs.path.join(alloc, &.{ dir, "murrtty.png" }) catch break :icon;
+        // Backslashes only: the resources' path can hold a '/' (zig-out/share),
+        // which files open with but the notification center doesn't, showing
+        // no icon.
+        std.mem.replaceScalar(u8, path, '/', '\\');
+        const wide = text_util.utf16Lossy(alloc, path) catch {
+            alloc.free(path);
+            break :icon;
+        };
+        defer alloc.free(wide);
+        if (c.GetFileAttributesW(wide) == c.INVALID_FILE_ATTRIBUTES) {
+            alloc.free(path);
+            break :icon;
+        }
+        icon = path;
+    }
+    toast.register(alloc, app_id, name, icon);
 }
 
 pub fn deinit(self: *Notifications) void {
     const hwnd = self.hwnd orelse return;
     _ = c.KillTimer(hwnd, focused_timer);
+    _ = c.KillTimer(hwnd, toast_timer);
+    // Toasts of panes that are gone would present nothing.
+    self.withdrawToasts();
+    self.standing.deinit(self.app.core_app.alloc);
+    self.standing = .empty;
+    if (self.toasts) |*t| t.deinit();
+    self.toasts = null;
+    self.use_toasts = false;
+    if (self.test_identity) toast.unregister(self.app.core_app.alloc, test_app_id_utf8);
+    self.test_identity = false;
     // Whatever murrtty thought: an icon Explorer added without saying so
     // goes too.
     var data = self.iconData();
@@ -175,14 +296,68 @@ fn remove(self: *Notifications) void {
     self.shown = false;
 }
 
+/// Whether a notification stands (a toast, or the balloon's).
+pub fn anyPending(self: *const Notifications) bool {
+    return self.pending or self.standing.items.len > 0;
+}
+
+/// The pane of the latest notification standing (0 for murrtty's own or
+/// none), for the tests' dump.
+pub fn latestSurface(self: *const Notifications) u64 {
+    if (self.standing.items.len > 0) return self.standing.items[self.standing.items.len - 1].surface orelse 0;
+    return self.surface orelse 0;
+}
+
 /// Show a notification from the pane `surface` (null: the app's own),
 /// `focused` if that pane has the keyboard. With no title it is murrtty's,
-/// as GTK's is Ghostty's; with no body the title says it under murrtty's
-/// (a balloon with no text isn't shown).
+/// as GTK's is Ghostty's.
 pub fn send(self: *Notifications, surface: ?u64, focused: bool, title: []const u8, body: []const u8) void {
+    if (self.hwnd == null) return;
+    if (self.use_toasts and self.sendToast(surface, focused, title, body)) return;
+    self.sendBalloon(surface, focused, title, body);
+}
+
+/// As a toast; false if Windows refused it (then a balloon instead).
+fn sendToast(self: *Notifications, surface: ?u64, focused: bool, title: []const u8, body: []const u8) bool {
+    if (!self.ensureToasts()) return false;
+    const alloc = self.app.core_app.alloc;
+    const heading: []const u8 = if (title.len > 0) title else "murrtty";
+    const tag = tagFor(title, body);
+    var group_buf: [32]u8 = undefined;
+    const group = groupFor(&group_buf, surface);
+    if (self.toasts) |*t| {
+        t.show(alloc, .{
+            .target = if (surface) |id| .{ .surface = id } else .app,
+            .group = group,
+            .tag = &tag,
+            .title = heading,
+            .body = body,
+        }) catch |err| {
+            if (!self.warned_toast) log.warn("a toast could not be shown, a balloon instead err={}", .{err});
+            self.warned_toast = true;
+            if (err == error.ToastNotShown) self.dropToasts();
+            return false;
+        };
+    }
+    // Showing replaced a toast of the same text from the same pane.
+    self.forget(surface, &tag);
+    if (self.standing.items.len >= max_standing) _ = self.standing.orderedRemove(0);
+    self.standing.append(alloc, .{
+        .surface = surface,
+        .tag = tag,
+        .expires = if (focused) c.GetTickCount64() + focused_timeout_ms else null,
+    }) catch {};
+    test_hooks.recordNotificationText(&self.app.test_state, alloc, surface, heading, body);
+    self.armToastTimer();
+    return true;
+}
+
+fn sendBalloon(self: *Notifications, surface: ?u64, focused: bool, title: []const u8, body: []const u8) void {
     const hwnd = self.hwnd orelse return;
     var data = self.iconOnly();
     data.uFlags |= c.NIF_INFO;
+    // With no body the title says it under murrtty's (a balloon with no
+    // text isn't shown).
     var heading: []const u8 = if (title.len > 0) title else "murrtty";
     var text: []const u8 = body;
     if (body.len == 0) {
@@ -209,10 +384,112 @@ pub fn send(self: *Notifications, surface: ?u64, focused: bool, title: []const u
     if (focused) _ = c.SetTimer(hwnd, focused_timer, focused_timeout_ms, null);
 }
 
-/// Take the notification back: the icon goes, and its toasts with it. The
+/// A pane's toasts' group, or murrtty's own (this process's: another
+/// murrtty, of another class, has its own).
+fn groupFor(buf: []u8, surface: ?u64) []const u8 {
+    if (surface) |id| return std.fmt.bufPrint(buf, "pane-{d}", .{id}) catch unreachable;
+    return std.fmt.bufPrint(buf, "app-{d}", .{c.GetCurrentProcessId()}) catch unreachable;
+}
+
+fn tagFor(title: []const u8, body: []const u8) [16]u8 {
+    var hash: std.hash.Wyhash = .init(0);
+    hash.update(title);
+    hash.update(&.{0});
+    hash.update(body);
+    var out: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&out, "{x:0>16}", .{hash.final()}) catch unreachable;
+    return out;
+}
+
+fn samePane(a: ?u64, b: ?u64) bool {
+    if (a) |x| return if (b) |y| x == y else false;
+    return b == null;
+}
+
+/// Forget the standing toast of `surface` with `tag` (Windows replaced it).
+fn forget(self: *Notifications, surface: ?u64, tag: *const [16]u8) void {
+    var i: usize = 0;
+    while (i < self.standing.items.len) {
+        const s = self.standing.items[i];
+        if (samePane(s.surface, surface) and std.mem.eql(u8, &s.tag, tag)) {
+            _ = self.standing.orderedRemove(i);
+        } else i += 1;
+    }
+}
+
+/// Take back the toasts of `surface`'s pane (null: murrtty's own).
+fn withdrawPane(self: *Notifications, surface: ?u64) void {
+    var found = false;
+    var i: usize = 0;
+    while (i < self.standing.items.len) {
+        if (samePane(self.standing.items[i].surface, surface)) {
+            _ = self.standing.orderedRemove(i);
+            found = true;
+        } else i += 1;
+    }
+    if (!found) return;
+    // Made again if they were let go after a failure, so what stands goes.
+    if (self.ensureToasts()) if (self.toasts) |*t| {
+        var group_buf: [32]u8 = undefined;
+        _ = t.removeGroup(self.app.core_app.alloc, groupFor(&group_buf, surface));
+    };
+    self.armToastTimer();
+}
+
+/// Take back every toast standing.
+fn withdrawToasts(self: *Notifications) void {
+    while (self.standing.items.len > 0) self.withdrawPane(self.standing.items[0].surface);
+}
+
+/// The toast timer for the next of the 3 s to end, or none.
+fn armToastTimer(self: *Notifications) void {
+    const hwnd = self.hwnd orelse return;
+    var next: ?u64 = null;
+    for (self.standing.items) |s| if (s.expires) |e| {
+        if (next == null or e < next.?) next = e;
+    };
+    const due = next orelse {
+        _ = c.KillTimer(hwnd, toast_timer);
+        return;
+    };
+    const now = c.GetTickCount64();
+    const wait: c.UINT = if (due > now) @intCast(@min(due - now, focused_timeout_ms)) else 1;
+    _ = c.SetTimer(hwnd, toast_timer, wait, null);
+}
+
+/// Take back the toasts whose 3 s have passed.
+fn expireToasts(self: *Notifications) void {
+    const now = c.GetTickCount64();
+    var i: usize = 0;
+    while (i < self.standing.items.len) {
+        const s = self.standing.items[i];
+        const expires = s.expires orelse {
+            i += 1;
+            continue;
+        };
+        if (expires > now) {
+            i += 1;
+            continue;
+        }
+        _ = self.standing.orderedRemove(i);
+        if (self.toasts) |*t| {
+            var group_buf: [32]u8 = undefined;
+            _ = t.remove(self.app.core_app.alloc, groupFor(&group_buf, s.surface), &s.tag);
+        }
+    }
+    self.armToastTimer();
+}
+
+/// Take every notification back: the toasts, and the balloon's icon.
+pub fn withdraw(self: *Notifications) void {
+    self.withdrawToasts();
+    self.withdrawBalloon();
+}
+
+/// Take the balloon back: the icon goes, and its toasts with it. The
 /// tray's comes straight back: deleting the icon is what takes a toast out
 /// of the notification center (an empty balloon only hides one showing).
-pub fn withdraw(self: *Notifications) void {
+fn withdrawBalloon(self: *Notifications) void {
     const hwnd = self.hwnd orelse return;
     _ = c.KillTimer(hwnd, focused_timer);
     if (!self.pending) return;
@@ -225,20 +502,46 @@ pub fn withdraw(self: *Notifications) void {
     }
 }
 
-/// The pane `id` got the keyboard, or closes: its notification goes, as
+/// The pane `id` got the keyboard, or closes: its notifications go, as
 /// GTK's do.
 pub fn surfaceDone(self: *Notifications, id: u64) void {
-    if (self.pending and self.surface == id) self.withdraw();
+    self.withdrawPane(id);
+    if (self.pending and self.surface == id) self.withdrawBalloon();
 }
 
-/// The toast or the icon was clicked: the notification goes, and its pane
+/// The balloon or the icon was clicked: the notification goes, and its pane
 /// comes forward from the message loop once no dialog is open (one of the
 /// app's own presents nothing, as GTK's).
 pub fn clicked(self: *Notifications) void {
     if (!self.pending) return;
     const id = self.surface;
-    self.withdraw();
+    self.withdrawBalloon();
     if (id) |v| self.app.request(.{ .present_surface = v });
+}
+
+/// A toast was clicked: its pane's notifications go, and the pane comes
+/// forward, as a balloon's.
+fn activated(self: *Notifications, target: toast.Target) void {
+    switch (target) {
+        .surface => |id| {
+            self.withdrawPane(id);
+            self.app.request(.{ .present_surface = id });
+        },
+        .app => self.withdrawPane(null),
+    }
+}
+
+/// For the GUI tests: click the latest notification as Windows would, a
+/// toast through the message its click posts.
+pub fn clickLatest(self: *Notifications) void {
+    const hwnd = self.hwnd orelse return;
+    if (self.standing.items.len > 0) {
+        const latest = self.standing.items[self.standing.items.len - 1];
+        const target: toast.Target = if (latest.surface) |id| .{ .surface = id } else .app;
+        _ = c.PostMessageW(hwnd, WM_TOAST, target.wparam(), target.lparam());
+        return;
+    }
+    _ = c.SendMessageW(hwnd, WM_ICON, 0, c.NIN_BALLOONUSERCLICK);
 }
 
 fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callconv(.winapi) c.LRESULT {
@@ -268,6 +571,12 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             }
             return 0;
         },
+        // Posted by toast.zig's handler, or another process: it only
+        // names a pane, which then comes forward.
+        WM_TOAST => {
+            if (self.use_toasts) if (toast.Target.fromMessage(wparam, lparam)) |target| self.activated(target);
+            return 0;
+        },
         // The tray's menu is owner-drawn (ContextMenu).
         c.WM_MEASUREITEM => {
             if (ContextMenu.measureItem(lparam)) return 1;
@@ -282,7 +591,11 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         c.WM_TIMER => {
-            if (wparam == focused_timer) self.withdraw();
+            switch (wparam) {
+                focused_timer => self.withdrawBalloon(),
+                toast_timer => self.expireToasts(),
+                else => {},
+            }
             return 0;
         },
         else => {
@@ -320,4 +633,15 @@ test "NOTIFYICONDATAW is laid out as Windows' (x64)" {
     try testing.expectEqual(@as(usize, 948), @offsetOf(T, "dwInfoFlags"));
     try testing.expectEqual(@as(usize, 952), @offsetOf(T, "guidItem"));
     try testing.expectEqual(@as(usize, 968), @offsetOf(T, "hBalloonIcon"));
+}
+
+test "toast groups and tags" {
+    const testing = std.testing;
+    var buf: [32]u8 = undefined;
+    try testing.expectEqualStrings("pane-18446744073709551615", groupFor(&buf, 18446744073709551615));
+    try testing.expect(std.mem.startsWith(u8, groupFor(&buf, null), "app-"));
+    // The same text, the same tag; another, another.
+    try testing.expectEqualSlices(u8, &tagFor("t", "b"), &tagFor("t", "b"));
+    try testing.expect(!std.mem.eql(u8, &tagFor("t", "b"), &tagFor("tb", "")));
+    try testing.expect(samePane(null, null) and samePane(3, 3) and !samePane(3, null) and !samePane(null, 3));
 }

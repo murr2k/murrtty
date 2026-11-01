@@ -1573,14 +1573,20 @@ pub const Dump = struct {
     /// The single instance's pipe (roadmap 5.1).
     ipc: Ipc = .{},
     /// Desktop notifications as they would have shown (roadmap 5.2): the
-    /// pane's core id (0 for murrtty's own), the title and body cut to the
-    /// balloon's fields; whether the icon for the latest is there, and
-    /// whose it is.
+    /// pane's core id (0 for murrtty's own), the title and body (a toast's
+    /// whole, a balloon's cut to its fields); whether the notification
+    /// area's icon is there (the balloon's, or the tray).
     notifications: []const struct { surface: u64, title: []const u8, body: []const u8 } = &.{},
     notify_icon: bool = false,
-    /// Whether a notification stands (the icon may stay as the tray).
+    /// Whether a notification stands (a toast, or the balloon; the icon
+    /// may stay as the tray), and the latest's pane.
     notify_pending: bool = false,
     notify_surface: u64 = 0,
+    /// Whether notifications go as toasts (roadmap 5.2b), and those
+    /// standing, oldest first: the pane, the tag (title and body hashed),
+    /// whether its 3 s run.
+    notify_toasts: bool = false,
+    toasts: []const struct { surface: u64, tag: []const u8, expires: bool } = &.{},
     /// The panes waiting for their user, oldest first: the header bars'
     /// bells (their core ids).
     waiting: []const u64 = &.{},

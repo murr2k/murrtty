@@ -105,7 +105,7 @@ pub const all = [_]Scenario{
     .{ .name = "quick-terminal", .about = "toggle_quick_terminal: one topmost tool window with no header bar at quick-terminal-position and -size, sliding in and out, hiding only while something can bring it back and showing when its last other window closes; quick-terminal-autohide; +toggle-quick-terminal over the pipe", .run = quickTerminalScenario },
     .{ .name = "progress", .about = "OSC 9;4: GTK's bar over the pane (accent, error tint, pulsing, paused) and the window's taskbar progress, the active tab's; gone after 15 s without a report; progress-style = false", .run = progressScenario },
     .{ .name = "command-finished", .about = "notify-on-command-finish: Command Succeeded and Failed with GTK's text past notify-on-command-finish-after, none for a short one; with never, the menu's Notify on Next Command Finish (checked) notifies once", .run = commandFinishedScenario },
-    .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify (titles cut to the balloon's 63 characters); a click presents the pane; the pane getting the keyboard, or 3 s for a focused one, takes it back; desktop-notifications = false", .run = notifications },
+    .{ .name = "notifications", .about = "OSC 9 and OSC 777 notify as toasts, grouped by pane: a click presents the pane; a pane getting the keyboard takes back its own, 3 s for a focused one; the balloons' fallback; desktop-notifications = false", .run = notifications },
     .{ .name = "config-editor-pages", .about = "the configuration editor's pickers: a color's swatch and a file's button (Windows' dialogs stood in for), the font chooser (monospaced families, searched, one chosen) and the theme chooser", .run = configEditorPages },
     .{ .name = "second-launch", .about = "single instance by default: a second plain launch brings the running murrtty's minimized window back and opens nothing (with a dialog open, it raises the dialog); one with -e or --title= opens a new tab in the front window, from the launch's folder; one with a configuration option runs apart; -e reaches a murrtty in the tray", .run = secondLaunch },
     .{ .name = "fit-window", .about = "Fit Window to Screen, from the terminal's Window submenu and the system menu: an oversized window fits its monitor's work area, not maximized; a maximized one and a fullscreen one are restored and fitted", .run = fitWindow },
@@ -123,7 +123,7 @@ pub const all = [_]Scenario{
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
     .{ .name = "blur-display", .about = "background-blur blurs a striped backdrop seen through the background ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = blurDisplay },
     .{ .name = "taskbar-shown", .about = "OSC 9;4 on a real taskbar button: the button is made (TaskbarButtonCreated) and ITaskbarList3 takes the progress, off-screen on the user's desktop (GHOSTTY_GUI_ONSCREEN=1: a button shows on the taskbar)", .run = taskbarShown },
-    .{ .name = "notify-shown", .about = "an OSC 9 notification really shows: Windows takes the icon and its balloon, then it is taken back; a toast appears ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = notifyShown },
+    .{ .name = "notify-shown", .about = "an OSC 9 notification really shows: Windows takes its toast, then it is taken back; a toast appears ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = notifyShown },
     .{ .name = "tray-shown", .about = "the tray's icon really in the notification area (Shell_NotifyIconW takes it), gone as murrtty quits, off-screen on the user's desktop (GHOSTTY_GUI_ONSCREEN=1: the icon shows for a moment)", .run = trayShown },
 };
 
@@ -10483,10 +10483,11 @@ fn openConfigWindow(h: *Harness) anyerror!void {
 }
 
 //---------------------------------------------------------------
-// Desktop notifications (roadmap 5.2)
+// Desktop notifications (roadmap 5.2, 5.2b)
 
 /// What the dump says of notifications: how many were sent, the latest,
-/// and whether its icon is there.
+/// whether one stands, whether they go as toasts, and whether the
+/// notification area's icon is there (the balloon's, or the tray).
 const NotifyState = struct {
     count: usize,
     surface: u64 = 0,
@@ -10496,6 +10497,8 @@ const NotifyState = struct {
     body_len: usize = 0,
     icon: bool,
     icon_surface: u64,
+    pending: bool,
+    toasts: bool,
 
     fn titleText(self: *const NotifyState) []const u8 {
         return self.title[0..self.title_len];
@@ -10509,7 +10512,13 @@ fn notifyState(h: *Harness, g: *Harness.Ghostty) !NotifyState {
     var d = try h.dump(g);
     defer d.deinit();
     const n = d.value.notifications;
-    var s: NotifyState = .{ .count = n.len, .icon = d.value.notify_icon, .icon_surface = d.value.notify_surface };
+    var s: NotifyState = .{
+        .count = n.len,
+        .icon = d.value.notify_icon,
+        .icon_surface = d.value.notify_surface,
+        .pending = d.value.notify_pending,
+        .toasts = d.value.notify_toasts,
+    };
     if (n.len > 0) {
         const last = n[n.len - 1];
         s.surface = last.surface;
@@ -10532,7 +10541,7 @@ fn waitNotifications(h: *Harness, g: *Harness.Ghostty, count: usize) !NotifyStat
     return h.fail("no notification {d} came", .{count});
 }
 
-/// Wait until the notification's icon has gone, within `ms`.
+/// Wait until the balloon's icon has gone, within `ms`.
 fn waitIconGone(h: *Harness, g: *Harness.Ghostty, ms: u32, comptime what: []const u8) !void {
     var waited: u32 = 0;
     while (waited <= ms) : (waited += 100) {
@@ -10543,28 +10552,73 @@ fn waitIconGone(h: *Harness, g: *Harness.Ghostty, ms: u32, comptime what: []cons
     return h.fail(what ++ ": the notification is still there", .{});
 }
 
+/// Wait until no notification stands, within `ms`.
+fn waitWithdrawn(h: *Harness, g: *Harness.Ghostty, ms: u32, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        const s = try notifyState(h, g);
+        if (!s.pending) return h.expect(true, what, .{});
+        w.Sleep(100);
+    }
+    return h.fail(what ++ ": a notification still stands", .{});
+}
+
+const PaneToasts = struct { count: usize, expiring: usize };
+
+/// The toasts standing of pane `surface` (0: murrtty's own): how many, and
+/// how many of them go after 3 s.
+fn toastsOf(h: *Harness, g: *Harness.Ghostty, surface: u64) !PaneToasts {
+    var d = try h.dump(g);
+    defer d.deinit();
+    var r: PaneToasts = .{ .count = 0, .expiring = 0 };
+    for (d.value.toasts) |t| if (t.surface == surface) {
+        r.count += 1;
+        if (t.expires) r.expiring += 1;
+    };
+    return r;
+}
+
+/// Wait until pane `surface`'s toasts are gone, within `ms`.
+fn waitToastsGone(h: *Harness, g: *Harness.Ghostty, surface: u64, ms: u32, comptime what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        if ((try toastsOf(h, g, surface)).count == 0) return h.expect(true, what, .{});
+        w.Sleep(100);
+    }
+    return h.fail(what ++ ": its toast is still there", .{});
+}
+
+/// The core id of the first window's active tab's first pane.
+fn activeSurfaceId(h: *Harness, g: *Harness.Ghostty) !u64 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const dw = d.value.windows[0];
+    return (dw.tabs[dw.active].panes orelse return h.fail("no panes", .{}))[0].surface_id;
+}
+
 /// PowerShell's text that writes `osc` (without its ESC and BEL) after
 /// `delay` seconds.
 fn oscCommand(h: *Harness, delay: []const u8, osc: []const u8) ![]u8 {
     return std.fmt.allocPrint(h.alloc, "Start-Sleep {s}; [Console]::Write([char]27 + '{s}' + [char]7)", .{ delay, osc });
 }
 
-/// OSC 9 and OSC 777 notify, as balloons of a notification-area icon
-/// (recorded here: the hidden desktop has none). One from a background
-/// pane stays until its pane gets the keyboard or it is clicked, which
-/// presents the pane; one from the pane with the keyboard goes after 3 s,
-/// as GTK's. Titles are cut to the balloon's 63 characters.
+const seventy = "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789";
+
+/// OSC 9 and OSC 777 notify as toasts (roadmap 5.2b; recorded here: the
+/// hidden desktop has no notification center), each its own and grouped by
+/// pane, with no icon in the notification area. A background pane's stays
+/// until its pane gets the keyboard, which takes back its own only, or a
+/// click takes them back and presents the pane; one sent to the pane with
+/// the keyboard goes after 3 s, as GTK's. Titles are the core's 63 bytes.
+/// Then the balloons, where Windows has no toasts: one icon for the latest,
+/// titles cut to 63 UTF-16 units. And desktop-notifications = false.
 fn notifications(h: *Harness) anyerror!void {
     var g = try h.launchWith("notifications", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n", .{});
     defer g.deinit();
     try h.waitText(&g, "PS ", 1, 20000);
     const win = try h.mainWindow(&g);
     const surf = try h.surface(&g, win);
-    const first = first: {
-        var d = try h.dump(&g);
-        defer d.deinit();
-        break :first (d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{}))[0].surface_id;
-    };
+    const first = try activeSurfaceId(h, &g);
 
     // From the first tab, sent once a second tab has the keyboard.
     {
@@ -10576,68 +10630,96 @@ fn notifications(h: *Harness) anyerror!void {
     h.key(surf, .{ .ctrl = true, .shift = true }, 'T');
     try waitWindowTabs(h, &g, win, 2);
     var s = try waitNotifications(h, &g, 1);
+    try h.expect(s.toasts, "notifications go as toasts", .{});
     try h.expect(s.surface == first and std.mem.eql(u8, s.titleText(), "murrtty") and std.mem.eql(u8, s.bodyText(), "Build done"), "OSC 9 from the background tab notifies as murrtty: '{s}' / '{s}'", .{ s.titleText(), s.bodyText() });
-    try h.expect(s.icon and s.icon_surface == first, "its icon stands for it", .{});
+    try h.expect((try toastsOf(h, &g, first)).count == 1 and !s.icon, "a toast of its pane's, with no icon in the notification area", .{});
     w.Sleep(500);
-    try h.expect((try notifyState(h, &g)).icon, "and stays while its pane is in the background", .{});
+    try h.expect((try toastsOf(h, &g, first)).count == 1, "it stays while its pane is in the background", .{});
 
-    // A click takes it back and presents its pane, from the loop.
+    // A click takes its pane's toasts back and presents the pane, from the
+    // loop.
     try h.clickNotification(&g);
-    {
-        var active: usize = 1;
-        var waited: u32 = 0;
-        while (waited <= 3000) : (waited += 100) {
-            var d = try h.dump(&g);
-            defer d.deinit();
-            try h.expect(!d.value.notify_icon, "a click takes the notification back", .{});
-            active = d.value.windows[0].active;
-            if (active == 0) break;
-            w.Sleep(100);
-        }
-        try h.expect(active == 0, "and brings the first tab forward (tab {d} active)", .{active});
-    }
+    try waitActiveTab(h, &g, win, 0);
+    try h.expect(true, "a click brings the first tab forward", .{});
+    try waitToastsGone(h, &g, first, 1500, "and takes its toast back");
 
-    // OSC 777 from the first tab while the second has the keyboard; the
-    // first getting it back takes the notification back.
+    // Two background panes' toasts: a pane getting the keyboard takes back
+    // its own only. The first's comes later (the core passes one a second).
     const surf0 = try h.surface(&g, win);
     {
-        const cmd = try oscCommand(h, "2", "]777;notify;Deploy;All green");
+        const cmd = try oscCommand(h, "5", "]777;notify;Deploy;All green");
         defer h.alloc.free(cmd);
         try h.typeText(surf0, cmd);
         h.enter(surf0);
     }
     h.key(surf0, .{ .ctrl = true }, 0x09);
-    s = try waitNotifications(h, &g, 2);
-    try h.expect(s.surface == first and std.mem.eql(u8, s.titleText(), "Deploy") and std.mem.eql(u8, s.bodyText(), "All green"), "OSC 777 notifies with its title: '{s}' / '{s}'", .{ s.titleText(), s.bodyText() });
-    try h.expect(s.icon, "its icon is there", .{});
-    // Past the 3 s a focused pane's would get: sent unfocused, it stays.
-    w.Sleep(3500);
-    try h.expect((try notifyState(h, &g)).icon, "it outlasts the 3 s of a focused pane's", .{});
+    try waitActiveTab(h, &g, win, 1);
     const surf1 = try h.surface(&g, win);
-    h.key(surf1, .{ .ctrl = true }, 0x09);
-    try waitIconGone(h, &g, 1500, "the pane getting the keyboard back takes its notification back");
+    const second = try activeSurfaceId(h, &g);
+    {
+        const cmd = try oscCommand(h, "2", "]9;Tests passed");
+        defer h.alloc.free(cmd);
+        try h.typeText(surf1, cmd);
+        h.enter(surf1);
+    }
+    h.key(surf1, .{ .ctrl = true, .shift = true }, 'T');
+    try waitWindowTabs(h, &g, win, 3);
+    s = try waitNotifications(h, &g, 3);
+    try h.expect(s.surface == first and std.mem.eql(u8, s.titleText(), "Deploy") and std.mem.eql(u8, s.bodyText(), "All green"), "OSC 777 notifies with its title: '{s}' / '{s}'", .{ s.titleText(), s.bodyText() });
+    const one = try toastsOf(h, &g, first);
+    const two = try toastsOf(h, &g, second);
+    try h.expect(one.count == 1 and two.count == 1 and one.expiring == 0 and two.expiring == 0, "each background pane has its toast ({d} and {d})", .{ one.count, two.count });
+    // Past the 3 s a focused pane's would get: sent unfocused, they stay.
+    w.Sleep(3500);
+    try h.expect((try toastsOf(h, &g, first)).count == 1 and (try toastsOf(h, &g, second)).count == 1, "they outlast the 3 s of a focused pane's", .{});
+    // From the third tab, Ctrl+Tab wraps to the first.
+    h.key(try h.surface(&g, win), .{ .ctrl = true }, 0x09);
+    try waitToastsGone(h, &g, first, 1500, "the first pane getting the keyboard takes its toast back");
+    try h.expect((try toastsOf(h, &g, second)).count == 1, "and leaves the second's", .{});
+    h.key(try h.surface(&g, win), .{ .ctrl = true }, 0x09);
+    try waitToastsGone(h, &g, second, 1500, "the second getting it takes its own back");
 
-    // From the pane with the keyboard: gone after 3 s. A long title is cut.
+    // From the pane with the keyboard: gone after 3 s. A long title is
+    // the core's 63 bytes, as GTK's gets it.
     const surf2 = try h.surface(&g, win);
     {
-        const long = try std.fmt.allocPrint(h.alloc, "]777;notify;{s};focused", .{"0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789" ++ "0123456789"});
-        defer h.alloc.free(long);
-        // After the core's one a second.
-        const cmd = try oscCommand(h, "2", long);
+        const cmd = try oscCommand(h, "2", "]777;notify;" ++ seventy ++ ";focused");
         defer h.alloc.free(cmd);
         try h.typeText(surf2, cmd);
         h.enter(surf2);
     }
-    s = try waitNotifications(h, &g, 3);
-    try h.expect(s.title_len == 63 and std.mem.startsWith(u8, s.titleText(), "0123456789") and std.mem.eql(u8, s.bodyText(), "focused"), "a 70-character title is cut to 63 ({d}: '{s}')", .{ s.title_len, s.titleText() });
-    try h.expect(s.icon, "it shows, from the pane with the keyboard too", .{});
+    s = try waitNotifications(h, &g, 4);
+    try h.expect(s.title_len == 63 and std.mem.eql(u8, s.titleText(), seventy[0..63]) and std.mem.eql(u8, s.bodyText(), "focused"), "a 70-character title is the core's 63 ({d})", .{s.title_len});
+    const focused = try toastsOf(h, &g, second);
+    try h.expect(focused.count == 1 and focused.expiring == 1, "it shows, from the pane with the keyboard too, for 3 s", .{});
+    try waitToastsGone(h, &g, second, 6000, "one sent from the pane with the keyboard goes after 3 s");
+
+    // Balloons, where Windows has no toasts (forced here).
     {
-        var d = try h.dump(&g);
-        defer d.deinit();
-        const focused = d.value.windows[0].tabs[0].focused orelse false;
-        try h.expect(focused, "the first tab is the core's focused one", .{});
+        var b = try h.launchWith("notifications-balloons", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n", .{
+            .env = &.{.{ "GHOSTTY_WIN32_TEST_BALLOONS", "1" }},
+        });
+        defer b.deinit();
+        try h.waitText(&b, "PS ", 1, 20000);
+        const bwin = try h.mainWindow(&b);
+        const bsurf = try h.surface(&b, bwin);
+        const bfirst = try activeSurfaceId(h, &b);
+        {
+            const cmd = try oscCommand(h, "2", "]777;notify;" ++ seventy ++ ";background");
+            defer h.alloc.free(cmd);
+            try h.typeText(bsurf, cmd);
+            h.enter(bsurf);
+        }
+        h.key(bsurf, .{ .ctrl = true, .shift = true }, 'T');
+        try waitWindowTabs(h, &b, bwin, 2);
+        const bs = try waitNotifications(h, &b, 1);
+        try h.expect(!bs.toasts and bs.icon and bs.icon_surface == bfirst, "balloons: the icon stands for the latest", .{});
+        try h.expect(bs.title_len == 63 and std.mem.startsWith(u8, bs.titleText(), "0123456789"), "a 70-character title is cut to the balloon's 63 ({d})", .{bs.title_len});
+        try h.clickNotification(&b);
+        try waitActiveTab(h, &b, bwin, 0);
+        try h.expect(true, "a click on the balloon brings its pane's tab forward", .{});
+        try waitIconGone(h, &b, 1500, "and takes it back");
     }
-    try waitIconGone(h, &g, 6000, "one sent from the pane with the keyboard goes after 3 s");
 
     // desktop-notifications = false: nothing.
     var off = try h.launchWith("notifications-off", base_config ++ "command = powershell.exe -NoLogo -NoProfile\ndesktop-notifications = false\n", .{});
@@ -10653,15 +10735,14 @@ fn notifications(h: *Harness) anyerror!void {
     try h.waitText(&off, "not shown' + [char]7)", 1, 10000);
     w.Sleep(2000);
     const none = try notifyState(h, &off);
-    try h.expect(none.count == 0 and !none.icon, "with desktop-notifications = false nothing shows ({d})", .{none.count});
+    try h.expect(none.count == 0 and !none.pending, "with desktop-notifications = false nothing shows ({d})", .{none.count});
 }
 
-/// A notification really shown: Windows takes the icon and its balloon
-/// (the icon counts as there only if Shell_NotifyIconW took it), and they
-/// are taken back (without presenting the pane, which could take the
-/// user's foreground). The window is off-screen on the user's desktop,
-/// whose notification area it needs; the toast shows on screen for a
-/// moment, so only with GHOSTTY_GUI_ONSCREEN=1.
+/// A notification really shown: Windows takes the toast (murrtty counts it
+/// standing only if Windows' Show took it), and it is taken back (without
+/// presenting the pane, which could take the user's foreground). The
+/// window is off-screen on the user's desktop; the toast shows on screen
+/// for a moment, so only with GHOSTTY_GUI_ONSCREEN=1.
 fn notifyShown(h: *Harness) anyerror!void {
     if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
         return h.skip("it shows a toast on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
@@ -10679,6 +10760,9 @@ fn notifyShown(h: *Harness) anyerror!void {
 }
 
 fn notifyShownOffscreen(h: *Harness) !void {
+    // murrtty registers its test identity for the toast to pop up, and
+    // removes it as it quits; gone also if it doesn't.
+    defer _ = w.RegDeleteTreeW(w.HKEY_CURRENT_USER, w.L("Software\\Classes\\AppUserModelId\\murrtty.gui-test"));
     var g = try h.launchWith("notify-shown", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n", .{
         .where = .offscreen,
         .env = &.{.{ "GHOSTTY_WIN32_TEST_NOTIFY", "1" }},
@@ -10692,9 +10776,12 @@ fn notifyShownOffscreen(h: *Harness) !void {
     h.enter(surf);
     const s = try waitNotifications(h, &g, 1);
     // From the pane with the keyboard it would go after 3 s.
-    try h.expect(s.icon, "Windows took the icon and its balloon", .{});
+    try h.expect(s.toasts and s.pending and !s.icon, "Windows took the toast", .{});
+    // On screen a moment, to be seen (its 3 s, from the pane with the
+    // keyboard, would take it back first: that is checked, not timed).
+    w.Sleep(2500);
     try h.withdrawNotification(&g);
-    try waitIconGone(h, &g, 2000, "and it is taken back");
+    try waitWithdrawn(h, &g, 2000, "and it is taken back");
 }
 
 //---------------------------------------------------------------

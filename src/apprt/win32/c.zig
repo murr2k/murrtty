@@ -481,6 +481,13 @@ pub extern "ntdll" fn RtlGetVersion(*OSVERSIONINFOW) callconv(.winapi) c_long;
 // Registry
 pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
 pub const RRF_RT_REG_DWORD = 0x00000010;
+pub const RRF_RT_REG_SZ = 0x00000002;
+pub const REG_SZ = 1;
+pub extern "advapi32" fn RegSetKeyValueW(HKEY, ?LPCWSTR, ?LPCWSTR, DWORD, ?*const anyopaque, DWORD) callconv(.winapi) c_long;
+pub extern "advapi32" fn RegDeleteTreeW(HKEY, ?LPCWSTR) callconv(.winapi) c_long;
+
+pub const LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
+pub extern "kernel32" fn LoadLibraryExW(LPCWSTR, ?*anyopaque, DWORD) callconv(.winapi) ?HINSTANCE;
 
 pub const ATTACH_PARENT_PROCESS: DWORD = @bitCast(@as(i32, -1));
 

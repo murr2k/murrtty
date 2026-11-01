@@ -75,6 +75,16 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
                 ).step);
             };
 
+            // The icon murrtty's toasts show in the notification center
+            // (src/apprt/win32/Notifications.zig; roadmap 5.2b), with the
+            // resources: Windows reads it from the AppUserModelID's
+            // IconUri.
+            install_step.step.dependOn(&b.addInstallFileWithDir(
+                b.path("images/murrtty/icon.png"),
+                .prefix,
+                "share/ghostty/murrtty.png",
+            ).step);
+
             // Mesa's llvmpipe in bin\mesa, murrtty's software OpenGL for a
             // machine whose own lacks 4.3 (src/apprt/win32/software_gl.zig).
             // In a folder of its own: beside the executable, Windows'

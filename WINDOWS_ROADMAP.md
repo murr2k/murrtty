@@ -447,19 +447,17 @@ roadmap item behind it.
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
   libadwaita header bar.
-- **Notifications** (5.2): balloons of a notification-area icon, which
-  Windows shows as toasts, with the icon in the notification area while
-  one is pending (GTK's have none). The icon stands for them all: a click
-  on the toast (on the icon too, unless it is the tray, 5.6) presents the
-  latest's pane, and they all go when that pane gets the
-  keyboard or closes, or 3 s after the latest if its pane had the
-  keyboard; an earlier one's pane taking the keyboard takes nothing back.
-  GTK's go each with its own pane, and one the same as a pane's earlier
-  one replaces it, where murrtty adds another toast. Titles are cut to 63
-  UTF-16 units (an emoji counts two) and bodies to 255, with no ellipsis.
-  One with no body shows its title under "murrtty", since Windows shows
-  no balloon without text; GTK's shows the title alone. WinRT toasts,
-  5.2's second step, are to lift this.
+- **Notifications** (5.2, 5.2b): Windows' toasts go as GTK's, but murrtty
+  names itself to Windows for them, without which they never pop up:
+  `HKCU\Software\Classes\AppUserModelId\murrtty.murrtty` (its name and
+  `share\ghostty\murrtty.png`), which nothing removes. A
+  toast left in the notification center by a murrtty that ended without
+  quitting (a crash) does nothing when clicked. Where Windows offers no
+  toasts, balloons of a notification-area icon instead, the icon standing
+  for the latest: a click on it presents that one's pane, and they all go
+  when that pane gets the keyboard or closes; titles there are cut to 63
+  UTF-16 units and bodies to 255, and one with no body shows its title
+  under "murrtty".
 - **Pulsing progress** (5.4): the bar's block moves a step with each
   report; GTK's glides between them.
 - **Dragging a tab** (4.5): once out of the strip, nothing follows the
@@ -1832,8 +1830,8 @@ default `bell-features`, so its part (S) is in M1; audio and border are M2.
 *Done when:* a BEL in a background tab marks it until selected, and the audio
 file plays at the configured volume.
 
-*Still open (2026-10-29): `audio` and `border`, M2's last items besides
-5.2b.* *3.7a (`title`) done 2026-10-26.* A BEL with `bell-features = title` (the
+*Still open (2026-10-29): `audio` and `border`, M2's last items (5.2b
+built 2026-10-31).* *3.7a (`title`) done 2026-10-26.* A BEL with `bell-features = title` (the
 default) in a pane that doesn't have the keyboard puts "🔔 " before the
 tab's title, and the caption, while the pane's bell rings
 (`Surface.bell_ringing`), until the pane gets the keyboard, a key or a
@@ -2613,6 +2611,48 @@ of showing them (the hidden desktop has no notification area, and the
 user's would show them); the opt-in `notify-shown` shows one for real and
 checks Windows took it. Not tested: a person's click on a real toast. The
 second step, WinRT toasts, is still to come.
+
+*5.2b built 2026-10-31 (`win32/toast.zig`):* each notification is a WinRT
+toast of its own under murrtty's AppUserModelID (`murrtty.murrtty`, the
+taskbar's), in a group per pane (`pane-<core id>`, murrtty's own
+`app-<pid>`) with its title and body hashed as its tag: a pane getting the
+keyboard or closing takes back its group, one sent while its pane had the
+keyboard goes 3 s later on its own, the same text from the same pane
+replaces its toast, and murrtty quitting takes back what is left, as GTK's
+go with their pane. A click raises Activated on a thread of Windows' own;
+the handler (agile, reference counted) reads the pane from the toast's
+launch argument (`murrtty-pane=<id>`) and posts it to the notifications'
+window, which takes back the pane's toasts and presents it from the loop.
+An unpackaged murrtty needs no shortcut or package, but it must register
+its AppUserModelID: Windows takes toasts for one registered nowhere
+(kept in the notification center's history, removed by tag and group)
+and never pops them up (checked on Windows 11, 2026-11-01, capturing the
+screen's corner). The HKCU registration (DisplayName, IconUri, written
+when they differ) makes them pop up, with murrtty's name and its icon,
+installed as `share\ghostty\murrtty.png`; a murrtty under the test hooks
+registers an identity of its own (`murrtty.gui-test`) and removes it as
+it quits. Windows keeps an AppUserModelID's name and icon from its first
+toast: a registration changed later shows neither (checked the same
+day), so the first must be right. The icon's path is written with
+backslashes only: the resources' path can hold a '/' (`zig-out/share`),
+with which the notification center showed no icon.
+combase's WinRT functions are loaded at run time (Zig's mingw-w64 has no
+import library for combase on x64 or ARM64); the interfaces are laid out
+from the system's own metadata (`System32\WinMetadata`, each interface's
+methods in metadata order after IInspectable's six slots), and the unit
+test calls every slot used but Show. The toasts are made at the first
+notification (a launch that only hands off never pays for them); without
+them (no combase, no notifier) the balloons as before, and when Show
+fails, a balloon for that one and new toasts for the next (the
+notification service may have restarted). U+FFFE and U+FFFF, which the
+toast's XML refuses, become U+FFFD; murrtty keeps at most 32 toasts
+standing (Windows keeps fewer in its notification center). The core already
+cuts a notification's title to 63 bytes and its body to 255, for GTK as
+here. `notifications` checks it through the test hooks (toasts recorded,
+a click posted as Windows' handler posts it, `GHOSTTY_WIN32_TEST_BALLOONS`
+for the balloons); the opt-in `notify-shown` checks Windows takes a real
+toast and gives it back (passed 2026-11-01, the owner at the screen).
+Not tested: a person's click on a real toast.
 
 **5.3 Command-finished notifications, S.** Port GTK's
 `notify-on-command-finish` logic (never, unfocused or always; minimum
@@ -3712,8 +3752,12 @@ verbose log will name. A run takes about 45 minutes with its builds.
   SignPath application wait. The README and the policy page say so.
 - MSIX for the Microsoft Store, later (*decided 2026-10-28 by the
   owner*). The Store signs what it publishes, and a packaged murrtty has a
-  package identity, which WinRT toasts (5.2b) and the AppUserModelID
-  otherwise need registered by hand.
+  package identity, which could name it to Windows' toasts (5.2b) in
+  place of the HKCU registration the unpackaged one writes. Not built:
+  murrtty asks for toasts under `murrtty.murrtty` and writes the
+  registration whether packaged or not; a packaged one should take its
+  package's AppUserModelID (`GetCurrentApplicationUserModelId`) and skip
+  the registration, checked with `windows-port-msix.yml`.
   *Prototype, 2026-10-30* (the owner's go-ahead): the Desktop Bridge's
   usual packaging (`packagedClassicApp`) redirects writes under AppData
   to a private copy, which would hide `%LOCALAPPDATA%\murrtty`'s config
