@@ -112,7 +112,8 @@ pub const all = [_]Scenario{
     .{ .name = "pane-history", .about = "each pane's own command history (PowerShell 5.1): a new pane copies its commands into its own file, one already in the shared history too; restored, Up brings back its own last command; a history no saved pane has goes at start; one of a pane closed for good goes after undo's time", .run = paneHistory },
     .{ .name = "clink-history", .about = "a cmd pane with Clink gets its own Clink history (CLINK_HISTORY_LABEL), and after murrtty quits and restarts, Up in the restored pane brings back its command (GHOSTTY_GUI_CLINK=folder)", .run = clinkHistory },
     .{ .name = "session-save", .about = "the session saved as it changes (session.json): the window, a tab and its pane's directory, a new tab, the tab in front, a split; a move saved as it ends, a divider as it is let go; a drag Esc cancels or murrtty ending mid-drag saves nothing; an unwritable state folder said once", .run = sessionSave },
-    .{ .name = "session-restore", .about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
+    .{ .name = "session-close", .about = "the session comes back however murrtty closed (the owner's rule): a window closed while another stays leaves the file; the last window's X and the last shell's exit leave it as it was, the pane's folder included, and the next start brings the window back", .run = sessionClose },
+    .{ .name = "session-restore",.about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-numbers", .about = "the configuration editor's numbers: a percentage on a slider (pressed, dragged, Escape), shown in the terminals before a save and put back by Discard, stepped with the arrow keys, typed in percent and refused past its range; spin rows in their unit, stepped by their buttons, saved as Ghostty's numbers", .run = configEditorNumbers },
     .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
@@ -13437,6 +13438,135 @@ fn paneHistory(h: *Harness) anyerror!void {
         try h.expect(waitFileHas(h, second_file, null, 10000), "and goes once undo's time has passed", .{});
         try h.expect(!fileThere(h, second_clink) and !fileThere(h, second_marker), "with its Clink history", .{});
         try h.expect(fileThere(h, pane_file), "the other pane's stays", .{});
+
+        // The last window closed with its X, murrtty closing with it: the
+        // session and the pane's history stay as they were (roadmap 5.10c).
+        _ = w.PostMessageW(try h.mainWindow(&g), w.WM_CLOSE, 0, 0);
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "closing the last window closes murrtty (exit {?d})", .{code});
+    }
+    {
+        var s = readSession(h, session_path) orelse return h.fail("no session after closing the last window", .{});
+        defer s.deinit();
+        try h.expect(s.value.windows.len == 1 and s.value.tabCount() == 1, "closing the last window leaves it in the file ({d} windows)", .{s.value.windows.len});
+    }
+    try h.expect(fileThere(h, pane_file), "with its pane's history", .{});
+    {
+        var g = try h.launchWith("pane-history-reopened", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, "PS ", 1, 30000);
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        // Its last command, the label's Write-Output, back for Up.
+        h.key(surf, .{}, w.VK_UP);
+        try h.waitText(&g, "Write-Output \"label=", 1, 10000);
+    }
+}
+
+/// Roadmap 5.10c, the owner's rule: the session is saved on every change
+/// and comes back however murrtty was closed. A window closed while another
+/// stays leaves the file at once; the last window closed with its X, and
+/// the last shell ended with `exit`, leave the file as it was, the pane's
+/// folder included, and the next start brings the window back.
+fn sessionClose(h: *Harness) anyerror!void {
+    const class = try ipcClass(h, "session-close");
+    defer h.alloc.free(class);
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\session-close", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    const state = try std.fmt.allocPrint(h.alloc, "{s}\\state", .{dir});
+    defer h.alloc.free(state);
+    const folder = try std.fmt.allocPrint(h.alloc, "{s}\\work", .{dir});
+    defer h.alloc.free(folder);
+    try h.makeDirAt(dir);
+    try h.makeDirAt(state);
+    try h.makeDirAt(folder);
+    const session_path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\session-{s}.json", .{ state, class });
+    defer h.alloc.free(session_path);
+    const config = try std.fmt.allocPrint(h.alloc, "{s}confirm-close-surface = false\nclass = {s}\n", .{ base_config, class });
+    defer h.alloc.free(config);
+    const env: []const [2][]const u8 = &.{.{ "XDG_STATE_HOME", state }};
+
+    // One window, one tab, one pane in the folder.
+    const OneIn = struct {
+        folder: []const u8,
+        fn ok(self: @This(), s: SavedSession) bool {
+            if (s.windows.len != 1 or s.windows[0].tabs.len != 1) return false;
+            const nodes = s.windows[0].tabs[0].nodes;
+            return nodes.len == 1 and nodes[0].pane != null and sameDir(nodes[0].pane.?.directory, self.folder);
+        }
+    };
+    const one: OneIn = .{ .folder = folder };
+
+    {
+        var g = try h.launchWith("session-close", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        const main = try h.mainWindow(&g);
+        const surf = try h.surface(&g, main);
+        const cd = try std.fmt.allocPrint(h.alloc, "cd /d \"{s}\"", .{folder});
+        defer h.alloc.free(cd);
+        try h.typeText(surf, cd);
+        h.enter(surf);
+        try h.waitText(&g, "\\work>", 1, 10000);
+        // A second window, saved beside the first.
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'N');
+        {
+            var s = try waitSession(h, session_path, 10000, {}, struct {
+                fn ok(_: void, v: SavedSession) bool {
+                    return v.windows.len == 2;
+                }
+            }.ok);
+            defer s.deinit();
+            try h.expect(s.value.windows.len == 2, "a second window is saved beside the first ({d})", .{s.value.windows.len});
+        }
+        // Closed while the first stays: it leaves the file.
+        const second = second: {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (d.value.windows.len < 2) return h.fail("no second window", .{});
+            for (d.value.windows) |win| if (hwndOf(win.hwnd) != main) break :second hwndOf(win.hwnd);
+            return h.fail("no second window", .{});
+        };
+        _ = w.PostMessageW(second, w.WM_CLOSE, 0, 0);
+        {
+            var s = try waitSession(h, session_path, 10000, one, OneIn.ok);
+            defer s.deinit();
+            try h.expect(OneIn.ok(one, s.value), "a window closed while another stays leaves the file, the first kept with its folder", .{});
+        }
+        // The last window closed with its X: murrtty closes, the file stays.
+        _ = w.PostMessageW(main, w.WM_CLOSE, 0, 0);
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "closing the last window closes murrtty (exit {?d})", .{code});
+    }
+    {
+        var s = readSession(h, session_path) orelse return h.fail("no session after closing the last window", .{});
+        defer s.deinit();
+        try h.expect(OneIn.ok(one, s.value), "closing the last window leaves it in the file, with its folder ({d} windows)", .{s.value.windows.len});
+    }
+    // Back at the next start, in its folder; then its shell ended by `exit`.
+    {
+        var g = try h.launchWith("session-close-reopened", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, "\\work>", 1, 20000);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(d.value.windows.len == 1 and d.value.windows[0].tabs.len == 1, "the window comes back at the next start, in its folder ({d} windows)", .{d.value.windows.len});
+        }
+        const surf = try h.surface(&g, try h.mainWindow(&g));
+        try h.typeText(surf, "exit");
+        h.enter(surf);
+        const code = g.waitExit(10000);
+        try h.expect(code != null and code.? == 0, "the last shell ending closes murrtty (exit {?d})", .{code});
+    }
+    {
+        var s = readSession(h, session_path) orelse return h.fail("no session after the last shell ended", .{});
+        defer s.deinit();
+        try h.expect(OneIn.ok(one, s.value), "the last shell ending leaves the window in the file too", .{});
+    }
+    {
+        var g = try h.launchWith("session-close-again", config, .{ .env = env });
+        defer g.deinit();
+        try h.waitText(&g, "\\work>", 1, 20000);
     }
 }
 

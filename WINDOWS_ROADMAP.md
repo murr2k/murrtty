@@ -408,8 +408,10 @@ roadmap item behind it.
   (`default` or `always`) restores the windows, tabs, splits, names and
   directories at start, or with `initial-window = false` on the first
   window asked for; the state is saved on every change (a drag on
-  release), not at exit. GTK ignores the option (macOS has it, saved at
-  exit). A restored pane runs a fresh shell with no scrollback.
+  release), not at exit, and comes back however murrtty was closed, its
+  last window's X and its last shell's `exit` included (5.10c; macOS
+  keeps it only through Quit). GTK ignores the option (macOS has it, saved
+  at exit). A restored pane runs a fresh shell with no scrollback.
 - **Single instance by default** (5.10b): `gtk-single-instance` defaults
   to `true`, `-e` doesn't turn it off, and a second plain launch brings
   the running murrtty's windows to the front without opening a window,
@@ -3140,6 +3142,26 @@ the buffer, the untouched system clipboard, and both pastes.
     while it is saved, dropped when a reload turns it to `never`, never
     under the GUI tests. The `second-launch` and `fit-window` scenarios
     check it.
+
+*5.10c built 2026-11-01, the owner's rule:* the session is saved on every
+change and comes back however murrtty was closed, "the most orthogonal,
+with the least exceptions". Before, only Quit (or Windows ending its
+session) kept it: the last window's X saved an empty session, and with
+`quit-after-last-window-closed` on by default that X is how murrtty is
+usually closed. Now the state is never written empty: whatever closes the
+last window (its X, Alt+F4, its last tab's close, the last shell's
+`exit`), that window, its tabs, splits, folders and each pane's command
+history come back at the next start. Closing a window while another
+stays still drops it. A pane's history file is kept while the saved
+state names the pane (`Session.saved_panes`) and goes once a later save
+no longer does, so the last pane's survives murrtty closing with it. With
+the tray keeping murrtty running, the last window stays saved; a new
+window from the tray starts fresh and becomes what is saved. Scenarios
+`session-close` (a window closed beside another leaves the file; the
+last window's X and the last shell's `exit` keep it, folder and all, and
+the next start brings it back) and `pane-history` (the last window's X
+keeps the pane's history; Up brings its last command back), both failing
+without the change.
 
 **5.11 Undo and redo of closes, L.** Keep closed panes, tabs and windows
 parked (hidden, process running) until `undo-timeout`. Undo and redo enter

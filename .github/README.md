@@ -290,8 +290,9 @@ hosted Windows runner and then the unit tests.
 - Session restore: the windows, their tabs and splits, sizes, names and
   each terminal's directory are saved as they change (to `session.json`
   in `%LOCALAPPDATA%\murrtty`) and come back when murrtty starts, each
-  terminal a fresh shell in its folder; `window-save-state = never` turns
-  it off. Each terminal's command history comes back with it, for
+  terminal a fresh shell in its folder, however murrtty was closed (Quit,
+  the last window's X, `exit` in the last shell); `window-save-state =
+  never` turns it off. Each terminal's command history comes back with it, for
   up-arrow: in PowerShell (new terminals still share PowerShell's history)
   and in cmd with Clink (each terminal keeps a Clink history of its own, so
   a new one starts empty). A crash while restoring skips the next restore

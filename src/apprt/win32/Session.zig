@@ -16,7 +16,11 @@
 //! saved once, on its release, and one cut short leaves the state as it
 //! was. Once murrtty quits, or Windows asks to end its session, the state
 //! is written a last time and frozen, so the windows closing on the way out
-//! (their shells ending first) don't empty it. Nothing is written before
+//! (their shells ending first) don't empty it. And however murrtty closes
+//! (roadmap 5.10c, the owner's rule: the last window's X, its last tab's,
+//! the last shell's `exit`), the state is never written empty: the last
+//! window, its panes' folders and histories come back at the next start;
+//! a window closed while another stays leaves it. Nothing is written before
 //! murrtty has started, and a saved window that fails to come back stays
 //! in the file for the next start. Only the murrtty holding the single
 //! instance's pipe keeps the session.
@@ -155,6 +159,12 @@ ending: bool = false,
 restoring: bool = false,
 /// The text last written (or read at start), to write only what changed.
 last: ?[]u8 = null,
+/// The panes that state names (their ids, owned). One that closes keeps
+/// its history while the file still names it, so whatever closes murrtty
+/// (its last pane, tab or window, closed any way) leaves the state and its
+/// panes' histories whole for the next start; a later save that no longer
+/// names it lets them go (noteSaved). Roadmap 5.10c, the owner's rule.
+saved_panes: std.StringHashMapUnmanaged(void) = .empty,
 /// Writes failed in a row; whether a failure was said this run; what waits
 /// to be said (a dialog was open, or no window yet).
 failures: u32 = 0,
@@ -190,6 +200,9 @@ pub fn deinit(self: *Session) void {
     self.clearMarker();
     if (self.dir) |d| alloc.free(d);
     if (self.last) |l| alloc.free(l);
+    var it = self.saved_panes.keyIterator();
+    while (it.next()) |k| alloc.free(k.*);
+    self.saved_panes.deinit(alloc);
     if (self.pending) |*p| p.deinit();
     self.unrestored.deinit(alloc);
     self.* = .{ .app = self.app };
@@ -312,9 +325,11 @@ pub fn markClink(self: *Session, id: Id) void {
 
 /// A pane closed for good (not parked for undo, not murrtty quitting or
 /// Windows ending its session, not a restore that failed): its history
-/// goes, and Clink's for it.
+/// goes, and Clink's for it, once the saved state no longer names it
+/// (noteSaved; the last pane closing murrtty is never dropped from it).
 pub fn paneClosed(self: *Session, id: Id) void {
     if (!self.enabled or self.frozen or self.restoring) return;
+    if (self.saved_panes.contains(&id)) return;
     var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
     defer arena.deinit();
     const a = arena.allocator();
@@ -384,7 +399,9 @@ pub fn collectGarbage(self: *Session) void {
             }
             const file = historyFile(name_w) orelse break :entry;
             if (live.contains(&file.id)) break :entry;
-            if (waiting.contains(&file.id)) {
+            // Named by the saved state (the last window's, closed with
+            // murrtty kept in the tray) as much as waiting to come back.
+            if (waiting.contains(&file.id) or self.saved_panes.contains(&file.id)) {
                 if (file.kind == .txt) repairHistory(a, path);
                 break :entry;
             }
@@ -526,6 +543,7 @@ fn load(self: *Session) void {
         return;
     };
     self.pending = parsed;
+    self.noteSaved(parsed.value);
     const windows = parsed.value.windows;
     for (windows, 0..) |w, i| {
         if (w.quick) {
@@ -997,6 +1015,10 @@ fn save(self: *Session, read: Read) void {
         log.warn("no snapshot of the session err={}", .{err});
         return;
     };
+    // No window left, nothing waiting: whatever closed the last one (murrtty
+    // closing with it, however; or the tray keeping murrtty running) leaves
+    // the state as it was, to come back at the next start (roadmap 5.10c).
+    if (state.windows.len == 0) return;
     const text = std.json.Stringify.valueAlloc(a, state, .{ .whitespace = .indent_2, .emit_null_optional_fields = false }) catch return;
     if (self.last) |l| if (std.mem.eql(u8, l, text)) return;
     const path = self.fileName(a, ".json") catch return;
@@ -1008,6 +1030,40 @@ fn save(self: *Session, read: Read) void {
     const copy = alloc.dupe(u8, text) catch return;
     if (self.last) |l| alloc.free(l);
     self.last = copy;
+    self.noteSaved(state);
+}
+
+/// `state` was written (or read at start): the panes it names are kept
+/// (saved_panes); those the file named before and no longer does, closed
+/// meanwhile, lose their histories now (paneClosed kept them).
+fn noteSaved(self: *Session, state: State) void {
+    const alloc = self.app.core_app.alloc;
+    var next: std.StringHashMapUnmanaged(void) = .empty;
+    for (state.windows) |w| for (w.tabs) |t| for (t.nodes) |n| if (n.pane) |pane| {
+        if (paneId(pane) == null or next.contains(pane.id)) continue;
+        const key = alloc.dupe(u8, pane.id) catch continue;
+        next.put(alloc, key, {}) catch alloc.free(key);
+    };
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = self.historyDir(a);
+    var it = self.saved_panes.keyIterator();
+    while (it.next()) |k| {
+        const dropped = !next.contains(k.*) and !self.paneLive(k.*);
+        if (dropped and !self.gc_hold) if (dir) |d| if (paneId(.{ .id = k.* })) |id| forgetPane(a, d, id);
+        alloc.free(k.*);
+    }
+    self.saved_panes.deinit(alloc);
+    self.saved_panes = next;
+}
+
+/// Whether a pane of `id` is open, or parked for undo (its surface lives).
+fn paneLive(self: *const Session, id: []const u8) bool {
+    for (self.app.core_app.surfaces.items) |s| {
+        if (std.mem.eql(u8, &s.session_id, id)) return true;
+    }
+    return false;
 }
 
 /// The windows as they are, and what waits to come back.
