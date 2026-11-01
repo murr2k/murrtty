@@ -20,6 +20,15 @@
 //! It also serves as the tab list (roadmap 3.8: the strip's list button and
 //! toggle_tab_overview): the same box listing the window's tabs in order,
 //! the active one selected; choosing one selects it.
+//!
+//! The palette has two tabs (the owner's ask, 2026-11-01; GTK's has one
+//! list): All Commands, the list above, and By Key, every key binding the
+//! runtime can perform, grouped by its key (a sequence's by its first):
+//! F1 to F24 first, then letters, digits and the other keys by name, the
+//! key named once in a column at the left of its group's first row. Tab
+//! in the field or a click switches them; the filter applies to both (By
+//! Key also matches the keys, "f5" or "ctrl+shift"), and the palette opens
+//! on the tab last used.
 const CommandPalette = @This();
 
 const std = @import("std");
@@ -45,6 +54,10 @@ const WM_RUN = c.WM_APP + 10;
 const max_width = 600;
 const top_gap = 12;
 const field_height = 40;
+/// The palette's tabs (All Commands, By Key), under the field.
+const tabs_height = 32;
+/// By Key's column naming each group's key.
+const key_column = 84;
 const row_height = 46;
 const max_rows = 10;
 const pad = 8;
@@ -74,11 +87,18 @@ const Entry = struct {
     /// murrtty's configuration editor (roadmap F1), which no core action
     /// opens.
     editor: bool = false,
+    /// By Key: the actions a chained binding runs after `action`.
+    chain: []const input.Binding.Action = &.{},
+    /// By Key: the key it is grouped under ("F1", "T", "Page Up") and the
+    /// group's place (keyRank).
+    group: []const u8 = "",
+    group_rank: u64 = 0,
 };
 
-/// What was chosen, kept past closing until WM_RUN runs it.
+/// What was chosen, kept past closing until WM_RUN runs it: an action, or
+/// a chained binding's actions in order.
 const Choice = union(enum) {
-    action: input.Binding.Action,
+    actions: []const input.Binding.Action,
     jump: u64,
     editor,
 };
@@ -86,7 +106,15 @@ const Choice = union(enum) {
 /// What it lists: commands and terminals, or the window's tabs.
 pub const Mode = enum { commands, tabs };
 
+/// The palette's tabs: every command by title, or the bindings by key.
+pub const View = enum { all, by_key };
+
 mode: Mode = .commands,
+/// The palette's tab, kept from one opening to the next.
+view: View = .all,
+/// Where its tabs were last painted, in the box's client pixels, for a
+/// click.
+tab_rects: [2]c.RECT = .{ .{}, .{} },
 window: ?*Window = null,
 hwnd: ?c.HWND = null,
 dim: ?c.HWND = null,
@@ -187,10 +215,7 @@ fn open(self: *CommandPalette, window: *Window, surface: *Surface, mode: Mode) !
     self.surface_id = if (surface.core_initialized) surface.core_surface.id else 0;
     if (self.hwnd == null) try self.create(window);
     self.setColors(surface);
-    switch (mode) {
-        .commands => try self.build(window.app),
-        .tabs => try self.buildTabs(window),
-    }
+    try self.buildEntries();
     _ = c.SetWindowTextW(self.edit.?, c.L(""));
     try self.refilter();
     _ = c.ShowWindow(self.dim.?, c.SW_SHOWNA);
@@ -199,6 +224,26 @@ fn open(self: *CommandPalette, window: *Window, surface: *Surface, mode: Mode) !
     // another, from `all:toggle_command_palette`); a window activated later
     // gives it to the palette (Window.focusActiveNow).
     if (c.GetActiveWindow() == window.hwnd) _ = c.SetFocus(self.edit.?);
+}
+
+/// The entries for what it shows: the tab list, or the palette's tab.
+fn buildEntries(self: *CommandPalette) !void {
+    const window = self.window orelse return;
+    switch (self.mode) {
+        .tabs => try self.buildTabs(window),
+        .commands => switch (self.view) {
+            .all => try self.build(window.app),
+            .by_key => try self.buildByKey(window.app),
+        },
+    }
+}
+
+/// Show the palette's other tab, the filter kept.
+fn setView(self: *CommandPalette, view: View) void {
+    if (self.mode != .commands or self.view == view) return;
+    self.view = view;
+    self.buildEntries() catch |err| log.warn("command palette tab not built err={}", .{err});
+    self.refilter() catch |err| log.warn("command palette filter failed err={}", .{err});
 }
 
 /// Hide it and give the keyboard back to the pane it opened over.
@@ -361,6 +406,137 @@ fn build(self: *CommandPalette, app: *App) !void {
     self.entries = list.items;
 }
 
+/// By Key: every key binding the runtime can perform, a sequence's under
+/// its first key, each titled as the palette titles its action (else
+/// after the action's name), sorted by key (keyRank), then the key alone
+/// before it with modifiers.
+fn buildByKey(self: *CommandPalette, app: *App) !void {
+    self.freeEntries();
+    self.arena = .init(app.core_app.alloc);
+    const alloc = self.arena.?.allocator();
+    // The palette's titles, by the action as the file spells it.
+    var titles: std.StringHashMapUnmanaged([]const u8) = .empty;
+    for (app.config.@"command-palette-entry".value.items) |entry| {
+        const text = try std.fmt.allocPrint(alloc, "{f}", .{entry.action});
+        if (!titles.contains(text)) try titles.put(alloc, text, try alloc.dupe(u8, entry.title));
+    }
+    var list: std.ArrayList(Entry) = .empty;
+    var path: std.ArrayList(input.Binding.Trigger) = .empty;
+    try walkSet(alloc, &app.config.keybind.set, &path, &titles, &list);
+    std.mem.sort(Entry, list.items, {}, byKeyLess);
+    self.entries = list.items;
+}
+
+/// The bindings of `set`, `path` the keys leading to it (a sequence's).
+fn walkSet(
+    alloc: Allocator,
+    set: *const input.Binding.Set,
+    path: *std.ArrayList(input.Binding.Trigger),
+    titles: *const std.StringHashMapUnmanaged([]const u8),
+    list: *std.ArrayList(Entry),
+) !void {
+    var it = set.bindings.iterator();
+    while (it.next()) |b| {
+        try path.append(alloc, b.key_ptr.*);
+        defer _ = path.pop();
+        switch (b.value_ptr.*) {
+            .leader => |sub| try walkSet(alloc, sub, path, titles, list),
+            .leaf => |leaf| try addBinding(alloc, path.items, &.{leaf.action}, titles, list),
+            .leaf_chained => |leaf| try addBinding(alloc, path.items, leaf.actions.items, titles, list),
+        }
+    }
+}
+
+/// One binding: its keys ("Ctrl+A > N" for a sequence), its actions copied
+/// (the app's config is freed when it changes, which can happen while the
+/// palette is open), and the key it is grouped under.
+fn addBinding(
+    alloc: Allocator,
+    triggers: []const input.Binding.Trigger,
+    actions: []const input.Binding.Action,
+    titles: *const std.StringHashMapUnmanaged([]const u8),
+    list: *std.ArrayList(Entry),
+) !void {
+    if (triggers.len == 0 or actions.len == 0) return;
+    for (actions) |a| if (!App.supportsAction(a)) return;
+    var binding: std.Io.Writer.Allocating = .init(alloc);
+    for (triggers, 0..) |t, i| {
+        if (i > 0) try binding.writer.writeAll(" > ");
+        try ContextMenu.writeTrigger(&binding.writer, t);
+    }
+    var key: std.Io.Writer.Allocating = .init(alloc);
+    try ContextMenu.writeTrigger(&key.writer, .{ .key = triggers[0].key });
+    const copies = try alloc.alloc(input.Binding.Action, actions.len);
+    for (actions, copies) |a, *o| o.* = try a.clone(alloc);
+    var detail: std.Io.Writer.Allocating = .init(alloc);
+    for (copies, 0..) |a, i| {
+        if (i > 0) try detail.writer.writeAll(", then ");
+        try detail.writer.print("{f}", .{a});
+    }
+    const first = try std.fmt.allocPrint(alloc, "{f}", .{copies[0]});
+    try list.append(alloc, .{
+        .title = titles.get(first) orelse try actionTitle(alloc, first),
+        .detail = detail.written(),
+        .binding = binding.written(),
+        .action = copies[0],
+        .chain = copies[1..],
+        .jump = null,
+        .group = key.written(),
+        .group_rank = keyRank(key.written()),
+    });
+}
+
+/// A title for an action the palette doesn't list: its name in words, its
+/// value after a colon ("goto_tab:3" is "Goto Tab: 3").
+fn actionTitle(alloc: Allocator, action: []const u8) ![]const u8 {
+    const colon = std.mem.indexOfScalar(u8, action, ':');
+    var out: std.ArrayList(u8) = .empty;
+    var upper = true;
+    for (action[0 .. colon orelse action.len]) |ch| {
+        if (ch == '_') {
+            try out.append(alloc, ' ');
+            upper = true;
+            continue;
+        }
+        try out.append(alloc, if (upper) std.ascii.toUpper(ch) else ch);
+        upper = false;
+    }
+    if (colon) |i| {
+        try out.appendSlice(alloc, ": ");
+        try out.appendSlice(alloc, action[i + 1 ..]);
+    }
+    return out.items;
+}
+
+/// A key's group's place in By Key: the function keys first, in number
+/// order (F1, F2, ... F24), then the letters, the digits, and the rest
+/// (sorted by name after).
+fn keyRank(name: []const u8) u64 {
+    if (name.len >= 2 and name[0] == 'F') {
+        if (std.fmt.parseInt(u8, name[1..], 10)) |n| return n else |_| {}
+    }
+    if (name.len == 1 and std.ascii.isAlphabetic(name[0])) return 1000 + @as(u64, std.ascii.toUpper(name[0]));
+    if (name.len == 1 and std.ascii.isDigit(name[0])) return 2000 + @as(u64, name[0]);
+    return 3000;
+}
+
+fn byKeyLess(_: void, a: Entry, b: Entry) bool {
+    if (a.group_rank != b.group_rank) return a.group_rank < b.group_rank;
+    switch (std.ascii.orderIgnoreCase(a.group, b.group)) {
+        .lt => return true,
+        .gt => return false,
+        .eq => {},
+    }
+    // The key alone before it with modifiers, a sequence after.
+    if (a.binding.len != b.binding.len) return a.binding.len < b.binding.len;
+    return std.mem.lessThan(u8, a.binding, b.binding);
+}
+
+/// Whether the palette shows By Key now.
+fn byKey(self: *const CommandPalette) bool {
+    return self.mode == .commands and self.view == .by_key;
+}
+
 /// The window's tabs in order, each as its strip shows it, with "Tab N"
 /// and its directory beneath; choosing one jumps to its focused pane.
 fn buildTabs(self: *CommandPalette, window: *Window) !void {
@@ -453,19 +629,28 @@ fn refilter(self: *CommandPalette) !void {
     var buf: [1024]u8 = undefined;
     const query = self.filterText(&buf);
 
-    const Ranked = struct { rank: u8, index: usize };
-    var ranked: std.ArrayList(Ranked) = .empty;
-    defer ranked.deinit(gpa);
-    for (self.entries, 0..) |e, i| {
-        if (rank(e.title, e.detail, query)) |r| try ranked.append(gpa, .{ .rank = r, .index = i });
-    }
-    std.mem.sort(Ranked, ranked.items, {}, struct {
-        fn f(_: void, a: Ranked, b: Ranked) bool {
-            return if (a.rank != b.rank) a.rank < b.rank else a.index < b.index;
-        }
-    }.f);
     self.shown.clearRetainingCapacity();
-    for (ranked.items) |r| try self.shown.append(gpa, r.index);
+    if (self.byKey()) {
+        // By Key stays in key order: the filter only leaves rows out,
+        // matching the title, the action or the keys.
+        for (self.entries, 0..) |e, i| {
+            if (rank(e.title, e.detail, query) != null or
+                std.ascii.findIgnoreCase(e.binding, query) != null) try self.shown.append(gpa, i);
+        }
+    } else {
+        const Ranked = struct { rank: u8, index: usize };
+        var ranked: std.ArrayList(Ranked) = .empty;
+        defer ranked.deinit(gpa);
+        for (self.entries, 0..) |e, i| {
+            if (rank(e.title, e.detail, query)) |r| try ranked.append(gpa, .{ .rank = r, .index = i });
+        }
+        std.mem.sort(Ranked, ranked.items, {}, struct {
+            fn f(_: void, a: Ranked, b: Ranked) bool {
+                return if (a.rank != b.rank) a.rank < b.rank else a.index < b.index;
+            }
+        }.f);
+        for (ranked.items) |r| try self.shown.append(gpa, r.index);
+    }
 
     _ = c.SendMessageW(list, c.LB_RESETCONTENT, 0, 0);
     for (0..self.shown.items.len) |i| _ = c.SendMessageW(list, c.LB_ADDSTRING, 0, @intCast(i));
@@ -485,6 +670,16 @@ pub fn shownTitle(self: *const CommandPalette, row: usize) []const u8 {
 
 pub fn shownDetail(self: *const CommandPalette, row: usize) []const u8 {
     return self.entries[self.shown.items[row]].detail;
+}
+
+/// A row's keys, and (By Key) the key it is grouped under: for the GUI
+/// tests' dump.
+pub fn shownBinding(self: *const CommandPalette, row: usize) []const u8 {
+    return self.entries[self.shown.items[row]].binding;
+}
+
+pub fn shownGroup(self: *const CommandPalette, row: usize) []const u8 {
+    return self.entries[self.shown.items[row]].group;
 }
 
 pub fn shownCount(self: *const CommandPalette) usize {
@@ -518,7 +713,9 @@ pub fn layout(self: *CommandPalette) void {
     const rows: c_int = @intCast(@min(self.shown.items.len, max_rows));
     const width = @min(px(max_width, dpi), @max(client.right - px(32, dpi), px(200, dpi)));
     const list_h = rows * px(row_height, dpi);
-    const height = px(field_height, dpi) + list_h + (if (rows > 0) px(pad, dpi) else 0);
+    // The palette's tabs under the field (not the tab list's).
+    const tabs_h: c_int = if (self.mode == .commands) px(tabs_height, dpi) else 0;
+    const height = px(field_height, dpi) + tabs_h + list_h + (if (rows > 0) px(pad, dpi) else 0);
     const top = window.chromeHeight() + px(top_gap, dpi);
     _ = c.SetWindowPos(hwnd, c.HWND_TOP, @divTrunc(client.right - width, 2), top, width, height, c.SWP_NOACTIVATE);
     const r = px(radius, dpi) * 2;
@@ -532,7 +729,7 @@ pub fn layout(self: *CommandPalette) void {
     }
     if (self.list) |l| {
         _ = c.SendMessageW(l, c.LB_SETITEMHEIGHT, 0, px(row_height, dpi));
-        _ = c.SetWindowPos(l, null, px(pad, dpi), px(field_height, dpi), width - px(2 * pad, dpi), list_h, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+        _ = c.SetWindowPos(l, null, px(pad, dpi), px(field_height, dpi) + tabs_h, width - px(2 * pad, dpi), list_h, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
         _ = c.ShowWindow(l, if (rows > 0) c.SW_SHOWNA else c.SW_HIDE);
     }
     _ = c.InvalidateRect(hwnd, null, c.TRUE);
@@ -601,11 +798,18 @@ fn choose(self: *CommandPalette) void {
         if (self.pending_arena == null) self.pending_arena = .init(window.app.core_app.alloc);
         const arena = &self.pending_arena.?;
         _ = arena.reset(.retain_capacity);
-        const action = entry.action.?.clone(arena.allocator()) catch |err| {
-            log.warn("command palette action not copied err={}", .{err});
+        // The action, then a chained binding's others (By Key).
+        const actions = copy: {
+            const a = arena.allocator();
+            const out = a.alloc(input.Binding.Action, 1 + entry.chain.len) catch break :copy null;
+            out[0] = entry.action.?.clone(a) catch break :copy null;
+            for (entry.chain, out[1..]) |x, *o| o.* = x.clone(a) catch break :copy null;
+            break :copy out;
+        } orelse {
+            log.warn("command palette action not copied", .{});
             return self.close();
         };
-        break :action .{ .action = action };
+        break :action .{ .actions = actions };
     };
     self.close();
     if (self.hwnd) |h| _ = c.PostMessageW(h, WM_RUN, 0, 0);
@@ -621,7 +825,8 @@ fn run(self: *CommandPalette) void {
     switch (choice) {
         .jump => |id| if (window.app.findSurface(id)) |s| s.window.presentSurface(s),
         .editor => window.app.openConfigEditor(),
-        .action => |action| {
+        .actions => |actions| for (actions) |action| {
+            // Looked up for each: an action may close the pane.
             const target = self.targetSurface() orelse return;
             if (!target.core_initialized) return;
             _ = target.core_surface.performBindingAction(action) catch |err| {
@@ -645,6 +850,7 @@ fn paint(self: *CommandPalette, hwnd: c.HWND) void {
         .right = rect.right - px(pad, dpi),
         .bottom = px(field_height - pad / 2, dpi),
     }, self.field_bg);
+    if (self.mode == .commands) self.paintTabs(hdc, rect, dpi);
     const r = px(radius, dpi) * 2;
     if (c.CreateRoundRectRgn(0, 0, rect.right, rect.bottom, r, r)) |rgn| {
         defer _ = c.DeleteObject(rgn);
@@ -653,6 +859,35 @@ fn paint(self: *CommandPalette, hwnd: c.HWND) void {
             _ = c.FrameRgn(hdc, rgn, brush, 1, 1);
         }
     }
+}
+
+/// The palette's tabs under the field: the one shown in the text color,
+/// underlined, the other dimmed (libadwaita's view switcher, flat).
+fn paintTabs(self: *CommandPalette, hdc: c.HDC, rect: c.RECT, dpi: c.UINT) void {
+    const old = if (self.font) |f| c.SelectObject(hdc, f) else null;
+    defer if (old) |o| {
+        _ = c.SelectObject(hdc, o);
+    };
+    _ = c.SetBkMode(hdc, c.TRANSPARENT);
+    const top = px(field_height, dpi);
+    const bottom = top + px(tabs_height, dpi);
+    var x = px(pad + 8, dpi);
+    for ([_][]const u8{ "All Commands", "By Key" }, 0..) |label, i| {
+        var wide: [32]u16 = undefined;
+        const n = std.unicode.utf8ToUtf16Le(&wide, label) catch 0;
+        var size: c.RECT = .{};
+        _ = c.DrawTextW(hdc, &wide, @intCast(n), &size, c.DT_CALCRECT | c.DT_SINGLELINE | c.DT_NOPREFIX);
+        const tab: c.RECT = .{ .left = x - px(8, dpi), .top = top, .right = x + size.right + px(8, dpi), .bottom = bottom };
+        self.tab_rects[i] = tab;
+        const shown = @intFromEnum(self.view) == i;
+        var text = tab;
+        _ = c.SetTextColor(hdc, if (shown) self.fg else self.dim_fg);
+        _ = c.DrawTextW(hdc, &wide, @intCast(n), &text, c.DT_CENTER | c.DT_VCENTER | c.DT_SINGLELINE | c.DT_NOPREFIX);
+        if (shown) fill(hdc, .{ .left = x, .top = bottom - px(3, dpi), .right = x + size.right, .bottom = bottom - px(1, dpi) }, self.fg);
+        x = tab.right + px(16, dpi);
+    }
+    // A line under the tabs, across the box.
+    fill(hdc, .{ .left = px(pad, dpi), .top = bottom - px(1, dpi), .right = rect.right - px(pad, dpi), .bottom = bottom }, self.selected_bg);
 }
 
 /// A row: the title, its description beneath, the binding as keycaps.
@@ -680,7 +915,20 @@ fn drawItem(self: *CommandPalette, item: *const c.DRAWITEMSTRUCT) void {
         count -= 1;
         right = self.keycap(dc, names[count], right, item.rcItem.top + half, dpi) - px(4, dpi);
     }
-    const text: c.RECT = .{ .left = item.rcItem.left + inset, .top = item.rcItem.top, .right = right - inset, .bottom = item.rcItem.bottom };
+    var left = item.rcItem.left + inset;
+    if (self.byKey()) {
+        // The key named on its group's first row, a line above each group
+        // but the first.
+        const row = item.itemID;
+        const first = row == 0 or !std.mem.eql(u8, self.entries[self.shown.items[row - 1]].group, e.group);
+        if (first) {
+            if (row > 0) fill(dc, .{ .left = item.rcItem.left, .top = item.rcItem.top, .right = item.rcItem.right, .bottom = item.rcItem.top + @max(1, px(1, dpi)) }, self.selected_bg);
+            var key: c.RECT = .{ .left = left, .top = item.rcItem.top, .right = left + px(key_column, dpi) - inset, .bottom = item.rcItem.bottom };
+            drawText(dc, e.group, &key, self.fg, c.DT_VCENTER);
+        }
+        left += px(key_column, dpi);
+    }
+    const text: c.RECT = .{ .left = left, .top = item.rcItem.top, .right = right - inset, .bottom = item.rcItem.bottom };
     var upper = text;
     upper.bottom = item.rcItem.top + half + px(1, dpi);
     drawText(dc, e.title, &upper, self.fg, c.DT_BOTTOM);
@@ -778,6 +1026,17 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             self.drawItem(item);
             return 1;
         },
+        // A click on one of the palette's tabs shows it; the keyboard stays
+        // in the field.
+        c.WM_LBUTTONDOWN => if (self.mode == .commands) {
+            const x = c.xParam(lparam);
+            const y = c.yParam(lparam);
+            for (self.tab_rects, 0..) |r, i| {
+                if (x >= r.left and x < r.right and y >= r.top and y < r.bottom) self.setView(@enumFromInt(i));
+            }
+            if (self.edit) |e| _ = c.SetFocus(e);
+            return 0;
+        },
         WM_RUN => {
             self.run();
             return 0;
@@ -851,6 +1110,11 @@ fn editProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callc
                 self.close();
                 return 0;
             },
+            // The palette's other tab (two: Shift+Tab goes there too).
+            c.VK_TAB => if (self.mode == .commands) {
+                self.setView(if (self.view == .all) .by_key else .all);
+                return 0;
+            },
             else => {},
         },
         c.WM_CHAR => switch (wparam) {
@@ -859,8 +1123,8 @@ fn editProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callc
                 SearchBox.deleteWordBefore(hwnd);
                 return 0;
             },
-            // Enter's and Escape's would only beep.
-            '\r', 0x1b => return 0,
+            // Enter's, Escape's and Tab's would only beep.
+            '\r', 0x1b, '\t' => return 0,
             else => {},
         },
         // The field's own menu runs a loop of its own: close requests wait
@@ -925,6 +1189,34 @@ test "palette filter: title, then the line beneath, then letters in order" {
     try testing.expectEqual(@as(?u8, 1), rank("Focus: cmd.exe", "Tab 2: C:\\src", "src"));
     try testing.expectEqual(@as(?u8, 2), rank("Toggle Fullscreen", "toggle_fullscreen", "tgl full"));
     try testing.expectEqual(@as(?u8, null), rank("New Tab", "new_tab", "split"));
+}
+
+test "palette By Key: function keys first, in number order, then letters, digits, the rest" {
+    const testing = std.testing;
+    try testing.expect(keyRank("F1") < keyRank("F2"));
+    try testing.expect(keyRank("F2") < keyRank("F10"));
+    try testing.expect(keyRank("F24") < keyRank("A"));
+    try testing.expect(keyRank("A") < keyRank("T"));
+    try testing.expect(keyRank("Z") < keyRank("0"));
+    try testing.expect(keyRank("9") < keyRank("Page Up"));
+    try testing.expectEqual(keyRank("Page Up"), keyRank("Enter"));
+    // A key's name that only starts with F is a name like the others.
+    try testing.expectEqual(keyRank("Page Up"), keyRank("Fn"));
+
+    const e = struct {
+        fn of(group: []const u8, binding: []const u8) Entry {
+            return .{ .title = "", .detail = "", .binding = binding, .action = null, .jump = null, .group = group, .group_rank = keyRank(group) };
+        }
+    }.of;
+    // In a group the key alone first; groups of the rest by name.
+    try testing.expect(byKeyLess({}, e("F11", "F11"), e("F11", "Ctrl+Shift+F11")));
+    try testing.expect(byKeyLess({}, e("Enter", "Shift+Enter"), e("Page Up", "Ctrl+Page Up")));
+    try testing.expect(!byKeyLess({}, e("T", "Ctrl+Shift+T"), e("F2", "F2")));
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try testing.expectEqualStrings("Goto Tab: 3", try actionTitle(arena.allocator(), "goto_tab:3"));
+    try testing.expectEqualStrings("Toggle Fullscreen", try actionTitle(arena.allocator(), "toggle_fullscreen"));
 }
 
 test "palette keycaps" {

@@ -81,7 +81,8 @@ pub const all = [_]Scenario{
     .{ .name = "tab-drag-close", .about = "a tab closing while another is dragged: the drag goes on with the tab pressed", .run = tabDragClose },
     .{ .name = "tab-drag", .about = "tabs reorder live as they are dragged, tear off into a new window, move onto another window's bar (an emptied window closes); move_tab_to_new_window", .run = tabDrag },
     .{ .name = "inspector", .about = "the terminal inspector: Ctrl+Shift+I opens a window for the pane that draws, with the core's inspector on; the mouse reaches it; the toggle, its close and the pane's close end it; its Terminal IO export writes the events", .run = inspectorScenario },
-    .{ .name = "close-all-but", .about = "Close All but This (the owner's ask): grayed with one pane; from a pane's menu, its tab's other pane, its window's other tab and the other window close, one entry for undo, which brings them back", .run = closeAllButScenario },
+    .{ .name = "palette-by-key", .about = "the command palette's By Key tab (the owner's ask): Tab switches to it; bindings grouped by key, function keys first in number order, the key alone before it with modifiers; the filter matches keys; a row runs; it opens again on By Key; Tab goes back", .run = paletteByKey },
+    .{ .name = "close-all-but",.about = "Close All but This (the owner's ask): grayed with one pane; from a pane's menu, its tab's other pane, its window's other tab and the other window close, one entry for undo, which brings them back", .run = closeAllButScenario },
     .{ .name = "undo",.about = "undo and redo of closes (macOS's): a pane back where it was, still running, a tab, closed tabs together, a window where it was; not a pane whose program ended; a parked pane's program ending; expiry; quitting with the last window", .run = undoCloses },
     .{ .name = "pane-drag", .about = "panes move by their drag handle onto a half of another pane, in the tab, into a hovered tab, into another window (an emptied window closes); Escape cancels", .run = paneDrag },
     .{ .name = "decorations", .about = "window-decoration = none: no caption or header, the top band still resizes; toggle_window_decorations per window, the grid unchanged", .run = decorations },
@@ -4071,6 +4072,98 @@ fn paletteState(h: *Harness, g: *Harness.Ghostty, win: w.HWND) !PaletteState {
         @memcpy(r.detail[0..r.detail_len], p.details[0][0..r.detail_len]);
     }
     return r;
+}
+
+/// Wait until the open palette shows its tab `view` ("all", "by_key").
+fn waitPaletteView(h: *Harness, g: *Harness.Ghostty, view: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.windows[0].palette) |p| if (p.open and std.mem.eql(u8, p.view, view)) return;
+        w.Sleep(100);
+    }
+    return h.fail("the palette doesn't show its {s} tab", .{view});
+}
+
+/// The command palette's By Key tab (the owner's ask, 2026-11-01): Tab in
+/// the filter switches to it; every binding grouped by its key, the
+/// function keys first in number order (F3 before F10), then the letters;
+/// in a group the key alone before it with modifiers, each titled as the
+/// palette titles its action. The filter matches the keys ("f3"), a row
+/// runs its action, the palette opens again on By Key, and Tab goes back.
+fn paletteByKey(h: *Harness) anyerror!void {
+    var g = try start(h, "palette-by-key", "keybind = f3=new_tab\nkeybind = ctrl+f3=clear_screen\nkeybind = f10=reset\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const surf = try h.surface(&g, win);
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'P');
+    const edit = hwndOf((try waitPalette(h, &g, win, true)).edit);
+    try waitPaletteView(h, &g, "all");
+    h.key(edit, .{}, w.VK_TAB);
+    try waitPaletteView(h, &g, "by_key");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const p = d.value.windows[0].palette.?;
+        var f3: ?usize = null;
+        var f10: ?usize = null;
+        var first_letter: ?usize = null;
+        var last_fkey: usize = 0;
+        for (p.groups, 0..) |group, i| {
+            const fkey = group.len >= 2 and group[0] == 'F' and std.ascii.isDigit(group[1]);
+            if (fkey) last_fkey = i;
+            if (first_letter == null and group.len == 1 and std.ascii.isAlphabetic(group[0])) first_letter = i;
+            if (f3 == null and std.mem.eql(u8, group, "F3")) f3 = i;
+            if (f10 == null and std.mem.eql(u8, group, "F10")) f10 = i;
+        }
+        try h.expect(p.groups.len > 10 and p.groups.len == p.items.len, "By Key lists the bindings, each with its key ({d})", .{p.groups.len});
+        try h.expect(f3 != null and f10 != null and f3.? < f10.?, "F3's group comes before F10's", .{});
+        try h.expect(first_letter != null and last_fkey < first_letter.?, "the function keys before the letters", .{});
+        const i = f3.?;
+        try h.expect(i + 1 < p.items.len and std.mem.eql(u8, p.bindings[i], "F3") and std.mem.eql(u8, p.bindings[i + 1], "Ctrl+F3"), "in F3's group, F3 alone, then Ctrl+F3 ('{s}', '{s}')", .{ p.bindings[i], if (i + 1 < p.items.len) p.bindings[i + 1] else "" });
+        try h.expect(std.mem.eql(u8, p.items[i], "New Tab") and std.mem.eql(u8, p.details[i], "new_tab"), "titled as the palette titles new_tab ('{s}')", .{p.items[i]});
+    }
+    // A picture of the box, by eye (GHOSTTY_GUI_SNAPSHOT = a folder).
+    {
+        var buf: [512]u16 = undefined;
+        const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &buf, buf.len);
+        if (n > 0 and n < buf.len) if (w.GetParent(edit)) |box| {
+            w.Sleep(300);
+            const dir = try std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
+            defer h.alloc.free(dir);
+            const path = try std.fmt.allocPrint(h.alloc, "{s}\\palette-by-key.bmp", .{dir});
+            defer h.alloc.free(path);
+            var img = try h.captureClient(box);
+            defer img.deinit();
+            try img.save(path);
+        };
+    }
+    // The filter matches the keys.
+    try h.typeText(edit, "f3");
+    _ = try waitPaletteText(h, &g, win, "f3");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const p = d.value.windows[0].palette.?;
+        var all_f3 = p.groups.len == 2;
+        for (p.groups) |group| all_f3 = all_f3 and std.mem.eql(u8, group, "F3");
+        try h.expect(all_f3, "'f3' leaves F3's group ({d} rows)", .{p.groups.len});
+    }
+    // Enter runs the first: F3's new_tab.
+    h.key(edit, .{}, w.VK_RETURN);
+    _ = try waitPalette(h, &g, win, false);
+    try waitWindowTabs(h, &g, win, 2);
+    // Open again: By Key, as last used; Tab goes back to All Commands.
+    h.key(try paneHwnd(h, &g, 0), .{ .ctrl = true, .shift = true }, 'P');
+    const edit2 = hwndOf((try waitPalette(h, &g, win, true)).edit);
+    try waitPaletteView(h, &g, "by_key");
+    h.key(edit2, .{}, w.VK_TAB);
+    try waitPaletteView(h, &g, "all");
+    const back = try paletteState(h, &g, win);
+    try h.expect(back.hasPrefix("Focus: "), "All Commands lists the terminals again", .{});
+    h.key(edit2, .{}, w.VK_ESCAPE);
+    _ = try waitPalette(h, &g, win, false);
 }
 
 fn waitPalette(h: *Harness, g: *Harness.Ghostty, win: w.HWND, open: bool) !PaletteState {

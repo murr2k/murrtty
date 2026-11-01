@@ -230,7 +230,10 @@ hosted Windows runner and then the unit tests.
   and a "Focus:" entry for each terminal in every window that says where it
   is ("Window 2, tab 1: C:\src"). Typing filters by title, by the line
   beneath it, or by letters in order; `Up`/`Down` choose, `Enter` or a
-  click runs, `Esc`, a click outside or `Ctrl+Shift+P` again closes.
+  click runs, `Esc`, a click outside or `Ctrl+Shift+P` again closes. Its
+  By Key tab (`Tab` switches) lists every key binding grouped by key, F1
+  to F24 first, then letters, digits and the rest; typing a key ("f5",
+  "ctrl+shift") filters it.
 - Renaming, as in Ghostty's GTK app: a tab (the context menu's Tab >
   Change Tab Title..., or `prompt_tab_title`; murrtty also renames a tab
   you double-click), a terminal (`prompt_surface_title`) or a window

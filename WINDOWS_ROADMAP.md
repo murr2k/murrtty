@@ -292,6 +292,15 @@ roadmap item behind it.
   ("Tab 2: C:\src", "Window 2, tab 1: ..."), and typing matches that line
   too; GTK's rows show only the title. Results are ranked (title matches,
   then the line beneath, then letters in order) rather than alphabetical.
+- **Palette by key** (the owner's ask, 2026-11-01): the palette has two
+  tabs, All Commands (GTK's list) and By Key: every key binding the
+  runtime can perform, grouped by its key, F1 to F24 first, then letters,
+  digits and the other keys by name, the key named once at the left of
+  its group, the key alone before it with modifiers, a sequence under its
+  first key and a chained binding's actions run in order. Tab in the
+  filter or a click switches; the filter applies to both (By Key also
+  matching the keys); it opens on the tab last used. GTK's palette has
+  one list.
 - **Palette over the title bar** (3.3, 4.3): with the command palette open,
   the header bar's caption, window buttons and top resize band still work
   (its own buttons stay covered). GTK's dialog dims the whole window; its

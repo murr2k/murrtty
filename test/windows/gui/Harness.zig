@@ -1799,6 +1799,11 @@ pub const Dump = struct {
             text: []const u8,
             items: []const []const u8,
             details: []const []const u8,
+            /// The palette's tab ("all", "by_key"), and each row's keys
+            /// and the key it is grouped under (By Key).
+            view: []const u8 = "",
+            bindings: []const []const u8 = &.{},
+            groups: []const []const u8 = &.{},
         } = null,
         /// The small and big icons' widths at the window's DPI.
         icon_widths: [2]i32 = .{ 0, 0 },

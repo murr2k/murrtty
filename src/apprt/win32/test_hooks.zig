@@ -573,6 +573,18 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 if (i > 0) try out.append(alloc, ',');
                 try writeString(alloc, out, p.shownDetail(i));
             }
+            // The palette's tab, and each row's keys and (By Key) the key
+            // it is grouped under.
+            try out.print(alloc, "],\"view\":\"{t}\",\"bindings\":[", .{p.view});
+            for (0..p.shownCount()) |i| {
+                if (i > 0) try out.append(alloc, ',');
+                try writeString(alloc, out, p.shownBinding(i));
+            }
+            try out.appendSlice(alloc, "],\"groups\":[");
+            for (0..p.shownCount()) |i| {
+                if (i > 0) try out.append(alloc, ',');
+                try writeString(alloc, out, p.shownGroup(i));
+            }
             try out.appendSlice(alloc, "]},");
         }
 
