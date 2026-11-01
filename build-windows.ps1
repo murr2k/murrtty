@@ -144,6 +144,7 @@ $VerbosePreference = 'SilentlyContinue'
 # minimum_zig_version in build.zig.zon changes.
 $PinnedZigSha256 = @{
     '0.17.0/x86_64-windows' = 'b5663f69581dcf391293fbf16c06cb80d81d806545ce618b4d0bab7f0eb8c428'
+    '0.17.0/aarch64-windows' = '0a59d91fa1cb40cf068e9b0954434ce973500c7a2ea749f1e01af62cdab52d26'
 }
 
 $Root = $PSScriptRoot

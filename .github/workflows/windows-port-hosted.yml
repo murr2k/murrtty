@@ -1,0 +1,125 @@
+# The GUI suite and the unit tests on GitHub's hosted runners
+# (WINDOWS_ROADMAP.md 7.3), x64 on windows-2025 and ARM64 natively on
+# windows-11-arm, started by hand. It runs only in the public repository,
+# murr2k/murrtty, whose hosted minutes are free (the private one bills
+# Windows minutes double, and GitHub's ARM64 Windows runners serve public
+# repositories); there every upstream workflow is disabled, and the
+# repository's actions policy (GitHub-owned actions only) stops any that
+# isn't at startup. The guard job checks that. The self-hosted desktop
+# runner never serves this repository.
+#
+# Hosted runners have no GPU: murrtty draws with the Mesa llvmpipe it
+# ships (bin\mesa, roadmap 6.3b), named by MURRTTY_OPENGL for every
+# launch so that none starts itself again (the harness follows the process
+# it started). The scenarios of the graphics driver's own OpenGL
+# (gl-missing, gl-library, gl-fallback) are left out for that reason.
+name: Windows port (hosted GUI suite)
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: Scenario names to run (all but the GPU ones when empty)
+        type: string
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: windows-port-hosted-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: No other workflow is active
+    if: github.repository == 'murr2k/murrtty'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check workflow states
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          registered=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | "\(.path) \(.state)"')
+          bad=0
+          while read -r path state; do
+            case "$path" in
+              .github/workflows/windows-port-desktop.yml) ;;
+              .github/workflows/windows-port*.yml) continue ;;
+              .github/workflows/*) ;;
+              *) continue ;;
+            esac
+            if [ "$state" = active ]; then
+              echo "::error::$path is active. Disable it: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
+              bad=1
+            fi
+          done <<< "$registered"
+          exit $bad
+
+  suite:
+    name: GUI suite and unit tests (${{ matrix.arch }})
+    needs: guard
+    if: github.repository == 'murr2k/murrtty'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            target: x86_64-windows-gnu
+          - arch: arm64
+            runner: windows-11-arm
+            target: aarch64-windows-gnu
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The builder installs the pinned Zig for the runner's architecture
+      # into .zig-toolchain\ (SHA-256 checked).
+      - name: Zig
+        id: zig
+        shell: cmd
+        run: .\build-windows.cmd -SetupOnly
+
+      - name: GUI suite
+        id: gui
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        shell: pwsh
+        env:
+          GHOSTTY_GUI_TARGET: ${{ matrix.target }}
+          GHOSTTY_GUI_TEST_DIR: ${{ runner.temp }}\gui
+          MURRTTY_OPENGL: ${{ github.workspace }}\zig-out\bin\mesa\opengl32.dll
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
+          if ($scenarioArgs.Count -eq 0) { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }
+          & .\test\windows\gui\run.cmd @scenarioArgs
+          exit $LASTEXITCODE
+
+      - name: Upload failed GUI runs
+        if: ${{ failure() && steps.gui.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-tests-${{ matrix.arch }}
+          path: ${{ runner.temp }}\gui
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Unit tests
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
+          & $zig build test -Dtarget=${{ matrix.target }} --summary failures
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
