@@ -140,6 +140,15 @@ fn kindOf(err: anyerror, facts: Facts) Kind {
     return .unknown;
 }
 
+/// Why `err` came: for murrtty's software OpenGL (software_gl.zig), which
+/// says so once it draws.
+pub fn diagnose(err: anyerror) Kind {
+    var adapter_buf: [384]u8 = undefined;
+    var gl_buf: [512]u8 = undefined;
+    var library_buf: [3072]u8 = undefined;
+    return kindOf(err, gather(err, &adapter_buf, &gl_buf, &library_buf));
+}
+
 pub const heading = "murrtty can't draw: it needs OpenGL 4.3";
 
 /// The dialog's body for `kind`, into `buf`.
@@ -175,10 +184,19 @@ fn body(buf: []u8, kind: Kind, err: anyerror, facts: Facts) []const u8 {
     } catch buf[0..0];
 }
 
+/// What became of murrtty's software OpenGL (software_gl.zig), for the
+/// dialog.
+pub const Software = enum {
+    /// Not tried: there is none, or MURRTTY_OPENGL names the OpenGL.
+    none,
+    /// It couldn't draw either.
+    failed,
+};
+
 /// Tell the user why murrtty can't draw, in a task dialog (a message box
 /// if that can't show). Runs a modal loop; for murrtty's start, before
 /// any window.
-pub fn show(app: *App, err: anyerror) void {
+pub fn show(app: *App, err: anyerror, software: Software) void {
     var adapter_buf: [384]u8 = undefined;
     var gl_buf: [512]u8 = undefined;
     var library_buf: [3072]u8 = undefined;
@@ -187,7 +205,14 @@ pub fn show(app: *App, err: anyerror) void {
     log.err("OpenGL 4.3 is not available ({t}): {t}, adapter {s}, remote {}", .{ kind, err, facts.adapter, facts.remote });
 
     var body_buf: [4096]u8 = undefined;
-    const text = body(&body_buf, kind, err, facts);
+    var text = body(&body_buf, kind, err, facts);
+    if (software == .failed) {
+        const note = "\n\nmurrtty's software renderer (Mesa, in the mesa folder beside murrtty.exe) couldn't draw either.";
+        if (text.len + note.len <= body_buf.len) {
+            @memcpy(body_buf[text.len..][0..note.len], note);
+            text = body_buf[0 .. text.len + note.len];
+        }
+    }
     const gl = facts.gl orelse wgl.Info{ .vendor = "", .renderer = "", .version = "" };
     var details_buf: [2048]u8 = undefined;
     const details = std.fmt.bufPrint(&details_buf,

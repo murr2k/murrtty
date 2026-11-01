@@ -50,7 +50,9 @@ pub const State = if (enabled) struct {
     /// can't be read from outside (a DirectUIHWND draws them).
     dialog_heading: [128]u8 = undefined,
     dialog_heading_len: usize = 0,
-    dialog_body: [256]u8 = undefined,
+    /// Room for the longest (the OpenGL diagnosis' for Remote Desktop with
+    /// its note on murrtty's Mesa).
+    dialog_body: [1024]u8 = undefined,
     dialog_body_len: usize = 0,
     /// Panes ignore WM_MOUSELEAVE (dump wparam 7): on the hidden desktop
     /// the real cursor is never over a window, so Windows answers a posted
@@ -802,6 +804,15 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     try out.print(alloc, ",\"sentry_ready\":{}", .{@import("../../crash/main.zig").sentry.ready()});
     // Which ConPTY new panes get: the bundled one or Windows' own (2.6).
     try out.print(alloc, ",\"conpty\":\"{t}\"", .{@import("../../os/main.zig").conpty.get().source});
+    // Which opengl32 is loaded ("" before any), what its first context
+    // reported, and why this murrtty runs on its software OpenGL ("" if it
+    // doesn't; roadmap 6.3b).
+    {
+        const wgl = @import("opengl").wgl;
+        try out.print(alloc, ",\"opengl\":\"{s}\",\"gl_renderer\":", .{if (wgl.loadedSource()) |s| @tagName(s) else ""});
+        try writeString(alloc, out, wgl.rendererText() orelse "");
+        try out.print(alloc, ",\"software_gl\":\"{s}\"", .{if (app.software_start) |s| @tagName(s.kind) else ""});
+    }
     try out.print(alloc, ",\"osk\":{{\"asks\":{d},\"hr\":{d},\"done\":{}}},\"click_interval\":{d}", .{
         app.test_state.osk_asks,
         app.test_state.osk_hr,

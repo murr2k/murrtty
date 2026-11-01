@@ -494,13 +494,16 @@ fn load(self: *Session) void {
     const a = arena.allocator();
     const path = self.fileName(a, ".json") catch return;
     const marker = self.fileName(a, ".restoring") catch return;
-    if (exists(a, marker)) {
+    // Started again on murrtty's software OpenGL by a murrtty that found
+    // the marker and put the session aside itself (software_gl.zig).
+    const carried = if (self.app.software_start) |s| s.session_skipped else false;
+    if (carried or exists(a, marker)) {
         self.skipped = true;
         self.skip_notice = true;
         // The session put aside may come back by hand: its histories stay.
         self.gc_hold = true;
         const aside = self.fileName(a, "-skipped.json") catch return;
-        _ = moveFile(a, path, aside);
+        if (!carried) _ = moveFile(a, path, aside);
         deleteFile(a, marker);
         log.warn("the last start crashed while restoring: its session is kept as {s}", .{aside});
         return;
@@ -912,20 +915,27 @@ fn notices(self: *Session) void {
     const window = for (self.app.windows.items) |w| {
         if (w.quick == null and w.tabs.items.len > 0) break w;
     } else return;
-    if (self.skip_notice) {
-        self.skip_notice = false;
-        var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
-        defer arena.deinit();
-        const aside: []const u8 = self.fileName(arena.allocator(), "-skipped.json") catch "session-skipped.json";
-        var buf: [400]u8 = undefined;
-        const text: []const u8 = std.fmt.bufPrint(&buf, "Your last session wasn't restored: restoring it failed. It's kept as {s}.", .{std.fs.path.basenameWindows(aside)}) catch
-            "Your last session wasn't restored: restoring it failed.";
-        window.showToastFor(text, notice_ms);
-    }
+    // On murrtty's software OpenGL, its notice takes this one along once
+    // the first frame is drawn (software_gl.tick): one toast, not two.
+    if (self.app.software_start) |s| if (!s.told) return;
+    var buf: [400]u8 = undefined;
+    if (self.takeSkipNotice(&buf)) |text| window.showToastFor(text, notice_ms);
     if (self.warn_pending) |reason| {
         self.warn_pending = null;
         self.showWarning(reason);
     }
+}
+
+/// The notice that the last session was put aside, into `buf`, if it is
+/// still to be said (once).
+pub fn takeSkipNotice(self: *Session, buf: []u8) ?[]const u8 {
+    if (!self.skip_notice) return null;
+    self.skip_notice = false;
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const aside: []const u8 = self.fileName(arena.allocator(), "-skipped.json") catch "session-skipped.json";
+    return std.fmt.bufPrint(buf, "Your last session wasn't restored: restoring it failed. It's kept as {s}.", .{std.fs.path.basenameWindows(aside)}) catch
+        "Your last session wasn't restored: restoring it failed.";
 }
 
 /// murrtty quits (Quit, the session ending): the state written a last

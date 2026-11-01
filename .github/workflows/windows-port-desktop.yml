@@ -90,7 +90,9 @@ jobs:
       # loaded, an OpenConsole.exe per pane), so it moves aside too, as
       # conpty.prev.dll and OpenConsole.prev.exe (copy those back too to
       # roll back a ConPTY update; a held older one makes the new name
-      # .prev-<stamp>). Any move failing, or the build, puts back what moved.
+      # .prev-<stamp>). A murrtty on its software OpenGL (roadmap 6.3b)
+      # holds Mesa's two DLLs in bin\mesa, which move aside the same way.
+      # Any move failing, or the build, puts back what moved.
       - name: Install the release build
         if: success() && github.ref == 'refs/heads/windows-port'
         shell: pwsh
@@ -99,8 +101,11 @@ jobs:
           if (-not $prefix) { "GHOSTTY_INSTALL_PREFIX isn't set on this runner; skipped"; exit 0 }
           $bin = Join-Path $prefix 'bin'
           $exe = Join-Path $bin 'murrtty.exe'
-          foreach ($old in @('murrtty.prev*.exe', 'conpty.prev*.dll', 'OpenConsole.prev*.exe')) {
-            Get-ChildItem $bin -Filter $old -ErrorAction SilentlyContinue |
+          $held = @('conpty.dll', 'OpenConsole.exe', 'mesa\opengl32.dll', 'mesa\libgallium_wgl.dll', 'murrtty.exe')
+          foreach ($f in $held) {
+            $dir = Split-Path (Join-Path $bin $f)
+            $old = '{0}.prev*{1}' -f [IO.Path]::GetFileNameWithoutExtension($f), [IO.Path]::GetExtension($f)
+            Get-ChildItem $dir -Filter $old -ErrorAction SilentlyContinue |
               ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
           }
           $stamp = '{0:yyyyMMdd-HHmmss}' -f (Get-Date)
@@ -113,13 +118,14 @@ jobs:
           }
           $running = @(Get-Process murrtty -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }).Count -gt 0
           try {
-            foreach ($f in @('conpty.dll', 'OpenConsole.exe', 'murrtty.exe')) {
+            foreach ($f in $held) {
               $have = Join-Path $bin $f
               if (-not (Test-Path $have)) { continue }
+              $dir = Split-Path $have
               $base = [IO.Path]::GetFileNameWithoutExtension($f)
               $ext = [IO.Path]::GetExtension($f)
-              $to = Join-Path $bin "$base.prev$ext"
-              if (Test-Path $to) { $to = Join-Path $bin "$base.prev-$stamp$ext" }
+              $to = Join-Path $dir "$base.prev$ext"
+              if (Test-Path $to) { $to = Join-Path $dir "$base.prev-$stamp$ext" }
               Move-Item $have $to
               $moved.Add([pscustomobject]@{ From = $have; To = $to })
             }

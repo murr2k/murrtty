@@ -1611,6 +1611,13 @@ pub const Dump = struct {
     sentry_ready: bool = false,
     /// The ConPTY new panes get: "bundled" or "system" (roadmap 2.6).
     conpty: []const u8 = "",
+    /// The opengl32 loaded ("system", "variable" for MURRTTY_OPENGL's,
+    /// "bundled" for murrtty's Mesa; "" before any), what its first context
+    /// reported (renderer, version), and why murrtty runs on its software
+    /// OpenGL ("" if it doesn't; a gl_diagnosis kind; roadmap 6.3b).
+    opengl: []const u8 = "",
+    gl_renderer: []const u8 = "",
+    software_gl: []const u8 = "",
     /// show_on_screen_keyboard's requests and the last one's result
     /// (roadmap 6.5), and click-repeat-interval as murrtty has it.
     osk: struct { asks: u32 = 0, hr: i32 = 0, done: bool = false } = .{},

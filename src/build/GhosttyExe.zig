@@ -74,6 +74,27 @@ pub fn init(b: *std.Build, cfg: *const Config, deps: *const SharedDeps) !Ghostty
                     name,
                 ).step);
             };
+
+            // Mesa's llvmpipe in bin\mesa, murrtty's software OpenGL for a
+            // machine whose own lacks 4.3 (src/apprt/win32/software_gl.zig).
+            // In a folder of its own: beside the executable, Windows'
+            // search (the program's folder first) would find it before
+            // System32's for anything in murrtty that loads opengl32 by
+            // name, on machines with a GPU too.
+            const mesa_dep: ?[]const u8 = switch (cfg.target.result.cpu.arch) {
+                .x86_64 => "murrtty_mesa_x64",
+                .aarch64 => "murrtty_mesa_arm64",
+                else => null,
+            };
+            if (mesa_dep) |name| if (b.lazyDependency(name, .{})) |mesa| {
+                for ([_][]const u8{ "opengl32.dll", "libgallium_wgl.dll" }) |file| {
+                    install_step.step.dependOn(&b.addInstallFileWithDir(
+                        mesa.path(file),
+                        .bin,
+                        b.fmt("mesa/{s}", .{file}),
+                    ).step);
+                }
+            };
         },
 
         else => {},

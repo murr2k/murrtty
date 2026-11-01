@@ -115,6 +115,20 @@
             .lazy = true,
         },
 
+        // murrtty's software OpenGL on Windows: Mesa's llvmpipe, built from
+        // source by murr2k/murrtty-mesa's workflow (build provenance
+        // attested), installed in bin\mesa (src/apprt/win32/software_gl.zig).
+        .murrtty_mesa_x64 = .{
+            .url = "https://github.com/murr2k/murrtty-mesa/releases/download/v26.2.6-2/murrtty-mesa-26.2.6-x64.zip",
+            .hash = "N-V-__8AACprewM9y2hTwronbUoOwomAvJ_PQW5aulrG6sni",
+            .lazy = true,
+        },
+        .murrtty_mesa_arm64 = .{
+            .url = "https://github.com/murr2k/murrtty-mesa/releases/download/v26.2.6-2/murrtty-mesa-26.2.6-arm64.zip",
+            .hash = "N-V-__8AAC5JPAMSOJb1X-nxX6CIUO2pWAIm4QIT9g6NIweZ",
+            .lazy = true,
+        },
+
         // Other
         .apple_sdk = .{ .path = "./pkg/apple-sdk" },
         .android_ndk = .{ .path = "./pkg/android-ndk" },

@@ -58,7 +58,8 @@
 .PARAMETER Package
     Build a release package: ReleaseFast (or the -Optimize given) with
     symbols kept, then murrtty-<version>-windows-<arch>.zip (bin\murrtty.exe
-    with Microsoft's conpty.dll and OpenConsole.exe beside it, share\,
+    with Microsoft's conpty.dll and OpenConsole.exe beside it, Mesa's
+    llvmpipe in bin\mesa, share\,
     LICENSE.txt and THIRD-PARTY-NOTICES.txt, written from
     dist\windows\third-party.json) and a -symbols.zip with murrtty.pdb. The
     package is unpacked and checked (its version, its themes) before the
@@ -616,6 +617,15 @@ function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
         $p = Join-Path $Stage "bin\$f"
         if (-not (Test-Path -LiteralPath $p)) { Fail "The build left no $f beside murrtty.exe (dist\windows\conpty)." }
         Copy-Item -LiteralPath $p -Destination (Join-Path $dir 'bin')
+    }
+    # Mesa's llvmpipe in bin\mesa, murrtty's software OpenGL for a machine
+    # whose own has no OpenGL 4.3 (roadmap 6.3b); the build installs it
+    # from build.zig.zon's murrtty_mesa_<arch>.
+    New-Item -ItemType Directory -Path (Join-Path $dir 'bin\mesa') -Force | Out-Null
+    foreach ($f in @('opengl32.dll', 'libgallium_wgl.dll')) {
+        $p = Join-Path $Stage "bin\mesa\$f"
+        if (-not (Test-Path -LiteralPath $p)) { Fail "The build left no bin\mesa\$f (build.zig.zon's murrtty_mesa)." }
+        Copy-Item -LiteralPath $p -Destination (Join-Path $dir 'bin\mesa')
     }
     # share\ as installed, but for libghostty-vt's pkg-config files: the
     # package has murrtty, not the library.

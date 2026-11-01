@@ -86,6 +86,11 @@ const Wgl = struct {
     /// The present pass's program and (empty) vertex array, made on the
     /// render thread at the first present.
     present: ?struct { program: gl.Program, vao: gl.VertexArray } = null,
+    /// Whether the window's back buffer stores sRGB (GL_FRAMEBUFFER_SRGB
+    /// then encodes on write), asked at the first present. A GPU driver's
+    /// is; Mesa's llvmpipe (murrtty's software OpenGL, 6.3b) gives a
+    /// linear one, which the present pass encodes for itself.
+    backbuffer_srgb: ?bool = null,
 
     /// For the GUI tests (GHOSTTY_WIN32_TEST_DUMP set in a Debug build):
     /// each present reads back one pixel near the window's bottom-right
@@ -246,6 +251,7 @@ fn initWgl(
     // Verify the context works, then release it so the render
     // thread can make it current.
     if (wgl.wglMakeCurrent(hdc, context) == 0) return error.WglMakeCurrentFailed;
+    wgl.noteRenderer();
     _ = wgl.wglMakeCurrent(null, null);
 
     return .{
@@ -647,6 +653,17 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     ctx.BindFramebuffer.?(gl.c.GL_FRAMEBUFFER, 0);
     ctx.Viewport.?(0, 0, win_w, win_h);
     ctx.Disable.?(gl.c.GL_BLEND);
+    const srgb_target = state.backbuffer_srgb orelse srgb: {
+        var encoding: gl.c.GLint = 0;
+        ctx.GetFramebufferAttachmentParameteriv.?(gl.c.GL_FRAMEBUFFER, gl.c.GL_BACK_LEFT, gl.c.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+        // A driver refusing the question leaves an error for the next call
+        // to find: take it here, and encode (exact either way when opaque).
+        const refused = ctx.GetError.?() != gl.c.GL_NO_ERROR;
+        const srgb = !refused and encoding == gl.c.GL_SRGB;
+        if (!srgb) log.info("the window's back buffer is linear: the present pass encodes sRGB itself", .{});
+        state.backbuffer_srgb = srgb;
+        break :srgb srgb;
+    };
     const pbind = try p.program.use();
     defer pbind.unbind();
     const vbind = try p.vao.bind();
@@ -663,6 +680,10 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     try p.program.setUniform("transparent", transparent);
     try p.program.setUniform("background_alpha", @as(f32, @floatFromInt(background.alpha)) / 255.0);
     try p.program.setUniform("frame_linear", background.linear);
+    // A linear frame into a linear back buffer: encode here what an sRGB
+    // one would on write.
+    const encode_out = background.linear and !srgb_target and !transparent;
+    try p.program.setUniform("encode_out", encode_out);
     try p.program.setUniform("frame_size", @Vector(2, f32){ frame_w, frame_h });
     // The frame sits at the window's top-left corner.
     try p.program.setUniform("frame_offset_y", @as(f32, @floatFromInt(win_h)) - frame_h);
@@ -674,7 +695,7 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     // With native blending the frame already holds sRGB values (the
     // shaders don't linearize), so they are stored as they are; encoding
     // them again showed every color too light.
-    const srgb_off = !background.linear or transparent;
+    const srgb_off = !background.linear or transparent or encode_out;
     if (srgb_off) ctx.Disable.?(gl.c.GL_FRAMEBUFFER_SRGB);
     defer if (srgb_off) ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
     ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 3);
@@ -687,7 +708,6 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     }
     if (overlay.len > 0) try drawOverlay(state, &overlay, win_w, win_h);
 
-    _ = state.presented.fetchAdd(1, .monotonic);
     if (comptime builtin.mode == .debug) if (state.sampling) {
         _ = state.frames.fetchAdd(1, .monotonic);
         state.sample.store(readPixel(@max(win_w - 6, 0), 6), .monotonic);
@@ -703,6 +723,9 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     };
 
     if (wgl.SwapBuffers(state.hdc) == 0) return error.WglSwapBuffersFailed;
+    // Counted once on the window: murrtty's software OpenGL takes the
+    // first as "it draws" (6.3b), UI Automation's poll as new text.
+    _ = state.presented.fetchAdd(1, .monotonic);
 }
 
 /// Draw the overlay's rectangles onto the back buffer, blending in its
@@ -824,6 +847,7 @@ const present_fragment =
     \\uniform bool transparent;
     \\uniform float background_alpha;
     \\uniform bool frame_linear;
+    \\uniform bool encode_out;
     \\uniform vec2 frame_size;
     \\uniform float frame_offset_y;
     \\layout(location = 0) out vec4 out_color;
@@ -846,6 +870,8 @@ const present_fragment =
     \\        out_color = vec4(straight * color.a, color.a);
     \\    } else {
     \\        out_color = color + background * (1.0 - color.a);
+    \\        // A linear back buffer (llvmpipe's): sRGB writes would do this.
+    \\        if (encode_out) out_color.rgb = encode(clamp(out_color.rgb, 0.0, 1.0));
     \\    }
     \\}
 ;

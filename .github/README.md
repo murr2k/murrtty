@@ -415,7 +415,13 @@ hosted Windows runner and then the unit tests.
   failure panel until it can. The tests fake the reset.
 - `MURRTTY_OPENGL`: the full path of another opengl32.dll to draw with, a
   software OpenGL such as Mesa's llvmpipe for machines without OpenGL 4.3.
-  The tests name Windows' own.
+  The tests name Windows' own and the bundled Mesa.
+- Software OpenGL: without OpenGL 4.3 from the graphics driver, murrtty
+  starts again on the Mesa llvmpipe it ships in `bin\mesa` (built from
+  source by [murr2k/murrtty-mesa](https://github.com/murr2k/murrtty-mesa))
+  and says in its window that it draws in software. The tests make
+  Windows' own OpenGL fail; no real Remote Desktop session or virtual
+  machine without 3D has run it yet.
 
 **Not implemented yet**
 
@@ -466,12 +472,14 @@ and testing on AMD and Intel graphics, ARM64 hardware and Windows 10.
   Windows 10 on ARM cannot run x64 programs. A native ARM64 build
   (`-Target aarch64-windows-gnu`, also with `-Package`) builds, but has not
   been run: it needs OpenGL 4.3, which on ARM64 GPUs comes from Microsoft's
-  OpenGL compatibility pack.
-- A GPU driver with OpenGL 4.3 support. Most GPUs from the last decade have
-  it; virtual machines and Remote Desktop sessions often don't. Without it
-  murrtty says at start what is missing (no graphics driver, Windows' basic
-  display adapter, a Remote Desktop session, an old driver) and what to do,
-  and exits.
+  OpenGL compatibility pack, or else from the Mesa it ships.
+- A GPU driver with OpenGL 4.3 support, for drawing on the GPU. Most GPUs
+  from the last decade have it; virtual machines and Remote Desktop
+  sessions often don't. Without it murrtty draws in software with the Mesa
+  llvmpipe in `bin\mesa`, using more CPU, and says so in its window; if
+  that can't draw either, or `bin\mesa` is missing, it says at start what
+  is missing (no graphics driver, Windows' basic display adapter, a Remote
+  Desktop session, an old driver) and what to do, and exits.
 
 To build you also need an internet connection for the first build. Git is
 optional: without it, or in a source tree that isn't a git checkout, the
@@ -540,7 +548,8 @@ comma or a space (`'-Dname=a,b'`). The exceptions:
 `.\build-windows.cmd -Package` builds a release package into
 `zig-out\package` (or `-Prefix`): `murrtty-<version>-windows-x86_64.zip`
 holds `bin\murrtty.exe` with Microsoft's ConPTY beside it
-(`dist\windows\conpty`), `share\`, `LICENSE.txt` and
+(`dist\windows\conpty`), Mesa's llvmpipe in `bin\mesa` (from
+murr2k/murrtty-mesa's releases, fetched by hash), `share\`, `LICENSE.txt` and
 `THIRD-PARTY-NOTICES.txt` (the licenses of everything murrtty includes,
 written from `dist\windows\third-party.json`), and `-symbols.zip` holds
 `murrtty.pdb`. It checks the package by unpacking it and asking the
@@ -624,6 +633,7 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
 | `src/apprt/win32/ConfigEditor.zig`, `src/config/EditableFile.zig`, `src/config/option_list.zig` | The configuration editor, and the in-place editing of the config file behind it |
 | `src/font/dwrite.zig` | Font discovery through DirectWrite (FreeType still draws) |
 | `src/apprt/win32/gl_diagnosis.zig` | Says at start why OpenGL 4.3 is missing |
+| `src/apprt/win32/software_gl.zig` | Starts murrtty again on its Mesa (`bin\mesa`) when OpenGL 4.3 is missing |
 | `src/apprt/win32/console.zig` | Attaches to the parent console for CLI actions |
 | `src/apprt/win32/url.zig` | Decides whether a link from terminal output opens, asks first or is blocked |
 | `src/apprt/win32/c.zig` | Hand-written Win32 bindings |

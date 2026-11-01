@@ -32,6 +32,7 @@ const Inspector = @import("Inspector.zig");
 const ConfigEditor = @import("ConfigEditor.zig");
 const wgl = @import("opengl").wgl;
 const gl_diagnosis = @import("gl_diagnosis.zig");
+const software_gl = @import("software_gl.zig");
 const taskbar = @import("taskbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -272,6 +273,9 @@ pane_drag: ?PaneDrag = null,
 /// selection, so copy-on-select, middle-click paste and
 /// paste_from_selection share this, between murrtty's panes only.
 selection: ?[]u8 = null,
+/// This murrtty was started again on its software OpenGL (Mesa) by one
+/// whose graphics have no OpenGL 4.3 (software_gl.zig).
+software_start: ?software_gl.Started = null,
 /// run() has opened the first window or the tray. Before, nothing quits:
 /// the color scheme's soft reload at start (a dark system) reaches the
 /// config change, with no window yet.
@@ -379,6 +383,8 @@ pub fn init(
         .windows_build = windowsBuild(),
         .fonts = draw.registerFonts(),
         .ipc_launch = takeLaunchEnv(),
+        // Before anything loads OpenGL (the first window).
+        .software_start = software_gl.take(),
         .test_state = test_hooks.init(alloc),
     };
     if (self.fonts == null) log.warn("the chrome's font (Adwaita Sans) could not be registered", .{});
@@ -464,7 +470,21 @@ pub fn run(self: *App) !void {
                 // murrtty started meanwhile opens its own.
                 if (self.ipc_server) |s| s.stop();
                 self.ipc_server = null;
-                gl_diagnosis.show(self, err);
+                // Started on Mesa, which can't draw either: the murrtty
+                // that started this one says why, or this one if that one
+                // no longer waits (roadmap 6.3b).
+                if (self.software_start) |*started| {
+                    log.err("murrtty's software OpenGL can't draw either err={}", .{err});
+                    if (!software_gl.failed(started)) software_gl.tellFailed(self, started.kind, err);
+                    return err;
+                }
+                // murrtty again on its software OpenGL, if it has one.
+                switch (software_gl.relaunch(self, err)) {
+                    .took_over => return,
+                    .failed => gl_diagnosis.show(self, err, .failed),
+                    .unavailable, .not_started => gl_diagnosis.show(self, err, .none),
+                    .ended => {},
+                }
                 return err;
             }
             const msg = std.fmt.allocPrint(
@@ -483,6 +503,10 @@ pub fn run(self: *App) !void {
     self.queueConfigErrors();
     self.started = true;
     self.registerRestart();
+    // On murrtty's software OpenGL: once a pane has drawn, the murrtty that
+    // started this one can end and the window says why it draws in
+    // software (6.3b); the shaders are only built for the first frame.
+    if (self.software_start != null) software_gl.startWatch(self);
 
     var msg: c.MSG = undefined;
     while (true) {
@@ -495,6 +519,8 @@ pub fn run(self: *App) !void {
 }
 
 pub fn terminate(self: *App) void {
+    // No first-frame watch (6.3b) through the teardown's messages.
+    software_gl.stopWatch(self);
     // The session stays as last written while the windows go.
     self.session.freeze();
     // With the requests it queued that the loop never took.
@@ -1478,6 +1504,7 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 GlobalKeys.retry_timer => self.global_keys.retry(),
                 Undo.timer_id => self.undo.tick(),
                 Session.timer_id => self.session.tick(),
+                software_gl.timer_id => software_gl.tick(self),
                 else => {},
             }
             return 0;
@@ -1692,7 +1719,9 @@ pub fn canShowHidden(self: *const App) bool {
     return self.global_keys.canShow() or self.notifications.tray;
 }
 
-fn quitNow(self: *App) void {
+/// Quit without asking (software_gl's failure too, which has no windows to
+/// close otherwise).
+pub fn quitNow(self: *App) void {
     if (self.quitting) return;
     self.quitting = true;
     c.PostQuitMessage(0);

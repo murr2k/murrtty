@@ -32,6 +32,7 @@ const DropTarget = @import("DropTarget.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
 const Session = @import("Session.zig");
+const software_gl = @import("software_gl.zig");
 const Inspector = @import("Inspector.zig");
 const input_pane = @import("input_pane.zig");
 const Uia = @import("Uia.zig");
@@ -64,6 +65,8 @@ hwnd: c.HWND,
 /// The core surface. Only valid when `core_initialized` is true.
 core_surface: CoreSurface = undefined,
 core_initialized: bool = false,
+/// The renderer said it failed (renderer_health) and hasn't recovered.
+renderer_unhealthy: bool = false,
 
 /// The title the program set (OSC 0/2, or set_surface_title), and the
 /// user's name for the pane over it (prompt_surface_title).
@@ -873,6 +876,7 @@ fn syncKeyOverlay(self: *Surface) void {
 /// The renderer failed (renderer_health), or recovered. GTK shows nothing;
 /// this shows macOS's panel.
 pub fn setRendererHealth(self: *Surface, health: renderer.Health) void {
+    self.renderer_unhealthy = health == .unhealthy;
     switch (health) {
         .healthy => self.health_overlay.hide(),
         .unhealthy => {
@@ -1253,6 +1257,8 @@ pub fn defaultTermioEnv(self: *Surface) !std.process.Environ.Map {
     // A murrtty started for a request doesn't pass that on: a murrtty
     // started from its shells would wait for one too.
     _ = env.orderedRemove(ipc.launch_env);
+    // Nor a start on murrtty's software OpenGL (taken at start already).
+    _ = env.orderedRemove(software_gl.variable);
     // The pane's own command history (roadmap 5.10b): the file PowerShell's
     // integration keeps, and Clink's label. Never a murrtty's own from the
     // environment it was started with (a pane of another murrtty's).

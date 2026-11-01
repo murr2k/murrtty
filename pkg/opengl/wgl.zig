@@ -6,9 +6,10 @@
 //! hidden window to look them up once.
 //!
 //! opengl32 itself is loaded at run time (murrtty's roadmap 6.3), by full
-//! path: Windows' own from System32, or the opengl32.dll `MURRTTY_OPENGL`
+//! path: Windows' own from System32, the opengl32.dll `MURRTTY_OPENGL`
 //! names (a full path), such as a software OpenGL's (Mesa's llvmpipe)
-//! standing in for Windows'. gdi32 (pixel formats, SwapBuffers) and the
+//! standing in for Windows', or the program's own (`useBundled`: murrtty's
+//! Mesa, roadmap 6.3b). gdi32 (pixel formats, SwapBuffers) and the
 //! inspector's loader then find that same module by its name.
 
 const std = @import("std");
@@ -99,13 +100,49 @@ const Library = struct {
 /// The variable naming another opengl32.dll, by full path.
 pub const library_variable = "MURRTTY_OPENGL";
 
+/// Which opengl32 `loadLibrary` loaded.
+pub const Source = enum {
+    /// Windows' own (System32's), which routes to the graphics driver.
+    system,
+    /// The one MURRTTY_OPENGL names.
+    variable,
+    /// The program's own, named by `useBundled` (murrtty's Mesa).
+    bundled,
+};
+var loaded_source: ?Source = null;
+var bundled_path: ?[*:0]const u16 = null;
+
+/// Load `path` (a full path to a file named opengl32.dll, which must stay
+/// valid) in place of Windows' own and MURRTTY_OPENGL's: the program's own
+/// software OpenGL. Before anything loads OpenGL.
+pub fn useBundled(path: [*:0]const u16) void {
+    std.debug.assert(library == null);
+    bundled_path = path;
+}
+
+/// Which opengl32 is loaded, null before `loadLibrary`.
+pub fn loadedSource() ?Source {
+    return loaded_source;
+}
+
 /// Load opengl32 (see the file's comment) once. On the UI thread, before
 /// any context exists.
 pub fn loadLibrary() Error!void {
     if (library != null) return;
     var buf: [1024]u16 = undefined;
+    var source: Source = .system;
     const module = module: {
+        if (bundled_path) |path| {
+            source = .bundled;
+            // What it loads from its own folder (Mesa's opengl32.dll its
+            // gallium DLL) and System32, nothing from anywhere else.
+            break :module LoadLibraryExW(path, null, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32) orelse {
+                log.err("could not load the bundled OpenGL err={}", .{GetLastError()});
+                return error.LibraryMissing;
+            };
+        }
         if (libraryOverridden()) {
+            source = .variable;
             // A path that isn't a full one is refused rather than ignored:
             // the search would find some other opengl32.dll.
             const path = libraryOverride(&buf) orelse {
@@ -133,6 +170,31 @@ pub fn loadLibrary() Error!void {
         .getProcAddress = @ptrCast(GetProcAddress(module, "wglGetProcAddress") orelse return error.LibraryMissing),
         .getString = @ptrCast(GetProcAddress(module, "glGetString") orelse return error.LibraryMissing),
     };
+    loaded_source = source;
+}
+
+/// What the first OpenGL 4.3 context reported (GL_RENDERER and
+/// GL_VERSION), for the log and murrtty's GUI tests.
+var renderer_buf: [256]u8 = undefined;
+var renderer_text: ?[]const u8 = null;
+
+/// Note the current context's renderer, once (logged). On the UI thread,
+/// with a context just made current.
+pub fn noteRenderer() void {
+    if (renderer_text != null) return;
+    const lib = library orelse return;
+    const GL_RENDERER = 0x1F01;
+    const GL_VERSION = 0x1F02;
+    const r: []const u8 = if (lib.getString(GL_RENDERER)) |p| std.mem.span(p) else "";
+    const v: []const u8 = if (lib.getString(GL_VERSION)) |p| std.mem.span(p) else "";
+    const text = std.fmt.bufPrint(&renderer_buf, "{s}, {s}", .{ r[0..@min(r.len, 120)], v[0..@min(v.len, 120)] }) catch return;
+    renderer_text = text;
+    log.info("OpenGL from {t} opengl32: {s}", .{ loaded_source orelse .system, text });
+}
+
+/// What `noteRenderer` noted, null before a context was made.
+pub fn rendererText() ?[]const u8 {
+    return renderer_text;
 }
 
 /// The opengl32.dll `MURRTTY_OPENGL` names, into `buf` (forward slashes
@@ -206,6 +268,7 @@ pub extern "gdi32" fn SwapBuffers(hdc: HDC) callconv(.winapi) BOOL;
 extern "kernel32" fn GetModuleHandleA(name: ?[*:0]const u8) callconv(.winapi) ?HMODULE;
 extern "kernel32" fn LoadLibraryExW(name: [*:0]const u16, file: ?*anyopaque, flags: u32) callconv(.winapi) ?HMODULE;
 const LOAD_WITH_ALTERED_SEARCH_PATH = 0x00000008;
+const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR = 0x00000100;
 const LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800;
 extern "kernel32" fn GetProcAddress(module: HMODULE, name: [*:0]const u8) callconv(.winapi) ?PROC;
 extern "kernel32" fn GetLastError() callconv(.winapi) u32;
@@ -274,14 +337,21 @@ pub const Error = error{
 /// A failure the GUI tests ask for (GHOSTTY_WIN32_TEST_WGL in a Debug
 /// build): "extensions" (Extensions.load as without WGL_ARB_*, as
 /// Windows' own OpenGL 1.1) or "context" (no 4.3 context, as an old
-/// driver).
+/// driver), whichever opengl32 is loaded; "system-extensions" and
+/// "system-context" only with Windows' own (murrtty's Mesa works).
 fn testFailure() enum { none, extensions, context } {
     if (comptime builtin.mode != .debug) return .none;
     var buf: [32]u16 = undefined;
     const n = GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("GHOSTTY_WIN32_TEST_WGL"), &buf, buf.len);
     if (n == 0 or n >= buf.len) return .none;
-    if (std.mem.eql(u16, buf[0..n], std.unicode.utf8ToUtf16LeStringLiteral("extensions"))) return .extensions;
-    if (std.mem.eql(u16, buf[0..n], std.unicode.utf8ToUtf16LeStringLiteral("context"))) return .context;
+    var value: []const u16 = buf[0..n];
+    const system = std.unicode.utf8ToUtf16LeStringLiteral("system-");
+    if (std.mem.startsWith(u16, value, system)) {
+        if (loaded_source != .system) return .none;
+        value = value[system.len..];
+    }
+    if (std.mem.eql(u16, value, std.unicode.utf8ToUtf16LeStringLiteral("extensions"))) return .extensions;
+    if (std.mem.eql(u16, value, std.unicode.utf8ToUtf16LeStringLiteral("context"))) return .context;
     return .none;
 }
 

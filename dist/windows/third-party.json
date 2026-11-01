@@ -369,9 +369,26 @@
         { "from": "repo", "path": "dist/windows/licenses/microsoft-terminal.txt" },
         { "from": "repo", "path": "dist/windows/licenses/microsoft-terminal-NOTICE.md", "title": "Windows Terminal's notices (the third-party code in its builds)" }
       ]
+    },
+    {
+      "name": "Mesa (llvmpipe)",
+      "version": "26.2.6, with LLVM 23.1.4",
+      "use": "bin\\mesa\\opengl32.dll and bin\\mesa\\libgallium_wgl.dll, the software OpenGL murrtty starts again on when the graphics driver offers no OpenGL 4.3, built from source with LLVM by github.com/murr2k/murrtty-mesa (LLVM linked into libgallium_wgl.dll)",
+      "license": "MIT (Mesa; parts BSL-1.0 or Apache-2.0), Apache-2.0 WITH LLVM-exception (LLVM)",
+      "home": "https://mesa3d.org/",
+      "deps": [":murrtty_mesa_x64", ":murrtty_mesa_arm64"],
+      "texts": [
+        { "from": "repo", "path": "dist/windows/licenses/mesa-license.rst", "title": "Mesa" },
+        { "from": "repo", "path": "dist/windows/licenses/mesa-MIT.txt", "title": "Mesa (MIT)" },
+        { "from": "repo", "path": "dist/windows/licenses/mesa-BSL-1.0.txt", "title": "Mesa (BSL-1.0 parts)" },
+        { "from": "repo", "path": "dist/windows/licenses/Apache-2.0.txt", "title": "Mesa (Apache-2.0 parts)" },
+        { "from": "repo", "path": "dist/windows/licenses/llvm.txt", "title": "LLVM" }
+      ]
     }
   ],
   "pins": {
+    ":murrtty_mesa_x64": "N-V-__8AACprewM9y2hTwronbUoOwomAvJ_PQW5aulrG6sni",
+    ":murrtty_mesa_arm64": "N-V-__8AAC5JPAMSOJb1X-nxX6CIUO2pWAIm4QIT9g6NIweZ",
     ":libxev": "libxev-0.0.0-86vtc8QQFACz0sVc7U-VDiDIgH-XfBuEY5JpABLjHNpn",
     ":vaxis": "vaxis-0.6.0-BWNV_MafDAAEzkVUvrW9NFUqnnMUoeHqrs2mecnD6D7w",
     ":z2d": "z2d-0.13.0-j5P_HgsRFABzZDH54gI35P0OSrg7HFyJwS2bXX5uBdU4",

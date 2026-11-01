@@ -432,6 +432,12 @@ roadmap item behind it.
   header bar, or with `gtk-titlebar-style = tabs` in the tab row that
   holds them; a window with neither (`gtk-titlebar = false` or server
   decorations without the tab-row style, the quick terminal) shows none.
+- **Software OpenGL** (6.3b): with no OpenGL 4.3 from the graphics driver
+  (Remote Desktop without the card, a virtual machine without 3D, the
+  basic display adapter, an old driver), murrtty starts again on the Mesa
+  llvmpipe it ships in `bin\mesa` and says in its window that it draws in
+  software, where GTK's app has no fallback of its own (on Linux the
+  system's Mesa already falls back to llvmpipe when there is no driver).
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -3280,8 +3286,8 @@ Spike S6 informs the ARM64 story.
   llvmpipe; a path that isn't a full one, isn't a file named
   opengl32.dll, which gdi32 finds by that name for pixel formats and
   SwapBuffers, or doesn't load is said so at start, never searched for).
-  The executable's import table has no opengl32. Bundling Mesa as the
-  opt-in software renderer is Phase 7's packaging.
+  The executable's import table has no opengl32. Bundling Mesa as a
+  software renderer became 6.3b, used on its own rather than opt-in.
 - GPU driver resets: a context is robust where the driver offers
   WGL_ARB_create_context_robustness (lost on a reset). Each frame asks
   glGetGraphicsResetStatusARB, and a lost context makes the renderer make
@@ -3305,6 +3311,74 @@ Spike S6 informs the ARM64 story.
   `gl-library` (Windows' opengl32.dll named draws; a missing, relative or
   wrongly named one is said). A real reset (`dxcap -forcetdr`) isn't run: it resets the
   GPU for every program on the machine.
+
+**6.3b Software OpenGL, M.** (Chosen 2026-10-31 as the next improvement,
+the owner's pick: Mesa built by murrtty itself, x64 and ARM64.) A machine
+whose graphics offer no OpenGL 4.3 (Remote Desktop without the card, a
+virtual machine without 3D, Windows' basic display adapter, an old driver)
+gets murrtty drawing in software instead of 6.3's dialog.
+- **Mesa, built here.** github.com/murr2k/murrtty-mesa (public) builds
+  Mesa's llvmpipe (opengl32.dll and libgallium_wgl.dll, LLVM linked in,
+  static C runtime) from Mesa's and LLVM's source releases, both pinned by
+  SHA-256, with one pinned MSVC toolset (14.44), natively on GitHub's
+  windows-2025 and windows-11-arm runners. Its probe makes an OpenGL 4.3
+  core context, then links and draws a program like murrtty's
+  (gl_FragCoord.y and a uniform block) before anything is released;
+  releases carry build provenance attestations (`gh attestation verify
+  <zip> -R murr2k/murrtty-mesa`). LLVM is built there rather than taken
+  from its prebuilt Windows release, whose libraries are compiled against
+  a newer MSVC C++ library: linked into Mesa they corrupted the heap
+  linking any shader reading gl_FragCoord.y (0xC0000374 in murrtty and in
+  a plain C probe alike; another project's MSVC build of the same Mesa
+  and LLVM, LLVM built from source, passed), and failed to link on ARM64
+  (`__std_find_trivial_8`). Found 2026-10-31 through WER's minidump, a
+  standalone probe narrowing it to gl_FragCoord.y, AddressSanitizer runs
+  and one-variable trials (MSVC 14.51 and 14.44, one DLL or two, clang-cl,
+  LLVM 22 and 26.1.8 all failed the same way or didn't build).
+  murrtty's build fetches the release zips by hash (`build.zig.zon`'s
+  lazy `murrtty_mesa_x64`/`_arm64`) and installs the target's two DLLs in
+  `bin\mesa\`: never beside murrtty.exe, where Windows' search (the
+  program's folder first) would hand them to anything loading opengl32 by
+  name.
+- **A second start.** A process can't change its opengl32 once loaded
+  (gdi32 routes pixel formats and SwapBuffers to the module of that name),
+  so a murrtty whose first window gets no OpenGL 4.3, with no
+  MURRTTY_OPENGL and `bin\mesa` there, lets go of what a murrtty holds once
+  (the single-instance pipe, its global hot keys, the tray icon, the
+  session, whose restore crash marker it clears) and starts itself again
+  (`win32/software_gl.zig`): the same executable and command line, its
+  startup info (window place, show state, a shortcut's title), its log
+  handles, the foreground passed on. The second takes `MURRTTY_SOFTWARE_GL`
+  at start (the diagnosis, its events, the first's process id, whether the
+  first put the saved session aside), clears it so no shell sees it, and
+  loads Mesa (`wgl.useBundled`, from its folder and System32 only). The
+  first waits, handling its messages, until the second presents its first
+  frame (the shaders are only built then) and then ends with exit code 0;
+  the second shows in its window why it draws in software. If Mesa can't
+  draw either (the second's window fails, its renderer fails before a
+  frame, or it crashes), the first shows 6.3's dialog with a line saying
+  so; a second that fails some other way says so itself, and so does one
+  whose first has stopped waiting (60 s). The second never starts a third.
+- **Exact colors on llvmpipe.** Its window back buffer is linear (no
+  sRGB-capable pixel format), so `GL_FRAMEBUFFER_SRGB` encodes nothing
+  there and the default background came out `#050609`, `#282c34` taken
+  as linear. The present pass asks the back buffer's color encoding at
+  its first frame (`Wgl.backbuffer_srgb`) and, on a linear one, encodes
+  sRGB in its shader with sRGB writes off, as it already did for a
+  translucent window; a GPU's sRGB back buffer is presented as before.
+- *Not covered:* `initial-window = false` and a murrtty started for an
+  IPC request open their first window later, inside the message loop, and
+  still fail as before (the request's murrtty only logs). Drawing in
+  software costs CPU a GPU would take; how much hasn't been measured yet.
+- Scenarios: `gl-fallback` (Windows' own OpenGL made to fail,
+  GHOSTTY_WIN32_TEST_WGL=system-*: the first murrtty ends with 0 once the
+  second has drawn, which runs on the bundled Mesa (the dump's `opengl`,
+  `gl_renderer`, `software_gl`), says why in its window, draws the
+  background exactly, gives its shells no MURRTTY_SOFTWARE_GL, and both
+  quit without leaks; MURRTTY_OPENGL naming that Mesa uses it directly),
+  `gl-missing` (each diagnosis now after the second start, which fails
+  too, with the dialog's line; without Mesa, GHOSTTY_WIN32_TEST_NO_MESA,
+  as before).
 
 **6.4 Accessibility, XL.** A UI Automation text provider (`ITextProvider`,
 `ITextRangeProvider`) so Narrator and NVDA can read the terminal, with

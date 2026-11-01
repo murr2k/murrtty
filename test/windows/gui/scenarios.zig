@@ -57,6 +57,7 @@ pub const all = [_]Scenario{
     .{ .name = "gl-reset", .about = "after a GPU driver reset (faked), the renderer builds itself in a new OpenGL context and draws the same frame", .run = glReset },
     .{ .name = "gl-missing", .about = "without OpenGL 4.3, murrtty says why at start: Remote Desktop, the basic display adapter, no driver, an old one", .run = glMissing },
     .{ .name = "gl-library", .about = "MURRTTY_OPENGL names the opengl32.dll to use; one that can't load is said so", .run = glLibrary },
+    .{ .name = "gl-fallback", .about = "without OpenGL 4.3 from the driver, murrtty starts again on its Mesa (bin\\mesa), which draws, and says so", .run = glFallback },
     .{ .name = "conpty", .about = "panes run in the bundled ConPTY (conpty.dll, OpenConsole.exe), which lets kitty graphics through; MURRTTY_CONPTY=system picks Windows' own", .run = conptyBundled },
     .{ .name = "ime-place", .about = "an IME asking where text is (WM_IME_REQUEST) is told the cursor's cell, and follows typing", .run = imePlace },
     .{ .name = "intl-keys", .about = "AltGr and Ctrl+Alt characters, and Alt+Numpad codes, reach a console program as Windows types them", .run = intlKeys },
@@ -4952,9 +4953,14 @@ fn glResetCase(h: *Harness, name: []const u8, extra: []const u8) !void {
 
 /// Without OpenGL 4.3, murrtty's start says why and what to do (roadmap
 /// 6.3), from what Windows says of the session, the display adapter and
-/// its OpenGL. The failure is asked for (GHOSTTY_WIN32_TEST_WGL) and the
-/// machines it isn't run on stood in for (GHOSTTY_WIN32_TEST_GL_DIAG).
+/// its OpenGL. The failure is asked for (GHOSTTY_WIN32_TEST_WGL, which
+/// fails murrtty's Mesa too: it starts again on it, which can't draw
+/// either, and the dialog says so, 6.3b) and the machines it isn't run on
+/// stood in for (GHOSTTY_WIN32_TEST_GL_DIAG). Without Mesa beside it
+/// (GHOSTTY_WIN32_TEST_NO_MESA), the dialog is as before. The dialog comes
+/// after two murrttys' starts, hence the long waits.
 fn glMissing(h: *Harness) anyerror!void {
+    const software_note = "murrtty's software renderer (Mesa, in the mesa folder beside murrtty.exe) couldn't draw either.";
     const cases = [_]struct { name: []const u8, fail: []const u8, diag: []const u8, body: []const u8 }{
         .{ .name = "gl-missing-remote", .fail = "extensions", .diag = "remote", .body = "This Remote Desktop session's display offers no OpenGL 4.3 (GDI Generic 1.1.0)." },
         .{ .name = "gl-missing-basic", .fail = "extensions", .diag = "basic", .body = "Windows is using its Microsoft Basic Display Adapter" },
@@ -4968,17 +4974,113 @@ fn glMissing(h: *Harness) anyerror!void {
         var g = try h.launchWith(case.name, base_config, .{ .env = if (case.diag.len > 0) &env else env[0..1], .wait_window = false });
         defer g.deinit();
         try h.waitAnswering(&g, 10000);
-        const dlg = try h.waitDialog(&g, 10000);
+        const dlg = try h.waitDialog(&g, 30000);
         {
             var d = try h.dump(&g);
             defer d.deinit();
             const dl = d.value.dialog;
             try h.expect(std.mem.eql(u8, dl.heading, "murrtty can't draw: it needs OpenGL 4.3") and std.mem.startsWith(u8, dl.body, case.body), "{s}: the dialog says '{s}' / '{s}'", .{ case.name, dl.heading, dl.body });
+            try h.expect(std.mem.endsWith(u8, dl.body, software_note), "{s}: and that murrtty's Mesa couldn't draw either ('{s}')", .{ case.name, dl.body });
         }
         h.answer(&g, dlg, w.IDCLOSE);
         const code = g.waitExit(10000);
         try h.expect(code != null and code.? != 0, "{s}: murrtty then exits with an error (exit {?d})", .{ case.name, code });
     }
+
+    // No Mesa beside murrtty.exe (an install without it): nothing to start
+    // again on, and the dialog says nothing of it.
+    var g = try h.launchWith("gl-missing-no-mesa", base_config, .{
+        .env = &.{ .{ "GHOSTTY_WIN32_TEST_WGL", "system-context" }, .{ "GHOSTTY_WIN32_TEST_NO_MESA", "1" } },
+        .wait_window = false,
+    });
+    defer g.deinit();
+    try h.waitAnswering(&g, 10000);
+    const dlg = try h.waitDialog(&g, 10000);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const body = d.value.dialog.body;
+        try h.expect(std.mem.startsWith(u8, body, "murrtty couldn't set up OpenGL (ContextCreateFailed).") and std.mem.indexOf(u8, body, "Mesa") == null, "gl-missing-no-mesa: the dialog says '{s}'", .{body});
+    }
+    h.answer(&g, dlg, w.IDCLOSE);
+    const code = g.waitExit(10000);
+    try h.expect(code != null and code.? != 0, "gl-missing-no-mesa: murrtty then exits with an error (exit {?d})", .{code});
+}
+
+/// No OpenGL 4.3 from the graphics driver (Windows' own opengl32 fails,
+/// GHOSTTY_WIN32_TEST_WGL=system-*): murrtty starts again on its Mesa
+/// (bin\mesa, roadmap 6.3b), which draws the background exactly; the
+/// first murrtty ends well once the second has its window, the second
+/// says why it draws in software, nothing it starts sees the variable, and
+/// both quit without leaks (their log is one file). MURRTTY_OPENGL naming
+/// that Mesa uses it directly.
+fn glFallback(h: *Harness) anyerror!void {
+    const config = base_config ++ "title = murrtty-gl-fallback\n";
+    {
+        const dir_end = (std.mem.lastIndexOfScalar(u16, h.exe, '\\') orelse return h.fail("murrtty.exe's path has no folder", .{})) + 1;
+        const folder = try std.unicode.utf16LeToUtf8Alloc(h.alloc, h.exe[0..dir_end]);
+        defer h.alloc.free(folder);
+        const path = try std.fmt.allocPrint(h.alloc, "{s}mesa\\opengl32.dll", .{folder});
+        defer h.alloc.free(path);
+        var g = try h.launchWith("gl-fallback-variable", config, .{ .env = &.{.{ "MURRTTY_OPENGL", path }} });
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 30000);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(std.mem.eql(u8, d.value.opengl, "variable") and std.mem.indexOf(u8, d.value.gl_renderer, "llvmpipe") != null and d.value.software_gl.len == 0, "MURRTTY_OPENGL naming murrtty's Mesa: drawn with it, started once (opengl '{s}', '{s}', software_gl '{s}')", .{ d.value.opengl, d.value.gl_renderer, d.value.software_gl });
+        }
+        try expectBackground(h, &g, "gl-fallback-variable");
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+    }
+    {
+        var g = try h.launchWith("gl-fallback", config, .{
+            .env = &.{ .{ "GHOSTTY_WIN32_TEST_WGL", "system-extensions" }, .{ "GHOSTTY_WIN32_TEST_GL_DIAG", "remote" } },
+            .wait_window = false,
+        });
+        defer g.deinit();
+        const code = g.waitExit(60000);
+        try h.expect(code != null and code.? == 0, "the first murrtty ends well once murrtty on Mesa has its window (exit {?d})", .{code});
+        var m = try h.adopt("gl-fallback", "murrtty-gl-fallback", 10000);
+        defer m.deinit();
+        // At once: the notice shows from the first frame, before the first
+        // murrtty ended, for Session.notice_ms.
+        {
+            var d = try h.dump(&m);
+            defer d.deinit();
+            try h.expect(std.mem.eql(u8, d.value.opengl, "bundled") and std.mem.indexOf(u8, d.value.gl_renderer, "llvmpipe") != null, "murrtty draws with its Mesa (opengl '{s}', '{s}')", .{ d.value.opengl, d.value.gl_renderer });
+            try h.expect(std.mem.eql(u8, d.value.software_gl, "remote"), "and knows why: '{s}'", .{d.value.software_gl});
+            const toast = d.value.windows[0].toast;
+            try h.expect(std.mem.startsWith(u8, toast, "This Remote Desktop session offers no OpenGL 4.3: murrtty draws with its software renderer (Mesa)."), "its window says so: '{s}'", .{toast});
+        }
+        try h.waitText(&m, ">", 1, 30000);
+        try expectBackground(h, &m, "gl-fallback");
+        const pane = try h.surface(&m, try h.mainWindow(&m));
+        // cmd leaves an unset variable's name as it is.
+        try h.typeText(pane, "echo [%MURRTTY_SOFTWARE_GL%]");
+        h.enter(pane);
+        try h.waitText(&m, "[%MURRTTY_SOFTWARE_GL%]", 2, 20000);
+        try quit(h, &m, pane);
+        try expectNoLeaks(h, &m, "neither murrtty leaked");
+    }
+}
+
+/// The background murrtty last presented near its window's bottom-right
+/// corner is the default theme's exactly (#282c34): the sRGB framebuffer
+/// and present pass work with this OpenGL too.
+fn expectBackground(h: *Harness, g: *Harness.Ghostty, name: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 200) {
+        if (g.exitCode()) |code| return h.fail("{s}: murrtty ended (exit {d}, 0x{x})", .{ name, code, code });
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.windows[0].tabs[0].pixel) |px| if (px != 0) {
+            try h.expect(px == 0x282c34, "{s}: background #{x:0>6}, expected #282c34", .{ name, px });
+            return;
+        };
+        w.Sleep(200);
+    }
+    return h.fail("{s}: no frame was presented", .{name});
 }
 
 /// Microsoft's ConPTY beside murrtty.exe (roadmap 2.6): the build installs
@@ -12270,7 +12372,9 @@ fn sessionRestore(h: *Harness) anyerror!void {
         var g = try h.launchWith("session-restore-gl", config, .{ .env = gl_env, .wait_window = false });
         defer g.deinit();
         try h.waitAnswering(&g, 10000);
-        const dlg = try h.waitDialog(&g, 15000);
+        // After two starts: this murrtty's, and the one on its Mesa that
+        // can't draw either (roadmap 6.3b).
+        const dlg = try h.waitDialog(&g, 30000);
         w.Sleep(1500);
         {
             const during = h.readFileOrNull(path) orelse return h.fail("the session file is gone", .{});
