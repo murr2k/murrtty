@@ -353,6 +353,17 @@ pub fn relaunch(app: *App, err: anyerror) Outcome {
     si.lpReserved = null;
     si.cbReserved2 = 0;
     si.lpReserved2 = null;
+    // Not the AppUserModelID this process set (App.init): it shows in the
+    // startup info as the title, flagged as the ID and as shell32's own
+    // allocation. Passed on, the other's shell32 frees that title, which
+    // there lies in the process parameters, as it sets its own ID: heap
+    // corruption (0xc0000374), caught or not depending on where the string
+    // falls, which the install path's length decides. The other sets the
+    // same ID itself.
+    if (si.dwFlags & (c.STARTF_TITLEISAPPID | c.STARTF_TITLE_ALLOCATED) != 0) {
+        si.dwFlags &= ~@as(c.DWORD, c.STARTF_TITLEISAPPID | c.STARTF_TITLE_ALLOCATED);
+        si.lpTitle = null;
+    }
     var std_handles: [3]c.HANDLE = undefined;
     var inherit: usize = 0;
     defer for (std_handles[0..inherit]) |h| {

@@ -1624,6 +1624,9 @@ pub const Dump = struct {
     opengl: []const u8 = "",
     gl_renderer: []const u8 = "",
     software_gl: []const u8 = "",
+    /// STARTUPINFO's flags as murrtty was started (before its own
+    /// AppUserModelID changed them).
+    startup_flags: u32 = 0,
     /// show_on_screen_keyboard's requests and the last one's result
     /// (roadmap 6.5), and click-repeat-interval as murrtty has it.
     osk: struct { asks: u32 = 0, hr: i32 = 0, done: bool = false } = .{},

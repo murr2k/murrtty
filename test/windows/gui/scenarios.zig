@@ -5113,6 +5113,10 @@ fn glFallback(h: *Harness) anyerror!void {
             defer d.deinit();
             try h.expect(std.mem.eql(u8, d.value.opengl, "bundled") and std.mem.indexOf(u8, d.value.gl_renderer, "llvmpipe") != null, "murrtty draws with its Mesa (opengl '{s}', '{s}')", .{ d.value.opengl, d.value.gl_renderer });
             try h.expect(std.mem.eql(u8, d.value.software_gl, "remote"), "and knows why: '{s}'", .{d.value.software_gl});
+            // Not started with the first's AppUserModelID as its title
+            // (STARTF_TITLEISAPPID, 0x4000): its shell32 freed that title,
+            // corrupting the heap where the install path's length put it.
+            try h.expect(d.value.startup_flags & 0x5000 == 0, "it isn't started with the first's AppUserModelID as its title (flags 0x{x})", .{d.value.startup_flags});
             const toast = d.value.windows[0].toast;
             try h.expect(std.mem.startsWith(u8, toast, "This Remote Desktop session offers no OpenGL 4.3: murrtty draws with its software renderer (Mesa)."), "its window says so: '{s}'", .{toast});
         }

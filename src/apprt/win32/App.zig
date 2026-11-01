@@ -299,6 +299,11 @@ config_editor: ?*ConfigEditor = null,
 /// without the toast.
 config_preview: enum { off, preview, revert } = .off,
 
+/// STARTUPINFO's flags as this process was started, before its
+/// AppUserModelID changed them (software_gl's second start must not get
+/// STARTF_TITLEISAPPID from the first).
+startup_flags: u32 = 0,
+
 /// The GUI test harness's state dump (Debug builds only; see test_hooks).
 test_state: test_hooks.State = .{},
 
@@ -331,6 +336,11 @@ pub fn init(
     // shells and programs in our terminals would never receive Ctrl+C.
     // Restore normal processing so children always inherit it.
     _ = c.SetConsoleCtrlHandler(null, c.FALSE);
+
+    // How this process was started, before setting the ID changes what
+    // GetStartupInfo says (software_gl passes it on; the GUI tests' check).
+    var startup: c.STARTUPINFOW = .{};
+    c.GetStartupInfoW(&startup);
 
     // Before any window exists, so all of them take it.
     const aumid = c.SetCurrentProcessExplicitAppUserModelID(app_user_model_id);
@@ -394,6 +404,7 @@ pub fn init(
         .ipc_launch = takeLaunchEnv(),
         // Before anything loads OpenGL (the first window).
         .software_start = software_gl.take(),
+        .startup_flags = startup.dwFlags,
         .test_state = test_hooks.init(alloc),
     };
     if (self.fonts == null) log.warn("the chrome's font (Adwaita Sans) could not be registered", .{});

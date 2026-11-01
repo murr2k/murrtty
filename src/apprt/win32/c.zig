@@ -1192,6 +1192,11 @@ pub const STARTUPINFOEXW = extern struct {
 pub const STARTF_USESTDHANDLES = 0x00000100;
 pub const STARTF_USEHOTKEY = 0x00000200;
 pub const STARTF_USEMONITOR = 0x00000400;
+pub const STARTF_TITLEISAPPID = 0x00001000;
+/// Undocumented: set beside STARTF_TITLEISAPPID by
+/// SetCurrentProcessExplicitAppUserModelID, the title then being shell32's
+/// own allocation, which it frees when the ID changes.
+pub const STARTF_TITLE_ALLOCATED = 0x00004000;
 pub const CREATE_SUSPENDED = 0x00000004;
 pub const EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
 pub const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x00020002;

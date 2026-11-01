@@ -844,7 +844,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         const wgl = @import("opengl").wgl;
         try out.print(alloc, ",\"opengl\":\"{s}\",\"gl_renderer\":", .{if (wgl.loadedSource()) |s| @tagName(s) else ""});
         try writeString(alloc, out, wgl.rendererText() orelse "");
-        try out.print(alloc, ",\"software_gl\":\"{s}\"", .{if (app.software_start) |s| @tagName(s.kind) else ""});
+        try out.print(alloc, ",\"software_gl\":\"{s}\",\"startup_flags\":{d}", .{ if (app.software_start) |s| @tagName(s.kind) else "", app.startup_flags });
     }
     try out.print(alloc, ",\"osk\":{{\"asks\":{d},\"hr\":{d},\"done\":{}}},\"click_interval\":{d}", .{
         app.test_state.osk_asks,

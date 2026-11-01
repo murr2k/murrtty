@@ -3456,6 +3456,20 @@ gets murrtty drawing in software instead of 6.3's dialog.
   `gl-missing` (each diagnosis now after the second start, which fails
   too, with the dialog's line; without Mesa, GHOSTTY_WIN32_TEST_NO_MESA,
   as before).
+- *Fixed 2026-11-01, after 0.3.0* (found by the GUI suite from a build in
+  another folder): the second start could die at once with heap
+  corruption (0xc0000374) in `SetCurrentProcessExplicitAppUserModelID`.
+  The first passes its own startup info on, and by then its AppUserModelID
+  shows there as the title, with STARTF_TITLEISAPPID and an undocumented
+  0x4000 marking the title as shell32's allocation; the second's shell32
+  then freed that title, which lies in its process parameters, as it set
+  its own ID. Whether Windows caught the bad free depended on where the
+  string fell, which the install path's length decided (every folder of
+  an odd-length name failed, every even one passed), so 0.3.0's fallback
+  crashes or not by where it is installed. The second start now gets no
+  title-as-ID; `gl-fallback` checks its startup flags (the dump's
+  `startup_flags`, recorded before the ID changes them), which fails
+  without the fix wherever it is installed.
 
 **6.4 Accessibility, XL.** A UI Automation text provider (`ITextProvider`,
 `ITextRangeProvider`) so Narrator and NVDA can read the terminal, with
