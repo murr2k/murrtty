@@ -178,6 +178,27 @@ test "custom shaders compile, OpenGL's coordinates and all" {
     }
 }
 
+test "the build compiled every program" {
+    // src/build/DxbcStep.zig's list against `sources`: a program it misses
+    // would compile at run time, silently slower.
+    const dxbc = @import("murrtty_dxbc");
+    if (!@hasDecl(dxbc, "built")) return error.SkipZigTest;
+    inline for (comptime std.enums.values(Device.Program)) |p| {
+        if (comptime @hasDecl(dxbc, @tagName(p))) {
+            const code: [2][]const u8 = @field(dxbc, @tagName(p));
+            try std.testing.expectEqualSlices(u8, "DXBC", code[0][0..4]);
+            if (comptime sources.get(p).ps.len > 0) {
+                try std.testing.expectEqualSlices(u8, "DXBC", code[1][0..4]);
+            } else {
+                try std.testing.expectEqual(@as(usize, 0), code[1].len);
+            }
+        } else {
+            std.debug.print("the build didn't compile {t}\n", .{p});
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
 test "every program compiles" {
     const alloc = std.testing.allocator;
     for (std.enums.values(Device.Program)) |p| {

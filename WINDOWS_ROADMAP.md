@@ -4292,11 +4292,18 @@ gain is on those with a card but no OpenGL driver.
      hold the terminal longer), so they read as the wheel scrolling down:
      it now waits for the rows to settle. ARM64 stopped at compiling, an
      ARM64-only alignment check in the COM bindings (fixed; the desktop CI
-     now compiles Direct3D 11 for both architectures on each push). Left:
-     the hosted runs again, and the on-screen translucency and blur runs
-     (with the owner).
+     now compiles Direct3D 11 for both architectures on each push). The
+     second (`bb877a122`) passed on both: 101 of 118, 17 skipped, on x64
+     and natively on ARM64, the unit tests too. Left: the on-screen
+     translucency and blur runs (with the owner).
   5. **Robustness (about a week):** `DxbcStep` (shaders compiled at build
-     time, from step 3), WARP and its notice, device removal,
+     time, from step 3; *done 2026-11-01:* `src/build/DxbcStep.zig` runs
+     `pkg/d3d11`'s `murrtty-dxbc`, a build-machine tool on System32's
+     compiler, and the renderer embeds what it writes as `murrtty_dxbc`;
+     the first frame no longer waits about 100 ms for the compiler here,
+     and only custom shaders compile at run time, or every program where
+     the build machine isn't Windows; a unit test fails if its program
+     list misses one), WARP and its notice, device removal,
      the start dialog, the inspector on DX11, ARM64 on the hosted runner,
      `pane-commit`, key-to-present latency against OpenGL here (the
      `perf-trace` marks); the owner's on-screen runs on NVIDIA, AMD and

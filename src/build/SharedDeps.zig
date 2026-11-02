@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const Config = @import("Config.zig");
 const HelpStrings = @import("HelpStrings.zig");
 const MetallibStep = @import("MetallibStep.zig");
+const DxbcStep = @import("DxbcStep.zig");
 const UnicodeTables = @import("UnicodeTables.zig");
 const GhosttyFrameData = @import("GhosttyFrameData.zig");
 const DistResource = @import("GhosttyDist.zig").Resource;
@@ -17,6 +18,10 @@ config: *const Config,
 options: *std.Build.Step.Options,
 help_strings: HelpStrings,
 metallib: ?*MetallibStep,
+/// The "murrtty_dxbc" module's root (DxbcStep, roadmap 7.8): made once, as
+/// DXBC is the same for every target; it runs only when an artifact for
+/// Windows imports it.
+dxbc: ?std.Build.LazyPath = null,
 unicode_tables: UnicodeTables,
 framedata: GhosttyFrameData,
 uucode_tables: std.Build.LazyPath,
@@ -95,6 +100,7 @@ pub fn init(b: *std.Build, cfg: *const Config) !SharedDeps {
         .options = undefined,
         .metallib = undefined,
     };
+    if (b.lazyDependency("d3d11", .{})) |dep| result.dxbc = DxbcStep.module(b, dep);
     try result.initTarget(b, cfg.target);
     if (cfg.emit_unicode_table_gen) result.unicode_tables.install(b);
     return result;
@@ -527,6 +533,7 @@ pub fn add(
     if (target.result.os.tag == .windows) {
         if (b.lazyDependency("d3d11", .{})) |dep| {
             step.root_module.addImport("d3d11", dep.module("d3d11"));
+            if (self.dxbc) |root| step.root_module.addAnonymousImport("murrtty_dxbc", .{ .root_source_file = root });
         }
     }
     if (b.lazyDependency("vaxis", .{

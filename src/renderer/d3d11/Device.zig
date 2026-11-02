@@ -182,8 +182,19 @@ pub fn adapterName(gpu: *d3d.Device, buf: []u8) []const u8 {
     return buf[0..n];
 }
 
-/// A program's bytecode, compiled the first time it is asked for.
+/// The bytecode the build compiled (src/build/DxbcStep.zig), or a stub
+/// without any where the build machine isn't Windows.
+const dxbc = @import("murrtty_dxbc");
+
+/// A program's bytecode: the build's, or compiled the first time it is
+/// asked for.
 pub fn bytecode(self: *Device, program: Program) !Bytecode {
+    switch (program) {
+        inline else => |p| if (comptime @hasDecl(dxbc, @tagName(p))) {
+            const code = @field(dxbc, @tagName(p));
+            return .{ .vs = code[0], .ps = code[1] };
+        },
+    }
     self.shader_mutex.lockUncancelable(global.io());
     defer self.shader_mutex.unlock(global.io());
     if (self.compiled.get(program)) |b| return b;
