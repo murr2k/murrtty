@@ -12291,7 +12291,7 @@ fn trayShown(h: *Harness) anyerror!void {
 }
 
 fn trayShownOffscreen(h: *Harness) !void {
-    try h.needTaskbar();
+    try h.needTaskbar(.icon);
     var g = try h.launchWith("tray-shown", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n" ++
         "quit-after-last-window-closed = false\nconfirm-close-surface = false\n", .{
         .where = .offscreen,
@@ -12596,7 +12596,7 @@ fn taskbarShown(h: *Harness) anyerror!void {
 }
 
 fn taskbarShownOffscreen(h: *Harness) !void {
-    try h.needTaskbar();
+    try h.needTaskbar(.button);
     var g = try h.launchWith("taskbar-shown", base_config ++ "command = powershell.exe -NoLogo -NoProfile\n", .{ .where = .offscreen });
     defer g.deinit();
     try h.waitText(&g, "PS ", 1, 20000);

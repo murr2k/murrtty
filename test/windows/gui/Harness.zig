@@ -1055,11 +1055,16 @@ pub fn mayShow() bool {
     return optIn("GHOSTTY_GUI_ONSCREEN") or optIn("GHOSTTY_GUI_UNWATCHED");
 }
 
+pub const ShellNeed = enum { button, icon };
+
 /// Skip unless the calling thread's desktop has Explorer's taskbar
-/// (Shell_TrayWnd) answering: taskbar buttons and notification area
-/// icons need it. Prints what it found (the hosted ARM64 runner's taskbar
-/// made no buttons and refused icons, E_FAIL, while x64's worked).
-pub fn needTaskbar(self: *const Harness) error{Skipped}!void {
+/// (Shell_TrayWnd) answering, and it gives a window of the harness's own a
+/// taskbar button (`.button`) or takes an icon of the harness's into the
+/// notification area (`.icon`): a control, so a scenario fails only where
+/// Explorer serves other programs but not murrtty. Prints what it found
+/// (the hosted ARM64 runner's taskbar made murrtty no button and refused
+/// its icon, E_FAIL, while x64's served both).
+pub fn needTaskbar(self: *const Harness, need: ShellNeed) error{Skipped}!void {
     const tray = w.FindWindowW(w.L("Shell_TrayWnd"), null) orelse {
         return self.skip("no taskbar on this desktop (Explorer's Shell_TrayWnd isn't there)", .{});
     };
@@ -1075,6 +1080,51 @@ pub fn needTaskbar(self: *const Harness) error{Skipped}!void {
         @intFromPtr(tray), pid, answers, notify_area, if (lua_rc != 0) "unknown" else if (lua != 0) "on" else "off", w.IsUserAnAdmin() != 0,
     });
     if (!answers) return self.skip("the taskbar doesn't answer (Explorer's Shell_TrayWnd is hung or not ready)", .{});
+    const own = self.shellProbe(need);
+    std.debug.print("    the harness's own: taskbar button {}, notification area icon {} (error {d})\n", .{ own.button, own.icon, own.icon_error });
+    switch (need) {
+        .button => if (!own.button) return self.skip("Explorer here gives no program a taskbar button (none came for the harness's own window in 5 s)", .{}),
+        .icon => if (!own.icon) return self.skip("Explorer here takes no program's notification area icon (it refused the harness's own, error {d})", .{own.icon_error}),
+    }
+}
+
+var probe_button_msg: w.UINT = 0;
+var probe_button_seen: bool = false;
+
+fn probeProc(hwnd: w.HWND, msg: w.UINT, wparam: w.WPARAM, lparam: w.LPARAM) callconv(.winapi) w.LRESULT {
+    if (msg != 0 and msg == probe_button_msg) probe_button_seen = true;
+    return w.DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+/// What Explorer does for the harness's own window, off-screen as the
+/// scenarios' are: whether a taskbar button comes for it (`.button`,
+/// TaskbarButtonCreated within 5 s) or the notification area takes its
+/// icon (`.icon`). Both show for a moment, as the scenarios' do.
+fn shellProbe(self: *const Harness, need: ShellNeed) struct { button: bool = false, icon: bool = false, icon_error: u32 = 0 } {
+    const instance = w.GetModuleHandleW(null);
+    const class = w.L("GhosttyGuiShellProbe");
+    _ = w.RegisterClassW(&.{ .lpfnWndProc = probeProc, .hInstance = instance, .lpszClassName = class });
+    probe_button_msg = w.RegisterWindowMessageW(w.L("TaskbarButtonCreated"));
+    probe_button_seen = false;
+    const hwnd = w.CreateWindowExW(0, class, w.L("murrtty GUI test probe"), w.WS_OVERLAPPEDWINDOW, -20000, -20000, 320, 200, null, null, instance, null) orelse return .{};
+    defer _ = w.DestroyWindow(hwnd);
+    var result: @TypeOf(self.shellProbe(need)) = .{};
+    switch (need) {
+        .button => {
+            _ = w.ChangeWindowMessageFilterEx(hwnd, probe_button_msg, w.MSGFLT_ALLOW, null);
+            _ = w.ShowWindow(hwnd, w.SW_SHOWNOACTIVATE);
+            var waited: u32 = 0;
+            while (!probe_button_seen and waited < 5000) : (waited += 50) self.pump(50);
+            result.button = probe_button_seen;
+        },
+        .icon => {
+            var data: w.NOTIFYICONDATAW = .{ .hWnd = hwnd, .uID = 1, .uFlags = w.NIF_ICON, .hIcon = w.LoadIconW(null, w.IDI_APPLICATION) };
+            result.icon = w.Shell_NotifyIconW(w.NIM_ADD, &data) != 0;
+            result.icon_error = w.GetLastError();
+            if (result.icon) _ = w.Shell_NotifyIconW(w.NIM_DELETE, &data);
+        },
+    }
+    return result;
 }
 
 /// Whether the user's desktop is the one on screen, and so drawn by DWM.

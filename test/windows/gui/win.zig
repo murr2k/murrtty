@@ -559,6 +559,50 @@ pub extern "user32" fn GetDC(?HWND) callconv(.winapi) ?HDC;
 pub extern "user32" fn ReleaseDC(?HWND, HDC) callconv(.winapi) c_int;
 pub extern "user32" fn GetDpiForWindow(HWND) callconv(.winapi) UINT;
 pub extern "user32" fn FindWindowW(?LPCWSTR, ?LPCWSTR) callconv(.winapi) ?HWND;
+
+// The shell probe (Harness.needTaskbar): a window of the harness's own and
+// a notification area icon.
+pub const WNDPROC = *const fn (HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+pub const WNDCLASSW = extern struct {
+    style: UINT = 0,
+    lpfnWndProc: WNDPROC,
+    cbClsExtra: c_int = 0,
+    cbWndExtra: c_int = 0,
+    hInstance: ?*anyopaque = null,
+    hIcon: ?*anyopaque = null,
+    hCursor: ?*anyopaque = null,
+    hbrBackground: ?*anyopaque = null,
+    lpszMenuName: ?LPCWSTR = null,
+    lpszClassName: LPCWSTR,
+};
+pub extern "user32" fn RegisterClassW(*const WNDCLASSW) callconv(.winapi) u16;
+pub extern "user32" fn DefWindowProcW(HWND, UINT, WPARAM, LPARAM) callconv(.winapi) LRESULT;
+pub extern "user32" fn LoadIconW(?*anyopaque, ?*const anyopaque) callconv(.winapi) ?*anyopaque;
+pub extern "user32" fn ChangeWindowMessageFilterEx(HWND, UINT, DWORD, ?*anyopaque) callconv(.winapi) BOOL;
+pub const WS_OVERLAPPEDWINDOW: DWORD = 0x00CF0000;
+pub const MSGFLT_ALLOW: DWORD = 1;
+pub const IDI_APPLICATION: *const anyopaque = @ptrFromInt(32512);
+pub const NOTIFYICONDATAW = extern struct {
+    cbSize: DWORD = @sizeOf(NOTIFYICONDATAW),
+    hWnd: ?HWND = null,
+    uID: UINT = 0,
+    uFlags: UINT = 0,
+    uCallbackMessage: UINT = 0,
+    hIcon: ?*anyopaque = null,
+    szTip: [128]u16 = @splat(0),
+    dwState: DWORD = 0,
+    dwStateMask: DWORD = 0,
+    szInfo: [256]u16 = @splat(0),
+    uVersion: UINT = 0,
+    szInfoTitle: [64]u16 = @splat(0),
+    dwInfoFlags: DWORD = 0,
+    guidItem: [4]u32 = @splat(0),
+    hBalloonIcon: ?*anyopaque = null,
+};
+pub const NIM_ADD: DWORD = 0;
+pub const NIM_DELETE: DWORD = 2;
+pub const NIF_ICON: UINT = 0x02;
+pub extern "shell32" fn Shell_NotifyIconW(DWORD, *NOTIFYICONDATAW) callconv(.winapi) BOOL;
 pub extern "user32" fn GetSystemMetricsForDpi(c_int, UINT) callconv(.winapi) c_int;
 pub const SM_CXICON = 11;
 pub const SM_CXSMICON = 49;
