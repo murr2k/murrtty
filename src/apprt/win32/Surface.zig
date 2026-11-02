@@ -408,7 +408,7 @@ pub fn setShade(self: *Surface, shade: draw.Shade) void {
 /// the clipboard with it held).
 pub fn updateOverlay(self: *Surface) void {
     if (!self.core_initialized) return;
-    const api = &self.core_surface.renderer.api;
+    const present = &self.core_surface.renderer.api.present_state;
     var rects: [Shapes.max]Shapes.Rect = undefined;
     var n = self.scrollbar.rects(self, rects[0..2]);
     // Under the dimming and the bars' shade, as GTK's unfocused-split
@@ -443,7 +443,7 @@ pub fn updateOverlay(self: *Surface) void {
         };
         n += 1;
     }
-    api.setOverlay(rects[0..n]);
+    present.setOverlay(rects[0..n]);
     self.postFrame();
 }
 
@@ -562,7 +562,7 @@ fn progressRects(self: *const Surface, out: []Shapes.Rect) usize {
     return 1;
 }
 
-const Shapes = renderer.OpenGL.Overlay;
+const Shapes = renderer.win32_present.Overlay;
 
 /// The drag handle's band (roadmap 1.10): GTK's, a CenterBox holding a 16
 /// px icon along the pane's top.
@@ -641,7 +641,7 @@ fn dragRects(self: *const Surface, out: []Shapes.Rect) usize {
 /// roadmap 4.1) or over the opaque background, from the next frame.
 pub fn setTranslucent(self: *Surface, on: bool) void {
     if (!self.core_initialized) return;
-    self.core_surface.renderer.api.wgl_state.transparent.store(on, .monotonic);
+    self.core_surface.renderer.api.present_state.transparent.store(on, .monotonic);
     self.postFrame();
 }
 

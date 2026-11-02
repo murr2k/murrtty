@@ -15,6 +15,7 @@ const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
 const Renderer = rendererpkg.GenericRenderer(OpenGL);
 const Dmabuf = @import("Dmabuf.zig");
+const win32_present = @import("win32_present.zig");
 pub const Device = @import("opengl/Device.zig");
 
 pub const GraphicsAPI = OpenGL;
@@ -59,6 +60,10 @@ egl_context: if (is_windows) void else *gl.egl.Context,
 /// The WGL state for the surface's window (Windows only).
 wgl_state: if (is_windows) Wgl else void,
 
+/// What the Windows runtime shares with the present, whichever API draws
+/// (win32_present.zig).
+present_state: if (is_windows) win32_present.State else void,
+
 const Wgl = struct {
     hwnd: wgl.HWND,
     hdc: wgl.HDC,
@@ -72,16 +77,13 @@ const Wgl = struct {
     /// so far, the last at `last_try`, in milliseconds since boot);
     /// `lost_context` is the old one until the renderer has released what
     /// it made there. There is always a context current: the lost one
-    /// until another is made. `fake_reset`: the GUI tests' stand-in for a
-    /// reset. `contexts`: contexts made, the first included.
-    robust: bool = false,
+    /// until another is made. The tests' faked reset, the contexts made
+    /// and whether this one is robust are in `present_state`.
     reset_status: ?*const fn () callconv(.winapi) u32 = null,
     lost: bool = false,
     tries: u32 = 0,
     last_try: u64 = 0,
     lost_context: ?wgl.HGLRC = null,
-    fake_reset: std.atomic.Value(bool) = .init(false),
-    contexts: std.atomic.Value(u32) = .init(1),
 
     /// The present pass's program and (empty) vertex array, made on the
     /// render thread at the first present.
@@ -92,92 +94,12 @@ const Wgl = struct {
     /// linear one, which the present pass encodes for itself.
     backbuffer_srgb: ?bool = null,
 
-    /// For the GUI tests (GHOSTTY_WIN32_TEST_DUMP set in a Debug build):
-    /// each present reads back one pixel near the window's bottom-right
-    /// corner into `sample` (0x00RRGGBB, as stored), and, once the tests
-    /// ask for one, the pixel at `probe_point` (x | y << 16, from the top
-    /// left) into `probe` (with bit 24 set once read). The state dump
-    /// reports both. Captures can't see windows on the tests' hidden
-    /// desktop.
-    sampling: bool = false,
-    sample: std.atomic.Value(u32) = .init(0),
-    probe_point: std.atomic.Value(u32) = .init(no_probe),
-    probe: std.atomic.Value(u32) = .init(0),
-    /// Frames presented, so the tests can tell whether something drew.
-    frames: std.atomic.Value(u32) = .init(0),
-    /// Frames presented, in every build: UI Automation's poll looks at the
-    /// text again only after one (murrtty's roadmap 6.4).
-    presented: std.atomic.Value(u32) = .init(0),
-    /// And once asked (`frame_wanted`), the next present reads its whole
-    /// back buffer into `frame` (BGRA rows, top first) and sets
-    /// `frame_ready`; the UI thread takes the frame from there, freeing it
-    /// before it asks again. Window captures read white where DWM isn't
-    /// composing; this is what was drawn.
-    frame_wanted: std.atomic.Value(bool) = .init(false),
-    frame_ready: std.atomic.Value(bool) = .init(false),
-    frame: []u8 = &.{},
-    frame_width: u32 = 0,
-    frame_height: u32 = 0,
-    /// Set by the apprt while its window is translucent (roadmap 4.1,
-    /// `background-opacity` below 1): present the frame with its own alpha,
-    /// for DWM to compose over what is behind the window, instead of over
-    /// the opaque background.
-    transparent: std.atomic.Value(bool) = .init(false),
-
-    /// Rectangles drawn over the frame in the present pass, set by the UI
-    /// thread (the dimming of an unfocused split pane) and read here.
-    overlay_mutex: std.Io.Mutex = .init,
-    overlay: Overlay = .{},
+    /// The shapes' program, made at the first present with shapes.
     overlay_program: ?struct { program: gl.Program, vao: gl.VertexArray } = null,
-
-    pub const no_probe = std.math.maxInt(u32);
-    pub const probe_read: u32 = 1 << 24;
 };
 
-/// Solid rectangles the Windows present pass draws over the frame, blending
-/// in the stored (sRGB) values as GTK's CSS overlays do.
-pub const Overlay = struct {
-    /// Room for the scrollbar, the progress bar, the dimming and the top
-    /// bars' shade (a rect per row, 6 per 96 DPI).
-    pub const max = 48;
-
-    rects: [max]Rect = undefined,
-    len: usize = 0,
-
-    pub const Rect = struct {
-        /// In the window's pixels from its top left corner.
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-        /// sRGB, straight (not premultiplied) alpha.
-        color: [4]f32,
-    };
-};
-
-/// Replace the rectangles drawn over this surface's frames (Windows). They
-/// show from the next frame, so a caller that needs them now forces one.
-pub fn setOverlay(self: *OpenGL, rects: []const Overlay.Rect) void {
-    if (comptime !is_windows) return;
-    const state = &self.wgl_state;
-    state.overlay_mutex.lockUncancelable(global.io());
-    defer state.overlay_mutex.unlock(global.io());
-    const n = @min(rects.len, Overlay.max);
-    @memcpy(state.overlay.rects[0..n], rects[0..n]);
-    state.overlay.len = n;
-}
-
-/// The terminal background, which the Windows present pass composites the
-/// frame over.
-pub const Background = struct {
-    /// sRGB.
-    rgb: [3]u8,
-    /// `background-opacity`, which a translucent window shows where the
-    /// frame doesn't reach yet.
-    alpha: u8 = 255,
-    /// Whether the frame holds linear colors (alpha-blending is linear).
-    linear: bool,
-};
+pub const Overlay = win32_present.Overlay;
+pub const Background = win32_present.Background;
 
 pub fn init(
     alloc: Allocator,
@@ -219,6 +141,7 @@ pub fn init(
         .device = device,
         .egl_context = context,
         .wgl_state = {},
+        .present_state = {},
     };
 }
 
@@ -263,13 +186,13 @@ fn initWgl(
             .hwnd = hwnd,
             .hdc = hdc,
             .context = context,
-            .robust = created.robust,
-            // A pane opening in a translucent window presents so from its
-            // first frame (the win32 runtime's; an embedding host has none).
-            .transparent = .init(if (@hasDecl(apprt.Surface, "translucent")) opts.rt_surface.translucent() else false),
-            .sampling = builtin.mode == .debug and
-                wgl.GetEnvironmentVariableW(std.unicode.utf8ToUtf16LeStringLiteral("GHOSTTY_WIN32_TEST_DUMP"), null, 0) != 0,
         },
+        // A pane opening in a translucent window presents so from its
+        // first frame (the win32 runtime's; an embedding host has none).
+        .present_state = .init(
+            if (@hasDecl(apprt.Surface, "translucent")) opts.rt_surface.translucent() else false,
+            created.robust,
+        ),
     };
 }
 
@@ -399,7 +322,7 @@ pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
             return error.WglMakeCurrentFailed;
         }
         try prepareContext(&wgl.getProcAddress);
-        state.reset_status = resetStatusFn(state.robust);
+        state.reset_status = resetStatusFn(self.present_state.robust.load(.monotonic));
 
         // DWM composites windowed GL output so there is no tearing
         // without vsync, and blocking in SwapBuffers would only add
@@ -429,7 +352,7 @@ pub fn contextLost(self: *OpenGL) bool {
     if (comptime !is_windows) return false;
     const state = &self.wgl_state;
     if (state.lost) return true;
-    const reset = if (state.fake_reset.swap(false, .acq_rel))
+    const reset = if (self.present_state.fake_reset.swap(false, .acq_rel))
         true
     else if (state.reset_status) |status|
         status() != 0
@@ -481,12 +404,12 @@ pub fn replaceContext(self: *OpenGL) bool {
     state.overlay_program = null;
     state.lost_context = state.context;
     state.context = created.handle;
-    state.robust = created.robust;
+    self.present_state.robust.store(created.robust, .monotonic);
     state.reset_status = resetStatusFn(created.robust);
     state.lost = false;
     state.tries = 0;
     if (self.device.wgl_ext.swapInterval) |swapInterval| _ = swapInterval(0);
-    _ = state.contexts.fetchAdd(1, .monotonic);
+    _ = self.present_state.contexts.fetchAdd(1, .monotonic);
     log.info("made a new OpenGL context after the reset", .{});
     return true;
 }
@@ -630,14 +553,8 @@ pub fn present(
 fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     const ctx = &gl.glad.context;
     const state = &self.wgl_state;
-    // The tests' probe is answered by a present begun after it was asked
-    // for, which then sees everything set before the ask (a toggled
-    // opacity's `transparent`, say): one already under way, which a slow
-    // renderer (llvmpipe's) makes likely, read what was set before.
-    const probe_point: u32 = if (comptime builtin.mode == .debug and is_windows)
-        (if (state.sampling) state.probe_point.swap(Wgl.no_probe, .acquire) else Wgl.no_probe)
-    else
-        Wgl.no_probe;
+    const ps = &self.present_state;
+    const probe_point = ps.takeProbe();
     const p = state.present orelse made: {
         const program = try gl.Program.createVF(present_vertex, present_fragment);
         errdefer program.destroy();
@@ -684,7 +601,7 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     }
     try p.program.setUniform("background", @as(@Vector(4, f32), bg));
     // DWM takes premultiplied sRGB, which the shader works out itself.
-    const transparent = state.transparent.load(.monotonic);
+    const transparent = ps.transparent.load(.monotonic);
     try p.program.setUniform("transparent", transparent);
     try p.program.setUniform("background_alpha", @as(f32, @floatFromInt(background.alpha)) / 255.0);
     try p.program.setUniform("frame_linear", background.linear);
@@ -708,35 +625,15 @@ fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
     defer if (srgb_off) ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
     ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 3);
 
-    var overlay: Overlay = undefined;
-    {
-        state.overlay_mutex.lockUncancelable(global.io());
-        defer state.overlay_mutex.unlock(global.io());
-        overlay = state.overlay;
-    }
+    const overlay = ps.overlayNow();
     if (overlay.len > 0) try drawOverlay(state, &overlay, win_w, win_h);
 
-    if (comptime builtin.mode == .debug) if (state.sampling) {
-        _ = state.frames.fetchAdd(1, .monotonic);
-        state.sample.store(readPixel(@max(win_w - 6, 0), 6), .monotonic);
-        if (probe_point != Wgl.no_probe) {
-            const x: gl.c.GLint = @intCast(probe_point & 0xFFFF);
-            const y: gl.c.GLint = @intCast(probe_point >> 16);
-            if (x < win_w and y < win_h) {
-                state.probe.store(readPixel(x, win_h - 1 - y) | Wgl.probe_read, .monotonic);
-            } else {
-                // Off this frame (a resize under way): the next one answers,
-                // unless the tests asked again meanwhile.
-                _ = state.probe_point.cmpxchgStrong(Wgl.no_probe, probe_point, .monotonic, .monotonic);
-            }
-        }
-        if (state.frame_wanted.swap(false, .acquire)) readFrame(state, win_w, win_h);
-    };
+    ps.readBack(probe_point, @intCast(win_w), @intCast(win_h), BackBuffer{ .height = win_h }, BackBuffer.pixel, BackBuffer.whole);
 
     if (wgl.SwapBuffers(state.hdc) == 0) return error.WglSwapBuffersFailed;
     // Counted once on the window: murrtty's software OpenGL takes the
     // first as "it draws" (6.3b), UI Automation's poll as new text.
-    _ = state.presented.fetchAdd(1, .monotonic);
+    _ = ps.presented.fetchAdd(1, .monotonic);
 }
 
 /// Draw the overlay's rectangles onto the back buffer, blending in its
@@ -799,42 +696,41 @@ const overlay_fragment =
     \\}
 ;
 
-/// The whole back buffer into `state.frame` (BGRA, rows top first), for
-/// the GUI tests; then `frame_ready`.
-fn readFrame(state: *Wgl, win_w: gl.c.GLint, win_h: gl.c.GLint) void {
-    if (win_w <= 0 or win_h <= 0) return;
-    // A frame not yet taken is the UI thread's: a second request while
-    // this one ran is answered by it, not by writing over it.
-    if (state.frame_ready.load(.acquire)) return;
-    const width: usize = @intCast(win_w);
-    const height: usize = @intCast(win_h);
-    const pixels = std.heap.page_allocator.alloc(u8, width * height * 4) catch return;
-    gl.glad.context.ReadPixels.?(0, 0, win_w, win_h, gl.c.GL_BGRA, gl.c.GL_UNSIGNED_BYTE, pixels.ptr);
-    // GL's rows run bottom up.
-    const stride = width * 4;
-    var top: usize = 0;
-    var bottom: usize = height - 1;
-    while (top < bottom) : ({
-        top += 1;
-        bottom -= 1;
-    }) {
-        const a = pixels[top * stride ..][0..stride];
-        const b = pixels[bottom * stride ..][0..stride];
-        for (a, b) |*x, *y| std.mem.swap(u8, x, y);
-    }
-    state.frame = pixels;
-    state.frame_width = @intCast(width);
-    state.frame_height = @intCast(height);
-    state.frame_ready.store(true, .release);
-}
+/// The window's back buffer, read for the GUI tests (win32_present's
+/// readBack) in top-left coordinates.
+const BackBuffer = struct {
+    height: gl.c.GLint,
 
-/// The back buffer's pixel at GL coordinates (origin bottom left) as
-/// 0x00RRGGBB, as stored.
-fn readPixel(x: gl.c.GLint, y: gl.c.GLint) u32 {
-    var px: [4]u8 = undefined;
-    gl.glad.context.ReadPixels.?(x, y, 1, 1, gl.c.GL_RGBA, gl.c.GL_UNSIGNED_BYTE, &px);
-    return @as(u32, px[0]) << 16 | @as(u32, px[1]) << 8 | px[2];
-}
+    /// A pixel as 0x00RRGGBB, as stored.
+    fn pixel(self: BackBuffer, x: u32, y: u32) u32 {
+        var px: [4]u8 = undefined;
+        // GL's rows run bottom up.
+        gl.glad.context.ReadPixels.?(@intCast(x), self.height - 1 - @as(gl.c.GLint, @intCast(y)), 1, 1, gl.c.GL_RGBA, gl.c.GL_UNSIGNED_BYTE, &px);
+        return @as(u32, px[0]) << 16 | @as(u32, px[1]) << 8 | px[2];
+    }
+
+    /// The whole of it, BGRA rows top first (page_allocator).
+    fn whole(_: BackBuffer, w: u32, h: u32) ?[]u8 {
+        if (w == 0 or h == 0) return null;
+        const width: usize = w;
+        const height: usize = h;
+        const pixels = std.heap.page_allocator.alloc(u8, width * height * 4) catch return null;
+        gl.glad.context.ReadPixels.?(0, 0, @intCast(w), @intCast(h), gl.c.GL_BGRA, gl.c.GL_UNSIGNED_BYTE, pixels.ptr);
+        // GL's rows run bottom up.
+        const stride = width * 4;
+        var top: usize = 0;
+        var bottom: usize = height - 1;
+        while (top < bottom) : ({
+            top += 1;
+            bottom -= 1;
+        }) {
+            const a = pixels[top * stride ..][0..stride];
+            const b = pixels[bottom * stride ..][0..stride];
+            for (a, b) |*x, *y| std.mem.swap(u8, x, y);
+        }
+        return pixels;
+    }
+};
 
 fn srgbToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);

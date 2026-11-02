@@ -163,7 +163,7 @@ pub fn tick(app: *App) void {
     var unhealthy = false;
     for (app.core_app.surfaces.items) |surface| {
         if (!surface.core_initialized) continue;
-        if (surface.core_surface.renderer.api.wgl_state.presented.load(.monotonic) > 0) {
+        if (surface.core_surface.renderer.api.present_state.presented.load(.monotonic) > 0) {
             _ = c.KillTimer(app.wakeup_hwnd, timer_id);
             for (app.windows.items) |w| {
                 if (w.quick != null or w.tabs.items.len == 0) continue;

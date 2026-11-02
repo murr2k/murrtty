@@ -335,7 +335,7 @@ pub fn tick(surface: *Surface) void {
         provider.selection_pending = false;
         return;
     }
-    const presents = if (surface.core_initialized) surface.core_surface.renderer.api.wgl_state.presented.load(.monotonic) else 0;
+    const presents = if (surface.core_initialized) surface.core_surface.renderer.api.present_state.presented.load(.monotonic) else 0;
     if (provider.seen and presents == provider.seen_presents and !provider.selection_pending) return;
     var locked = lockNow(provider) orelse return;
     const sign = viewSign(&locked.view);

@@ -413,7 +413,7 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
             var it = w.panes();
             while (it.next()) |s| {
                 if (!s.core_initialized) continue;
-                const state = &s.core_surface.renderer.api.wgl_state;
+                const state = &s.core_surface.renderer.api.present_state;
                 state.probe.store(0, .monotonic);
                 // Release: the present taking it sees what this thread set
                 // before (OpenGL.presentWgl).
@@ -426,7 +426,7 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         var it = w.panes();
         while (it.next()) |s| {
             if (!s.core_initialized) continue;
-            const state = &s.core_surface.renderer.api.wgl_state;
+            const state = &s.core_surface.renderer.api.present_state;
             // A frame read is the UI thread's to free; one still asked for
             // is the render thread's to write.
             if (state.frame_ready.swap(false, .acquire)) {
@@ -445,7 +445,7 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         var it = w.panes();
         while (it.next()) |s| {
             if (!s.core_initialized) continue;
-            s.core_surface.renderer.api.wgl_state.fake_reset.store(true, .release);
+            s.core_surface.renderer.api.present_state.fake_reset.store(true, .release);
             redraw(s);
         }
     };
@@ -726,8 +726,8 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                 const size = s.core_surface.size;
                 const grid = size.grid();
                 // The last presented frame's pixel near the bottom-right
-                // corner (see OpenGL.Wgl.sample).
-                const wgl_state = &s.core_surface.renderer.api.wgl_state;
+                // corner (see win32_present.State.sample).
+                const present = &s.core_surface.renderer.api.present_state;
                 try out.print(alloc, ",\"scheme\":\"{t}\"", .{s.core_surface.config_conditional_state.theme});
                 // Whether the core surface thinks it has the focus.
                 try out.print(alloc, ",\"focused\":{}", .{s.core_surface.focused});
@@ -738,9 +738,9 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
                     size.cell.height,
                     size.padding.left,
                     size.padding.top,
-                    wgl_state.sample.load(.monotonic),
-                    wgl_state.probe.load(.monotonic),
-                    wgl_state.frames.load(.monotonic),
+                    present.sample.load(.monotonic),
+                    present.probe.load(.monotonic),
+                    present.frames.load(.monotonic),
                 });
                 const text = text: {
                     s.core_surface.renderer_state.mutex.lockUncancelable(global.io());
@@ -1066,14 +1066,14 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
         }
         if (s.core_initialized) {
             const grid = s.core_surface.size.grid();
-            const wgl_state = &s.core_surface.renderer.api.wgl_state;
+            const present = &s.core_surface.renderer.api.present_state;
             // Whether text is selected (hasSelection takes the terminal's lock).
             // The OpenGL contexts its renderer made (a new one after a
             // driver reset, roadmap 6.3) and whether its context reports
             // resets (robust).
             try out.print(alloc, ",\"gl_contexts\":{d},\"gl_robust\":{}", .{
-                wgl_state.contexts.load(.monotonic),
-                wgl_state.robust,
+                present.contexts.load(.monotonic),
+                present.robust.load(.monotonic),
             });
             // The font size in points, whether it was adjusted (a binding,
             // not inherited), and the core's read-only mode (5.10b keeps
@@ -1086,9 +1086,9 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             try out.print(alloc, ",\"core_focused\":{},\"selection\":{},\"frames\":{d},\"probe\":{d},\"frame_ready\":{},\"shade\":{d:.3},\"keys\":{d},\"cols\":{d},\"rows\":{d},\"text\":", .{
                 s.core_surface.focused,
                 s.core_surface.hasSelection(),
-                wgl_state.frames.load(.monotonic),
-                wgl_state.probe.load(.monotonic),
-                wgl_state.frame_ready.load(.acquire),
+                present.frames.load(.monotonic),
+                present.probe.load(.monotonic),
+                present.frame_ready.load(.acquire),
                 s.shade.alpha(s.shade_dpi, 0),
                 s.keys_sent,
                 grid.columns,
@@ -1157,7 +1157,7 @@ fn saveFrames(app: *App) void {
         var it = w.panes();
         while (it.next()) |s| : (n += 1) {
             if (!s.core_initialized) continue;
-            const state = &s.core_surface.renderer.api.wgl_state;
+            const state = &s.core_surface.renderer.api.present_state;
             if (!state.frame_ready.load(.acquire)) continue;
             var name_buf: [32]u8 = undefined;
             const name = std.fmt.bufPrint(&name_buf, "frame-{d}.bmp", .{n}) catch continue;
