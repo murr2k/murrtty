@@ -1055,6 +1055,14 @@ pub fn mayShow() bool {
     return optIn("GHOSTTY_GUI_ONSCREEN") or optIn("GHOSTTY_GUI_UNWATCHED");
 }
 
+/// Skip unless the calling thread's desktop has Explorer's taskbar
+/// (Shell_TrayWnd): taskbar buttons and notification area icons need it.
+pub fn needTaskbar(self: *const Harness) error{Skipped}!void {
+    if (w.FindWindowW(w.L("Shell_TrayWnd"), null) == null) {
+        return self.skip("no taskbar on this desktop (Explorer's Shell_TrayWnd isn't there)", .{});
+    }
+}
+
 /// Whether the user's desktop is the one on screen, and so drawn by DWM.
 /// It isn't while a screen saver or the lock screen is up (each has a
 /// desktop of its own), and captures of its windows then come back blank.

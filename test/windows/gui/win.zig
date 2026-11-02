@@ -557,6 +557,7 @@ pub extern "user32" fn PrintWindow(HWND, HDC, UINT) callconv(.winapi) BOOL;
 pub extern "user32" fn GetDC(?HWND) callconv(.winapi) ?HDC;
 pub extern "user32" fn ReleaseDC(?HWND, HDC) callconv(.winapi) c_int;
 pub extern "user32" fn GetDpiForWindow(HWND) callconv(.winapi) UINT;
+pub extern "user32" fn FindWindowW(?LPCWSTR, ?LPCWSTR) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetSystemMetricsForDpi(c_int, UINT) callconv(.winapi) c_int;
 pub const SM_CXICON = 11;
 pub const SM_CXSMICON = 49;
