@@ -71,7 +71,16 @@
 .PARAMETER Clean
     Delete .zig-cache, and zig-out when no -Prefix is given, before
     building. A custom -Prefix directory is never deleted, and the
-    downloaded dependencies (zig-pkg\) and Zig (.zig-toolchain\) are kept.
+    downloaded dependencies (zig-pkg\) and Zig (.zig-toolchain\) are kept:
+    for a dependency that fails its hash check, use -Repair.
+
+.PARAMETER Repair
+    Delete the dependencies this build uses, unpacked in zig-pkg\ and as
+    Zig keeps them per user (%LOCALAPPDATA%\zig\p), before building, so
+    they are downloaded again. For a build that fails with "hash
+    mismatch": a `zig fetch` run by hand (Zig 0.17.0's) stores a package
+    one folder too deep, and every build after it fails that way. Other
+    projects' packages are left alone.
 
 .PARAMETER Help
     Show this help. -h, --help, -? and /? work too.
@@ -118,6 +127,7 @@ param(
     [switch]$Run,
     [switch]$SetupOnly,
     [switch]$Clean,
+    [switch]$Repair,
     [switch]$Package,
     [switch]$Help,
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -149,7 +159,7 @@ $PinnedZigSha256 = @{
 
 $Root = $PSScriptRoot
 $ToolchainDir = Join-Path $Root '.zig-toolchain'
-$OwnOptions = @('Optimize', 'Prefix', 'Target', 'Run', 'SetupOnly', 'Clean', 'Package', 'Help')
+$OwnOptions = @('Optimize', 'Prefix', 'Target', 'Run', 'SetupOnly', 'Clean', 'Repair', 'Package', 'Help')
 $OptimizeModes = @('Debug', 'ReleaseSafe', 'ReleaseFast', 'ReleaseSmall')
 
 function Write-Step([string]$Message) {
@@ -1070,6 +1080,193 @@ if (-not $zig) {
 Write-Host "    using $zig"
 
 #---------------------------------------------------------------------
+# Dependencies: repair, diagnosis
+
+# A value zig env reports (a string field of its output), or $null.
+function Get-ZigEnvValue([string]$Name) {
+    $saved = [Console]::OutputEncoding
+    $ErrorActionPreference = 'Continue'
+    try {
+        [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+        $envText = (& $zig env 2>$null) -join "`n"
+    } finally {
+        [Console]::OutputEncoding = $saved
+        $ErrorActionPreference = 'Stop'
+    }
+    $m = [regex]::Match($envText, '\.' + $Name + '\s*=\s*"((?:[^"\\]|\\.)*)"')
+    if (-not $m.Success) { return $null }
+    $text = $m.Groups[1].Value -replace '\\\\', '\'
+    return $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($text)
+}
+
+# Zig's per-user cache, where it keeps each package as p\<hash>.tar.gz.
+function Get-ZigGlobalCache {
+    if ($env:ZIG_GLOBAL_CACHE_DIR) { return $env:ZIG_GLOBAL_CACHE_DIR }
+    return Get-ZigEnvValue 'global_cache_dir'
+}
+
+# Every package hash this build can use: those the repository's
+# build.zig.zon files declare, those of their own build.zig.zon files
+# (unpacked in the package folder), and the folders unpacked there.
+function Get-BuildHashes([string]$PkgDir) {
+    $hashes = @{}
+    $queue = New-Object Collections.Queue
+    $zons = @(Join-Path $Root 'build.zig.zon')
+    foreach ($z in @(Get-ChildItem -LiteralPath (Join-Path $Root 'pkg') -Directory -ErrorAction SilentlyContinue)) {
+        $file = Join-Path $z.FullName 'build.zig.zon'
+        if (Test-Path -LiteralPath $file) { $zons += $file }
+    }
+    foreach ($z in $zons) { foreach ($d in @(Get-ZonDependencies $z '')) { $queue.Enqueue($d.Hash) } }
+    while ($queue.Count -gt 0) {
+        $h = $queue.Dequeue()
+        if ($hashes.ContainsKey($h)) { continue }
+        $hashes[$h] = $true
+        $zon = Join-Path (Join-Path $PkgDir $h) 'build.zig.zon'
+        if (Test-Path -LiteralPath $zon) {
+            foreach ($d in @(Get-ZonDependencies $zon '')) { $queue.Enqueue($d.Hash) }
+        }
+    }
+    foreach ($d in @(Get-ChildItem -LiteralPath $PkgDir -Directory -ErrorAction SilentlyContinue)) { $hashes[$d.Name] = $true }
+    return @($hashes.Keys)
+}
+
+# Delete a folder and everything in it. Packages can hold names that
+# Windows' usual paths refuse (one ending in a dot, as a package's ._.
+# does), which Remove-Item can't delete; rd can, through \\?\.
+function Remove-Tree([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $full = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $ErrorActionPreference = 'Continue'
+    try {
+        & cmd.exe /d /c rd /s /q "\\?\$full" 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = 'Stop'
+    }
+    if (Test-Path -LiteralPath $Path) {
+        Fail "Couldn't delete $Path entirely. A program may have a file in it open: close it, or delete the folder yourself, then run this again."
+    }
+}
+
+# -Repair: delete this build's packages, unpacked and per user.
+function Repair-Dependencies {
+    $pkgDir = Get-PkgDir
+    $hashes = @(Get-BuildHashes $pkgDir)
+    $cache = Get-ZigGlobalCache
+    $removed = 0
+    if ($cache) {
+        $p = Join-Path $cache 'p'
+        foreach ($h in $hashes) {
+            foreach ($item in @("$h.tar.gz", $h)) {
+                $path = Join-Path $p $item
+                if (Test-Path -LiteralPath $path -PathType Container) {
+                    Remove-Tree $path
+                    $removed++
+                } elseif (Test-Path -LiteralPath $path) {
+                    Remove-Item -LiteralPath $path -Force
+                    $removed++
+                }
+            }
+        }
+        Write-Step "Repair: deleted $removed of this build's packages from $p"
+    } else {
+        Write-Note "zig env didn't report its cache folder; only $pkgDir is repaired."
+    }
+    if (Test-Path -LiteralPath $pkgDir) {
+        Write-Step "Repair: deleting $pkgDir"
+        Remove-Tree $pkgDir
+    }
+    Write-Host '    The build downloads them again.'
+}
+
+# A URL or proxy with any user name and password masked.
+function Hide-Credentials([string]$Text) {
+    return [regex]::Replace($Text, '(?<=//)[^/@\s]+@', '***@')
+}
+
+# After a failed build, fetch again with the output kept, and explain a
+# fetch problem: a package that fails its hash check, or a download that
+# fails (through a proxy, say). Zig names the server a request went to,
+# not the proxy that answered. Returns whether it explained anything.
+function Show-FetchDiagnosis([string[]]$BuildArgs) {
+    $fetchArgs = @('build', '--fetch') + @($BuildArgs | Where-Object { $_ -like '-D*' -or $_ -like '-fsys=*' -or $_ -like '-fno-sys=*' })
+    Write-Step 'Checking the dependencies (zig build --fetch)'
+    Push-Location -LiteralPath $Root
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = @(& $zig @fetchArgs 2>&1 | ForEach-Object { "$_" })
+        $fetchCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = 'Stop'
+        Pop-Location
+    }
+    if ($fetchCode -eq 0) {
+        Write-Host '    They are all there: the failure is elsewhere.'
+        return $false
+    }
+    $text = $out -join "`n"
+    $mismatch = [regex]::Match($text, 'hash mismatch: manifest declares (\S+) but the fetched package has (\S+)')
+    if ($mismatch.Success) {
+        Write-Note ("Package {0} doesn't match its hash: Zig unpacked one whose files hash to {1}." -f $mismatch.Groups[1].Value, $mismatch.Groups[2].Value)
+        Write-Note 'A `zig fetch` run by hand can cause this: Zig 0.17.0''s stores a package one folder too deep in'
+        Write-Note 'its per-user cache, and every build after it fails here. -Clean keeps downloaded packages; instead run'
+        Write-Host '        .\build-windows.cmd -Repair' -ForegroundColor Yellow
+        Write-Note 'which deletes this build''s packages so they are downloaded again.'
+        return $true
+    }
+    $http = [regex]::Match($text, "error: (bad HTTP response code: '[^']+'|[^\n]*(Connection|Tls|Certificate|HostName|NetworkUnreachable|Timed ?Out)[^\n]*)")
+    if ($http.Success) {
+        $url = [regex]::Match($text, '\.url\s*=\s*"(https?://([^/"]+)[^"]*)"')
+        $server = 'the dependency server'
+        if ($url.Success) { $server = $url.Groups[2].Value }
+        $proxyVars = @('HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY') | Where-Object { [Environment]::GetEnvironmentVariable($_) }
+        Write-Note ("Zig couldn't download the dependencies: {0}" -f $http.Groups[1].Value)
+        if (@($proxyVars).Count -gt 0) {
+            $first = @($proxyVars)[0]
+            $value = Hide-Credentials ([Environment]::GetEnvironmentVariable($first))
+            Write-Note "Zig sends its downloads through the proxy that $first names ($value),"
+            Write-Note "so that answer most likely came from the proxy: $server in the error is only"
+            Write-Note 'where the request was going. (This script downloads Zig with Windows'' own proxy'
+            Write-Note 'settings; Zig uses the variable instead.) If this machine reaches the internet without'
+            Write-Note "the proxy, clear the variable and build again: in cmd, set $first="
+            Write-Note "in PowerShell, `$env:$first = `$null"
+        } else {
+            Write-Note "No proxy variable is set: check this machine's connection to $server."
+        }
+        return $true
+    }
+    return $false
+}
+
+# The console title counts the build's minutes, so a long step that prints
+# nothing (Zig compiling murrtty's own code) doesn't look hung. Returns
+# what Stop-TitleClock needs, or $null without a console.
+function Start-TitleClock([string]$Label) {
+    try { $old = [Console]::Title } catch { return $null }
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.Open()
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript({
+        param($label)
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        while ($true) {
+            try { [Console]::Title = ('{0} {1:mm\:ss}' -f $label, $clock.Elapsed) } catch { return }
+            Start-Sleep -Milliseconds 1000
+        }
+    }).AddArgument($Label)
+    $handle = $ps.BeginInvoke()
+    return [pscustomobject]@{ PS = $ps; Runspace = $rs; Handle = $handle; Old = $old }
+}
+
+function Stop-TitleClock($Clock) {
+    if ($null -eq $Clock) { return }
+    try { $Clock.PS.Stop() } catch { }
+    $Clock.PS.Dispose()
+    $Clock.Runspace.Dispose()
+    try { [Console]::Title = $Clock.Old } catch { }
+}
+
+#---------------------------------------------------------------------
 # Clean
 
 if ($Clean) {
@@ -1087,6 +1284,8 @@ if ($Clean) {
         Write-Note "-Clean leaves the custom prefix $Prefix in place; delete old files there yourself if needed."
     }
 }
+
+if ($Repair) { Repair-Dependencies }
 
 if ($SetupOnly) {
     Write-Step 'Requirements installed. Not building (-SetupOnly).'
@@ -1141,7 +1340,10 @@ $zigArgs = @('build', "-Dtarget=$Target", "-Doptimize=$Optimize", '--prefix', $P
 $shown = ($zigArgs | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
 Write-Step "zig $shown"
 if (-not (Test-Path -LiteralPath (Join-Path $Root '.zig-cache'))) {
-    Write-Host '    The first build downloads dependencies and takes several minutes.'
+    Write-Host '    The first build downloads the dependencies, then compiles murrtty''s own code as one unit.'
+    Write-Host '    Zig does that on one core, so it takes 10 minutes or more on any machine, and Zig''s progress'
+    Write-Host '    line can sit still for minutes of it: the window title counts the time. Later builds are'
+    Write-Host '    incremental and take seconds.'
 }
 
 if ($Package -and (Test-Path -LiteralPath $PackageWork)) { Remove-Item -LiteralPath $PackageWork -Recurse -Force }
@@ -1152,16 +1354,21 @@ Push-Location -LiteralPath $Root
 # into a terminating error whenever the caller redirects this script's
 # output (`*> build.log`). The exit code decides success instead.
 $ErrorActionPreference = 'Continue'
+$titleClock = Start-TitleClock 'murrtty build'
 try {
     & $zig @zigArgs
     $code = $LASTEXITCODE
 } finally {
+    Stop-TitleClock $titleClock
     $ErrorActionPreference = 'Stop'
     Pop-Location
 }
 $timer.Stop()
 
 if ($code -ne 0) {
+    if ($printsAndExits.Count -eq 0 -and (Show-FetchDiagnosis $zigArgs)) {
+        Fail "zig build failed with exit code $code, for the reason above." $code
+    }
     Fail "zig build failed with exit code $code. The first error above is the cause." $code
 }
 

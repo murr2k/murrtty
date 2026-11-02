@@ -541,7 +541,10 @@ that ships with Windows, from `cmd`, PowerShell or a double-click. It:
 
 The first build downloads Ghostty's dependencies (unpacked into `zig-pkg\` in
 the repository, about 270 MB; Zig also keeps a per-user cache in
-`%LOCALAPPDATA%\zig`) and takes several minutes. The result is
+`%LOCALAPPDATA%\zig`), then compiles murrtty's own code as one unit, which
+Zig does on one core: 10 minutes or more on any machine, with Zig's progress
+line still for minutes of it (the window title counts the time). Later
+builds are incremental and take seconds. The result is
 `zig-out\bin\murrtty.exe`. Keep `zig-out\share` next to `bin` if you move it:
 it holds the themes and other resources murrtty looks for. To keep a log of
 the build, run `.\build-windows.cmd > build.log 2>&1`.
@@ -556,6 +559,7 @@ Options:
 | `-Run` | Start murrtty after a successful build |
 | `-SetupOnly` | Install Zig, don't build |
 | `-Clean` | Delete `.zig-cache`, and `zig-out` unless `-Prefix` is given, first (`zig-pkg\` and `.zig-toolchain\` are kept) |
+| `-Repair` | Delete the dependencies this build uses, from `zig-pkg\` and Zig's per-user cache, so they download again: for a "hash mismatch" |
 | `-Package` | Build the release zip and its symbols zip (see below) |
 | `-Help` | Show the help (also `-?` or `/?`) |
 
@@ -584,6 +588,19 @@ written from `dist\windows\third-party.json`), and `-symbols.zip` holds
 `murrtty.pdb`. It checks the package by unpacking it and asking the
 unpacked murrtty for its version and its themes. It stops when a
 dependency is added or changes until `third-party.json` covers it.
+
+When a build fails, the builder checks the dependencies again with the
+output kept, and says what it finds:
+
+- **"hash mismatch"**: a package in Zig's caches doesn't match its hash.
+  A `zig fetch` run by hand causes this (Zig 0.17.0's stores a package one
+  folder too deep in the per-user cache). `-Clean` keeps downloaded
+  packages; `-Repair` deletes them so they download again.
+- **A download failing** (`bad HTTP response code`): with `HTTPS_PROXY` or
+  `HTTP_PROXY` set, Zig downloads through that proxy, and the server the
+  error names is only where the request was going. The builder itself
+  downloads Zig with Windows' proxy settings instead. If the machine
+  reaches the internet without the proxy, clear the variable for the build.
 
 To build by hand with Zig 0.17.0 already installed:
 
