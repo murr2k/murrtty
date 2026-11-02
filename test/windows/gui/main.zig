@@ -9,6 +9,10 @@
 //!   --expect-skip <name>  a scenario this machine is known to skip, such as
 //!                         pixels where no display is driven (repeatable)
 //!
+//! GHOSTTY_GUI_GOLDEN (a folder) compares the on-screen scenarios'
+//! captures with this machine's golden samples (Harness.golden); a
+//! scenario whose captures differ fails.
+//!
 //! With no scenario names, every scenario runs; tools (picture makers that
 //! check nothing) run only when named. A scenario skips because it is an
 //! opt-in whose switch is off, because it isn't for this build (the other
@@ -128,8 +132,12 @@ pub fn main(init: std.process.Init) !u8 {
         std.debug.print("{s:<16} ", .{s.name});
         if (verbose) std.debug.print("\n", .{});
         Harness.last_skip = .{};
+        const goldens_differing = Harness.golden_stats.differ;
         if (s.run(&h)) |_| {
-            std.debug.print("ok\n", .{});
+            if (Harness.golden_stats.differ > goldens_differing) {
+                failed += 1;
+                std.debug.print("FAILED (golden samples differ)\n", .{});
+            } else std.debug.print("ok\n", .{});
             if (listed(expect.items, s.name)) try expected_ran.append(alloc, s.name);
         } else |err| switch (err) {
             error.Skipped => {
@@ -168,6 +176,13 @@ pub fn main(init: std.process.Init) !u8 {
         std.debug.print(")", .{});
     }
     std.debug.print("\n", .{});
+
+    const gs = Harness.golden_stats;
+    if (gs.matched + gs.recorded + gs.differ > 0) {
+        std.debug.print("golden samples ({s}): {d} match, {d} recorded, {d} differ\n", .{
+            if (h.golden_key) |k| k else "?", gs.matched, gs.recorded, gs.differ,
+        });
+    }
 
     if (unexpected.items.len > 0) {
         std.debug.print("skipped by this machine, not expected (--expect-skip):\n", .{});

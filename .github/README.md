@@ -100,6 +100,9 @@ mirror of this repository
 (`.github/workflows/windows-port-desktop.yml`). A manually started workflow
 (`.github/workflows/windows-port-hosted.yml`) runs both on GitHub's hosted
 x64 and ARM64 runners, which have no GPU: there murrtty draws with WARP.
+Before each release, the checks that show something on the screen run
+with the developer present, and compare the display's look with the
+previous release's (`test\windows\gui\run-onscreen.cmd`).
 Another (`.github/workflows/windows-port.yml`) runs the builder on a clean
 hosted Windows runner and then the unit tests.
 

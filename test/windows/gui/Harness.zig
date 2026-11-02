@@ -29,6 +29,9 @@ verbose: bool = false,
 renderer_cache: ?Renderer = null,
 /// Each launch's folder, for cleanup.
 launched: std.ArrayList([]u8) = .empty,
+/// This machine's setup as a golden samples folder (machineKey), once
+/// worked out.
+golden_key: ?[]u8 = null,
 
 pub const Error = error{
     TestFailed,
@@ -107,6 +110,7 @@ pub fn deinit(self: *Harness) void {
     if (self.desktop_name) |n| self.alloc.free(n);
     self.alloc.free(self.exe);
     self.alloc.free(self.temp_dir);
+    if (self.golden_key) |k| self.alloc.free(k);
 }
 
 /// Delete the run's folder: each launch's config and dump, then the
@@ -2257,6 +2261,11 @@ pub fn loadPicture(self: *Harness, g: *const Ghostty, name: []const u8) !Image {
     defer self.alloc.free(path);
     const bytes = self.readFileOrNull(path) orelse return self.fail("no {s}", .{path});
     defer self.alloc.free(bytes);
+    return self.parseBmp(bytes, name);
+}
+
+/// A top-down 32-bit BMP, as Image.save writes it, read into an Image.
+pub fn parseBmp(self: *Harness, bytes: []const u8, name: []const u8) !Image {
     if (bytes.len < 54 or bytes[0] != 'B' or bytes[1] != 'M') return self.fail("{s} is not a BMP", .{name});
     const offset = std.mem.readInt(u32, bytes[10..14], .little);
     const width = std.mem.readInt(i32, bytes[18..22], .little);
@@ -2421,6 +2430,142 @@ pub const Image = struct {
         try writeFile(self.alloc, path, bytes);
     }
 };
+
+/// Golden samples (GHOSTTY_GUI_GOLDEN = a folder, which
+/// test\windows\gui\run-onscreen.cmd sets before a release): the on-screen
+/// scenarios' captures compared with this machine's earlier ones, so the
+/// look can't drift unseen from one release to the next. They are kept
+/// per machine setup (machineKey: the Windows build, renderer, GPU, DPI,
+/// light or dark, elevated), since each changes the pictures. A capture
+/// with no golden yet is recorded, to be looked over; one where more than
+/// 0.05% of the pixels differ by more than 4 in a channel (a cursor cell
+/// passes, a 1 px line across the window doesn't) fails its scenario, the
+/// capture and a diff kept in its run folder.
+/// GHOSTTY_GUI_GOLDEN_UPDATE=1 records them all again, once a change is
+/// meant.
+pub var golden_stats: struct { matched: usize = 0, recorded: usize = 0, differ: usize = 0 } = .{};
+
+/// Compare `img` with its golden sample `name` (a .bmp file name) in the
+/// scenario's folder of this machine's goldens, or record it there.
+pub fn golden(self: *Harness, g: *const Ghostty, name: []const u8, img: *const Image) void {
+    var buf: [260]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_GOLDEN"), &buf, buf.len);
+    if (n == 0 or n >= buf.len) return;
+    self.goldenIn(g, buf[0..n], name, img) catch |err| {
+        golden_stats.differ += 1;
+        std.debug.print("    GOLDEN {s}: {t}\n", .{ name, err });
+    };
+}
+
+fn goldenIn(self: *Harness, g: *const Ghostty, folder_w: []const u16, name: []const u8, img: *const Image) !void {
+    const folder = try std.unicode.utf16LeToUtf8Alloc(self.alloc, folder_w);
+    defer self.alloc.free(folder);
+    const setup = try self.machineKey(g);
+    const dir = try std.fmt.allocPrint(self.alloc, "{s}\\{s}\\{s}", .{ folder, setup, std.fs.path.basename(g.dir) });
+    defer self.alloc.free(dir);
+    try makePath(self.alloc, dir);
+    const path = try std.fmt.allocPrint(self.alloc, "{s}\\{s}", .{ dir, name });
+    defer self.alloc.free(path);
+
+    const old = if (optIn("GHOSTTY_GUI_GOLDEN_UPDATE")) null else self.readFileOrNull(path);
+    const bytes = old orelse {
+        try img.save(path);
+        golden_stats.recorded += 1;
+        std.debug.print("    golden {s}: recorded, to look over: {s}\n", .{ name, path });
+        return;
+    };
+    defer self.alloc.free(bytes);
+    var want = try self.parseBmp(bytes, path);
+    defer want.deinit();
+
+    const total = img.width * img.height;
+    var differ: usize = 0;
+    var worst: u32 = 0;
+    const same_size = want.width == img.width and want.height == img.height;
+    if (same_size) for (img.pixels, want.pixels) |a, b| {
+        const gap = channelGap(a, b);
+        worst = @max(worst, gap);
+        if (gap > 4) differ += 1;
+    };
+    if (same_size and differ * 2000 <= total) {
+        golden_stats.matched += 1;
+        std.debug.print("    golden {s}: matches ({d} pixels apart, by up to {d})\n", .{ name, differ, worst });
+        return;
+    }
+
+    golden_stats.differ += 1;
+    const actual = try std.fmt.allocPrint(self.alloc, "{s}\\golden-actual-{s}", .{ g.dir, name });
+    defer self.alloc.free(actual);
+    try img.save(actual);
+    if (!same_size) {
+        std.debug.print("    GOLDEN {s}: {d}x{d}, the golden {d}x{d} ({s}); the capture is {s}\n", .{
+            name, img.width, img.height, want.width, want.height, path, actual,
+        });
+        return;
+    }
+    // The capture dimmed, the pixels that differ magenta.
+    var diff: Image = .{ .alloc = self.alloc, .width = img.width, .height = img.height, .pixels = try self.alloc.alloc(u32, total) };
+    defer diff.deinit();
+    for (diff.pixels, img.pixels, want.pixels) |*d, a, b| {
+        d.* = 0xFF000000 | if (channelGap(a, b) > 4) @as(u32, 0xFF00FF) else (a >> 2) & 0x3F3F3F;
+    }
+    const diff_path = try std.fmt.allocPrint(self.alloc, "{s}\\golden-diff-{s}", .{ g.dir, name });
+    defer self.alloc.free(diff_path);
+    try diff.save(diff_path);
+    std.debug.print("    GOLDEN {s}: {d} of {d} pixels differ, by up to {d}, from {s}; the capture and a diff are {s} and {s}\n", .{
+        name, differ, total, worst, path, actual, diff_path,
+    });
+}
+
+/// The largest difference between two 0xRRGGBB colors in one channel.
+fn channelGap(a: u32, b: u32) u32 {
+    var gap: u32 = 0;
+    var shift: u5 = 0;
+    while (shift <= 16) : (shift += 8) {
+        const x: i32 = @intCast((a >> shift) & 0xFF);
+        const y: i32 = @intCast((b >> shift) & 0xFF);
+        gap = @max(gap, @abs(x - y));
+    }
+    return gap;
+}
+
+/// This machine's setup as a folder name for golden samples: what changes
+/// how murrtty's windows look on its display.
+fn machineKey(self: *Harness, g: *const Ghostty) ![]const u8 {
+    if (self.golden_key) |k| return k;
+    var d = try self.dump(g);
+    defer d.deinit();
+    const gpu = if (d.value.adapter.len > 0) d.value.adapter else d.value.gl_renderer;
+    const dpi = w.GetDpiForWindow(try self.mainWindow(g));
+    var name: std.ArrayList(u8) = .empty;
+    errdefer name.deinit(self.alloc);
+    try name.print(self.alloc, "{d}-{t}-", .{ windowsBuild(), self.renderer() });
+    for (gpu[0..@min(gpu.len, 40)]) |c| try name.append(self.alloc, if (std.ascii.isAlphanumeric(c)) c else '_');
+    try name.print(self.alloc, "-{d}dpi-{s}", .{ dpi, if (systemDark()) "dark" else "light" });
+    if (w.IsUserAnAdmin() != 0) try name.appendSlice(self.alloc, "-admin");
+    self.golden_key = try name.toOwnedSlice(self.alloc);
+    return self.golden_key.?;
+}
+
+/// Whether Windows' apps are set to dark, which murrtty's header bar
+/// follows (window-theme = auto).
+fn systemDark() bool {
+    var value: w.DWORD = 1;
+    var size: w.DWORD = @sizeOf(w.DWORD);
+    const rc = w.RegGetValueW(w.HKEY_CURRENT_USER, w.L("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"), w.L("AppsUseLightTheme"), w.RRF_RT_REG_DWORD, null, &value, &size);
+    return rc == 0 and value == 0;
+}
+
+/// Make the folder `path` and any of its parents missing.
+fn makePath(alloc: Allocator, path: []const u8) !void {
+    for (0..path.len + 1) |i| {
+        if (i < path.len and path[i] != '\\' and path[i] != '/') continue;
+        if (i == 0 or path[i - 1] == ':' or path[i - 1] == '\\') continue;
+        const part = try std.unicode.utf8ToUtf16LeAllocZ(alloc, path[0..i]);
+        defer alloc.free(part);
+        _ = w.CreateDirectoryW(part.ptr, null);
+    }
+}
 
 /// Capture a window through DWM (PrintWindow with PW_RENDERFULLCONTENT),
 /// which works even when it is covered or on another desktop.

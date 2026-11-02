@@ -409,6 +409,8 @@ pub extern "advapi32" fn RegCreateKeyExW(HKEY, LPCWSTR, DWORD, ?LPWSTR, DWORD, D
 pub extern "advapi32" fn RegSetValueExW(HKEY, ?LPCWSTR, DWORD, DWORD, [*]const u8, DWORD) callconv(.winapi) c_long;
 pub extern "advapi32" fn RegCloseKey(HKEY) callconv(.winapi) c_long;
 pub extern "advapi32" fn RegDeleteTreeW(HKEY, ?LPCWSTR) callconv(.winapi) c_long;
+pub extern "advapi32" fn RegGetValueW(HKEY, ?LPCWSTR, ?LPCWSTR, DWORD, ?*DWORD, ?*anyopaque, ?*DWORD) callconv(.winapi) c_long;
+pub const RRF_RT_REG_DWORD: DWORD = 0x10;
 pub extern "kernel32" fn CreateFileW(LPCWSTR, DWORD, DWORD, ?*anyopaque, DWORD, DWORD, ?HANDLE) callconv(.winapi) HANDLE;
 pub extern "kernel32" fn ReadFile(HANDLE, [*]u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WriteFile(HANDLE, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;

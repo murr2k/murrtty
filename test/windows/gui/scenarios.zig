@@ -151,6 +151,17 @@ const base_config =
     \\
 ;
 
+/// For golden samples (Harness.golden): the same screen on every run.
+/// cmd's banner names the Windows revision, which changes monthly, and a
+/// prompt in the home folder names the user: `cls` clears the one and C:\
+/// replaces the other. The cursor stays steady.
+const golden_screen =
+    \\working-directory = C:\
+    \\command = cmd.exe /k cls
+    \\cursor-style-blink = false
+    \\
+;
+
 /// Launch with the base config plus `extra`, and wait for cmd's prompt.
 fn start(h: *Harness, name: []const u8, extra: []const u8, prompt: []const u8) !Harness.Ghostty {
     const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
@@ -226,7 +237,7 @@ fn pixels(h: *Harness) anyerror!void {
 }
 
 fn pixelsOffscreen(h: *Harness) !void {
-    var g = try h.launchAt("pixels", base_config, .offscreen);
+    var g = try h.launchAt("pixels", base_config ++ golden_screen, .offscreen);
     defer g.deinit();
     try h.waitText(&g, ">", 1, 20000);
     const win = try h.mainWindow(&g);
@@ -240,6 +251,18 @@ fn pixelsOffscreen(h: *Harness) !void {
     defer img.deinit();
     const px = img.rgb(img.width - 6, img.height - 6);
     try h.expect(px == 0x282c34, "background pixel #{x:0>6}, expected #282c34", .{px});
+
+    // Its golden sample: DWM composes an off-screen window again only a
+    // step late on a still screen, so a second capture after a pause.
+    h.pump(1000);
+    if (h.capture(surf)) |first| {
+        var f = first;
+        f.deinit();
+    } else |_| {}
+    h.pump(300);
+    var settled = h.capture(surf) catch return h.fail("capture failed", .{});
+    defer settled.deinit();
+    h.golden(&g, "pane.bmp", &settled);
 }
 
 /// The line `snapshot`'s frame shows, as GTK's reference shows it with
@@ -7796,7 +7819,7 @@ fn transparency(h: *Harness) anyerror!void {
 const backdrop_green = 0x00FF00;
 
 fn transparencyOnScreen(h: *Harness) !void {
-    var g = try h.launchAt("transparency", base_config ++ "background-opacity = 0.5\n" ++ toggle_opacity, .onscreen);
+    var g = try h.launchAt("transparency", base_config ++ golden_screen ++ "background-opacity = 0.5\n" ++ toggle_opacity, .onscreen);
     defer g.deinit();
     try h.waitText(&g, ">", 1, 20000);
     const win = try h.mainWindow(&g);
@@ -7854,6 +7877,8 @@ fn transparencyOnScreen(h: *Harness) !void {
     // buffer), beside a new pane that starts translucent.
     h.key(surf, .{ .ctrl = true, .shift = true }, 'O');
     try waitPanes(h, &g, 2);
+    // The new pane (the tab's text) at its prompt, for the golden samples.
+    try h.waitText(&g, "C:\\>", 1, 20000);
     h.pump(800);
     var divider_color: u32 = 0;
     const divider_px = divider: {
@@ -7923,7 +7948,7 @@ fn blurDisplay(h: *Harness) anyerror!void {
 }
 
 fn blurOnScreen(h: *Harness) !void {
-    const config = base_config ++ "background-opacity = 0.5\napp-notifications = no-config-reload\n";
+    const config = base_config ++ golden_screen ++ "background-opacity = 0.5\napp-notifications = no-config-reload\n";
     var g = try h.launchAt("blur-display", config, .onscreen);
     defer g.deinit();
     try h.waitText(&g, ">", 1, 20000);
@@ -8158,10 +8183,18 @@ fn overlayOnDisplay(h: *Harness, g: *Harness.Ghostty, client: w.RECT, kind: u8) 
     return displayPixel(h, g, client, @intCast(@divTrunc(r.left + r.right, 2) - client.left), @intCast(@divTrunc(r.top + r.bottom, 2) - client.top), name);
 }
 
+/// Keep a display capture in the scenario's folder, and compare it with its
+/// golden sample (Harness.golden). Not spike S1's sibling and child hosts
+/// (they flicker, which is why overlays are layered children) or Acrylic
+/// kept while inactive (reported only: Windows' to change).
 fn saveImage(h: *Harness, g: *Harness.Ghostty, img: *const Harness.Image, name: []const u8) void {
     const path = std.fmt.allocPrint(h.alloc, "{s}\\{s}", .{ g.dir, name }) catch return;
     defer h.alloc.free(path);
     img.save(path) catch {};
+    for ([_][]const u8{ "overlay-1", "overlay-2", "acrylic-inactive" }) |no| {
+        if (std.mem.startsWith(u8, name, no)) return;
+    }
+    h.golden(g, name, img);
 }
 
 /// The client area of `hwnd` in screen pixels.

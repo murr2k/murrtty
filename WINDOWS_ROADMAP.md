@@ -3770,7 +3770,16 @@ S7 spike on every hosted run (Windows reports a variable set to "" as
 present): the opt-in switches now need a value (`Harness.optIn`). The
 stress scenarios (`GHOSTTY_GUI_STRESS`) run there too. The picture makers
 (`snapshot`, `readme-screenshot`, `config-editor-look`) are tools, which
-run only when named.
+run only when named. The scenarios that need the owner at the screen run
+before each release (the owner's choice): `test\windows\gui\run-onscreen.cmd`
+runs them and compares the display's captures (`pixels`, `transparency`,
+`blur-display`) with golden samples, kept per machine setup (Windows
+build, renderer, GPU, DPI, light or dark, elevated) in
+`GHOSTTY_GUI_GOLDEN`. A capture with no golden is recorded to be looked
+over; one where over 0.05% of the pixels differ by more than 4 fails,
+with a diff beside it. Those scenarios run cmd at `C:\` with its banner
+cleared and a steady cursor, so the screen is the same on every run
+(checked with the read-back frame: two launches 0 pixels apart).
 
 **7.4 Packaging and signing, L.**
 - A zip of `bin` plus `share` (themes, shell integration, terminfo), LICENSE
