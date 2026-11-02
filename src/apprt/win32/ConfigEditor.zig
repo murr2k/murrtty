@@ -1,8 +1,13 @@
 //! The configuration editor (roadmap F1): murrtty's own, as Ghostty's apps
 //! have none. GTK having nothing to match, it is drawn as libadwaita's
-//! preferences window (the Look rule): a search field, a page picker and
-//! Save over a page of cards (libadwaita's boxed lists), one per group of
-//! options, each option a row with its name, its documentation's first
+//! preferences window (the Look rule), laid out as the owner designed it
+//! (roadmap F1f): a search field centered in the top bar, the categories in
+//! a column at the left (All Settings, then each group), and along the
+//! bottom a status line ("No unsaved changes ▪ config valid") with Undo,
+//! Redo, Discard and Review & Save, which shows the lines a save changes
+//! before it saves. The page is a column of cards (libadwaita's boxed
+//! lists), one per group of options, each option a row with its name, its
+//! documentation's first
 //! sentence (all of it once the row is opened), and the control that edits
 //! its value: a switch, a menu of its choices or flags, a field (a color's
 //! with its swatch, a path's), or a list's lines. Some rows have a picker
@@ -38,6 +43,8 @@ const configpkg = @import("../../config.zig");
 const cli_args = @import("../../cli/args.zig");
 const option_list = configpkg.option_list;
 const EditorSession = configpkg.EditorSession;
+const EditableFile = configpkg.EditableFile;
+const line_diff = configpkg.line_diff;
 const c = @import("c.zig");
 const draw = @import("draw.zig");
 const text_util = @import("text.zig");
@@ -68,19 +75,37 @@ const id_save = 200;
 const id_discard = 201;
 const id_overwrite = 202;
 
+/// Posted after it opens: the configuration's lines are checked once the
+/// window shows (the status line says "checking" meanwhile).
+const wm_check = c.WM_APP + 31;
+
 /// Metrics in device-independent pixels, libadwaita's where it has them:
 /// rows 58 tall with a subtitle, cards rounded 12, entries 34 tall rounded
 /// 6, a switch 46 by 26, a page at most 680 wide with 24 at its sides.
-const default_width = 760;
-const default_height = 680;
-const min_width = 420;
-const min_height = 360;
+const default_width = 980;
+const default_height = 700;
+const min_width = 640;
+const min_height = 400;
 const bar_height = 58;
 const bar_pad = 12;
 const field_height = 34;
 const field_radius = 6;
 const button_pad_x = 16;
-const footer_height = 30;
+const button_gap = 8;
+/// The bottom bar: the status line and the buttons.
+const footer_height = 54;
+/// The search field's width at most, centered.
+const search_width = 380;
+/// The categories' column (libadwaita's navigation sidebar): rows 38 tall,
+/// inset 6, from 8 below its top.
+const sidebar_width = 220;
+const sidebar_row = 38;
+const sidebar_inset = 6;
+const sidebar_top = 8;
+/// Changes to one option this close together (a held spin button) are one
+/// step of Undo; it keeps this many.
+const coalesce_ms = 1000;
+const max_steps = 200;
 const content_max = 680;
 const content_pad = 24;
 const group_gap = 24;
@@ -138,6 +163,11 @@ const Pal = struct {
     knob: c.COLORREF,
     warning: c.COLORREF,
     err: c.COLORREF,
+    /// The categories' column, a little off the window's (darker in light,
+    /// lighter in dark), its selected row and the one under the mouse.
+    sidebar: c.COLORREF,
+    sidebar_selected: c.COLORREF,
+    sidebar_hover: c.COLORREF,
 
     fn of(dark: bool) Pal {
         const theme = draw.adwaita(dark);
@@ -146,7 +176,11 @@ const Pal = struct {
         const card = if (dark) draw.blend(bg, white, 0.08) else white;
         const fg = theme.fg;
         const accent: draw.Color = .{ .r = 0x35, .g = 0x84, .b = 0xe4 };
+        const sidebar = draw.blend(bg, fg, 0.05);
         return .{
+            .sidebar = draw.ref(sidebar),
+            .sidebar_selected = draw.ref(draw.blend(sidebar, fg, 0.12)),
+            .sidebar_hover = draw.ref(draw.blend(sidebar, fg, 0.06)),
             .bg = draw.ref(bg),
             .card = draw.ref(card),
             .text = draw.ref(fg),
@@ -280,11 +314,29 @@ dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 dark: bool = false,
 pal: Pal = Pal.of(false),
 fonts: Fonts = .{},
-/// The top bar's parts, in the window's client pixels.
+/// The window's parts, in its client pixels: the search field's box, the
+/// categories' column and its rows (All Settings first), the bottom bar's
+/// buttons.
 search_rect: c.RECT = .{},
-group_rect: c.RECT = .{},
-save_rect: c.RECT = .{},
-pressed: enum { none, group, save } = .none,
+sidebar_rect: c.RECT = .{},
+category_rects: [group_count + 1]c.RECT = @splat(.{}),
+buttons: [button_count]c.RECT = @splat(.{}),
+/// What the mouse is over in the window itself.
+hover_main: ?MainHit = null,
+tracking_main: bool = false,
+/// Undo's steps and Redo's: the files as they were.
+undo_steps: std.ArrayList(Step) = .empty,
+redo_steps: std.ArrayList(Step) = .empty,
+/// What the status line says: options changed and not saved, and the
+/// lines the loader would refuse (the first of them, said).
+unsaved: usize = 0,
+problems: usize = 0,
+first_problem: [300]u8 = undefined,
+first_problem_len: usize = 0,
+checked_once: bool = false,
+/// Each line's check, by its text: null when the loader takes it, else its
+/// message.
+checked: std.StringHashMapUnmanaged(?[]u8) = .empty,
 /// Its window has been made: until then a WM_NCDESTROY (a failed
 /// creation) leaves freeing it to `create`.
 created: bool = false,
@@ -304,6 +356,44 @@ repeat: ?struct { option: u16, part: Part } = null,
 /// A slider's value is shown in the terminals before it is saved (the
 /// app's configuration holds it); closing without saving reloads the files.
 previewed: bool = false,
+
+const group_count = @typeInfo(option_list.Group).@"enum".field_names.len;
+
+/// The bottom bar's buttons, left to right.
+const Button = enum { undo, redo, discard, review };
+const button_count = @typeInfo(Button).@"enum".field_names.len;
+
+fn buttonLabel(b: Button) []const u8 {
+    return switch (b) {
+        .undo => "Undo",
+        .redo => "Redo",
+        .discard => "Discard",
+        .review => "Review & Save",
+    };
+}
+
+/// A category's row (0 is All Settings) or a button.
+const MainHit = union(enum) {
+    category: usize,
+    button: Button,
+
+    fn eql(a: ?MainHit, b: ?MainHit) bool {
+        const x = a orelse return b == null;
+        const y = b orelse return false;
+        return switch (x) {
+            .category => |i| y == .category and y.category == i,
+            .button => |k| y == .button and y.button == k,
+        };
+    }
+};
+
+/// A step of Undo or Redo: every file's text before it, and the option it
+/// changed (null for several, as Discard).
+const Step = struct {
+    snap: EditorSession.Snapshot,
+    option: ?u16,
+    at: u64,
+};
 
 pub fn registerClass(instance: c.HINSTANCE) !void {
     for ([_]struct { c.LPCWSTR, c.WNDPROC }{
@@ -458,7 +548,7 @@ fn create(app: *App) !*ConfigEditor {
     _ = c.ShowWindow(self.hwnd, c.SW_SHOWNORMAL);
     _ = c.SetForegroundWindow(self.hwnd);
     if (self.search) |s| _ = c.SetFocus(s);
-    self.setStatus(false, "Editing {s}", .{self.path});
+    _ = c.PostMessageW(self.hwnd, wm_check, 0, 0);
     return self;
 }
 
@@ -627,6 +717,10 @@ fn setStatus(self: *ConfigEditor, is_error: bool, comptime fmt: []const u8, args
     const s = std.fmt.bufPrint(&self.status, fmt, args) catch self.status[0..];
     self.status_len = text_util.truncate(s, self.status.len).len;
     self.status_error = is_error;
+    self.invalidateFooter();
+}
+
+fn invalidateFooter(self: *ConfigEditor) void {
     var r: c.RECT = .{};
     _ = c.GetClientRect(self.hwnd, &r);
     r.top = r.bottom - self.scale(footer_height);
@@ -654,33 +748,52 @@ fn refreshTheme(self: *ConfigEditor) void {
     _ = c.InvalidateRect(self.hwnd, null, c.TRUE);
 }
 
-/// The top bar's search field, page button and Save, and the list below.
+/// The search field centered in the top bar, the categories' column at the
+/// left, the page beside it, and the bottom bar's buttons at its right.
 fn layoutBar(self: *ConfigEditor) void {
     var client: c.RECT = .{};
     _ = c.GetClientRect(self.hwnd, &client);
     const pad = self.scale(bar_pad);
     const fh = self.scale(field_height);
-    const top = @divTrunc(self.scale(bar_height) - fh, 2);
-    const save_w = self.textWidth(self.fonts.button, "Save") + 2 * self.scale(button_pad_x);
-    const group_w = @min(self.scale(200), self.textWidth(self.fonts.button, self.groupLabel()) + 2 * self.scale(button_pad_x) + self.scale(14));
-    self.save_rect = .{ .left = client.right - pad - save_w, .top = top, .right = client.right - pad, .bottom = top + fh };
-    self.group_rect = .{ .left = self.save_rect.left - pad - group_w, .top = top, .right = self.save_rect.left - pad, .bottom = top + fh };
-    self.search_rect = .{ .left = pad, .top = top, .right = @max(pad + self.scale(80), self.group_rect.left - pad), .bottom = top + fh };
+    const bar_h = self.scale(bar_height);
+    const foot_h = self.scale(footer_height);
+    const top = @divTrunc(bar_h - fh, 2);
+    const sw = @min(self.scale(search_width), @max(self.scale(120), client.right - 2 * pad));
+    const sl = @divTrunc(client.right - sw, 2);
+    self.search_rect = .{ .left = sl, .top = top, .right = sl + sw, .bottom = top + fh };
     if (self.search) |s| {
         const inset = self.scale(9);
         const line = self.lineHeight(self.fonts.title) + 2;
         const r = self.search_rect;
         _ = c.SetWindowPos(s, null, r.left + inset, r.top + @divTrunc(fh - line, 2), r.right - r.left - 2 * inset, line, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
     }
-    if (self.list) |l| {
-        const y = self.scale(bar_height);
-        const h = @max(0, client.bottom - y - self.scale(footer_height));
-        _ = c.SetWindowPos(l, null, 0, y, client.right, h, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
-    }
-}
 
-fn groupLabel(self: *const ConfigEditor) []const u8 {
-    return if (self.group) |g| g.title() else "All Pages";
+    // The categories.
+    const side_w = @min(self.scale(sidebar_width), @divTrunc(client.right, 3));
+    self.sidebar_rect = .{ .left = 0, .top = bar_h, .right = side_w, .bottom = @max(bar_h, client.bottom - foot_h) };
+    const inset = self.scale(sidebar_inset);
+    const row_h = self.scale(sidebar_row);
+    var y = bar_h + self.scale(sidebar_top);
+    for (&self.category_rects) |*r| {
+        r.* = .{ .left = inset, .top = y, .right = side_w - inset, .bottom = y + row_h };
+        y += row_h + self.scale(2);
+    }
+
+    // The buttons, from the right: Review & Save, Discard, Redo, Undo.
+    const by = client.bottom - foot_h + @divTrunc(foot_h - fh, 2);
+    var right = client.right - pad;
+    var k: usize = button_count;
+    while (k > 0) {
+        k -= 1;
+        const w = self.textWidth(self.fonts.button, buttonLabel(@enumFromInt(k))) + 2 * self.scale(button_pad_x);
+        self.buttons[k] = .{ .left = right - w, .top = by, .right = right, .bottom = by + fh };
+        right -= w + self.scale(button_gap);
+    }
+
+    if (self.list) |l| {
+        const h = @max(0, client.bottom - bar_h - foot_h);
+        _ = c.SetWindowPos(l, null, side_w, bar_h, @max(0, client.right - side_w), h, c.SWP_NOZORDER | c.SWP_NOACTIVATE);
+    }
 }
 
 fn textWidth(self: *const ConfigEditor, font: ?c.HFONT, s: []const u8) c_int {
@@ -716,7 +829,7 @@ fn rebuild(self: *ConfigEditor) void {
     const groups = @typeInfo(option_list.Group).@"enum".field_names;
     inline for (groups) |gname| {
         const g = @field(option_list.Group, gname);
-        if (self.group == null or self.group.? == g) {
+        if (self.query.items.len > 0 or self.group == null or self.group.? == g) {
             var first = true;
             for (option_list.all, 0..) |*o, i| {
                 if (option_list.groupOf(o.name) != g) continue;
@@ -1030,7 +1143,9 @@ fn commit(self: *ConfigEditor, option: u16, value: ?[]const u8) bool {
         self.setStatus(true, "{s}: {s}", .{ o.name, message });
         return false;
     }
+    const step = self.beginChange(option);
     self.session.set(o.name, value) catch |err| {
+        self.dropStep(step);
         self.setStatus(true, "{s}: not changed ({t})", .{ o.name, err });
         return false;
     };
@@ -1205,7 +1320,9 @@ fn commitList(self: *ConfigEditor, option: u16, entries: []const ?[]const u8) bo
             return false;
         }
     }
+    const step = self.beginChange(option);
     self.session.setList(o.name, entries) catch |err| {
+        self.dropStep(step);
         self.setStatus(true, "{s}: not changed ({t})", .{ o.name, err });
         return false;
     };
@@ -1213,26 +1330,285 @@ fn commitList(self: *ConfigEditor, option: u16, entries: []const ?[]const u8) bo
     return true;
 }
 
+/// A change made: when it applies, said only when that isn't at once.
 fn noteChange(self: *ConfigEditor, o: *const option_list.Option) void {
     self.changed.put(self.app.core_app.alloc, o.name, {}) catch {};
-    const when: []const u8 = switch (o.reload()) {
-        .live => "",
-        .new_terminals => " It applies to terminals opened after the save.",
-        .restart => " It applies once murrtty starts again.",
-    };
-    self.setStatus(false, "{s} changed. Save to keep it.{s}", .{ o.name, when });
+    switch (o.reload()) {
+        .live => self.status_len = 0,
+        .new_terminals => self.setStatus(false, "{s} applies to terminals opened after the save", .{o.name}),
+        .restart => self.setStatus(false, "{s} applies once murrtty starts again", .{o.name}),
+    }
     self.layout();
-    _ = c.InvalidateRect(self.hwnd, &self.save_rect, c.FALSE);
+    self.stateChanged();
 }
 
 fn resetOption(self: *ConfigEditor, option: u16) void {
     const o = &option_list.all[option];
+    const step = self.beginChange(option);
     self.session.reset(o.name) catch |err| {
+        self.dropStep(step);
         self.setStatus(true, "{s}: not reset ({t})", .{ o.name, err });
         return;
     };
     self.noteChange(o);
     self.previewIfSlider(option);
+}
+
+// ---------------------------------------------------------------- undo
+
+const Began = enum { pushed, joined, none };
+
+/// Before a change to `option` (null for several): the files as they are,
+/// a step for Undo, and Redo's steps gone. A change to the option the last
+/// step changed, within a second of it (a held spin button), joins it.
+fn beginChange(self: *ConfigEditor, option: ?u16) Began {
+    const alloc = self.app.core_app.alloc;
+    const now = c.GetTickCount64();
+    if (option != null and self.redo_steps.items.len == 0 and self.undo_steps.items.len > 0) {
+        const last = &self.undo_steps.items[self.undo_steps.items.len - 1];
+        if (last.option == option and now -% last.at < coalesce_ms) {
+            last.at = now;
+            return .joined;
+        }
+    }
+    const snap = self.session.snapshot(alloc) catch return .none;
+    self.undo_steps.append(alloc, .{ .snap = snap, .option = option, .at = now }) catch {
+        snap.deinit(alloc);
+        return .none;
+    };
+    if (self.undo_steps.items.len > max_steps) {
+        const oldest = self.undo_steps.orderedRemove(0);
+        oldest.snap.deinit(alloc);
+    }
+    clearSteps(alloc, &self.redo_steps);
+    return .pushed;
+}
+
+/// The change didn't happen: its step goes.
+fn dropStep(self: *ConfigEditor, began: Began) void {
+    if (began != .pushed) return;
+    const step = self.undo_steps.pop() orelse return;
+    step.snap.deinit(self.app.core_app.alloc);
+}
+
+fn clearSteps(alloc: Allocator, steps: *std.ArrayList(Step)) void {
+    for (steps.items) |st| st.snap.deinit(alloc);
+    steps.clearRetainingCapacity();
+}
+
+fn undo(self: *ConfigEditor) void {
+    self.travel(&self.undo_steps, &self.redo_steps, "Undone");
+}
+
+fn redo(self: *ConfigEditor) void {
+    self.travel(&self.redo_steps, &self.undo_steps, "Redone");
+}
+
+/// The files back as `from`'s last step has them; the state they leave goes
+/// onto `to`.
+fn travel(self: *ConfigEditor, from: *std.ArrayList(Step), to: *std.ArrayList(Step), verb: []const u8) void {
+    self.endEdit(.commit);
+    self.endDrag(.cancel);
+    self.endRepeat();
+    const alloc = self.app.core_app.alloc;
+    if (from.items.len == 0) return;
+    const now = self.session.snapshot(alloc) catch |err| {
+        self.setStatus(true, "{s}: nothing changed ({t})", .{ verb, err });
+        return;
+    };
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const before = self.previewedValues(arena.allocator());
+    const step = from.pop().?;
+    self.session.restore(step.snap) catch |err| {
+        now.deinit(alloc);
+        from.append(alloc, step) catch step.snap.deinit(alloc);
+        self.setStatus(true, "{s}: nothing changed ({t})", .{ verb, err });
+        return;
+    };
+    to.append(alloc, .{ .snap = now, .option = step.option, .at = 0 }) catch now.deinit(alloc);
+    step.snap.deinit(alloc);
+    if (step.option) |o| {
+        self.setStatus(false, "{s}: {s}", .{ verb, option_list.all[o].name });
+    } else {
+        self.setStatus(false, "{s}: Discard", .{verb});
+    }
+    self.afterRestore(before);
+}
+
+/// Every unsaved change dropped, as one step Undo takes back.
+fn discardChanges(self: *ConfigEditor) void {
+    self.endEdit(.cancel);
+    self.endDrag(.cancel);
+    self.endRepeat();
+    if (!self.session.dirty()) return;
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const before = self.previewedValues(arena.allocator());
+    const step = self.beginChange(null);
+    self.session.discard() catch |err| {
+        self.dropStep(step);
+        self.setStatus(true, "Not discarded ({t})", .{err});
+        return;
+    };
+    self.setStatus(false, "Discarded the unsaved changes; Undo brings them back", .{});
+    self.afterRestore(before);
+}
+
+/// The values of the options that preview (roadmap F1d) as the editor
+/// holds them, by option.
+fn previewedValues(self: *ConfigEditor, a: Allocator) []?[]const u8 {
+    const out = a.alloc(?[]const u8, option_list.all.len) catch return &.{};
+    for (option_list.all, 0..) |*o, i| {
+        out[i] = if (previews(o)) a.dupe(u8, self.valueOf(a, @intCast(i))) catch null else null;
+    }
+    return out;
+}
+
+/// After Undo, Redo or Discard: the terminals show the files' values again
+/// when nothing is unsaved, else each previewed value that moved; the page
+/// and the status line follow.
+fn afterRestore(self: *ConfigEditor, before: []const ?[]const u8) void {
+    if (!self.session.dirty()) {
+        if (self.previewed) self.app.revertConfigPreview();
+        self.previewed = false;
+    } else if (before.len == option_list.all.len) {
+        var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+        defer arena.deinit();
+        for (option_list.all, 0..) |*o, i| {
+            if (!previews(o)) continue;
+            const was = before[i] orelse continue;
+            const now = self.valueOf(arena.allocator(), @intCast(i));
+            if (!std.mem.eql(u8, was, now)) self.previewValue(@intCast(i), now);
+        }
+    }
+    self.rebuild();
+    self.stateChanged();
+    if (self.list) |l| _ = c.InvalidateRect(l, null, c.FALSE);
+}
+
+// ---------------------------------------------------------------- status
+
+/// The unsaved changes (the options whose lines differ from the files on
+/// disk) and the lines the loader would refuse, counted again, and the
+/// bottom bar repainted.
+fn stateChanged(self: *ConfigEditor) void {
+    const alloc = self.app.core_app.alloc;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var keys: std.StringHashMapUnmanaged(void) = .empty;
+    for (self.session.files.items) |f| {
+        if (!f.dirty) continue;
+        const text = f.doc.toOwnedText(a) catch continue;
+        const lines = line_diff.diff(a, f.original, text) catch continue;
+        line_diff.changedKeys(a, lines, &keys) catch {};
+    }
+    self.unsaved = keys.count();
+
+    self.problems = 0;
+    self.first_problem_len = 0;
+    for (self.session.order.items) |index| {
+        const f = &self.session.files.items[index];
+        for (f.doc.lines.items, 1..) |line, number| {
+            const e = EditableFile.entry(line.text) orelse continue;
+            const message = self.lineProblem(line.text, e.key, e.value) orelse continue;
+            if (self.problems == 0) {
+                const s = std.fmt.bufPrint(&self.first_problem, "{s}, line {d}: {s}: {s}", .{
+                    std.fs.path.basename(f.path), number, e.key, message,
+                }) catch self.first_problem[0..];
+                self.first_problem_len = text_util.truncate(s, self.first_problem.len).len;
+            }
+            self.problems += 1;
+        }
+    }
+    self.checked_once = true;
+    self.invalidateFooter();
+}
+
+/// The loader's message for a line, or null when it takes it, checked once
+/// per text.
+fn lineProblem(self: *ConfigEditor, text: []const u8, key: []const u8, value: ?[]const u8) ?[]const u8 {
+    const alloc = self.app.core_app.alloc;
+    if (self.checked.get(text)) |known| return known;
+    const message = option_list.check(alloc, key, value) catch return null;
+    const k = alloc.dupe(u8, text) catch {
+        if (message) |m| alloc.free(m);
+        return null;
+    };
+    self.checked.put(alloc, k, message) catch {
+        alloc.free(k);
+        if (message) |m| alloc.free(m);
+        return null;
+    };
+    return message;
+}
+
+fn unsavedText(self: *const ConfigEditor, buf: []u8) []const u8 {
+    return switch (self.unsaved) {
+        0 => "No unsaved changes",
+        1 => "1 unsaved change",
+        else => std.fmt.bufPrint(buf, "{d} unsaved changes", .{self.unsaved}) catch "Unsaved changes",
+    };
+}
+
+fn validityText(self: *const ConfigEditor, buf: []u8) []const u8 {
+    if (!self.checked_once) return "checking the config";
+    const first = self.first_problem[0..self.first_problem_len];
+    return switch (self.problems) {
+        0 => "config valid",
+        1 => std.fmt.bufPrint(buf, "1 problem: {s}", .{first}) catch "1 problem",
+        else => std.fmt.bufPrint(buf, "{d} problems, the first {s}", .{ self.problems, first }) catch "problems",
+    };
+}
+
+/// The status line's state, as the bottom bar shows it before any message.
+fn summary(self: *const ConfigEditor, buf: []u8) []const u8 {
+    var a: [64]u8 = undefined;
+    var b: [400]u8 = undefined;
+    return std.fmt.bufPrint(buf, "{s} \u{25AA} {s}", .{ self.unsavedText(&a), self.validityText(&b) }) catch buf[0..0];
+}
+
+fn buttonEnabled(self: *const ConfigEditor, b: Button) bool {
+    return switch (b) {
+        .undo => self.undo_steps.items.len > 0,
+        .redo => self.redo_steps.items.len > 0,
+        .discard, .review => self.session.dirty(),
+    };
+}
+
+fn press(self: *ConfigEditor, b: Button) void {
+    if (!self.buttonEnabled(b)) return;
+    switch (b) {
+        .undo => self.undo(),
+        .redo => self.redo(),
+        .discard => self.discardChanges(),
+        .review => self.review(),
+    }
+}
+
+/// What is at (`x`, `y`) in the window: a category or a button.
+fn mainHit(self: *const ConfigEditor, x: c_int, y: c_int) ?MainHit {
+    for (self.buttons, 0..) |r, k| if (draw.contains(r, x, y)) return .{ .button = @enumFromInt(k) };
+    for (self.category_rects, 0..) |r, i| if (draw.contains(r, x, y)) return .{ .category = i };
+    return null;
+}
+
+/// Show category `index` (0: All Settings); a search ends.
+fn selectCategory(self: *ConfigEditor, index: usize) void {
+    self.endEdit(.commit);
+    self.group = if (index == 0) null else @enumFromInt(index - 1);
+    if (self.query.items.len > 0) {
+        // Its EN_CHANGE rebuilds the page.
+        if (self.search) |s| _ = c.SetWindowTextW(s, c.L(""));
+    }
+    self.scroll = 0;
+    self.rebuild();
+    _ = c.InvalidateRect(self.hwnd, &self.sidebar_rect, c.FALSE);
+}
+
+fn categoryIndex(self: *const ConfigEditor) usize {
+    return if (self.group) |g| @as(usize, @intFromEnum(g)) + 1 else 0;
 }
 
 /// Act on a row's control: flip a switch, open a choice's or flags' menu,
@@ -2244,7 +2620,7 @@ fn editProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callc
             }
             if (ctrl and wparam == 'S') {
                 s.endEdit(.commit);
-                s.save();
+                s.review();
                 return 0;
             }
         },
@@ -2344,8 +2720,56 @@ fn save(self: *ConfigEditor) void {
         .restart => " Some changes apply once murrtty starts again.",
     } else "";
     self.setStatus(false, "Saved {s}.{s}", .{ self.path, when });
-    _ = c.InvalidateRect(self.hwnd, &self.save_rect, c.FALSE);
+    self.stateChanged();
     if (self.list) |l| _ = c.InvalidateRect(l, null, c.FALSE);
+}
+
+/// Review & Save: the lines a save changes, in each file, in a text box;
+/// Save writes them.
+fn review(self: *ConfigEditor) void {
+    self.endEdit(.commit);
+    if (!self.session.dirty()) {
+        self.setStatus(false, "No changes to save", .{});
+        return;
+    }
+    const alloc = self.app.core_app.alloc;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const changed = self.session.changedFiles(a) catch |err| {
+        self.setStatus(true, "Not saved ({t})", .{err});
+        return;
+    };
+    var out: std.ArrayList(u8) = .empty;
+    for (changed, 0..) |ch, i| {
+        if (i > 0) out.appendSlice(a, "\r\n") catch return;
+        out.print(a, "{s}\r\n", .{ch.path}) catch return;
+        const lines = line_diff.diff(a, self.session.files.items[ch.index].original, ch.text) catch return;
+        line_diff.writeChanges(a, &out, lines) catch return;
+    }
+    const content = text_util.utf16Lossy(a, out.items) catch return;
+    const body = if (changed.len == 1)
+        "Saving changes these lines (- as the file has it, + as it will be):"
+    else
+        std.fmt.allocPrint(a, "Saving changes these lines of {d} files (- as a file has it, + as it will be):", .{changed.len}) catch return;
+    const chosen = chosen: {
+        var modal = self.app.beginModal(self.hwnd, .{});
+        defer modal.end();
+        const result = AlertDialog.run(alloc, .{
+            .owner = self.hwnd,
+            .heading = "Review & Save",
+            .body = body,
+            .text = .{ .content = content, .monospace = true, .min_width = 560, .height = 260 },
+            .responses = &.{
+                .{ .id = c.IDCANCEL, .label = "Cancel" },
+                .{ .id = id_save, .label = "Save", .appearance = .suggested },
+            },
+            .default = id_save,
+            .dark = self.dark,
+        }) orelse break :chosen c.IDCANCEL;
+        break :chosen result.id;
+    };
+    if (chosen == id_save) self.save();
 }
 
 fn askOverwrite(self: *ConfigEditor, path: []const u8) bool {
@@ -2410,8 +2834,10 @@ fn paintBar(self: *ConfigEditor, dc: c.HDC) void {
     draw.fill(dc, .{ .left = 0, .top = 0, .right = client.right, .bottom = self.scale(bar_height) }, pal.bg);
     const footer: c.RECT = .{ .left = 0, .top = client.bottom - self.scale(footer_height), .right = client.right, .bottom = client.bottom };
     draw.fill(dc, footer, pal.bg);
+    draw.fill(dc, .{ .left = 0, .top = footer.top, .right = client.right, .bottom = footer.top + @max(1, self.scale(1)) }, pal.separator);
     _ = c.SetBkMode(dc, c.TRANSPARENT);
     const radius = self.scale(field_radius);
+    self.paintSidebar(dc);
 
     // The search field's box, ringed while it has the keyboard.
     const focused = self.search != null and c.GetFocus() == self.search;
@@ -2422,41 +2848,89 @@ fn paintBar(self: *ConfigEditor, dc: c.HDC) void {
     }
     draw.roundRect(dc, self.search_rect, radius, pal.field, null, 0);
 
-    // The page button: its label and a chevron.
+    // The buttons: Review & Save the suggested one, Discard destructive.
     const old = if (self.fonts.button) |f| c.SelectObject(dc, f) else null;
     defer if (old) |o| {
         _ = c.SelectObject(dc, o);
     };
-    draw.roundRect(dc, self.group_rect, radius, if (self.pressed == .group) pal.pressed else pal.field, null, 0);
-    var buf: [64]u16 = undefined;
-    const label = text_util.utf16Into(&buf, self.groupLabel());
-    var lr = self.group_rect;
-    lr.left += self.scale(button_pad_x);
-    lr.right -= self.scale(button_pad_x) + self.scale(10);
-    _ = c.SetTextColor(dc, pal.text);
-    _ = c.DrawTextW(dc, label.ptr, @intCast(label.len), &lr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_NOPREFIX | c.DT_END_ELLIPSIS);
-    const cy = @divTrunc(self.group_rect.top + self.group_rect.bottom, 2);
-    draw.triangleDown(dc, self.group_rect.right - self.scale(button_pad_x) + self.scale(2), cy, self.scale(4), self.scale(4), pal.text);
+    for (self.buttons, 0..) |r, k| {
+        const b: Button = @enumFromInt(k);
+        const enabled = self.buttonEnabled(b);
+        const hovered = enabled and MainHit.eql(self.hover_main, .{ .button = b });
+        const suggested = b == .review and enabled;
+        draw.roundRect(dc, r, radius, if (suggested) pal.accent else if (hovered) pal.pressed else pal.field, null, 0);
+        _ = c.SetTextColor(dc, if (!enabled) pal.subtitle else if (suggested) pal.accent_text else if (b == .discard) pal.err else pal.text);
+        var buf: [32]u16 = undefined;
+        const label = text_util.utf16Into(&buf, buttonLabel(b));
+        var lr = r;
+        _ = c.DrawTextW(dc, label.ptr, @intCast(label.len), &lr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
+    }
 
-    // Save: the suggested button while there are changes.
-    const dirty = self.session.dirty();
-    draw.roundRect(dc, self.save_rect, radius, if (dirty) pal.accent else pal.field, null, 0);
-    _ = c.SetTextColor(dc, if (dirty) pal.accent_text else pal.subtitle);
-    var sr = self.save_rect;
-    _ = c.DrawTextW(dc, c.L("Save"), 4, &sr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_CENTER | c.DT_NOPREFIX);
-
-    // The status line.
+    // The status line: the unsaved changes, the config's validity, and the
+    // last message, each set off by a small square.
     const small = if (self.fonts.subtitle) |f| c.SelectObject(dc, f) else null;
     defer if (small) |o| {
         _ = c.SelectObject(dc, o);
     };
-    var status_buf: [512]u16 = undefined;
-    const status = text_util.utf16Into(&status_buf, self.status[0..self.status_len]);
     var fr = footer;
     fr.left += self.scale(bar_pad);
-    fr.right -= self.scale(bar_pad);
-    _ = c.SetTextColor(dc, if (self.status_error) pal.err else pal.subtitle);
-    _ = c.DrawTextW(dc, status.ptr, @intCast(status.len), &fr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_NOPREFIX | c.DT_END_ELLIPSIS);
+    fr.right = self.buttons[0].left - self.scale(bar_pad);
+    var ub: [64]u8 = undefined;
+    var vb: [400]u8 = undefined;
+    const sep = " \u{25AA} ";
+    const segments = [_]struct { []const u8, c.COLORREF }{
+        .{ self.unsavedText(&ub), pal.subtitle },
+        .{ sep, pal.subtitle },
+        .{ self.validityText(&vb), if (self.problems > 0) pal.err else pal.subtitle },
+        .{ if (self.status_len > 0) sep else "", pal.subtitle },
+        .{ self.status[0..self.status_len], if (self.status_error) pal.err else pal.subtitle },
+    };
+    var x = fr.left;
+    for (segments) |seg| {
+        if (seg[0].len == 0 or x >= fr.right) continue;
+        var wbuf: [512]u16 = undefined;
+        const w = text_util.utf16Into(&wbuf, seg[0]);
+        var measure: c.RECT = .{};
+        _ = c.DrawTextW(dc, w.ptr, @intCast(w.len), &measure, c.DT_SINGLELINE | c.DT_CALCRECT | c.DT_NOPREFIX);
+        var r: c.RECT = .{ .left = x, .top = fr.top, .right = fr.right, .bottom = fr.bottom };
+        _ = c.SetTextColor(dc, seg[1]);
+        _ = c.DrawTextW(dc, w.ptr, @intCast(w.len), &r, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_NOPREFIX | c.DT_END_ELLIPSIS);
+        x += measure.right - measure.left;
+    }
+}
+
+/// The categories' column: All Settings, then each group, the one shown
+/// selected.
+fn paintSidebar(self: *ConfigEditor, dc: c.HDC) void {
+    const pal = self.pal;
+    draw.fill(dc, self.sidebar_rect, pal.sidebar);
+    const edge = self.sidebar_rect.right - @max(1, self.scale(1));
+    draw.fill(dc, .{ .left = edge, .top = self.sidebar_rect.top, .right = self.sidebar_rect.right, .bottom = self.sidebar_rect.bottom }, pal.separator);
+    const old = if (self.fonts.title) |f| c.SelectObject(dc, f) else null;
+    defer if (old) |o| {
+        _ = c.SelectObject(dc, o);
+    };
+    const selected = self.categoryIndex();
+    const groups = @typeInfo(option_list.Group).@"enum".field_names;
+    for (self.category_rects, 0..) |r, i| {
+        if (r.bottom > self.sidebar_rect.bottom) break;
+        if (i == selected) {
+            draw.roundRect(dc, r, self.scale(field_radius), pal.sidebar_selected, null, 0);
+        } else if (MainHit.eql(self.hover_main, .{ .category = i })) {
+            draw.roundRect(dc, r, self.scale(field_radius), pal.sidebar_hover, null, 0);
+        }
+        const label: []const u8 = if (i == 0) "All Settings" else label: {
+            inline for (groups, 1..) |gname, gi| if (gi == i) break :label @field(option_list.Group, gname).title();
+            break :label "";
+        };
+        var buf: [64]u16 = undefined;
+        const w = text_util.utf16Into(&buf, label);
+        var tr = r;
+        tr.left += self.scale(12);
+        tr.right -= self.scale(8);
+        _ = c.SetTextColor(dc, pal.text);
+        _ = c.DrawTextW(dc, w.ptr, @intCast(w.len), &tr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_NOPREFIX | c.DT_END_ELLIPSIS);
+    }
 }
 
 fn paintList(self: *ConfigEditor, dc: c.HDC, client: c.RECT) void {
@@ -2749,28 +3223,6 @@ fn toggleExpanded(self: *ConfigEditor, option: u16) void {
     self.reveal(option);
 }
 
-fn chooseGroup(self: *ConfigEditor) void {
-    const groups = @typeInfo(option_list.Group).@"enum".field_names;
-    var labels: [groups.len + 1][]const u8 = undefined;
-    var checked: [groups.len + 1]bool = undefined;
-    labels[0] = "All Pages";
-    checked[0] = self.group == null;
-    inline for (groups, 1..) |gname, i| {
-        const g = @field(option_list.Group, gname);
-        labels[i] = g.title();
-        checked[i] = self.group == g;
-    }
-    var at: c.POINT = .{ .x = self.group_rect.left, .y = self.group_rect.bottom };
-    _ = c.ClientToScreen(self.hwnd, &at);
-    const chosen = ContextMenu.pick(self.app, self.hwnd, at, &labels, &checked) orelse return;
-    // What is typed, taken before its row may leave the page.
-    self.endEdit(.commit);
-    self.group = if (chosen == 0) null else @enumFromInt(chosen - 1);
-    self.scroll = 0;
-    self.layoutBar();
-    self.rebuild();
-    _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
-}
 
 fn onSearchChanged(self: *ConfigEditor) void {
     const search = self.search orelse return;
@@ -2786,13 +3238,36 @@ fn onSearchChanged(self: *ConfigEditor) void {
     self.rebuild();
 }
 
-/// Keys every part of the window takes: Ctrl+S saves, Ctrl+F searches,
-/// Escape closes an opened row. Returns whether the key was taken.
-fn commonKey(self: *ConfigEditor, key: c.WPARAM) bool {
-    if (!ctrlOnly()) return false;
+/// Keys every part of the window takes: Ctrl+S reviews and saves, Ctrl+F
+/// searches, Ctrl+Page Up and Down go through the categories, and, except
+/// in a text field (`in_field`, whose own undo they are), Ctrl+Z undoes and
+/// Ctrl+Y or Ctrl+Shift+Z redoes. Returns whether the key was taken.
+fn commonKey(self: *ConfigEditor, key: c.WPARAM, in_field: bool) bool {
+    if (c.GetKeyState(c.VK_CONTROL) >= 0 or c.GetKeyState(c.VK_MENU) < 0) return false;
+    const shift = c.GetKeyState(c.VK_SHIFT) < 0;
+    switch (key) {
+        'Z' => {
+            if (in_field) return false;
+            if (shift) self.redo() else self.undo();
+            return true;
+        },
+        'Y' => {
+            if (in_field) return false;
+            self.redo();
+            return true;
+        },
+        c.VK_PRIOR, c.VK_NEXT => {
+            const n = group_count + 1;
+            const step: usize = if (key == c.VK_NEXT) 1 else n - 1;
+            self.selectCategory((self.categoryIndex() + step) % n);
+            return true;
+        },
+        else => {},
+    }
+    if (shift) return false;
     switch (key) {
         'S' => {
-            self.save();
+            self.review();
             return true;
         },
         'F' => {
@@ -2811,7 +3286,7 @@ fn listKey(self: *ConfigEditor, key: c.WPARAM) bool {
         if (key == c.VK_ESCAPE) self.endDrag(.cancel);
         return true;
     }
-    if (self.commonKey(key)) return true;
+    if (self.commonKey(key, false)) return true;
     switch (key) {
         // A number's step down or up (roadmap F1d): Ctrl a tenth of one
         // (94.5%), Shift ten.
@@ -3005,7 +3480,7 @@ fn searchProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) cal
     const s = self orelse return c.DefWindowProcW(hwnd, msg, wparam, lparam);
     switch (msg) {
         c.WM_KEYDOWN => {
-            if (s.commonKey(wparam)) return 0;
+            if (s.commonKey(wparam, true)) return 0;
             switch (wparam) {
                 c.VK_DOWN, c.VK_RETURN => {
                     if (s.selected == null) s.moveSelection(1);
@@ -3106,20 +3581,40 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         c.WM_LBUTTONDOWN => {
             const x = c.xParam(lparam);
             const y = c.yParam(lparam);
-            if (draw.contains(self.save_rect, x, y)) {
-                self.save();
-            } else if (draw.contains(self.group_rect, x, y)) {
-                self.pressed = .group;
-                _ = c.InvalidateRect(hwnd, &self.group_rect, c.FALSE);
-                self.chooseGroup();
-                self.pressed = .none;
-                _ = c.InvalidateRect(hwnd, &self.group_rect, c.FALSE);
+            if (self.mainHit(x, y)) |h| switch (h) {
+                .button => |b| self.press(b),
+                .category => |i| self.selectCategory(i),
             } else if (draw.contains(self.search_rect, x, y)) {
                 if (self.search) |s| _ = c.SetFocus(s);
             }
             return 0;
         },
-        c.WM_KEYDOWN => if (self.commonKey(wparam)) return 0,
+        c.WM_MOUSEMOVE => {
+            if (!self.tracking_main) {
+                var tme: c.TRACKMOUSEEVENT = .{ .dwFlags = c.TME_LEAVE, .hwndTrack = hwnd };
+                _ = c.TrackMouseEvent(&tme);
+                self.tracking_main = true;
+            }
+            const h = self.mainHit(c.xParam(lparam), c.yParam(lparam));
+            if (!MainHit.eql(h, self.hover_main)) {
+                self.hover_main = h;
+                _ = c.InvalidateRect(hwnd, null, c.FALSE);
+            }
+            return 0;
+        },
+        c.WM_MOUSELEAVE => {
+            self.tracking_main = false;
+            if (self.hover_main != null) {
+                self.hover_main = null;
+                _ = c.InvalidateRect(hwnd, null, c.FALSE);
+            }
+            return 0;
+        },
+        wm_check => {
+            self.stateChanged();
+            return 0;
+        },
+        c.WM_KEYDOWN => if (self.commonKey(wparam, false)) return 0,
         // The choice, flags and page menus, owner-drawn (ContextMenu.pick).
         c.WM_MEASUREITEM => {
             if (ContextMenu.measureItem(lparam)) return 1;
@@ -3227,6 +3722,16 @@ fn free(self: *ConfigEditor) void {
     self.items.deinit(alloc);
     self.query.deinit(alloc);
     self.changed.deinit(alloc);
+    clearSteps(alloc, &self.undo_steps);
+    self.undo_steps.deinit(alloc);
+    clearSteps(alloc, &self.redo_steps);
+    self.redo_steps.deinit(alloc);
+    var checks = self.checked.iterator();
+    while (checks.next()) |e| {
+        alloc.free(e.key_ptr.*);
+        if (e.value_ptr.*) |m| alloc.free(m);
+    }
+    self.checked.deinit(alloc);
     if (app.config_editor == self) app.config_editor = null;
     alloc.destroy(self);
     app.configEditorClosed();
@@ -3280,6 +3785,22 @@ pub fn writeDump(self: *const ConfigEditor, alloc: Allocator, out: *std.ArrayLis
     try writeString(alloc, out, if (self.edit_option) |e| option_list.all[e].name else "");
     try out.print(alloc, ",\"previewed\":{},\"dragging\":{},\"status_error\":{},\"status\":", .{ self.previewed, self.drag != null, self.status_error });
     try writeString(alloc, out, self.status[0..self.status_len]);
+    var summary_buf: [512]u8 = undefined;
+    try out.appendSlice(alloc, ",\"summary\":");
+    try writeString(alloc, out, self.summary(&summary_buf));
+    try out.print(alloc, ",\"unsaved\":{d},\"problems\":{d},\"checked\":{},\"undo\":{d},\"redo\":{d},\"buttons\":[", .{
+        self.unsaved, self.problems, self.checked_once, self.undo_steps.items.len, self.redo_steps.items.len,
+    });
+    for (self.buttons, 0..) |r, k| {
+        if (k > 0) try out.append(alloc, ',');
+        try out.print(alloc, "{{\"label\":\"{s}\",\"enabled\":{},\"rect\":[{d},{d},{d},{d}]}}", .{ buttonLabel(@enumFromInt(k)), self.buttonEnabled(@enumFromInt(k)), r.left, r.top, r.right, r.bottom });
+    }
+    try out.appendSlice(alloc, "],\"categories\":[");
+    for (self.category_rects, 0..) |r, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try out.print(alloc, "[{d},{d},{d},{d}]", .{ r.left, r.top, r.right, r.bottom });
+    }
+    try out.print(alloc, "],\"category\":{d}", .{self.categoryIndex()});
     try out.appendSlice(alloc, ",\"files\":[");
     for (self.session.files.items, 0..) |f, i| {
         if (i > 0) try out.append(alloc, ',');

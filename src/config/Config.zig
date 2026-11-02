@@ -2307,7 +2307,10 @@ keybind: Keybinds = .{},
 ///
 /// The default value is `default`.
 ///
-/// This is currently only supported on macOS. This has no effect on Linux.
+/// This is supported on macOS and on Windows (murrtty). On Windows,
+/// `default` and `always` both keep the windows, tabs and splits (with
+/// their working directories) as they change and bring them back at the
+/// next start; `never` turns that off. This has no effect on Linux.
 @"window-save-state": WindowSaveState = .default,
 
 /// Resize the window in discrete increments of the focused surface's cell size.

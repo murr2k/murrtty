@@ -1843,10 +1843,38 @@ pub const Dump = struct {
         dragging: bool = false,
         status_error: bool = false,
         status: []const u8 = "",
+        /// The status line's state (roadmap F1f): "No unsaved changes ▪
+        /// config valid", the options changed unsaved, the lines the loader
+        /// would refuse and whether they were checked, Undo's and Redo's
+        /// steps.
+        summary: []const u8 = "",
+        unsaved: u32 = 0,
+        problems: u32 = 0,
+        checked: bool = false,
+        undo: u32 = 0,
+        redo: u32 = 0,
+        /// Undo, Redo, Discard and Review & Save, in the window's client
+        /// pixels.
+        buttons: []const BarButton = &.{},
+        /// The categories' rows (All Settings first), in the window's
+        /// client pixels, and the one shown.
+        categories: []const [4]i32 = &.{},
+        category: u32 = 0,
         /// The opened file, then those it includes.
         files: []const []const u8 = &.{},
         /// The rows shown, in order.
         rows: []const Row = &.{},
+
+        pub const BarButton = struct {
+            label: []const u8 = "",
+            enabled: bool = false,
+            rect: [4]i32 = .{ 0, 0, 0, 0 },
+        };
+
+        pub fn button(self: Editor, label: []const u8) ?BarButton {
+            for (self.buttons) |b| if (std.mem.eql(u8, b.label, label)) return b;
+            return null;
+        }
 
         pub const Row = struct {
             name: []const u8 = "",

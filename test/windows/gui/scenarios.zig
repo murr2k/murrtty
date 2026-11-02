@@ -123,6 +123,7 @@ pub const all = [_]Scenario{
     .{ .name = "session-settings", .about = "what was changed while murrtty ran comes back: a pane's font size set by a binding and a split's inherited one, read-only, the zoomed split, the window's float and decorations (its size kept), the opacity toggle", .run = sessionSettings },
     .{ .name = "session-restore",.about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-numbers", .about = "the configuration editor's numbers: a percentage on a slider (pressed, dragged, Escape), shown in the terminals before a save and put back by Discard, stepped with the arrow keys, typed in percent and refused past its range; spin rows in their unit, stepped by their buttons, saved as Ghostty's numbers", .run = configEditorNumbers },
+    .{ .name = "config-editor-review", .about = "the configuration editor's bar and status line (F1f, the owner's design): 'No unsaved changes \u{25AA} config valid'; a change counted, Undo and Redo by button and key, a held change one step, Discard as one step Undo brings back, Review & Save showing the lines it saves; a category's options, a search through all; a refused line counted as a problem", .run = configEditorReview },
     .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook, .tool = true },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "pwsh-typeahead", .about = "task 42: PowerShell 7 and 5.1 with integration, commands typed ahead (during a slowed prompt; in pairs after a Ctrl+C) all run (GHOSTTY_GUI_STRESS=1; GHOSTTY_PTY_LOG for a trace)", .run = pwshTypeahead },
@@ -6255,6 +6256,30 @@ fn splits(h: *Harness) anyerror!void {
     try quit(h, &g, second);
 }
 
+/// The editor's Save in its dialogs (ConfigEditor.id_save).
+const editor_save = 200;
+
+/// Review & Save (roadmap F1f), asked for by Ctrl+S or its button: its
+/// dialog shows the lines a save changes in a text box; Save is answered.
+/// Returns the box's text (the caller frees it).
+fn answerReview(h: *Harness, g: *Harness.Ghostty) ![]u8 {
+    const dlg = try h.waitDialog(g, 5000);
+    const text = try dialogItemText(h, dlg, 100);
+    errdefer h.alloc.free(text);
+    h.answer(g, dlg, editor_save);
+    return text;
+}
+
+/// Click the editor's bottom-bar button `label`, which must be enabled.
+fn editorButton(h: *Harness, g: *Harness.Ghostty, label: []const u8) !void {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const e = d.value.config_editor orelse return h.fail("the config editor isn't open", .{});
+    const b = e.button(label) orelse return h.fail("no {s} button", .{label});
+    try h.expect(b.enabled, "{s} is enabled", .{label});
+    h.click(hwndOf(e.hwnd), @divTrunc(b.rect[0] + b.rect[2], 2), @divTrunc(b.rect[1] + b.rect[3], 2), .left);
+}
+
 /// Wait until the configuration editor's state passes `ctx.ok`, or fail
 /// saying `what` and its status line.
 fn waitEditor(h: *Harness, g: *Harness.Ghostty, ctx: anytype, comptime what: []const u8) !void {
@@ -6314,6 +6339,201 @@ fn rowValue(name: []const u8, value: []const u8) struct {
     }
 } {
     return .{ .name = name, .value = value };
+}
+
+/// Roadmap F1f, the owner's design: the editor's search centered over a
+/// column of categories, and along the bottom the status line ("No unsaved
+/// changes \u{25AA} config valid") with Undo, Redo, Discard and Review & Save.
+/// A change counts one unsaved change; Undo takes it back to the file's
+/// value, Redo again; changes to one option close together (two clicks on
+/// a spin button) are one step; Discard drops every change as one step
+/// Undo brings back; Review & Save shows the lines a save changes, then
+/// writes them. A category shows only its options, a search looks through
+/// all of them, Ctrl+Page Down goes to the next category. A line the
+/// loader refuses (written while the editor was closed) is a problem.
+fn configEditorReview(h: *Harness) anyerror!void {
+    var g = try start(h, "config-editor-review", "font-size = 13\nwindow-theme = dark\n", ">");
+    defer g.deinit();
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty\\config.ghostty", .{g.dir});
+    defer h.alloc.free(path);
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+
+    try h.openConfigEditor(&g);
+    const opened = struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.rows.len > 200 and e.checked;
+        }
+    }{};
+    try waitEditor(h, &g, opened, "it opens and checks the files");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const e = d.value.config_editor.?;
+        try h.expect(std.mem.eql(u8, e.summary, "No unsaved changes \u{25AA} config valid"), "the status line: '{s}'", .{e.summary});
+        try h.expect(e.buttons.len == 4, "four buttons ({d})", .{e.buttons.len});
+        for (e.buttons) |b| try h.expect(!b.enabled, "{s} is disabled with nothing changed", .{b.label});
+        try h.expect(e.categories.len > 5 and e.category == 0, "the categories, All Settings shown ({d})", .{e.categories.len});
+    }
+
+    // A change: one unsaved change, Undo, Discard and Review & Save on.
+    try editorClick(h, &g, "font-size", .control);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.edit != 0;
+        }
+    }{}, "a field over font-size");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const edit_hwnd = hwndOf(d.value.config_editor.?.edit);
+        try h.typeText(edit_hwnd, "15");
+        h.key(edit_hwnd, .{}, w.VK_RETURN);
+    }
+    const one = struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("font-size") orelse return false;
+            return std.mem.eql(u8, r.value, "15 pt") and std.mem.startsWith(u8, e.summary, "1 unsaved change \u{25AA}") and e.undo == 1 and e.redo == 0;
+        }
+    }{};
+    try waitEditor(h, &g, one, "15 taken: 1 unsaved change, one step to undo");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const e = d.value.config_editor.?;
+        for ([_]struct { []const u8, bool }{ .{ "Undo", true }, .{ "Redo", false }, .{ "Discard", true }, .{ "Review & Save", true } }) |want| {
+            const b = e.button(want[0]) orelse return h.fail("no {s} button", .{want[0]});
+            try h.expect(b.enabled == want[1], "{s} enabled: {}", .{ want[0], want[1] });
+        }
+    }
+
+    // Undo by its button: the file's 13, nothing unsaved; Redo by Ctrl+Y.
+    try editorButton(h, &g, "Undo");
+    const none = struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("font-size") orelse return false;
+            return std.mem.eql(u8, r.value, "13 pt") and !e.dirty and e.unsaved == 0 and e.redo == 1;
+        }
+    }{};
+    try waitEditor(h, &g, none, "Undo: 13 again, nothing unsaved");
+    var now = try editorNow(h, &g, "font-size");
+    h.key(now.list, .{ .ctrl = true }, 'Y');
+    try waitEditor(h, &g, one, "Ctrl+Y redoes it");
+
+    // Two steps of the spin button close together: one step of Undo.
+    {
+        const row = (try editorNow(h, &g, "font-size")).row orelse return h.fail("no font-size row", .{});
+        const plus = row.plus orelse return h.fail("font-size has no spin buttons", .{});
+        for (0..2) |_| {
+            h.click(now.list, @divTrunc(plus[0] + plus[2], 2), @divTrunc(plus[1] + plus[3], 2), .left);
+            w.Sleep(150);
+        }
+    }
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("font-size") orelse return false;
+            return std.mem.eql(u8, r.value, "17 pt") and e.undo == 2;
+        }
+    }{}, "two steps up, 17, one more step to undo");
+    h.key(now.list, .{ .ctrl = true }, 'Z');
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            const r = e.find("font-size") orelse return false;
+            return std.mem.eql(u8, r.value, "15 pt") and e.undo == 1 and e.redo == 1 and e.unsaved == 1;
+        }
+    }{}, "Ctrl+Z takes both back, to 15");
+
+    // A second option, then Discard: nothing unsaved, as one step.
+    try editorClick(h, &g, "focus-follows-mouse", .control);
+    const two = struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return std.mem.startsWith(u8, e.summary, "2 unsaved changes \u{25AA}");
+        }
+    }{};
+    try waitEditor(h, &g, two, "a switch flipped: 2 unsaved changes");
+    try editorButton(h, &g, "Discard");
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return !e.dirty and e.unsaved == 0 and e.redo == 0 and e.undo == 3;
+        }
+    }{}, "Discard: nothing unsaved");
+    now = try editorNow(h, &g, "font-size");
+    h.key(now.list, .{ .ctrl = true }, 'Z');
+    try waitEditor(h, &g, two, "Undo brings both back");
+
+    // Review & Save: the lines it changes, then saved.
+    try editorButton(h, &g, "Review & Save");
+    const shown = try answerReview(h, &g);
+    defer h.alloc.free(shown);
+    try h.expect(std.mem.indexOf(u8, shown, "- font-size = 13") != null and std.mem.indexOf(u8, shown, "+ font-size = 15") != null, "it shows font-size's line before and after", .{});
+    try h.expect(std.mem.indexOf(u8, shown, "+ focus-follows-mouse = true") != null, "and the switch's new line", .{});
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return !e.dirty and e.unsaved == 0 and std.mem.startsWith(u8, e.status, "Saved");
+        }
+    }{}, "saved");
+    {
+        const saved = h.readFileOrNull(path) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(saved);
+        try h.expect(std.mem.indexOf(u8, saved, "font-size = 15\n") != null and std.mem.indexOf(u8, saved, "focus-follows-mouse = true\n") != null, "the file has both", .{});
+    }
+
+    // A category shows its options only; a search looks through all;
+    // Ctrl+Page Down goes on to the next category.
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const e = d.value.config_editor.?;
+        const r = e.categories[1];
+        h.click(hwndOf(e.hwnd), @divTrunc(r[0] + r[2], 2), @divTrunc(r[1] + r[3], 2), .left);
+    }
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            if (e.category != 1 or e.rows.len == 0) return false;
+            for (e.rows) |r| if (!std.mem.eql(u8, r.group, e.rows[0].group)) return false;
+            return std.mem.eql(u8, e.group, e.rows[0].group);
+        }
+    }{}, "the first category: its options only");
+    now = try editorNow(h, &g, "font-size");
+    h.key(now.list, .{ .ctrl = true }, w.VK_NEXT);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.category == 2;
+        }
+    }{}, "Ctrl+Page Down: the next category");
+    _ = try editorNow(h, &g, "font-size");
+    try editorClick(h, &g, "cursor-style", .reset);
+    try waitEditor(h, &g, struct {
+        fn ok(_: @This(), e: Harness.Dump.Editor) bool {
+            return e.find("cursor-style") != null and e.query.len > 0;
+        }
+    }{}, "a search finds an option of any category");
+
+    // Closed, a refused line written meanwhile, opened again: a problem.
+    now = try editorNow(h, &g, "font-size");
+    _ = w.PostMessageW(now.hwnd, w.WM_CLOSE, 0, 0);
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        if (d.value.config_editor == null) break;
+        w.Sleep(100);
+    }
+    {
+        const text = h.readFileOrNull(path) orelse return h.fail("the file is gone", .{});
+        defer h.alloc.free(text);
+        const bad = try std.mem.concat(h.alloc, u8, &.{ text, "font-sise = 12\n" });
+        defer h.alloc.free(bad);
+        try h.writeFileAt(path, bad);
+    }
+    try h.openConfigEditor(&g);
+    try waitEditor(h, &g, opened, "it opens again");
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const e = d.value.config_editor.?;
+        try h.expect(e.problems == 1 and std.mem.indexOf(u8, e.summary, "1 problem: config.ghostty, line") != null and std.mem.indexOf(u8, e.summary, "font-sise") != null, "the misspelled key is a problem: '{s}'", .{e.summary});
+    }
+    try quit(h, &g, surf);
 }
 
 /// Roadmap F1: the configuration editor, murrtty's own. It opens from the
@@ -6548,6 +6768,7 @@ fn configEditor(h: *Harness) anyerror!void {
     }
     now = try editorNow(h, &g, "font-size");
     h.key(now.list, .{ .ctrl = true }, 'S');
+    h.alloc.free(try answerReview(h, &g));
     try waitEditor(h, &g, struct {
         fn ok(_: @This(), e: Harness.Dump.Editor) bool {
             return !e.dirty and std.mem.startsWith(u8, e.status, "Saved");
@@ -6698,6 +6919,7 @@ fn configEditor(h: *Harness) anyerror!void {
     try waitEditor(h, &g2, rowValue("font-size", "14 pt"), "14 taken");
     now = try editorNow(h, &g2, "font-size");
     h.key(now.list, .{ .ctrl = true }, 'S');
+    h.alloc.free(try answerReview(h, &g2));
     try waitEditor(h, &g2, struct {
         fn ok(_: @This(), e: Harness.Dump.Editor) bool {
             return !e.dirty;
@@ -6928,6 +7150,7 @@ fn configEditorPages(h: *Harness) anyerror!void {
     // Saved: the lines, the font's in place of Consolas.
     const now = try editorNow(h, &g, "theme");
     h.key(now.list, .{ .ctrl = true }, 'S');
+    h.alloc.free(try answerReview(h, &g));
     try waitEditor(h, &g, struct {
         fn ok(_: @This(), e: Harness.Dump.Editor) bool {
             return !e.dirty;
@@ -7016,6 +7239,7 @@ fn configEditorPages(h: *Harness) anyerror!void {
     }{}, "background-blur = true, shown in the terminals before a save");
     const now3 = try editorNow(h, &g3, "background-blur");
     h.key(now3.list, .{ .ctrl = true }, 'S');
+    h.alloc.free(try answerReview(h, &g3));
     try waitEditor(h, &g3, struct {
         fn ok(_: @This(), e: Harness.Dump.Editor) bool {
             return !e.dirty and std.mem.startsWith(u8, e.status, "Saved");
@@ -7255,6 +7479,7 @@ fn configEditorNumbers(h: *Harness) anyerror!void {
         try h.expect(!d.value.config_editor.?.previewed, "a spin row previews nothing", .{});
     }
     h.key(now.list, .{ .ctrl = true }, 'S');
+    h.alloc.free(try answerReview(h, &g));
     try waitEditor(h, &g, struct {
         fn ok(_: @This(), e: Harness.Dump.Editor) bool {
             return !e.dirty and std.mem.startsWith(u8, e.status, "Saved");

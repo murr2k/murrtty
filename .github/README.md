@@ -324,10 +324,13 @@ hosted Windows runner and then the unit tests.
   or `$EDITOR`.
 - A configuration editor, murrtty's own (Ghostty has none): Open
   Configuration Editor in the Config menus and the command palette. Every
-  option with its documentation, a search and pages, a switch, menu or
-  field for each kind of value, reset, and a save that rewrites only the
-  changed lines of the files murrtty reads, Ghostty's too, in Ghostty's
-  own syntax, then reloads. Pickers for colors and files (Windows' own
+  option with its documentation, a search over a column of categories, a
+  switch, menu or field for each kind of value, reset, and a bottom bar
+  with the status ("No unsaved changes ▪ config valid", each line checked
+  as the loader reads it) and Undo, Redo, Discard and Review & Save, which
+  shows the lines a save changes, then rewrites only those lines of the
+  files murrtty reads, Ghostty's too, in Ghostty's own syntax, and
+  reloads. Pickers for colors and files (Windows' own
   dialogs), fonts (the installed monospaced ones, each shown in itself),
   themes (with a sample of their colors) and key bindings (press the
   keys, choose the action). Numbers in their unit: opacities as

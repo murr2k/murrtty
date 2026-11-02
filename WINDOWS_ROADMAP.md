@@ -412,7 +412,13 @@ roadmap item behind it.
   binding's keys are pressed in a capture box. Numbers (F1d) show in their
   unit, a fraction as a percentage, on a slider or a spin row, and a
   slider's value shows in the terminals before it is saved; `command`
-  offers the installed shells and `working-directory` a folder (F1e).
+  offers the installed shells and `working-directory` a folder (F1e). Its
+  layout is the owner's (F1f): the search centered in the top bar, the
+  categories in a column at the left, and a bottom bar with the status
+  line ("No unsaved changes ▪ config valid") and Undo, Redo, Discard and
+  Review & Save, which shows the lines a save changes before saving
+  (libadwaita's preferences window has its pages in a sidebar too, but no
+  bottom bar: changes there apply at once).
 - **Session restore** (5.10b, the owner's design): `window-save-state`
   (`default` or `always`) restores the windows, tabs, splits, names and
   directories at start, or with `initial-window = false` on the first
@@ -4689,6 +4695,38 @@ a text value's field opens a menu, the field still taking anything typed
   vtable slots (all but Show). `config-editor-pages` picks the Command
   Prompt, a folder (the dialog stood in for by `GHOSTTY_WIN32_TEST_PICK`)
   and `background-blur = true`, and checks the saved lines.
+
+*F1f built 2026-11-02, the owner's layout:* the search field centered in
+the top bar; at the left a column of categories (All Settings, then each
+group), which replaces the page menu (a search looks through every
+category, and choosing one ends it; Ctrl+Page Up and Down go through
+them); along the bottom a status line and four buttons.
+- The status line: the unsaved changes, counted as options whose lines
+  differ from the files on disk (a value set back to the file's is no
+  change: `EditorSession` keeps a file unsaved only while its text
+  differs), then whether the configuration is valid: each line of the
+  files the loader reads is checked as the loader parses it
+  (`option_list.check`, cached per line's text, checked once the window
+  shows), and "1 problem: config.ghostty, line 8: font-sise: unknown
+  field" names the first. The last message (a refused value, a save)
+  follows, each set off by a small square.
+- Undo and Redo (also Ctrl+Z, and Ctrl+Y or Ctrl+Shift+Z, outside a text
+  field, whose own they are): every file's text before each change
+  (`EditorSession.snapshot`, `restore`), up to 200 steps; changes to one
+  option within a second (a held spin button) are one step. A previewed
+  slider's value follows in the terminals, and with nothing left unsaved
+  they show the files' values again.
+- Discard: every unsaved change dropped, as one step Undo takes back, so
+  it asks nothing.
+- Review & Save (also Ctrl+S): the lines a save changes, in each file, as
+  a diff with a line of context (`line_diff.zig`: the longest common
+  subsequence of the lines between the common start and end), in a
+  read-only text box of an alert dialog; Save writes them and reloads.
+- `config-editor-review` checks the status line, Undo and Redo by button
+  and key, a held change as one step, Discard and its undo, the review's
+  lines and the file saved, a category's options, Ctrl+Page Down, a search
+  across categories, and a misspelled key written while the editor was
+  closed counted as a problem.
 
 **F2 Waiting bells, S.** *The owner's design, 2026-10-29.* The owner runs
 Claude Code in many tabs and splits; when one waits for input from a pane

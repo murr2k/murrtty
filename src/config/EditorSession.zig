@@ -314,14 +314,14 @@ pub fn listEntries(self: *const EditorSession, alloc: Allocator, name: []const u
 pub fn set(self: *EditorSession, name: []const u8, value: ?[]const u8) !void {
     const i = self.source(name) orelse self.main;
     try self.files.items[i].doc.set(name, value);
-    self.files.items[i].dirty = true;
+    try self.refreshDirty(i);
 }
 
 /// Give a list exactly `entries` as the main file's lines for it; the other
 /// files' entries stay. A change of `config-file` finds the includes again.
 pub fn setList(self: *EditorSession, name: []const u8, entries: []const ?[]const u8) !void {
     try self.files.items[self.main].doc.setList(name, entries);
-    self.files.items[self.main].dirty = true;
+    try self.refreshDirty(self.main);
     if (std.mem.eql(u8, name, "config-file")) try self.discover();
 }
 
@@ -334,9 +334,18 @@ pub fn reset(self: *EditorSession, name: []const u8) !void {
         const f = &self.files.items[i];
         if (!f.doc.has(name)) continue;
         f.doc.remove(name);
-        f.dirty = true;
+        try self.refreshDirty(i);
     }
     if (std.mem.eql(u8, name, "config-file")) try self.discover();
+}
+
+/// Whether file `index` now differs from what is on disk: a value set back
+/// to what the file had leaves it unchanged.
+fn refreshDirty(self: *EditorSession, index: usize) !void {
+    const f = &self.files.items[index];
+    const text = try f.doc.toOwnedText(self.alloc);
+    defer self.alloc.free(text);
+    f.dirty = !std.mem.eql(u8, text, f.original);
 }
 
 /// Whether anything changed since the files were read or saved.
@@ -373,6 +382,53 @@ pub fn saved(self: *EditorSession, index: usize, text: []const u8) !void {
     self.alloc.free(f.original);
     f.original = copy;
     f.dirty = false;
+}
+
+/// Every file's text as it stands: a step of the editor's undo.
+pub const Snapshot = struct {
+    texts: [][]u8,
+
+    pub fn deinit(self: Snapshot, alloc: Allocator) void {
+        for (self.texts) |t| alloc.free(t);
+        alloc.free(self.texts);
+    }
+};
+
+pub fn snapshot(self: *const EditorSession, alloc: Allocator) !Snapshot {
+    const texts = try alloc.alloc([]u8, self.files.items.len);
+    var n: usize = 0;
+    errdefer {
+        for (texts[0..n]) |t| alloc.free(t);
+        alloc.free(texts);
+    }
+    for (self.files.items) |f| {
+        texts[n] = try f.doc.toOwnedText(alloc);
+        n += 1;
+    }
+    return .{ .texts = texts };
+}
+
+/// Each file back as `snap` holds it (one read since, as on disk), and the
+/// includes found again. A file is unsaved where it differs from disk.
+pub fn restore(self: *EditorSession, snap: Snapshot) !void {
+    for (self.files.items, 0..) |f, i| {
+        try self.replaceText(i, if (i < snap.texts.len) snap.texts[i] else f.original);
+    }
+    try self.discover();
+}
+
+/// Every unsaved change dropped: each file back to what is on disk.
+pub fn discard(self: *EditorSession) !void {
+    for (self.files.items, 0..) |f, i| if (f.dirty) try self.replaceText(i, f.original);
+    try self.discover();
+}
+
+fn replaceText(self: *EditorSession, index: usize, text: []const u8) !void {
+    const f = &self.files.items[index];
+    const doc = try EditableFile.parse(self.alloc, text);
+    f.doc.deinit();
+    f.doc = doc;
+    f.dirty = !std.mem.eql(u8, text, f.original);
 }
 
 const testing = std.testing;
@@ -428,6 +484,38 @@ test "EditorSession: includes in the loader's order, each once" {
     try expectValues(&session, "font-size", &.{"20"});
     try expectValues(&session, "background", &.{"#111111"});
     try testing.expectEqual(@as(?usize, null), session.source("cursor-color"));
+}
+
+test "EditorSession: undo steps, discard, and a value set back is no change" {
+    const files: TestFiles = .{ .map = &.{} };
+    var session = try init(testing.allocator, "C:\\cfg\\config", "font-size = 13\nwindow-theme = dark\n", files.reader());
+    defer session.deinit();
+    const before = try session.snapshot(testing.allocator);
+    defer before.deinit(testing.allocator);
+
+    try session.set("font-size", "15");
+    try testing.expect(session.dirty());
+    const mid = try session.snapshot(testing.allocator);
+    defer mid.deinit(testing.allocator);
+    try session.set("window-theme", "light");
+    try session.restore(mid);
+    try expectValues(&session, "font-size", &.{"15"});
+    try expectValues(&session, "window-theme", &.{"dark"});
+    try testing.expect(session.dirty());
+    try session.restore(before);
+    try expectValues(&session, "font-size", &.{"13"});
+    try testing.expect(!session.dirty());
+
+    // Set back to what the file has: nothing to save.
+    try session.set("font-size", "15");
+    try session.set("font-size", "13");
+    try testing.expect(!session.dirty());
+
+    try session.reset("window-theme");
+    try testing.expect(session.dirty());
+    try session.discard();
+    try testing.expect(!session.dirty());
+    try expectValues(&session, "window-theme", &.{"dark"});
 }
 
 test "EditorSession: a change goes where the loader takes it from" {
