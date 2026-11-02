@@ -641,6 +641,9 @@ fn dragRects(self: *const Surface, out: []Shapes.Rect) usize {
 /// Present the frame with its own alpha (the window is translucent,
 /// roadmap 4.1) or over the opaque background, from the next frame.
 pub fn setTranslucent(self: *Surface, on: bool) void {
+    // Direct3D 11: the pane's own paint changes with it (paintBackground),
+    // and a parent's invalidation doesn't reach a child window.
+    if (comptime build_config.renderer == .d3d11) _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
     if (!self.core_initialized) return;
     self.core_surface.renderer.api.present_state.transparent.store(on, .monotonic);
     self.postFrame();
@@ -853,9 +856,13 @@ fn paintBackground(self: *Surface) void {
     var ps: c.PAINTSTRUCT = undefined;
     const dc = c.BeginPaint(self.hwnd, &ps) orelse return;
     defer _ = c.EndPaint(self.hwnd, &ps);
-    if (self.window.translucent) return;
+    // In a translucent window the pane's part of the window's surface is
+    // black: GDI writes alpha 0, which DWM takes as premultiplied clear,
+    // so blur-behind shows the desktop under the swap chain's visual.
+    // Left unpainted, it was white, and the frame showed over white.
     const bg = self.colors.bg;
-    const brush = c.CreateSolidBrush(c.rgb(bg.r, bg.g, bg.b)) orelse return;
+    const fill = if (self.window.translucent) c.rgb(0, 0, 0) else c.rgb(bg.r, bg.g, bg.b);
+    const brush = c.CreateSolidBrush(fill) orelse return;
     defer _ = c.DeleteObject(brush);
     _ = c.FillRect(dc, &ps.rcPaint, brush);
 }
