@@ -64,7 +64,9 @@
     dist\windows\third-party.json) and a -symbols.zip with murrtty.pdb. The
     package is unpacked and checked (its version, its themes) before the
     zips get their names. -Prefix is then where the zips go (default
-    zig-out\package); the build and the check work in
+    zig-out\package), with murrtty-<version>-deps.zip beside them (Zig's
+    copy of each package the build used, for -Deps); the build and the
+    check work in
     .zig-cache\murrtty-package. Of zig's options it takes only
     -Dversion-string=, -Dstrip=false, -j<N> and --verbose.
 
@@ -81,6 +83,18 @@
     mismatch": a `zig fetch` run by hand (Zig 0.17.0's) stores a package
     one folder too deep, and every build after it fails that way. Other
     projects' packages are left alone.
+
+.PARAMETER Deps
+    Fill Zig's per-user package cache from a zip of the dependencies before
+    building, so the build downloads nothing: for a machine where Zig's
+    downloader can't reach the dependency server (a proxy it doesn't get
+    along with). 'release' downloads the newest murrtty release's
+    murrtty-<version>-deps.zip (from 0.4.0 on) with Windows' own proxy
+    settings, as this script downloads Zig; a URL downloads that zip; a path
+    takes a zip already here. Zig checks every package against the hash
+    build.zig.zon pins as it unpacks it, so a wrong or altered zip fails the
+    build rather than going into it. Packages already in the cache are kept
+    (with -Repair, this build's are deleted first).
 
 .PARAMETER Help
     Show this help. -h, --help, -? and /? work too.
@@ -128,6 +142,7 @@ param(
     [switch]$SetupOnly,
     [switch]$Clean,
     [switch]$Repair,
+    [string]$Deps = '',
     [switch]$Package,
     [switch]$Help,
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -159,7 +174,7 @@ $PinnedZigSha256 = @{
 
 $Root = $PSScriptRoot
 $ToolchainDir = Join-Path $Root '.zig-toolchain'
-$OwnOptions = @('Optimize', 'Prefix', 'Target', 'Run', 'SetupOnly', 'Clean', 'Repair', 'Package', 'Help')
+$OwnOptions = @('Optimize', 'Prefix', 'Target', 'Run', 'SetupOnly', 'Clean', 'Repair', 'Deps', 'Package', 'Help')
 $OptimizeModes = @('Debug', 'ReleaseSafe', 'ReleaseFast', 'ReleaseSmall')
 
 function Write-Step([string]$Message) {
@@ -605,8 +620,9 @@ function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
     $name = "murrtty-$version-windows-$($Target.Split('-')[0])"
     $zip = Join-Path $OutDir "$name.zip"
     $symZip = Join-Path $OutDir "$name-symbols.zip"
+    $depsZip = Join-Path $OutDir "murrtty-$version-deps.zip"
     # Never leave an earlier zip of the same name beside a failed run.
-    foreach ($f in @($zip, $symZip, "$zip.partial", "$symZip.partial")) {
+    foreach ($f in @($zip, $symZip, $depsZip, "$zip.partial", "$symZip.partial", "$depsZip.partial")) {
         if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
     }
 
@@ -690,7 +706,10 @@ function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
 
     Move-Item -LiteralPath "$zip.partial" -Destination $zip
     Move-Item -LiteralPath "$symZip.partial" -Destination $symZip
-    foreach ($f in @($zip, $symZip)) {
+    $packages = New-DepsZip "$depsZip.partial"
+    Move-Item -LiteralPath "$depsZip.partial" -Destination $depsZip
+    Write-Host "    the dependencies zip holds $packages packages"
+    foreach ($f in @($zip, $symZip, $depsZip)) {
         Write-Host ("    {0} ({1:N1} MB)" -f $f, ((Get-Item -LiteralPath $f).Length / 1MB))
     }
 }
@@ -1178,6 +1197,110 @@ function Repair-Dependencies {
     Write-Host '    The build downloads them again.'
 }
 
+# The dependencies zip (-Package): Zig's own copy, p\<hash>.tar.gz, of each
+# package this build uses that its per-user cache holds (both
+# architectures' after both were packaged), stored as they are (they are
+# compressed already). Returns how many.
+function New-DepsZip([string]$OutPath) {
+    $cache = Get-ZigGlobalCache
+    if (-not $cache) { Fail "zig env didn't report its cache folder, so no dependencies zip can be made." }
+    $p = Join-Path $cache 'p'
+    $files = @()
+    foreach ($h in @(Get-BuildHashes (Get-PkgDir))) {
+        $f = Join-Path $p "$h.tar.gz"
+        if (Test-Path -LiteralPath $f -PathType Leaf) { $files += $f }
+    }
+    if ($files.Count -eq 0) { Fail "Zig's cache ($p) holds none of this build's packages." }
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $stream = [IO.File]::Open($OutPath, [IO.FileMode]::Create)
+    try {
+        $archive = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($f in $files) {
+                $entry = 'p/' + [IO.Path]::GetFileName($f)
+                [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f, $entry, [IO.Compression.CompressionLevel]::NoCompression)
+            }
+        } finally {
+            $archive.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+    return $files.Count
+}
+
+# The newest murrtty release's dependencies zip, asked of GitHub's API with
+# Windows' own proxy settings.
+function Get-ReleaseDepsUrl {
+    try {
+        $releases = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/murr2k/murrtty/releases?per_page=30'
+    } catch {
+        Fail "Couldn't ask GitHub for murrtty's releases: $($_.Exception.Message)"
+    }
+    foreach ($r in @($releases)) {
+        foreach ($a in @($r.assets)) {
+            if ([string]$a.name -like '*-deps.zip') { return [string]$a.browser_download_url }
+        }
+    }
+    Fail 'No murrtty release has a dependencies zip yet (each release from 0.4.0 on has one).'
+}
+
+# -Deps: Zig's per-user package cache filled from a dependencies zip, so
+# the build downloads nothing. Zig checks each package against the hash
+# build.zig.zon pins as it unpacks it, so the zip needs no trust of its own.
+function Import-Dependencies([string]$From) {
+    $zipPath = $From
+    $temp = $null
+    if ($From -eq 'release' -or $From -match '^https?://') {
+        $url = $From
+        if ($From -eq 'release') { $url = Get-ReleaseDepsUrl }
+        $temp = Join-Path ([IO.Path]::GetTempPath()) ('murrtty-deps-' + [guid]::NewGuid().ToString('N') + '.zip')
+        Write-Step "Downloading the dependencies from $url"
+        try {
+            Save-Url $url $temp
+        } catch {
+            $why = $_.Exception.Message
+            $inner = $_.Exception
+            while ($inner.InnerException) { $inner = $inner.InnerException }
+            if ($inner.Message -ne $why) { $why += " ($($inner.Message))" }
+            if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
+            Fail "Download of $url failed: $why"
+        }
+        $zipPath = $temp
+    } else {
+        if (-not [IO.Path]::IsPathRooted($zipPath)) { $zipPath = Join-Path $startDir $zipPath }
+        if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) { Fail "-Deps: there is no file $zipPath." }
+    }
+    $cache = Get-ZigGlobalCache
+    if (-not $cache) { Fail "zig env didn't report its cache folder." }
+    $p = Join-Path $cache 'p'
+    New-Item -ItemType Directory -Force -Path $p | Out-Null
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $added = 0
+    $kept = 0
+    try {
+        $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+        try {
+            foreach ($e in $archive.Entries) {
+                $m = [regex]::Match($e.FullName, '^p/([A-Za-z0-9_.\-]+\.tar\.gz)$')
+                if (-not $m.Success) { continue }
+                $dest = Join-Path $p $m.Groups[1].Value
+                if (Test-Path -LiteralPath $dest) { $kept++; continue }
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dest)
+                $added++
+            }
+        } finally {
+            $archive.Dispose()
+        }
+    } catch {
+        Fail "-Deps: $zipPath couldn't be read as a zip: $($_.Exception.Message)"
+    } finally {
+        if ($temp -and (Test-Path -LiteralPath $temp)) { Remove-Item -LiteralPath $temp -Force }
+    }
+    if ($added + $kept -eq 0) { Fail "-Deps: $zipPath holds no packages (p/<hash>.tar.gz)." }
+    Write-Step "Dependencies: $added packages put in $p ($kept were there already)"
+}
+
 # A URL or proxy with any user name and password masked.
 function Hide-Credentials([string]$Text) {
     return [regex]::Replace($Text, '(?<=//)[^/@\s]+@', '***@')
@@ -1229,6 +1352,8 @@ function Show-FetchDiagnosis([string[]]$BuildArgs) {
             Write-Note 'settings; Zig uses the variable instead.) If this machine reaches the internet without'
             Write-Note "the proxy, clear the variable and build again: in cmd, set $first="
             Write-Note "in PowerShell, `$env:$first = `$null"
+            Write-Note 'Otherwise this script can download them as one zip, with Windows'' proxy settings:'
+            Write-Host '        .\build-windows.cmd -Deps release' -ForegroundColor Yellow
         } else {
             Write-Note "No proxy variable is set: check this machine's connection to $server."
         }
@@ -1286,6 +1411,7 @@ if ($Clean) {
 }
 
 if ($Repair) { Repair-Dependencies }
+if ($Deps) { Import-Dependencies $Deps }
 
 if ($SetupOnly) {
     Write-Step 'Requirements installed. Not building (-SetupOnly).'

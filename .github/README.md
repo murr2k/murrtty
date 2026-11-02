@@ -563,6 +563,7 @@ Options:
 | `-SetupOnly` | Install Zig, don't build |
 | `-Clean` | Delete `.zig-cache`, and `zig-out` unless `-Prefix` is given, first (`zig-pkg\` and `.zig-toolchain\` are kept) |
 | `-Repair` | Delete the dependencies this build uses, from `zig-pkg\` and Zig's per-user cache, so they download again: for a "hash mismatch" |
+| `-Deps release` | Take the dependencies from the newest release's `murrtty-<version>-deps.zip` (from 0.4.0 on), downloaded with Windows' proxy settings, so Zig downloads nothing; a URL or a zip's path works too |
 | `-Package` | Build the release zip and its symbols zip (see below) |
 | `-Help` | Show the help (also `-?` or `/?`) |
 
@@ -588,7 +589,9 @@ holds `bin\murrtty.exe` with Microsoft's ConPTY beside it
 murr2k/murrtty-mesa's releases, fetched by hash), `share\`, `LICENSE.txt` and
 `THIRD-PARTY-NOTICES.txt` (the licenses of everything murrtty includes,
 written from `dist\windows\third-party.json`), and `-symbols.zip` holds
-`murrtty.pdb`. It checks the package by unpacking it and asking the
+`murrtty.pdb`, and `murrtty-<version>-deps.zip` holds Zig's copy of each
+dependency the build used (for `-Deps`). It checks the package by
+unpacking it and asking the
 unpacked murrtty for its version and its themes. It stops when a
 dependency is added or changes until `third-party.json` covers it.
 
@@ -603,7 +606,10 @@ output kept, and says what it finds:
   `HTTP_PROXY` set, Zig downloads through that proxy, and the server the
   error names is only where the request was going. The builder itself
   downloads Zig with Windows' proxy settings instead. If the machine
-  reaches the internet without the proxy, clear the variable for the build.
+  reaches the internet without the proxy, clear the variable for the build;
+  otherwise `-Deps release` downloads every dependency as one zip with
+  Windows' proxy settings. Zig checks each against the hash `build.zig.zon`
+  pins, so the zip needs no trust of its own.
 
 To build by hand with Zig 0.17.0 already installed:
 

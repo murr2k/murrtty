@@ -3765,6 +3765,16 @@ the inspector crashing on ARM64's llvmpipe, and ARM64's thread stacks
 committing 5 MB each (`pane-commit`), which the failed runs' symbols and
 verbose log will name. A run takes about 45 minutes with its builds.
 
+*2026-11-02, from the owner's build behind a proxy:* `-Package` also
+writes `murrtty-<version>-deps.zip`, Zig's own copy (`p\<hash>.tar.gz`)
+of each package the build used, and each release carries it from 0.4.0
+on. `build-windows.cmd -Deps release` (or a URL, or a zip's path)
+downloads it with Windows' proxy settings and puts the packages in Zig's
+per-user cache, so the build downloads nothing; Zig checks each against
+`build.zig.zon`'s hash as it unpacks it. Not `--system`: it would also
+turn on every system integration (Ghostty would look for FreeType and the
+rest installed on Windows).
+
 *2026-11-02, from a review of what the suite skips:* a scenario skips as
 an opt-in whose switch is off, as not for this build (the other
 renderer's), or because the machine can't run it now (no display, a
