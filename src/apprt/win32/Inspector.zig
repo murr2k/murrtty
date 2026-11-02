@@ -3,7 +3,9 @@
 //! inspector (Dear ImGui) for it. The core owns the inspector's data
 //! (activateInspector, deactivateInspector); this owns the window, a WGL
 //! 4.3 context of its own and the ImGui context, drawn by ImGui's OpenGL 3
-//! backend, as the embedded runtime's Inspector does with Metal. Input is
+//! backend, as the embedded runtime's Inspector does with Metal; with the
+//! Direct3D 11 renderer (roadmap 7.8), a device and swap chain of its own
+//! and ImGui's DX11 backend, so it needs no OpenGL either. Input is
 //! fed to ImGui by hand, as GTK's widget does (with the ImGuiMod_ keys it
 //! leaves out), and it draws 30 times a second while shown, as macOS's
 //! view, and at once after input.
@@ -22,6 +24,12 @@ const Surface = @import("Surface.zig");
 const test_hooks = @import("test_hooks.zig");
 const CoreInspector = @import("../../inspector/main.zig").Inspector;
 const global = @import("../../global.zig");
+const build_config = @import("../../build_config.zig");
+
+/// The Direct3D 11 renderer's build: the inspector draws with it too.
+const is_d3d = build_config.renderer == .d3d11;
+const d3d11 = if (is_d3d) @import("d3d11") else struct {};
+const RendererDevice = @import("../../renderer.zig").Device;
 
 const log = std.log.scoped(.win32_inspector);
 
@@ -61,6 +69,81 @@ frames: u32 = 0,
 /// linked, they would load Windows' at start, whichever MURRTTY_OPENGL
 /// names).
 gl11: ?Gl11 = null,
+/// With the Direct3D 11 renderer: its device and swap chain.
+dx: if (is_d3d) ?Dx else void = if (is_d3d) null else {},
+
+/// The inspector's own Direct3D 11 device (on the UI thread, which alone
+/// uses it), the panes' choice of GPU or WARP, and a flip swap chain on
+/// its window, opaque.
+const Dx = if (!is_d3d) void else struct {
+    gpu: *d3d11.d3d.Device,
+    ctx: *d3d11.d3d.DeviceContext,
+    swap: *d3d11.dxgi.SwapChain1,
+    rtv: ?*d3d11.d3d.RenderTargetView = null,
+    width: u32,
+    height: u32,
+
+    fn create(device: *RendererDevice, hwnd: c.HWND) !@This() {
+        const com = d3d11.com;
+        const made = try device.createDevice(.{});
+        errdefer {
+            com.release(made.ctx);
+            com.release(made.gpu);
+        }
+        const dxgi_device = com.query(made.gpu, d3d11.dxgi.Device) orelse return error.D3D11Failed;
+        defer com.release(dxgi_device);
+        const adapter = dxgi_device.getAdapter() orelse return error.D3D11Failed;
+        defer com.release(adapter);
+        const factory = adapter.getParentFactory() orelse return error.D3D11Failed;
+        defer com.release(factory);
+        var r: c.RECT = .{};
+        _ = c.GetClientRect(hwnd, &r);
+        const width: u32 = @intCast(@max(r.right, 1));
+        const height: u32 = @intCast(@max(r.bottom, 1));
+        var swap: ?*d3d11.dxgi.SwapChain1 = null;
+        const hr = factory.createSwapChainForHwnd(made.gpu, hwnd, &.{
+            .Width = width,
+            .Height = height,
+            .Format = .b8g8r8a8_unorm,
+            .BufferCount = 2,
+            .Scaling = .stretch,
+            .SwapEffect = .flip_discard,
+            .AlphaMode = .ignore,
+        }, &swap);
+        if (!com.succeeded(hr)) return error.D3D11Failed;
+        return .{ .gpu = made.gpu, .ctx = made.ctx, .swap = swap.?, .width = width, .height = height };
+    }
+
+    /// The view of the buffer to draw into, the buffers sized to the
+    /// window first.
+    fn target(self: *@This(), width: u32, height: u32) ?*d3d11.d3d.RenderTargetView {
+        const com = d3d11.com;
+        if (width != self.width or height != self.height) {
+            self.ctx.omSetRenderTargets(&.{});
+            if (self.rtv) |v| com.release(v);
+            self.rtv = null;
+            if (!com.succeeded(self.swap.resizeBuffers(0, width, height, .unknown, 0))) return null;
+            self.width = width;
+            self.height = height;
+        }
+        if (self.rtv) |v| return v;
+        const buf = self.swap.getBuffer(0, d3d11.d3d.Texture2D) orelse return null;
+        defer com.release(buf);
+        var rtv: ?*d3d11.d3d.RenderTargetView = null;
+        if (!com.succeeded(self.gpu.createRenderTargetView(buf.resource(), null, &rtv))) return null;
+        self.rtv = rtv;
+        return rtv;
+    }
+
+    fn release(self: *@This()) void {
+        const com = d3d11.com;
+        self.ctx.clearState();
+        if (self.rtv) |v| com.release(v);
+        com.release(self.swap);
+        com.release(self.ctx);
+        com.release(self.gpu);
+    }
+};
 
 const Gl11 = struct {
     viewport: *const fn (c_int, c_int, c_int, c_int) callconv(.winapi) void,
@@ -92,7 +175,6 @@ pub fn registerClass(instance: c.HINSTANCE) !void {
 pub fn create(surface: *Surface) !*Inspector {
     const app = surface.app;
     const alloc = app.core_app.alloc;
-    const ext = try app.wglExtensions();
     const self = try alloc.create(Inspector);
     // Until its window exists: then the window's destroy frees it.
     var owned = true;
@@ -118,17 +200,26 @@ pub fn create(surface: *Surface) !*Inspector {
 
     self.dpi = c.GetDpiForWindow(self.hwnd);
     self.sizeForDpi();
-    const hdc = c.GetDC(self.hwnd) orelse return error.GetDCFailed;
-    self.hdc = hdc;
-    const whdc: wgl.HDC = @ptrCast(hdc);
-    try ext.setPixelFormat(whdc);
-    self.glrc = (try ext.createContext(whdc, 4, 3, false)).handle;
-    self.gl11 = Gl11.load();
-    if (wgl.wglMakeCurrent(whdc, self.glrc) == 0) return error.MakeCurrentFailed;
-    defer _ = wgl.wglMakeCurrent(null, null);
-    // No waiting on the display in SwapBuffers: it runs on the UI thread,
-    // and the timer paces it (the terminals' renderers do the same).
-    if (ext.swapInterval) |swapInterval| _ = swapInterval(0);
+    if (comptime is_d3d) {
+        const device = app.core_app.device orelse return error.NoRenderDevice;
+        self.dx = try Dx.create(device, self.hwnd);
+    } else {
+        const ext = try app.wglExtensions();
+        const hdc = c.GetDC(self.hwnd) orelse return error.GetDCFailed;
+        self.hdc = hdc;
+        const whdc: wgl.HDC = @ptrCast(hdc);
+        try ext.setPixelFormat(whdc);
+        self.glrc = (try ext.createContext(whdc, 4, 3, false)).handle;
+        self.gl11 = Gl11.load();
+        if (wgl.wglMakeCurrent(whdc, self.glrc) == 0) return error.MakeCurrentFailed;
+        // No waiting on the display in SwapBuffers: it runs on the UI
+        // thread, and the timer paces it (the terminals' renderers do the
+        // same).
+        if (ext.swapInterval) |swapInterval| _ = swapInterval(0);
+    }
+    defer if (comptime !is_d3d) {
+        _ = wgl.wglMakeCurrent(null, null);
+    };
 
     const ig = cimgui.c.ImGui_CreateContext(null) orelse return error.OutOfMemory;
     self.ig = ig;
@@ -141,8 +232,13 @@ pub fn create(surface: *Surface) !*Inspector {
     pio.Platform_ClipboardUserData = self;
     pio.Platform_GetClipboardTextFn = &getClipboardText;
     pio.Platform_SetClipboardTextFn = &setClipboardText;
-    // A 4.3 core context: GLSL 4.10's shaders.
-    if (!cimgui.ImGui_ImplOpenGL3_Init("#version 410")) return error.ImGuiBackendFailed;
+    if (comptime is_d3d) {
+        const dx = &self.dx.?;
+        if (!cimgui.ImGui_ImplDX11_Init(dx.gpu, dx.ctx)) return error.ImGuiBackendFailed;
+    } else {
+        // A 4.3 core context: GLSL 4.10's shaders.
+        if (!cimgui.ImGui_ImplOpenGL3_Init("#version 410")) return error.ImGuiBackendFailed;
+    }
     self.backend = true;
     CoreInspector.setup();
     self.applyStyle();
@@ -179,11 +275,14 @@ fn onDestroy(self: *Inspector) void {
         // Not ShutdownWithLoaderCleanup: its GL function table is the
         // process's, and another inspector still drawing would call GL
         // through it zeroed (opengl32 stays loaded, so it stays right).
-        if (self.backend) cimgui.ImGui_ImplOpenGL3_Shutdown();
+        if (self.backend) {
+            if (comptime is_d3d) cimgui.ImGui_ImplDX11_Shutdown() else cimgui.ImGui_ImplOpenGL3_Shutdown();
+        }
         cimgui.c.ImGui_DestroyContext(ig);
         cimgui.c.ImGui_SetCurrentContext(if (prev == ig) null else prev);
         if (self.glrc != null) _ = wgl.wglMakeCurrent(null, null);
     }
+    if (comptime is_d3d) if (self.dx) |*dx| dx.release();
     if (self.glrc) |glrc| _ = wgl.wglDeleteContext(glrc);
     if (self.hdc) |hdc| _ = c.ReleaseDC(self.hwnd, hdc);
     if (self.active) self.surface.core_surface.deactivateInspector();
@@ -235,6 +334,7 @@ fn applyStyle(self: *Inspector) void {
 
 /// Draw a frame: the core's inspector for the pane, through ImGui.
 fn render(self: *Inspector) void {
+    if (comptime is_d3d) return self.renderD3d();
     const hdc = self.hdc orelse return;
     if (!self.backend or c.IsIconic(self.hwnd) != 0) return;
     if (wgl.wglMakeCurrent(@ptrCast(hdc), self.glrc) == 0) return;
@@ -267,6 +367,41 @@ fn render(self: *Inspector) void {
     }
     cimgui.ImGui_ImplOpenGL3_RenderDrawData(cimgui.c.ImGui_GetDrawData());
     _ = wgl.SwapBuffers(@ptrCast(hdc));
+    self.frames +%= 1;
+}
+
+/// render's Direct3D 11 frame: the same ImGui frames, then ImGui's DX11
+/// backend draws into the swap chain, presented without waiting (the
+/// timer paces it).
+fn renderD3d(self: *Inspector) void {
+    if (comptime !is_d3d) return;
+    const dx = if (self.dx) |*d| d else return;
+    if (!self.backend or c.IsIconic(self.hwnd) != 0) return;
+    const scope = self.enter() orelse return;
+    defer scope.leave();
+
+    var r: c.RECT = .{};
+    _ = c.GetClientRect(self.hwnd, &r);
+    const ig_io: *cimgui.c.ImGuiIO = cimgui.c.ImGui_GetIO();
+    ig_io.DisplaySize = .{ .x = @floatFromInt(r.right), .y = @floatFromInt(r.bottom) };
+    ig_io.DisplayFramebufferScale = .{ .x = 1, .y = 1 };
+
+    const core = &self.surface.core_surface;
+    for (0..2) |_| {
+        cimgui.ImGui_ImplDX11_NewFrame();
+        self.newFrame(ig_io);
+        cimgui.c.ImGui_NewFrame();
+        if (core.inspector) |i| i.render(core);
+        self.cursor = cimgui.c.ImGui_GetMouseCursor();
+        cimgui.c.ImGui_Render();
+    }
+
+    const rtv = dx.target(@intCast(@max(r.right, 1)), @intCast(@max(r.bottom, 1))) orelse return;
+    dx.ctx.omSetRenderTargets(&.{rtv});
+    dx.ctx.rsSetViewports(&.{.{ .Width = @floatFromInt(@max(r.right, 1)), .Height = @floatFromInt(@max(r.bottom, 1)) }});
+    dx.ctx.clearRenderTargetView(rtv, &.{ 0, 0, 0, 1 });
+    cimgui.ImGui_ImplDX11_RenderDrawData(cimgui.c.ImGui_GetDrawData());
+    _ = dx.swap.present(0, 0);
     self.frames +%= 1;
 }
 

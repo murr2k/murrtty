@@ -888,8 +888,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 break :err &.{};
             };
 
-            const has_custom_shaders = custom_shaders.len > 0;
-
             var shaders = try self.api.initShaders(
                 self.alloc,
                 custom_shaders,
@@ -897,7 +895,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             errdefer shaders.deinit(self.alloc);
 
             self.shaders = shaders;
-            self.has_custom_shaders = has_custom_shaders;
+            // The post pipelines built, not the shaders loaded: a backend
+            // leaves them all out when one fails to build, and drawing into
+            // the custom shaders' texture with no pass to copy it to the
+            // target left the terminal blank (a port fix, roadmap 7.8).
+            self.has_custom_shaders = shaders.post_pipelines.len > 0;
         }
 
         /// Callback called by renderer.Thread when it begins.

@@ -284,6 +284,9 @@ selection: ?[]u8 = null,
 /// This murrtty was started again on its software OpenGL (Mesa) by one
 /// whose graphics have no OpenGL 4.3 (software_gl.zig).
 software_start: ?software_gl.Started = null,
+/// Direct3D 11 (roadmap 7.8): whether the first pane to present was told
+/// about drawing on the CPU (takeSoftwareNotice).
+software_told: bool = false,
 /// run() has opened the first window or the tray. Before, nothing quits:
 /// the color scheme's soft reload at start (a dark system) reaches the
 /// config change, with no window yet.
@@ -490,8 +493,10 @@ pub fn run(self: *App) !void {
         defer self.ipc_overrides = null;
         _ = Window.create(self, null) catch |err| {
             // A GUI program has no console, so say why it can't start: for
-            // OpenGL, what is missing and what to do (roadmap 6.3).
-            if (gl_diagnosis.isGlError(err)) {
+            // OpenGL, what is missing and what to do (roadmap 6.3). Direct3D
+            // 11 (7.8) falls back to WARP itself: failing here, it has
+            // neither, and the dialog below says so.
+            if (comptime build_config.renderer == .opengl) if (gl_diagnosis.isGlError(err)) {
                 // No hand-offs to an instance that can't open a window: a
                 // murrtty started meanwhile opens its own.
                 if (self.ipc_server) |s| s.stop();
@@ -512,12 +517,24 @@ pub fn run(self: *App) !void {
                     .ended => {},
                 }
                 return err;
-            }
+            };
+            // As above: nothing hands off to an instance that can't open a
+            // window while its dialog shows.
+            if (self.ipc_server) |s| s.stop();
+            self.ipc_server = null;
             const msg = std.fmt.allocPrint(
                 self.core_app.alloc,
-                "murrtty could not open a window ({t}).\n\n" ++
+                "{s}murrtty could not open a window ({t}).\n\n" ++
                     "To see the log, start murrtty from a shell with: murrtty.exe 2> murrtty.log",
-                .{err},
+                .{
+                    // Direct3D 11 (7.8): not even WARP, Windows' own
+                    // software renderer, gave a device.
+                    if (build_config.renderer == .d3d11 and @as(anyerror, err) == error.DeviceFailed)
+                        "Windows offers no Direct3D 11 device here, not even its software renderer (WARP), so murrtty can't draw.\n\n"
+                    else
+                        "",
+                    err,
+                },
             ) catch return err;
             defer self.core_app.alloc.free(msg);
             _ = Surface.messageBox(self.core_app.alloc, null, msg, "murrtty", c.MB_OK | c.MB_ICONERROR);
@@ -1590,6 +1607,24 @@ fn checkQuit(self: *App) void {
         if (config.@"quit-after-last-window-closed-delay" == null and self.requested_window) return self.quitNow();
     }
     if (!self.notifications.tray and self.quit_timer != .active) self.quitNow();
+}
+
+/// Direct3D 11 (roadmap 7.8): the notice that murrtty draws on the CPU
+/// (WARP, or Microsoft's Basic Render Driver: no graphics card's driver
+/// here), once, when the first pane to present draws so; none where
+/// MURRTTY_D3D asked for WARP. As the software OpenGL's (software_gl).
+pub fn takeSoftwareNotice(self: *App) ?[]const u8 {
+    if (comptime build_config.renderer != .d3d11) return null;
+    if (self.software_told) return null;
+    for (self.core_app.surfaces.items) |s| {
+        if (!s.core_initialized) continue;
+        const api = &s.core_surface.renderer.api;
+        if (api.present_state.presented.load(.monotonic) == 0) continue;
+        self.software_told = true;
+        if (!api.software or api.device.warp_asked) return null;
+        return "No graphics card's driver draws here: murrtty draws in software, which is slower.";
+    }
+    return null;
 }
 
 fn startQuitTimer(self: *App) void {

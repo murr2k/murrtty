@@ -77,6 +77,7 @@
         .macos = .{ .path = "./pkg/macos", .lazy = true },
         .oniguruma = .{ .path = "./pkg/oniguruma", .lazy = true },
         .opengl = .{ .path = "./pkg/opengl", .lazy = true },
+        .d3d11 = .{ .path = "./pkg/d3d11", .lazy = true },
         .sentry = .{ .path = "./pkg/sentry", .lazy = true },
         .simdutf = .{ .path = "./pkg/simdutf", .lazy = true },
         .wuffs = .{ .path = "./pkg/wuffs", .lazy = true },

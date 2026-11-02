@@ -5,6 +5,8 @@ const WasmTarget = @import("../os/wasm/target.zig").Target;
 pub const Backend = enum {
     opengl,
     metal,
+    /// murrtty's Windows renderer (roadmap 7.8).
+    d3d11,
 
     pub fn default(
         target: std.Target,

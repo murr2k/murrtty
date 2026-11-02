@@ -1034,7 +1034,14 @@ fn notices(self: *Session) void {
     // the first frame is drawn (software_gl.tick): one toast, not two.
     if (self.app.software_start) |s| if (!s.told) return;
     var buf: [400]u8 = undefined;
-    if (self.takeSkipNotice(&buf)) |text| window.showToastFor(text, notice_ms);
+    const skip = self.takeSkipNotice(&buf);
+    // Drawing in software (Direct3D 11's WARP, roadmap 7.8): with the
+    // skipped session's, one toast.
+    if (self.app.takeSoftwareNotice()) |software| {
+        var both: [600]u8 = undefined;
+        const text = if (skip) |s| std.fmt.bufPrint(&both, "{s} {s}", .{ software, s }) catch software else software;
+        window.showToastFor(text, notice_ms);
+    } else if (skip) |text| window.showToastFor(text, notice_ms);
     if (self.warn_pending) |reason| {
         self.warn_pending = null;
         self.showWarning(reason);

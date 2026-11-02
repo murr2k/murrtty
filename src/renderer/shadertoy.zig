@@ -42,7 +42,8 @@ pub const Uniforms = extern struct {
 };
 
 /// The target to load shaders for.
-pub const Target = enum { glsl, msl };
+/// hlsl: murrtty's Direct3D 11 renderer (roadmap 7.8), shader model 5.0.
+pub const Target = enum { glsl, msl, hlsl };
 
 /// Load a set of shaders from files and convert them to the target
 /// format. The shader order is preserved.
@@ -137,6 +138,7 @@ pub fn loadFromFile(
         // is the final result that will be returned to the caller.
         .glsl => try glslFromSpv(alloc_gpa, spirv),
         .msl => try mslFromSpv(alloc_gpa, spirv),
+        .hlsl => try hlslFromSpv(alloc_gpa, spirv),
     };
 }
 
@@ -250,6 +252,24 @@ pub fn mslFromSpv(alloc: Allocator, spv: []const u8) ![:0]const u8 {
                 options,
                 c.SPVC_COMPILER_OPTION_MSL_ENABLE_DECORATION_BINDING,
                 c.SPVC_TRUE,
+            ) != c.SPVC_SUCCESS) {
+                return error.SpvcFailed;
+            }
+        }
+    }).setOptions);
+}
+
+/// Convert SPIR-V binary to HLSL (shader model 5.0) for murrtty's
+/// Direct3D 11 renderer: the uniform block keeps binding 1 (b1) and the
+/// channel its 0 (t0, its sampler s0), as the renderer binds them.
+pub fn hlslFromSpv(alloc: Allocator, spv: []const u8) ![:0]const u8 {
+    const c = spvcross.c;
+    return try spvCross(alloc, c.SPVC_BACKEND_HLSL, spv, (struct {
+        fn setOptions(options: c.spvc_compiler_options) error{SpvcFailed}!void {
+            if (c.spvc_compiler_options_set_uint(
+                options,
+                c.SPVC_COMPILER_OPTION_HLSL_SHADER_MODEL,
+                50,
             ) != c.SPVC_SUCCESS) {
                 return error.SpvcFailed;
             }

@@ -16,6 +16,7 @@ const terminal = @import("../../terminal/main.zig");
 const unicode = @import("../../unicode/main.zig");
 const CoreSurface = @import("../../Surface.zig");
 
+const build_config = @import("../../build_config.zig");
 const c = @import("c.zig");
 const key = @import("key.zig");
 const split_layout = @import("split_layout.zig");
@@ -842,6 +843,23 @@ pub fn setReadonly(self: *Surface, on: bool) void {
     o.show(self.hwnd, "Read-only", 0);
 }
 
+/// Direct3D 11 (roadmap 7.8): the pane's own content, under the swap
+/// chain's composition visual, is the terminal background, which then
+/// shows where the frame doesn't reach yet (the strip a resize uncovers,
+/// until the swap chain's buffers follow), as OpenGL's present pass
+/// fills it. A translucent window leaves it alone: GDI's alpha 0 lets
+/// the backdrop show there.
+fn paintBackground(self: *Surface) void {
+    var ps: c.PAINTSTRUCT = undefined;
+    const dc = c.BeginPaint(self.hwnd, &ps) orelse return;
+    defer _ = c.EndPaint(self.hwnd, &ps);
+    if (self.window.translucent) return;
+    const bg = self.colors.bg;
+    const brush = c.CreateSolidBrush(c.rgb(bg.r, bg.g, bg.b)) orelse return;
+    defer _ = c.DeleteObject(brush);
+    _ = c.FillRect(dc, &ps.rcPaint, brush);
+}
+
 pub fn readonlyShown(self: *const Surface) bool {
     return self.readonly_overlay.visible();
 }
@@ -1517,7 +1535,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         c.WM_MENUCHAR => return ContextMenu.menuChar(wparam, lparam),
 
         c.WM_PAINT => {
-            _ = c.ValidateRect(self.hwnd, null);
+            if (comptime build_config.renderer == .d3d11) self.paintBackground() else _ = c.ValidateRect(self.hwnd, null);
             if (self.core_initialized) self.core_surface.refreshCallback() catch {};
             return 0;
         },

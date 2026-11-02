@@ -851,6 +851,36 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     try out.print(alloc, ",\"force_opaque\":{}", .{app.force_opaque});
     // Which ConPTY new panes get: the bundled one or Windows' own (2.6).
     try out.print(alloc, ",\"conpty\":\"{t}\"", .{@import("../../os/main.zig").conpty.get().source});
+    // The renderer this build draws with (roadmap 7.8): "opengl" or
+    // "d3d11"; with Direct3D 11, the first pane's adapter and whether it
+    // draws on the CPU (WARP, Microsoft's Basic Render Driver).
+    {
+        const build_config = @import("../../build_config.zig");
+        try out.print(alloc, ",\"renderer\":\"{t}\"", .{build_config.renderer});
+        if (comptime build_config.renderer == .d3d11) {
+            const D3D11 = @import("../../renderer.zig").D3D11;
+            var name_buf: [256]u8 = undefined;
+            var adapter: []const u8 = "";
+            var software = false;
+            panes: for (app.windows.items) |w| {
+                var it = w.panes();
+                while (it.next()) |s| {
+                    if (!s.core_initialized) continue;
+                    // The render thread replaces a lost device (and
+                    // releases the old one) under its draw mutex.
+                    const r = &s.core_surface.renderer;
+                    r.draw_mutex.lockUncancelable(global.io());
+                    defer r.draw_mutex.unlock(global.io());
+                    adapter = D3D11.Device.adapterName(r.api.gpu, &name_buf);
+                    software = r.api.software;
+                    break :panes;
+                }
+            }
+            try out.appendSlice(alloc, ",\"adapter\":");
+            try writeString(alloc, out, adapter);
+            try out.print(alloc, ",\"software\":{}", .{software});
+        }
+    }
     // Which opengl32 is loaded ("" before any), what its first context
     // reported, and why this murrtty runs on its software OpenGL ("" if it
     // doesn't; roadmap 6.3b).

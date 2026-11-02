@@ -17,6 +17,7 @@ pub const Backend = @import("renderer/backend.zig").Backend;
 pub const GenericRenderer = @import("renderer/generic.zig").Renderer;
 pub const Metal = @import("renderer/Metal.zig");
 pub const OpenGL = @import("renderer/OpenGL.zig");
+pub const D3D11 = @import("renderer/D3D11.zig");
 /// What murrtty's Windows runtime shares with any Windows backend's present.
 pub const win32_present = @import("renderer/win32_present.zig");
 pub const Options = @import("renderer/Options.zig");
@@ -41,6 +42,7 @@ pub const Renderer = GenericRenderer(GraphicsAPI);
 const GraphicsAPI = switch (build_config.renderer) {
     .metal => Metal,
     .opengl => OpenGL,
+    .d3d11 => D3D11,
 };
 
 /// The app-scoped render device from which surface renderers are created.
@@ -61,6 +63,13 @@ pub const Health = enum(c_int) {
 test {
     // Our comptime-chosen renderer
     _ = Renderer;
+
+    // murrtty's Direct3D 11 renderer (roadmap 7.8) and its bindings are
+    // tested whichever renderer the build chose.
+    if (comptime @import("builtin").target.os.tag == .windows) {
+        _ = D3D11;
+        _ = @import("d3d11");
+    }
 
     _ = cursor;
     _ = message;

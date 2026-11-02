@@ -59,6 +59,25 @@ pub fn compileFn() ?*const D3DCompileFn {
     return f;
 }
 
+/// Dear ImGui's DX11 backend calls D3DCompile by this name (pkg/dcimgui
+/// builds it so), reaching System32's compiler without an import.
+pub export fn murrtty_D3DCompile(
+    src: [*]const u8,
+    src_len: usize,
+    name: ?[*:0]const u8,
+    defines: ?*const anyopaque,
+    include: ?*anyopaque,
+    entry: [*:0]const u8,
+    target: [*:0]const u8,
+    flags1: u32,
+    flags2: u32,
+    code: *?*Blob,
+    errors: ?*?*Blob,
+) callconv(.winapi) HRESULT {
+    const f = compileFn() orelse return com.E_FAIL;
+    return f(src, src_len, name, defines, include, entry, target, flags1, flags2, code, errors);
+}
+
 pub const Compiled = struct {
     code: *Blob,
 

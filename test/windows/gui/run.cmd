@@ -7,7 +7,8 @@ rem   test\windows\gui\run.cmd --verbose tabs clipboard
 rem Zig comes from ZIG (zig.exe or its folder), the builder's
 rem .zig-toolchain, or PATH. murrtty is built for GHOSTTY_GUI_TARGET
 rem (default x86_64-windows-gnu; aarch64-windows-gnu on ARM64, where the
-rem x64 harness runs emulated).
+rem x64 harness runs emulated), with GHOSTTY_GUI_RENDERER's renderer if set
+rem (opengl, d3d11; roadmap 7.8).
 setlocal
 set "ROOT=%~dp0..\..\.."
 pushd "%ROOT%" || exit /b 1
@@ -19,7 +20,9 @@ if not defined ZIGEXE for /d %%D in (".zig-toolchain\zig-*") do if exist "%%D\zi
 if not defined ZIGEXE set "ZIGEXE=zig"
 
 if not defined GHOSTTY_GUI_TARGET set "GHOSTTY_GUI_TARGET=x86_64-windows-gnu"
-"%ZIGEXE%" build -Dtarget=%GHOSTTY_GUI_TARGET% || goto failed
+set "RENDERER_ARG="
+if defined GHOSTTY_GUI_RENDERER set "RENDERER_ARG=-Drenderer=%GHOSTTY_GUI_RENDERER%"
+"%ZIGEXE%" build -Dtarget=%GHOSTTY_GUI_TARGET% %RENDERER_ARG% || goto failed
 "%ZIGEXE%" build --build-file test\windows\gui\build.zig || goto failed
 "test\windows\gui\zig-out\bin\ghostty-gui-test.exe" --ghostty "%CD%\zig-out\bin\murrtty.exe" %*
 set "RC=%ERRORLEVEL%"

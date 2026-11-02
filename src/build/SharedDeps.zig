@@ -522,6 +522,13 @@ pub fn add(
     if (b.lazyDependency("opengl", .{})) |dep| {
         step.root_module.addImport("opengl", dep.module("opengl"));
     }
+    // murrtty's Direct3D 11 renderer (roadmap 7.8): on Windows always, so
+    // the backend builds and its tests run whichever renderer is chosen.
+    if (target.result.os.tag == .windows) {
+        if (b.lazyDependency("d3d11", .{})) |dep| {
+            step.root_module.addImport("d3d11", dep.module("d3d11"));
+        }
+    }
     if (b.lazyDependency("vaxis", .{
         .target = target,
         .optimize = optimize,
@@ -612,6 +619,7 @@ pub fn add(
         .optimize = optimize,
         .freetype = true,
         .@"backend-metal" = target.result.os.tag.isDarwin(),
+        .@"backend-dx11" = target.result.os.tag == .windows,
         .@"backend-osx" = target.result.os.tag == .macos,
         // OpenGL3 backend should only be built on non-Apple targets.
         // Apple platforms use Metal (and macOS may also use the OSX backend).

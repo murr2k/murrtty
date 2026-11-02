@@ -75,6 +75,8 @@ fn buildSpirvCross(
     try flags.appendSlice(b.allocator, &.{
         "-DSPIRV_CROSS_C_API_GLSL=1",
         "-DSPIRV_CROSS_C_API_MSL=1",
+        // murrtty's Direct3D 11 renderer's custom shaders (roadmap 7.8).
+        "-DSPIRV_CROSS_C_API_HLSL=1",
 
         "-fno-sanitize=undefined",
         "-fno-sanitize-trap=undefined",
@@ -105,6 +107,9 @@ fn buildSpirvCross(
 
                 // MSL
                 "spirv_msl.cpp",
+
+                // HLSL
+                "spirv_hlsl.cpp",
             },
         });
 

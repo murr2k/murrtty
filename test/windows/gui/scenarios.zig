@@ -55,10 +55,11 @@ pub const all = [_]Scenario{
     .{ .name = "cli", .about = "CLI actions with output on a pipe: +version; +validate-config exits 0 for a valid file, 1 naming the problem for an invalid one", .run = cli },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
     .{ .name = "uia", .about = "a screen reader reads a pane through UI Automation's Text pattern: text, caret, words, lines, finding and selecting", .run = uiaScenario },
-    .{ .name = "gl-reset", .about = "after a GPU driver reset (faked), the renderer builds itself in a new OpenGL context and draws the same frame", .run = glReset },
-    .{ .name = "gl-missing", .about = "without OpenGL 4.3, murrtty says why at start: Remote Desktop, the basic display adapter, no driver, an old one", .run = glMissing },
-    .{ .name = "gl-library", .about = "MURRTTY_OPENGL names the opengl32.dll to use; one that can't load is said so", .run = glLibrary },
-    .{ .name = "gl-fallback", .about = "without OpenGL 4.3 from the driver, murrtty starts again on its Mesa (bin\\mesa), which draws, and says so", .run = glFallback },
+    .{ .name = "gl-reset", .about = "after a GPU driver reset (faked), the renderer builds itself in a new OpenGL context (Direct3D 11: device) and draws the same frame", .run = glReset },
+    .{ .name = "gl-missing", .about = "without OpenGL 4.3, murrtty says why at start: Remote Desktop, the basic display adapter, no driver, an old one; Direct3D 11 (7.8): with no device, not even WARP, it says so", .run = glMissing },
+    .{ .name = "gl-library", .about = "MURRTTY_OPENGL names the opengl32.dll to use; one that can't load is said so (OpenGL builds)", .run = glLibrary },
+    .{ .name = "gl-fallback", .about = "without OpenGL 4.3 from the driver, murrtty starts again on its Mesa (bin\\mesa), which draws, and says so; Direct3D 11 (7.8): without the GPU, WARP in the same process draws the background exactly, and says so, unless MURRTTY_D3D asked", .run = glFallback },
+    .{ .name = "custom-shader", .about = "custom-shader: a shader writing one color covers the frame, one reading iChannel0 sees the terminal (OpenGL's GLSL; Direct3D 11's HLSL from spirv-cross, 7.8)", .run = customShader },
     .{ .name = "conpty", .about = "panes run in the bundled ConPTY (conpty.dll, OpenConsole.exe), which lets kitty graphics through; MURRTTY_CONPTY=system picks Windows' own", .run = conptyBundled },
     .{ .name = "ime-place", .about = "an IME asking where text is (WM_IME_REQUEST) is told the cursor's cell, and follows typing", .run = imePlace },
     .{ .name = "intl-keys", .about = "AltGr and Ctrl+Alt characters, and Alt+Numpad codes, reach a console program as Windows types them", .run = intlKeys },
@@ -5122,6 +5123,7 @@ fn glResetCase(h: *Harness, name: []const u8, extra: []const u8) !void {
 /// (GHOSTTY_WIN32_TEST_NO_MESA), the dialog is as before. The dialog comes
 /// after two murrttys' starts, hence the long waits.
 fn glMissing(h: *Harness) anyerror!void {
+    if (h.renderer() == .d3d11) return d3dMissing(h);
     const software_note = "murrtty's software renderer (Mesa, in the mesa folder beside murrtty.exe) couldn't draw either.";
     const cases = [_]struct { name: []const u8, fail: []const u8, diag: []const u8, body: []const u8 }{
         .{ .name = "gl-missing-remote", .fail = "extensions", .diag = "remote", .body = "This Remote Desktop session's display offers no OpenGL 4.3 (GDI Generic 1.1.0)." },
@@ -5177,6 +5179,7 @@ fn glMissing(h: *Harness) anyerror!void {
 /// both quit without leaks (their log is one file). MURRTTY_OPENGL naming
 /// that Mesa uses it directly.
 fn glFallback(h: *Harness) anyerror!void {
+    if (h.renderer() == .d3d11) return d3dFallback(h);
     const config = base_config ++ "title = murrtty-gl-fallback\n";
     {
         const dir_end = (std.mem.lastIndexOfScalar(u16, h.exe, '\\') orelse return h.fail("murrtty.exe's path has no folder", .{})) + 1;
@@ -5234,6 +5237,136 @@ fn glFallback(h: *Harness) anyerror!void {
 /// The background murrtty last presented near its window's bottom-right
 /// corner is the default theme's exactly (#282c34): the sRGB framebuffer
 /// and present pass work with this OpenGL too.
+/// Direct3D 11 (roadmap 7.8) with no device at all, not even WARP
+/// (GHOSTTY_WIN32_TEST_D3D=all): the start says so, and murrtty exits
+/// with an error.
+fn d3dMissing(h: *Harness) anyerror!void {
+    var g = try h.launchWith("d3d-missing", base_config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_D3D", "all" }}, .wait_window = false });
+    defer g.deinit();
+    try h.waitAnswering(&g, 10000);
+    const dlg = try h.waitDialog(&g, 15000);
+    const text = try h.messageBoxText(dlg);
+    defer h.alloc.free(text);
+    try h.expect(std.mem.startsWith(u8, text, "Windows offers no Direct3D 11 device here, not even its software renderer (WARP), so murrtty can't draw.") and std.mem.indexOf(u8, text, "DeviceFailed") != null, "the dialog says '{s}'", .{text});
+    // An MB_OK box's only button has IDCANCEL's id (Escape closes it);
+    // MessageBox still returns IDOK.
+    h.answer(&g, dlg, w.IDCANCEL);
+    const code = g.waitExit(10000);
+    try h.expect(code != null and code.? != 0, "murrtty then exits with an error (exit {?d})", .{code});
+}
+
+/// Direct3D 11 (roadmap 7.8) without the GPU (GHOSTTY_WIN32_TEST_D3D=
+/// hardware): WARP draws in the same process, the background exactly, and
+/// a toast says murrtty draws in software; MURRTTY_D3D=warp draws with it
+/// and says nothing (it was asked for).
+fn d3dFallback(h: *Harness) anyerror!void {
+    const notice = "No graphics card's driver draws here: murrtty draws in software, which is slower.";
+    {
+        // Not asked for (the hosted run sets MURRTTY_D3D=warp), or no
+        // notice is due.
+        var g = try h.launchWith("d3d-fallback", base_config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_D3D", "hardware" }}, .unset = &.{"MURRTTY_D3D"} });
+        defer g.deinit();
+        try expectBackground(h, &g, "d3d-fallback");
+        var toast: []u8 = &.{};
+        defer h.alloc.free(toast);
+        var waited: u32 = 0;
+        while (waited < 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(d.value.software, "WARP draws ({s})", .{d.value.adapter});
+            if (d.value.windows.len > 0 and d.value.windows[0].toast.len > 0) {
+                toast = try h.alloc.dupe(u8, d.value.windows[0].toast);
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(std.mem.indexOf(u8, toast, notice) != null, "and a toast says so ('{s}')", .{toast});
+        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
+        try expectNoLeaks(h, &g, "d3d-fallback");
+    }
+    {
+        var g = try h.launchWith("d3d-fallback-asked", base_config, .{ .env = &.{.{ "MURRTTY_D3D", "warp" }} });
+        defer g.deinit();
+        try expectBackground(h, &g, "d3d-fallback-asked");
+        w.Sleep(2000);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.software, "MURRTTY_D3D=warp draws with WARP ({s})", .{d.value.adapter});
+        const toast = if (d.value.windows.len > 0) d.value.windows[0].toast else "";
+        try h.expect(std.mem.indexOf(u8, toast, notice) == null, "and says nothing of it ('{s}')", .{toast});
+    }
+}
+
+/// custom-shader (both renderers; Direct3D 11's HLSL comes from
+/// spirv-cross, roadmap 7.8): one writing a color covers the frame, the
+/// whole window (the probe) green; one reading iChannel0 (the terminal's
+/// frame) and writing it back shows the terminal's background exactly.
+fn customShader(h: *Harness) anyerror!void {
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\custom-shader", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    const Case = struct { name: []const u8, glsl: []const u8, want: u32 };
+    const cases = [_]Case{
+        .{ .name = "green", .glsl = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(0.0, 1.0, 0.0, 1.0); }\n", .want = 0x00ff00 },
+        .{ .name = "pass", .glsl = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = texture(iChannel0, fragCoord / iResolution.xy); }\n", .want = 0x282c34 },
+    };
+    for (cases) |case| {
+        const path = try std.fmt.allocPrint(h.alloc, "{s}\\{s}.glsl", .{ dir, case.name });
+        defer h.alloc.free(path);
+        try h.writeFileAt(path, case.glsl);
+        const config = try std.fmt.allocPrint(h.alloc, "{s}custom-shader = {s}\n", .{ base_config, path });
+        defer h.alloc.free(config);
+        const name = try std.fmt.allocPrint(h.alloc, "custom-shader-{s}", .{case.name});
+        defer h.alloc.free(name);
+        var g = try h.launchWith(name, config, .{});
+        defer g.deinit();
+        try h.waitText(&g, ">", 1, 20000);
+        // Away from the prompt's text: a cell of background.
+        var px: u32 = 0;
+        var waited: u32 = 0;
+        while (waited < 5000) : (waited += 200) {
+            px = try h.probe(&g, 300, 200);
+            if (px == case.want) break;
+            w.Sleep(200);
+        }
+        try h.expect(px == case.want, "{s}: the frame's pixel is #{x:0>6}, expected #{x:0>6}", .{ case.name, px, case.want });
+    }
+    try customShaderBroken(h, dir);
+}
+
+/// Custom shaders the backend can't build (Direct3D 11's compiler refusing
+/// them, faked: GHOSTTY_WIN32_TEST_D3D=post): the terminal still draws.
+/// Generic's renderer drew into the custom shaders' texture with no pass to
+/// copy it to the target, so nothing showed (roadmap 7.8; the code is
+/// OpenGL's too). `color 1F` gives every cell a blue background, which an
+/// empty frame over the background wouldn't show.
+fn customShaderBroken(h: *Harness, dir: []const u8) !void {
+    if (h.renderer() != .d3d11) return;
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\pass.glsl", .{dir});
+    defer h.alloc.free(path);
+    const config = try std.fmt.allocPrint(h.alloc, "{s}custom-shader = {s}\n", .{ base_config, path });
+    defer h.alloc.free(config);
+    var g = try h.launchWith("custom-shader-broken", config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_D3D", "post" }} });
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    try h.typeText(surf, "color 1F");
+    h.enter(surf);
+    var px: u32 = 0;
+    var waited: u32 = 0;
+    while (waited < 5000) : (waited += 200) {
+        px = try h.probe(&g, 300, 200);
+        if (px != 0x282c34 and px & 0xff > px >> 16) break;
+        w.Sleep(200);
+    }
+    try h.expect(px != 0x282c34 and px & 0xff > px >> 16, "broken: the cells' blue background shows (#{x:0>6})", .{px});
+    const log_path = try std.fmt.allocPrint(h.alloc, "{s}\\murrtty.log", .{g.dir});
+    defer h.alloc.free(log_path);
+    const log_text = h.readFileOrNull(log_path) orelse return h.fail("broken: no log at {s}", .{log_path});
+    defer h.alloc.free(log_text);
+    try h.expect(std.mem.indexOf(u8, log_text, "error initializing postprocess shaders") != null, "broken: the custom shaders weren't built", .{});
+}
+
 fn expectBackground(h: *Harness, g: *Harness.Ghostty, name: []const u8) !void {
     var waited: u32 = 0;
     while (waited <= 10000) : (waited += 200) {
@@ -5361,6 +5494,7 @@ fn conptyBundled(h: *Harness) anyerror!void {
 /// it; one that can't load, or a path that isn't a full one, is said so
 /// at start.
 fn glLibrary(h: *Harness) anyerror!void {
+    if (h.renderer() == .d3d11) return h.skip("OpenGL builds only: the Direct3D 11 build loads no opengl32", .{});
     {
         var g = try h.launchWith("gl-library-system", base_config, .{ .env = &.{.{ "MURRTTY_OPENGL", "C:\\Windows\\System32\\opengl32.dll" }} });
         defer g.deinit();
@@ -13165,7 +13299,11 @@ fn sessionRestore(h: *Harness) anyerror!void {
         defer h.alloc.free(before);
         const marker = try std.fmt.allocPrint(h.alloc, "{s}\\session-{s}.restoring", .{ folder, class });
         defer h.alloc.free(marker);
-        const gl_env: []const [2][]const u8 = &.{ .{ "XDG_STATE_HOME", state }, .{ "GHOSTTY_WIN32_TEST_WGL", "context" } };
+        // Direct3D 11 (7.8): no device, not even WARP.
+        const gl_env: []const [2][]const u8 = if (h.renderer() == .d3d11)
+            &.{ .{ "XDG_STATE_HOME", state }, .{ "GHOSTTY_WIN32_TEST_D3D", "all" } }
+        else
+            &.{ .{ "XDG_STATE_HOME", state }, .{ "GHOSTTY_WIN32_TEST_WGL", "context" } };
         var g = try h.launchWith("session-restore-gl", config, .{ .env = gl_env, .wait_window = false });
         defer g.deinit();
         try h.waitAnswering(&g, 10000);
@@ -13178,7 +13316,8 @@ fn sessionRestore(h: *Harness) anyerror!void {
             defer h.alloc.free(during);
             try h.expect(std.mem.eql(u8, before, during), "while murrtty says it can't draw, the session file is as it was", .{});
         }
-        h.answer(&g, dlg, w.IDCLOSE);
+        // Direct3D 11's is a MessageBox: its OK button has IDCANCEL's id.
+        h.answer(&g, dlg, if (h.renderer() == .d3d11) w.IDCANCEL else w.IDCLOSE);
         _ = g.waitExit(10000);
         const after = h.readFileOrNull(path) orelse return h.fail("the session file is gone", .{});
         defer h.alloc.free(after);

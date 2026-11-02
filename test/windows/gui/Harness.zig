@@ -25,6 +25,8 @@ desktop: ?w.HDESK = null,
 desktop_name: ?[:0]u16 = null,
 dump_msg: w.UINT,
 verbose: bool = false,
+/// The renderer murrtty was built with (renderer()), once asked.
+renderer_cache: ?Renderer = null,
 /// Each launch's folder, for cleanup.
 launched: std.ArrayList([]u8) = .empty,
 
@@ -501,6 +503,27 @@ pub const CliResult = struct {
 /// PowerShell captures it, and its stderr (a Debug build's log) in
 /// murrtty.log there. Only those two handles are inherited. It gets 30 s
 /// to finish.
+/// The renderer murrtty was built with (roadmap 7.8), from +version's
+/// "renderer" line, asked once.
+pub const Renderer = enum { opengl, d3d11 };
+
+pub fn renderer(self: *Harness) Renderer {
+    if (self.renderer_cache) |r| return r;
+    var r = self.runCli("renderer", &.{"+version"}) catch return .opengl;
+    defer r.deinit();
+    const which: Renderer = if (std.mem.indexOf(u8, r.out, "D3D11") != null) .d3d11 else .opengl;
+    self.renderer_cache = which;
+    return which;
+}
+
+/// A MessageBox's text (its static control, id 0xFFFF), UTF-8.
+pub fn messageBoxText(self: *Harness, dlg: w.HWND) ![]u8 {
+    const static = w.GetDlgItem(dlg, 0xFFFF) orelse return self.alloc.dupe(u8, "");
+    var buf: [2048]u16 = undefined;
+    const n = w.GetWindowTextW(static, &buf, buf.len);
+    return std.unicode.utf16LeToUtf8Alloc(self.alloc, buf[0..@intCast(@max(n, 0))]);
+}
+
 pub fn runCli(self: *Harness, name: []const u8, args: []const []const u8) !CliResult {
     return self.runCliWith(name, args, &.{});
 }
@@ -1617,6 +1640,12 @@ pub const Dump = struct {
     sentry_ready: bool = false,
     /// toggle_background_opacity made the windows opaque (4.1).
     force_opaque: bool = false,
+    /// The renderer the build draws with ("opengl", "d3d11"; 7.8), and
+    /// with Direct3D 11 the first pane's adapter and whether it draws on
+    /// the CPU.
+    renderer: []const u8 = "",
+    adapter: []const u8 = "",
+    software: bool = false,
     /// The ConPTY new panes get: "bundled" or "system" (roadmap 2.6).
     conpty: []const u8 = "",
     /// The opengl32 loaded ("system", "variable" for MURRTTY_OPENGL's,

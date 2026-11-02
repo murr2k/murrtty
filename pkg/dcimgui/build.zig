@@ -9,6 +9,8 @@ pub fn build(b: *std.Build) !void {
     const backend_opengl3 = b.option(bool, "backend-opengl3", "OpenGL3 backend") orelse false;
     const backend_metal = b.option(bool, "backend-metal", "Metal backend") orelse false;
     const backend_osx = b.option(bool, "backend-osx", "OSX backend") orelse false;
+    // murrtty's Direct3D 11 renderer's inspector (roadmap 7.8).
+    const backend_dx11 = b.option(bool, "backend-dx11", "Direct3D 11 backend") orelse false;
 
     // Build options
     const options = b.addOptions();
@@ -16,6 +18,7 @@ pub fn build(b: *std.Build) !void {
     options.addOption(bool, "backend_opengl3", backend_opengl3);
     options.addOption(bool, "backend_metal", backend_metal);
     options.addOption(bool, "backend_osx", backend_osx);
+    options.addOption(bool, "backend_dx11", backend_dx11);
 
     // Main static lib
     const lib = b.addLibrary(.{
@@ -166,6 +169,25 @@ pub fn build(b: *std.Build) !void {
                 upstream.path("backends"),
                 "",
                 .{ .include_extensions = &.{"imgui_impl_opengl3.h"} },
+            );
+        }
+        if (backend_dx11) {
+            // Its D3DCompile call goes to murrtty's (pkg/d3d11's
+            // compiler.zig), which loads System32's d3dcompiler_47 by full
+            // path when first needed: nothing imports it at start.
+            var dx11_flags: std.ArrayList([]const u8) = .empty;
+            defer dx11_flags.deinit(b.allocator);
+            try dx11_flags.appendSlice(b.allocator, all_flags.items);
+            try dx11_flags.append(b.allocator, "-DD3DCompile=murrtty_D3DCompile");
+            lib.root_module.addCSourceFiles(.{
+                .root = upstream.path("backends"),
+                .files = &.{"imgui_impl_dx11.cpp"},
+                .flags = dx11_flags.items,
+            });
+            lib.installHeadersDirectory(
+                upstream.path("backends"),
+                "",
+                .{ .include_extensions = &.{"imgui_impl_dx11.h"} },
             );
         }
     }

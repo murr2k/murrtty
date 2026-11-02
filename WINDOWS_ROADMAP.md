@@ -594,7 +594,7 @@ apply to all new code:
 | **S4** many contexts, part of 1.4 | 16 panes, each flooding output: steady frames, no stale-frame recurrence, linear memory, on two vendors | Whether per-pane contexts scale. *Run 2026-10-24 on NVIDIA (RTX 2070), scenario `stress-panes`:* every pane kept presenting (1,030 to 1,210 frames each in 13 s, Debug build); memory flat while flooding; per added pane 4 threads, 31 MB resident, 90 MB committed, 64 MB of it Zig's thread stacks (0.15; three threads, 48 MB, by its count of 2026-10-28; since its fix, 42 MB a pane, most of the rest the GL driver's per-context buffers). They scale. AMD and Intel not yet run. *Re-run 2026-10-25 at the end of Phase 1 (15 panes dimmed by 1.7's overlay):* the slowest pane presented 994 frames in 13 s; memory per pane unchanged, and 49 MB of growth in 15 s of flooding (scrollback). |
 | **S5** reparenting, part of 4.5 | Does a GL child window keep rendering after `SetParent` to another top-level window, on NVIDIA, AMD and Intel? | Tab tear-off design. *Run 2026-10-27 on NVIDIA (RTX 2070), on the hidden desktop (`tab-drag`):* after its tab's container moved to another window the pane kept presenting frames (the renderer's count and read-back) and taking input. What the display shows wasn't checked (no monitor on); AMD and Intel not yet run. |
 | **S6** OpenGL elsewhere, 1 day | What does Microsoft's OpenGL compatibility pack expose on Snapdragon X and in VMs: 4.3 core with fragment SSBOs and sRGB framebuffers? | ARM64 (7.7) and software fallback (6.3) |
-| **S7** Direct3D 11 present path, 2 to 3 days, before 7.8's code | For a composition swap chain on a composition target on each pane's window (not topmost) and, as the fallback, a blt-model swap chain with blur-behind: does it present on the GUI suite's hidden desktop, which DWM doesn't compose? Microsoft documents nothing there, flip model never reports occlusion, and the frame-latency wait must still return (wait with a timeout); if it can't, the suite needs another way to run, which decides the design. Do layered child overlays stay above it and clean (S1's `overlay-host`)? Per-pixel alpha with blur-behind and the system backdrop (S2's `transparency`, with the owner)? The frame top-left through a live resize (composition swap chains must stretch; what that does to a visual's content isn't documented)? `PrintWindow` captures? Does a composition swap chain work on WARP (Microsoft rules out only the reference driver)? On the hosted runners: WARP's frame time against llvmpipe's, and whether `d3dcompiler_47.dll` is there natively on the ARM64 one. One pane's device commit, hardware and WARP. | 7.8's present path, and per-pane or shared devices |
+| **S7** Direct3D 11 present path, 2 to 3 days, before 7.8's code | For a composition swap chain on a composition target on each pane's window (not topmost) and, as the fallback, a blt-model swap chain with blur-behind: does it present on the GUI suite's hidden desktop, which DWM doesn't compose? Microsoft documents nothing there, flip model never reports occlusion, and the frame-latency wait must still return (wait with a timeout); if it can't, the suite needs another way to run, which decides the design. Do layered child overlays stay above it and clean (S1's `overlay-host`)? Per-pixel alpha with blur-behind and the system backdrop (S2's `transparency`, with the owner)? The frame top-left through a live resize (composition swap chains must stretch; what that does to a visual's content isn't documented)? `PrintWindow` captures? Does a composition swap chain work on WARP (Microsoft rules out only the reference driver)? On the hosted runners: WARP's frame time against llvmpipe's, and whether `d3dcompiler_47.dll` is there natively on the ARM64 one. One pane's device commit, hardware and WARP. *Run 2026-11-01 here (RTX 2070) and on the hosted runners (x64, ARM64), opt-in scenario `d3d-spike` (`GHOSTTY_GUI_SPIKE=1`, ghostty-gui-d3d.exe, on murrtty's bindings in `pkg/d3d11`):* every variant presents on the hidden desktop, 60 frames of 60 (Present says `DXGI_STATUS_OCCLUDED` there, a success code, so it is no error), the latency wait never timing out, and a staging read-back reads exact pixels (`ff0000`, `282c34`). Off-screen, `PrintWindow` sees the composition path's frame exact, the layered child above it (magenta) and the window's GDI around it; through a resize the frame stays at the top left, unstretched, and the strip the window adds shows the pane window's own content until the buffers follow (so the pane paints the terminal background there). The window's flip swap chain leaves that strip black, and the blt model with blur-behind captures white until resized: composition it is. A composition swap chain works on WARP. A pane costs 13.3 MB committed on the GPU (a GL context's pane about 51 MB, 0.15) and 2.3 MB on WARP: a device per pane stays. System32's `d3dcompiler_47.dll` is native on ARM64 and loads. The hosted runners' GPU device is Microsoft's Basic Render Driver, which doesn't set DXGI's software flag: software is told by its vendor and device id (0x1414, 0x8C). Left for 7.8's parity step: per-pixel alpha over the blur, on screen with the owner. | 7.8's present path, and per-pane or shared devices |
 
 ---
 
@@ -4247,12 +4247,29 @@ gain is on those with a card but no OpenGL driver.
   3. **Bring-up (about a week):** the COM bindings, `DxbcStep`, the
      backend under `-Drenderer=d3d11`, the swap chain and present pass,
      `bg_color`, `cell_bg` and `cell_text`. Done when the suite's text
-     checks pass on Direct3D 11.
+     checks pass on Direct3D 11. *Done 2026-11-01, with parts of steps 4
+     and 5 ahead of plan:* the GUI suite passes on a `-Drenderer=d3d11`
+     build here (RTX 2070), all but the on-screen and opt-in scenarios,
+     the pixel checks and read-back hooks included, and with them custom
+     shaders (`custom-shader`: one color, `iChannel0` read back exactly,
+     and a set the compiler refuses), the inspector on DX11, WARP and its
+     notice (`gl-fallback`), a faked device loss (`gl-reset`) and the "no
+     device" dialog (`gl-missing`). Shaders compile at run time for now,
+     once per program per process, through System32's `d3dcompiler_47.dll`
+     (there on x64 and ARM64, S7), so `DxbcStep` moves to step 5. A
+     device that fails while recovering from a loss doesn't move every
+     pane to WARP: the GPU gets five tries a second apart (a driver reset
+     takes about 2 s), then that pane alone draws with WARP. Found on the
+     way, in Ghostty's shared renderer: custom shaders that failed to
+     build left the terminal blank, as it drew into their texture with no
+     pass to copy it out; it now counts the pipelines built, not the
+     shaders loaded (a port fix, a 7.9 candidate).
   4. **Parity (1.5 to 2 weeks):** images, the background image, custom
      shaders, the shapes, translucency and blur, the blending modes,
      resizing, the read-back hooks. Done when the suite passes but for the
      `gl-*` scenarios, and `render-parity` passes.
-  5. **Robustness (about a week):** WARP and its notice, device removal,
+  5. **Robustness (about a week):** `DxbcStep` (shaders compiled at build
+     time, from step 3), WARP and its notice, device removal,
      the start dialog, the inspector on DX11, ARM64 on the hosted runner,
      `pane-commit`, key-to-present latency against OpenGL here (the
      `perf-trace` marks); the owner's on-screen runs on NVIDIA, AMD and
@@ -4285,6 +4302,12 @@ config reload, say) never released the old grid, and `App.deinit`'s
 `quit-after-reload` stress scenario; `renderer/Thread.zig`'s
 `drainForExit` takes what owns memory after the loop stops, and the
 scenario then passes 20 of 20 with no leak. Upstream's code is the same.
+Another (2026-11-01, found bringing up 7.8): `generic.zig` set
+`has_custom_shaders` from the custom shaders loaded, not the post
+pipelines built, so a set the backend failed to build (each backend
+leaves them all out then) still sent every frame into the custom
+shaders' texture, with no pass left to copy it to the target: a blank
+terminal. `custom-shader`'s refused set checks it.
 
 ---
 

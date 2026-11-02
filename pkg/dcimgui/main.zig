@@ -12,6 +12,13 @@ pub extern fn ImGui_ImplOpenGL3_RenderDrawData(draw_data: *c.ImDrawData) callcon
 // pointer table so a subsequent Init can re-initialize the loader.
 pub extern fn ImGui_ImplOpenGL3_ShutdownWithLoaderCleanup() callconv(.c) void;
 
+// Direct3D 11 backend (murrtty's roadmap 7.8): the device and its
+// immediate context, ID3D11Device and ID3D11DeviceContext.
+pub extern fn ImGui_ImplDX11_Init(device: *anyopaque, context: *anyopaque) callconv(.c) bool;
+pub extern fn ImGui_ImplDX11_Shutdown() callconv(.c) void;
+pub extern fn ImGui_ImplDX11_NewFrame() callconv(.c) void;
+pub extern fn ImGui_ImplDX11_RenderDrawData(draw_data: *c.ImDrawData) callconv(.c) void;
+
 // Metal backend
 pub extern fn ImGui_ImplMetal_Init(device: *anyopaque) callconv(.c) bool;
 pub extern fn ImGui_ImplMetal_Shutdown() callconv(.c) void;
