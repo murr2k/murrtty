@@ -146,6 +146,38 @@ fn initPostPipelines(
     return pipelines;
 }
 
+test "custom shaders compile, OpenGL's coordinates and all" {
+    const shadertoy = @import("../shadertoy.zig");
+    const alloc = std.testing.allocator;
+    // Every call shadertoy's hlsl_main wraps, and the CRT test shader.
+    for ([_][]const u8{ @embedFile("../shaders/test_shadertoy_crt.glsl"),
+        \\void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+        \\    vec2 uv = fragCoord / iResolution.xy;
+        \\    vec4 c = texture(iChannel0, uv) + texture(iChannel0, uv, 0.5) + texture2D(iChannel0, uv);
+        \\    c += textureLod(iChannel0, uv, 0.0) + textureGrad(iChannel0, uv, dFdx(uv), dFdy(uv));
+        \\    c += textureOffset(iChannel0, uv, ivec2(1, 2)) + texelFetch(iChannel0, ivec2(gl_FragCoord.xy), 0);
+        \\    fragColor = c * dFdy(uv.y);
+        \\}
+        \\
+    }) |shader| {
+        var glsl: std.Io.Writer.Allocating = .init(alloc);
+        defer glsl.deinit();
+        try shadertoy.glslFromShaderFor(&glsl.writer, shader, .hlsl);
+        try glsl.writer.writeByte(0);
+        const src = glsl.written()[0 .. glsl.written().len - 1 :0];
+        var spv: std.Io.Writer.Allocating = .init(alloc);
+        defer spv.deinit();
+        try shadertoy.spirvFromGlsl(&spv.writer, null, src);
+        var words: std.ArrayListAligned(u8, .of(u32)) = .empty;
+        defer words.deinit(alloc);
+        try words.appendSlice(alloc, spv.written());
+        const hlsl = try shadertoy.hlslFromSpv(alloc, words.items);
+        defer alloc.free(hlsl);
+        const code = try Device.compileStage(alloc, hlsl, "custom-shader", "main", "ps_5_0");
+        alloc.free(code);
+    }
+}
+
 test "every program compiles" {
     const alloc = std.testing.allocator;
     for (std.enums.values(Device.Program)) |p| {

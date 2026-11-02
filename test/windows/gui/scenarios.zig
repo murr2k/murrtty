@@ -125,6 +125,7 @@ pub const all = [_]Scenario{
     .{ .name = "quit-after-reload", .about ="20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
     .{ .name = "d3d-spike", .about = "spike S7 (7.8): Direct3D 11 swap chains for a pane (composition, flip, blt) on hardware and WARP, on the hidden desktop and off-screen: presents, latency waits, read-back, captures through a resize, a pane's commit (GHOSTTY_GUI_SPIKE=1)", .run = d3dSpike },
+    .{ .name = "render-parity", .about = "7.8: the same scenes drawn by this build and another (GHOSTTY_GUI_PARITY, the other renderer's murrtty.exe) read back within 1 per channel: 16, 256 and true colors, attributes, box drawing, fallback fonts and a kitty graphics image in each alpha-blending mode, a custom shader, a background image, a translucent window (alpha too), a split's dimming", .run = renderParity },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
     .{ .name = "readme-screenshot", .about = "the README's picture: two tabs, a split running PowerShell 7, the second tab's waiting bell; the parts read back on the hidden desktop for test/windows/look/readme_shot.py (GHOSTTY_GUI_SNAPSHOT=folder)", .run = readmeScreenshot },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
@@ -4659,7 +4660,7 @@ fn mouseSettings(h: *Harness) anyerror!void {
         try h.typeText(surf, "for /L %i in (1,1,200) do @echo row %i");
         h.enter(surf);
         try h.waitText(&g, "row 200", 1, 20000);
-        const bottom = try waitScroll(h, &g, ScrollState.atBottom, "to the bottom", 5000);
+        const bottom = try waitScrollSettled(h, &g, 5000);
         var rect: w.RECT = undefined;
         _ = w.GetClientRect(surf, &rect);
         const cx = @divTrunc(rect.right, 2);
@@ -4701,6 +4702,23 @@ fn rowsUp(a: ScrollState, b: ScrollState) i64 {
 }
 
 /// The scrollbar once the viewport has moved from `offset` and settled.
+/// At the bottom with no rows arriving: the same for 400 ms. A slow
+/// renderer (WARP on the hosted runners) holds the terminal longer, so
+/// the shell's last rows could land after a first look at the bottom and
+/// read as the wheel scrolling down (mouse-settings, 7.8's first hosted
+/// run on Direct3D 11).
+fn waitScrollSettled(h: *Harness, g: *Harness.Ghostty, ms: u32) !ScrollState {
+    var last = try waitScroll(h, g, ScrollState.atBottom, "to the bottom", ms);
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 400) {
+        w.Sleep(400);
+        const now = try scrollState(h, g);
+        if (now.atBottom() and now.total == last.total and now.offset == last.offset) return now;
+        last = now;
+    }
+    return h.fail("rows kept arriving (rows {d}+{d} of {d})", .{ last.offset, last.len, last.total });
+}
+
 fn waitScrolled(h: *Harness, g: *Harness.Ghostty, offset: u64) !ScrollState {
     var last = try scrollState(h, g);
     var waited: u32 = 0;
@@ -5309,6 +5327,9 @@ fn customShader(h: *Harness) anyerror!void {
     const cases = [_]Case{
         .{ .name = "green", .glsl = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(0.0, 1.0, 0.0, 1.0); }\n", .want = 0x00ff00 },
         .{ .name = "pass", .glsl = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = texture(iChannel0, fragCoord / iResolution.xy); }\n", .want = 0x282c34 },
+        // OpenGL's coordinates on either renderer: y counts up from the
+        // bottom, so the probe's upper half is green (7.8).
+        .{ .name = "up", .glsl = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(0.0, fragCoord.y > iResolution.y * 0.5 ? 1.0 : 0.0, 0.0, 1.0); }\n", .want = 0x00ff00 },
     };
     for (cases) |case| {
         const path = try std.fmt.allocPrint(h.alloc, "{s}\\{s}.glsl", .{ dir, case.name });
@@ -5365,6 +5386,318 @@ fn customShaderBroken(h: *Harness, dir: []const u8) !void {
     const log_text = h.readFileOrNull(log_path) orelse return h.fail("broken: no log at {s}", .{log_path});
     defer h.alloc.free(log_text);
     try h.expect(std.mem.indexOf(u8, log_text, "error initializing postprocess shaders") != null, "broken: the custom shaders weren't built", .{});
+}
+
+/// render-parity (roadmap 7.8, opt-in): the same scenes drawn by this
+/// build and another (GHOSTTY_GUI_PARITY: the other renderer's Debug
+/// murrtty.exe), each pane's presented frame read back (the present pass
+/// and its shapes included) and compared within 1 per channel, alpha too
+/// for a translucent window. A scene stays shorter than the hosted
+/// runners' rows: scrolling would show the scrollbar, whose fade is timed.
+fn renderParity(h: *Harness) anyerror!void {
+    var buf: [1024]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_PARITY"), &buf, buf.len);
+    if (n == 0 or n >= buf.len) return h.skip("set GHOSTTY_GUI_PARITY to the other renderer's murrtty.exe to run it", .{});
+    const other = try std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
+    defer h.alloc.free(other);
+
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\render-parity", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    const text_path = try std.fmt.allocPrint(h.alloc, "{s}\\scene.txt", .{dir});
+    defer h.alloc.free(text_path);
+    const text = try paritySceneText(h.alloc);
+    defer h.alloc.free(text);
+    try h.writeFileAt(text_path, text);
+    const shader_path = try std.fmt.allocPrint(h.alloc, "{s}\\shader.glsl", .{dir});
+    defer h.alloc.free(shader_path);
+    // The frame tinted by its coordinates: a flipped axis shows.
+    try h.writeFileAt(shader_path,
+        \\void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+        \\    vec2 uv = fragCoord / iResolution.xy;
+        \\    vec4 c = texture(iChannel0, uv);
+        \\    fragColor = vec4(mix(c.rgb, vec3(uv, 0.5), 0.25), 1.0);
+        \\}
+        \\
+    );
+    const png_path = try std.fmt.allocPrint(h.alloc, "{s}\\gradient.png", .{dir});
+    defer h.alloc.free(png_path);
+    var rgba: [16 * 16 * 4]u8 = undefined;
+    for (0..16) |y| for (0..16) |x| {
+        const i = (y * 16 + x) * 4;
+        rgba[i..][0..4].* = .{ @intCast(x * 17), @intCast(y * 17), @intCast(255 - (x + y) * 8), 255 };
+    };
+    const png = try pngRgba(h.alloc, 16, 16, &rgba);
+    defer h.alloc.free(png);
+    try h.writeFileAt(png_path, png);
+
+    const shader_cfg = try std.fmt.allocPrint(h.alloc, "custom-shader = {s}\n", .{shader_path});
+    defer h.alloc.free(shader_cfg);
+    const bg_cfg = try std.fmt.allocPrint(h.alloc, "background-image = {s}\nbackground-image-fit = stretch\nbackground-image-opacity = 0.6\n", .{png_path});
+    defer h.alloc.free(bg_cfg);
+    const scenes = [_]ParityScene{
+        .{ .name = "native", .extra = "alpha-blending = native\n" },
+        .{ .name = "linear", .extra = "alpha-blending = linear\n" },
+        .{ .name = "linear-corrected", .extra = "alpha-blending = linear-corrected\n" },
+        .{ .name = "shader", .extra = shader_cfg },
+        .{ .name = "background", .extra = bg_cfg },
+        .{ .name = "translucent", .extra = "background-opacity = 0.8\n", .alpha = true },
+        .{ .name = "split", .extra = "", .split = true },
+    };
+    var failed: usize = 0;
+    for (scenes) |scene| parityScene(h, scene, text_path, other) catch |err| switch (err) {
+        error.TestFailed => failed += 1,
+        else => return err,
+    };
+    try h.expect(failed == 0, "{d} of {d} scenes drawn alike", .{ scenes.len - failed, scenes.len });
+}
+
+const ParityScene = struct {
+    name: []const u8,
+    extra: []const u8,
+    /// A split of a bare prompt (its dimming), not the scene's text.
+    split: bool = false,
+    /// Compare alpha too (a translucent window's frame keeps it).
+    alpha: bool = false,
+};
+
+fn parityScene(h: *Harness, scene: ParityScene, text_path: []const u8, other: []const u8) !void {
+    const config = try std.fmt.allocPrint(h.alloc, "{s}cursor-style-blink = false\n{s}", .{ base_config, scene.extra });
+    defer h.alloc.free(config);
+    var mine = try parityDraw(h, scene, "a", config, null, text_path);
+    defer parityFree(h, &mine);
+    var theirs = try parityDraw(h, scene, "b", config, other, text_path);
+    defer parityFree(h, &theirs);
+    try h.expect(!std.mem.eql(u8, mine.renderer, theirs.renderer), "{s}: drawn by {s} and {s}", .{ scene.name, mine.renderer, theirs.renderer });
+    try h.expect(mine.frames.len == theirs.frames.len, "{s}: {d} and {d} panes", .{ scene.name, mine.frames.len, theirs.frames.len });
+    for (mine.frames, theirs.frames, 0..) |*a, *b, i| try parityCompare(h, scene, i, a, b, mine.dir);
+}
+
+const ParityDrawn = struct {
+    renderer: []u8,
+    dir: []u8,
+    frames: []Harness.Image,
+};
+
+fn parityFree(h: *Harness, d: *ParityDrawn) void {
+    for (d.frames) |*f| f.deinit();
+    h.alloc.free(d.frames);
+    h.alloc.free(d.renderer);
+    h.alloc.free(d.dir);
+}
+
+/// One build's frames of `scene`, one picture per pane in `saveFrames`'
+/// order.
+fn parityDraw(h: *Harness, scene: ParityScene, which: []const u8, config: []const u8, exe: ?[]const u8, text_path: []const u8) !ParityDrawn {
+    const name = try std.fmt.allocPrint(h.alloc, "parity-{s}-{s}", .{ scene.name, which });
+    defer h.alloc.free(name);
+    var g = try h.launchWith(name, config, .{ .exe = exe });
+    defer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    if (scene.split) {
+        h.key(surf, .{ .ctrl = true, .shift = true }, 'O');
+        var waited: u32 = 0;
+        while (true) : (waited += 200) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const panes = d.value.windows[0].tabs[0].panes orelse &.{};
+            var prompts: usize = 0;
+            for (panes) |p| if (p.text) |t| if (std.mem.indexOfScalar(u8, t, '>') != null) {
+                prompts += 1;
+            };
+            if (panes.len == 2 and prompts == 2) break;
+            if (waited >= 15000) return h.fail("{s}: the split's second shell didn't show its prompt", .{name});
+            w.Sleep(200);
+        }
+    } else {
+        const cmd = try std.fmt.allocPrint(h.alloc, "chcp 65001>nul&type \"{s}\"", .{text_path});
+        defer h.alloc.free(cmd);
+        try h.typeText(surf, cmd);
+        h.enter(surf);
+        try h.waitText(&g, "parity-end", 1, 20000);
+        var waited: u32 = 0;
+        while (true) : (waited += 200) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const panes = d.value.windows[0].tabs[0].panes orelse &.{};
+            if (panes.len > 0 and panes[0].images >= 1) break;
+            if (waited >= 5000) return h.fail("{s}: the kitty graphics image never arrived", .{name});
+            w.Sleep(200);
+        }
+    }
+    // The last output drawn, the cursor still.
+    w.Sleep(500);
+    try h.saveFrames(&g);
+    var d = try h.dump(&g);
+    defer d.deinit();
+    const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("{s}: no panes", .{name});
+    const frames = try h.alloc.alloc(Harness.Image, panes.len);
+    var loaded: usize = 0;
+    errdefer {
+        for (frames[0..loaded]) |*f| f.deinit();
+        h.alloc.free(frames);
+    }
+    while (loaded < panes.len) : (loaded += 1) {
+        const pic = try std.fmt.allocPrint(h.alloc, "frame-{d}.bmp", .{loaded});
+        defer h.alloc.free(pic);
+        frames[loaded] = try h.loadPicture(&g, pic);
+    }
+    const renderer = try h.alloc.dupe(u8, d.value.renderer);
+    errdefer h.alloc.free(renderer);
+    return .{
+        .renderer = renderer,
+        .dir = try h.alloc.dupe(u8, std.fs.path.dirname(g.dump_path).?),
+        .frames = frames,
+    };
+}
+
+fn parityCompare(h: *Harness, scene: ParityScene, pane: usize, a: *const Harness.Image, b: *const Harness.Image, dir: []const u8) !void {
+    if (a.width != b.width or a.height != b.height) {
+        return h.fail("{s} pane {d}: frames of {d}x{d} and {d}x{d}", .{ scene.name, pane, a.width, a.height, b.width, b.height });
+    }
+    const mask: u32 = if (scene.alpha) 0xFFFFFFFF else 0x00FFFFFF;
+    var differ: usize = 0;
+    var worst: u32 = 0;
+    var first: usize = 0;
+    for (a.pixels, b.pixels, 0..) |pa, pb, i| {
+        const diff = channelDiff(pa & mask, pb & mask);
+        worst = @max(worst, diff);
+        if (diff > 1) {
+            if (differ == 0) first = i;
+            differ += 1;
+        }
+    }
+    if (differ == 0) {
+        h.log("{s} pane {d}: {d}x{d} alike (at most {d} apart)", .{ scene.name, pane, a.width, a.height, worst });
+        return;
+    }
+    // Where they differ, red over this build's frame darkened.
+    var pic: Harness.Image = .{ .alloc = h.alloc, .width = a.width, .height = a.height, .pixels = try h.alloc.alloc(u32, a.pixels.len) };
+    defer pic.deinit();
+    for (a.pixels, b.pixels, pic.pixels) |pa, pb, *out| {
+        out.* = if (channelDiff(pa & mask, pb & mask) > 1) 0xFFFF0000 else 0xFF000000 | ((pa >> 2) & 0x3F3F3F);
+    }
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\parity-diff-{d}.bmp", .{ dir, pane });
+    defer h.alloc.free(path);
+    pic.save(path) catch {};
+    return h.fail("{s} pane {d}: {d} pixels differ by more than 1 (at most {d}), the first at ({d},{d}): #{x:0>8} here, #{x:0>8} there (picture: {s})", .{
+        scene.name, pane, differ, worst, first % a.width, first / a.width, a.pixels[first] & mask, b.pixels[first] & mask, path,
+    });
+}
+
+/// The largest difference between two pixels' channels.
+fn channelDiff(a: u32, b: u32) u32 {
+    var most: u32 = 0;
+    inline for (.{ 0, 8, 16, 24 }) |shift| {
+        const x: i32 = @intCast((a >> shift) & 0xff);
+        const y: i32 = @intCast((b >> shift) & 0xff);
+        most = @max(most, @abs(x - y));
+    }
+    return most;
+}
+
+/// render-parity's text (UTF-8, under 72 columns a line, 20 lines): the
+/// 16 colors as text and backgrounds, the 256-color cube and grays, true
+/// color backgrounds and text, attributes, box drawing and shades, text
+/// in fallback fonts, and a 4x4 kitty graphics image stretched over 8x4
+/// cells (its sampling).
+fn paritySceneText(alloc: std.mem.Allocator) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var line: [64]u8 = undefined;
+    for ([_]u32{ 30, 90 }) |base| for (base..base + 8) |c| {
+        try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[{d}mAa ", .{c}));
+    };
+    try out.appendSlice(alloc, "\x1b[0m\r\n");
+    for ([_]u32{ 40, 100 }) |base| for (base..base + 8) |c| {
+        try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[{d}m   ", .{c}));
+    };
+    try out.appendSlice(alloc, "\x1b[0m\r\n");
+    for (16..232) |c| {
+        try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[48;5;{d}m ", .{c}));
+        if ((c - 16) % 72 == 71) try out.appendSlice(alloc, "\x1b[0m\r\n");
+    }
+    for (232..256) |c| try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[48;5;{d}m  ", .{c}));
+    try out.appendSlice(alloc, "\x1b[0m\r\n");
+    for (0..2) |row| {
+        for (0..64) |i| {
+            const r = i * 4;
+            const g = if (row == 0) 255 - i * 4 else 128;
+            const b = if (row == 0) 96 else i * 4;
+            try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[48;2;{d};{d};{d}m ", .{ r, g, b }));
+        }
+        try out.appendSlice(alloc, "\x1b[0m\r\n");
+    }
+    try out.appendSlice(alloc, "\x1b[38;2;255;128;0mOrange \x1b[38;2;0;200;255mCyan \x1b[38;2;200;60;220mViolet \x1b[38;2;250;250;250;48;2;30;90;40mOn green\x1b[0m\r\n");
+    try out.appendSlice(alloc, "\x1b[1mBold\x1b[0m \x1b[3mItalic\x1b[0m \x1b[1;3mBoth\x1b[0m \x1b[4mUnder\x1b[0m \x1b[9mStrike\x1b[0m \x1b[7mInverse\x1b[0m \x1b[2mFaint\x1b[0m \x1b[4;31mRed under\x1b[0m\r\n");
+    try out.appendSlice(alloc, "\u{250c}\u{2500}\u{252c}\u{2500}\u{2510} \u{2588}\u{2593}\u{2592}\u{2591} \u{2580}\u{2584}\u{258c}\u{2590} \u{256d}\u{2500}\u{256e} \u{2550}\u{2551}\u{2554}\u{2557} \u{25cf}\u{25c6}\u{25b2}\r\n");
+    try out.appendSlice(alloc, "\u{2502} \u{2502} \u{2502} \u{2581}\u{2582}\u{2583}\u{2584}\u{2585}\u{2586}\u{2587}\u{2588} \u{2570}\u{2500}\u{256f} \u{255a}\u{2550}\u{255d} \u{e0b0}\u{e0b2}\r\n");
+    try out.appendSlice(alloc, "\u{2514}\u{2500}\u{2534}\u{2500}\u{2518} Caf\u{e9} na\u{ef}ve \u{6f22}\u{5b57}\u{30c6}\u{30b9}\u{30c8} \u{263a} -> => != \r\n");
+    // 4x4 RGBA: a row each of reds, greens, blues and grays.
+    var px: [64]u8 = undefined;
+    for (0..4) |y| for (0..4) |x| {
+        const v: u8 = @intCast(64 + x * 60);
+        px[(y * 4 + x) * 4 ..][0..4].* = switch (y) {
+            0 => .{ v, 0, 0, 255 },
+            1 => .{ 0, v, 0, 255 },
+            2 => .{ 0, 0, v, 255 },
+            else => .{ v, v, v, 255 },
+        };
+    };
+    var b64: [std.base64.standard.Encoder.calcSize(64)]u8 = undefined;
+    _ = std.base64.standard.Encoder.encode(&b64, &px);
+    try out.appendSlice(alloc, "\x1b_Ga=T,f=32,s=4,v=4,c=8,r=4;");
+    try out.appendSlice(alloc, &b64);
+    try out.appendSlice(alloc, "\x1b\\\r\nparity-end\r\n");
+    return out.toOwnedSlice(alloc);
+}
+
+/// An RGBA PNG, its pixels in one stored (uncompressed) deflate block.
+fn pngRgba(alloc: std.mem.Allocator, width: u32, height: u32, rgba: []const u8) ![]u8 {
+    var raw: std.ArrayList(u8) = .empty;
+    defer raw.deinit(alloc);
+    for (0..height) |y| {
+        try raw.append(alloc, 0);
+        try raw.appendSlice(alloc, rgba[y * width * 4 ..][0 .. width * 4]);
+    }
+    std.debug.assert(raw.items.len <= 0xffff);
+    var z: std.ArrayList(u8) = .empty;
+    defer z.deinit(alloc);
+    var word: [4]u8 = undefined;
+    try z.appendSlice(alloc, &.{ 0x78, 0x01, 0x01 });
+    const len: u16 = @intCast(raw.items.len);
+    std.mem.writeInt(u16, word[0..2], len, .little);
+    std.mem.writeInt(u16, word[2..4], ~len, .little);
+    try z.appendSlice(alloc, &word);
+    try z.appendSlice(alloc, raw.items);
+    std.mem.writeInt(u32, &word, std.hash.Adler32.hash(raw.items), .big);
+    try z.appendSlice(alloc, &word);
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.appendSlice(alloc, "\x89PNG\r\n\x1a\n");
+    var ihdr: [13]u8 = undefined;
+    std.mem.writeInt(u32, ihdr[0..4], width, .big);
+    std.mem.writeInt(u32, ihdr[4..8], height, .big);
+    ihdr[8..13].* = .{ 8, 6, 0, 0, 0 };
+    try pngChunk(alloc, &out, "IHDR", &ihdr);
+    try pngChunk(alloc, &out, "IDAT", z.items);
+    try pngChunk(alloc, &out, "IEND", "");
+    return out.toOwnedSlice(alloc);
+}
+
+fn pngChunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), kind: *const [4]u8, data: []const u8) !void {
+    var word: [4]u8 = undefined;
+    std.mem.writeInt(u32, &word, @intCast(data.len), .big);
+    try out.appendSlice(alloc, &word);
+    try out.appendSlice(alloc, kind);
+    try out.appendSlice(alloc, data);
+    var crc = std.hash.Crc32.init();
+    crc.update(kind);
+    crc.update(data);
+    std.mem.writeInt(u32, &word, crc.final(), .big);
+    try out.appendSlice(alloc, &word);
 }
 
 fn expectBackground(h: *Harness, g: *Harness.Ghostty, name: []const u8) !void {

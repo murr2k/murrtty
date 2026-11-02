@@ -103,7 +103,7 @@ pub fn loadFromFile(
     // Convert to full GLSL
     const glsl: [:0]const u8 = glsl: {
         var stream: std.Io.Writer.Allocating = .init(alloc);
-        try glslFromShader(&stream.writer, src);
+        try glslFromShaderFor(&stream.writer, src, target);
         try stream.writer.writeByte(0);
         break :glsl stream.written()[0 .. stream.written().len - 1 :0];
     };
@@ -149,11 +149,55 @@ pub fn loadFromFile(
 /// will convert the ShaderToy shader into a valid GLSL shader that can be
 /// compiled and linked.
 pub fn glslFromShader(writer: *std.Io.Writer, src: []const u8) !void {
+    try glslFromShaderFor(writer, src, .glsl);
+}
+
+/// As glslFromShader, for `target`: Direct3D 11's (murrtty, roadmap 7.8)
+/// takes `hlsl_main` in place of the prefix's main.
+pub fn glslFromShaderFor(writer: *std.Io.Writer, src: []const u8, target: Target) !void {
     const prefix = @embedFile("shaders/shadertoy_prefix.glsl");
-    try writer.writeAll(prefix);
+    if (target == .hlsl) {
+        const main_at = comptime std.mem.indexOf(u8, prefix, "void main()").?;
+        try writer.writeAll(prefix[0..main_at]);
+        try writer.writeAll(hlsl_main);
+    } else {
+        try writer.writeAll(prefix);
+    }
     try writer.writeAll("\n\n");
     try writer.writeAll(src);
 }
+
+/// For murrtty's Direct3D 11 renderer: a custom shader sees OpenGL's
+/// coordinates, as in GTK's app, where Metal's (upstream) sees its own.
+/// Direct3D's pixels count down from the top left and a texture's first
+/// row is its top, so fragCoord and gl_FragCoord count up from the bottom
+/// here, iChannel0's reads flip v (texelFetch its row, offsets and
+/// gradients their y; textureOffset is a macro, as its offset must stay a
+/// constant), and dFdy changes sign. The frames themselves stay
+/// top-down; every pass of a chain reads and writes them the same way.
+const hlsl_main =
+    \\vec4 _murrtty_FragCoord;
+    \\void main() {
+    \\    _murrtty_FragCoord = vec4(gl_FragCoord.x, iResolution.y - gl_FragCoord.y, gl_FragCoord.zw);
+    \\    mainImage(_fragColor, _murrtty_FragCoord.xy);
+    \\}
+    \\vec2 _murrtty_flip(vec2 uv) { return vec2(uv.x, 1.0 - uv.y); }
+    \\vec4 _murrtty_texture(sampler2D s, vec2 uv) { return texture(s, _murrtty_flip(uv)); }
+    \\vec4 _murrtty_texture(sampler2D s, vec2 uv, float bias) { return texture(s, _murrtty_flip(uv), bias); }
+    \\vec4 _murrtty_textureLod(sampler2D s, vec2 uv, float lod) { return textureLod(s, _murrtty_flip(uv), lod); }
+    \\vec4 _murrtty_textureGrad(sampler2D s, vec2 uv, vec2 dx, vec2 dy) { return textureGrad(s, _murrtty_flip(uv), vec2(dx.x, -dx.y), vec2(dy.x, -dy.y)); }
+    \\vec4 _murrtty_texelFetch(sampler2D s, ivec2 p, int lod) { return texelFetch(s, ivec2(p.x, textureSize(s, lod).y - 1 - p.y), lod); }
+    \\#define gl_FragCoord _murrtty_FragCoord
+    \\#define texture _murrtty_texture
+    \\#define textureLod _murrtty_textureLod
+    \\#define textureGrad _murrtty_textureGrad
+    \\#define textureOffset(s, uv, o) textureOffset(s, _murrtty_flip(uv), ivec2((o).x, -(o).y))
+    \\#define texelFetch _murrtty_texelFetch
+    \\#define dFdy(x) (-dFdy(x))
+    \\#define dFdyFine(x) (-dFdyFine(x))
+    \\#define dFdyCoarse(x) (-dFdyCoarse(x))
+    \\
+;
 
 /// Convert a GLSL shader into SPIR-V assembly.
 pub fn spirvFromGlsl(
@@ -507,6 +551,45 @@ test "shadertoy to glsl" {
     defer alloc.free(glsl);
 
     // log.warn("glsl={s}", .{glsl});
+}
+
+test "shadertoy to hlsl" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // Every call hlsl_main wraps, and the CRT test shader.
+    for ([_][]const u8{ test_crt,
+        \\void mainImage(out vec4 fragColor, in vec2 fragCoord) {
+        \\    vec2 uv = fragCoord / iResolution.xy;
+        \\    vec4 c = texture(iChannel0, uv) + texture(iChannel0, uv, 0.5) + texture2D(iChannel0, uv);
+        \\    c += textureLod(iChannel0, uv, 0.0) + textureGrad(iChannel0, uv, dFdx(uv), dFdy(uv));
+        \\    c += textureOffset(iChannel0, uv, ivec2(1, 2)) + texelFetch(iChannel0, ivec2(gl_FragCoord.xy), 0);
+        \\    fragColor = c * dFdy(uv.y);
+        \\}
+        \\
+    }) |shader| {
+        var glsl: std.Io.Writer.Allocating = .init(alloc);
+        defer glsl.deinit();
+        try glslFromShaderFor(&glsl.writer, shader, .hlsl);
+        try glsl.writer.writeByte(0);
+        const src = glsl.written()[0 .. glsl.written().len - 1 :0];
+
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        defer buf.deinit();
+        var errlog: SpirvLog = .{ .alloc = alloc };
+        defer errlog.deinit();
+        spirvFromGlsl(&buf.writer, &errlog, src) catch |err| {
+            std.debug.print("glslang: {s}\n", .{errlog.info});
+            return err;
+        };
+        var spvlist: std.ArrayListAligned(u8, .of(u32)) = .empty;
+        defer spvlist.deinit(alloc);
+        try spvlist.appendSlice(alloc, buf.written());
+
+        const hlsl = try hlslFromSpv(alloc, spvlist.items);
+        defer alloc.free(hlsl);
+        try testing.expect(std.mem.indexOf(u8, hlsl, "main(") != null);
+    }
 }
 
 const test_crt = @embedFile("shaders/test_shadertoy_crt.glsl");

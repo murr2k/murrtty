@@ -39,8 +39,9 @@ pub const shaders = @import("d3d11/shaders.zig");
 // Custom shaders: GLSL to SPIR-V to HLSL (spirv-cross), compiled when
 // the shaders are made.
 pub const custom_shader_target: shadertoy.Target = .hlsl;
-// SV_Position's origin is the top left.
-pub const custom_shader_y_is_down = true;
+// SV_Position's origin is the top left, but custom shaders see OpenGL's
+// coordinates (shadertoy's hlsl_main), so +Y is up for them, as GTK's.
+pub const custom_shader_y_is_down = false;
 
 /// Frames in flight, as the other backends.
 pub const swap_chain_count = 3;

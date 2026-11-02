@@ -4145,8 +4145,15 @@ gain is on those with a card but no OpenGL driver.
   depth range (use 0, as Metal does). Custom shaders (`custom-shader`) gain an `hlsl` target
   in `shadertoy.zig`: glslang to SPIR-V as now, spirv-cross's HLSL backend
   (built with `spirv_hlsl.cpp` and `SPIRV_CROSS_C_API_HLSL`, shader model
-  50), then `D3DCompile` at run time; `custom_shader_y_is_down` true, as
-  Metal's.
+  50), then `D3DCompile` at run time. *Changed 2026-11-01:* not Metal's
+  coordinates (`fragCoord` from the top left, which upstream's macOS app
+  gives its shaders) but OpenGL's, so a shader looks as in GTK's app:
+  `shadertoy.zig`'s `hlsl_main` counts `fragCoord` and `gl_FragCoord` up
+  from the bottom, flips `iChannel0`'s reads (`texture`, `textureLod`,
+  `textureGrad`, `textureOffset`, `texelFetch`) and `dFdy`, in the GLSL
+  before SPIR-V, and `custom_shader_y_is_down` is false (the cursor
+  uniforms OpenGL's too). The frames stay top-down: each pass of a chain
+  reads and writes them alike.
 - **Colors (the Look rule):** the backend reproduces OpenGL's pixels, not
   Metal's: murrtty looks like GTK's app, which draws with OpenGL. Targets
   and the color atlas are sRGB formats (`R8G8B8A8_UNORM_SRGB`,
@@ -4267,7 +4274,27 @@ gain is on those with a card but no OpenGL driver.
   4. **Parity (1.5 to 2 weeks):** images, the background image, custom
      shaders, the shapes, translucency and blur, the blending modes,
      resizing, the read-back hooks. Done when the suite passes but for the
-     `gl-*` scenarios, and `render-parity` passes.
+     `gl-*` scenarios, and `render-parity` passes. *`render-parity` built
+     2026-11-01* (opt-in: `GHOSTTY_GUI_PARITY` names the other renderer's
+     Debug murrtty.exe): seven scenes, each drawn by both and every pane's
+     presented frame read back, shapes included: a page of 16, 256 and
+     true colors, attributes, box drawing, shades, Powerline glyphs, text
+     in fallback fonts and a 4x4 kitty graphics image stretched over 8x4
+     cells, in each `alpha-blending` mode; a custom shader tinting by its
+     coordinates; a 16x16 background image stretched at 0.6 opacity; a
+     translucent window (alpha compared too); a split's dimming. Here (RTX
+     2070) all seven match exactly, 0 apart in every channel, once custom
+     shaders took OpenGL's coordinates (the first run found them
+     upside-down). The first hosted run (2026-11-01, `renderer=d3d11`):
+     on x64, WARP drew the GUI suite, 100 of 117 passing, 16 skipped, the
+     unit tests too; the one failure, `mouse-settings`, had taken its "at
+     the bottom" before the shell's last rows landed (WARP's slower frames
+     hold the terminal longer), so they read as the wheel scrolling down:
+     it now waits for the rows to settle. ARM64 stopped at compiling, an
+     ARM64-only alignment check in the COM bindings (fixed; the desktop CI
+     now compiles Direct3D 11 for both architectures on each push). Left:
+     the hosted runs again, and the on-screen translucency and blur runs
+     (with the owner).
   5. **Robustness (about a week):** `DxbcStep` (shaders compiled at build
      time, from step 3), WARP and its notice, device removal,
      the start dialog, the inspector on DX11, ARM64 on the hosted runner,

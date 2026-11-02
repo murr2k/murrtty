@@ -48,7 +48,8 @@ pub inline fn succeeded(hr: HRESULT) bool {
 /// The function in `obj`'s vtable slot `index`, as type `F`.
 pub inline fn method(obj: anytype, comptime index: usize, comptime F: type) *const F {
     const vtable: *const *const [index + 1]?*const anyopaque = @ptrCast(@alignCast(obj));
-    return @ptrCast(vtable.*[index].?);
+    // ARM64's code is 4-aligned: the slot's pointer is asserted to be.
+    return @ptrCast(@alignCast(vtable.*[index].?));
 }
 
 /// IUnknown's three, for any interface.

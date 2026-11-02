@@ -158,3 +158,17 @@ jobs:
           $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
           & $zig build -Dtarget=aarch64-windows-gnu --prefix (Join-Path $env:RUNNER_TEMP 'arm64')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The Direct3D 11 renderer (roadmap 7.8) while it isn't the default:
+      # compiled for both architectures on every push (its first ARM64
+      # build met the same alignment check). The GUI suite runs on it by
+      # hand (GHOSTTY_GUI_RENDERER=d3d11) and on the hosted runners.
+      - name: Direct3D 11 build
+        if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $zig = (Get-ChildItem .zig-toolchain -Recurse -Filter zig.exe)[0].FullName
+          foreach ($target in 'x86_64-windows-gnu', 'aarch64-windows-gnu') {
+            & $zig build "-Dtarget=$target" -Drenderer=d3d11 --prefix (Join-Path $env:RUNNER_TEMP "d3d11-$target")
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

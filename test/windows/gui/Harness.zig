@@ -271,6 +271,9 @@ pub const LaunchOptions = struct {
     wait_window: bool = true,
     /// Arguments after the program's name (quoted where they hold spaces).
     args: []const []const u8 = &.{},
+    /// Another murrtty.exe to start instead of the one under test (a full
+    /// path): `render-parity`'s other renderer.
+    exe: ?[]const u8 = null,
 };
 
 pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: LaunchOptions) !Ghostty {
@@ -300,10 +303,13 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
     const env = try self.environment(dir, dump_path, opts.env, opts.unset);
     defer alloc.free(env);
 
+    const exe: [:0]const u16 = if (opts.exe) |e| try std.unicode.utf8ToUtf16LeAllocZ(alloc, e) else self.exe;
+    defer if (opts.exe != null) alloc.free(exe);
+
     var cmdline: std.ArrayList(u16) = .empty;
     defer cmdline.deinit(alloc);
     try cmdline.append(alloc, '"');
-    try cmdline.appendSlice(alloc, self.exe);
+    try cmdline.appendSlice(alloc, exe);
     try cmdline.append(alloc, '"');
     for (opts.args) |arg| {
         const quote = arg.len == 0 or std.mem.indexOfScalar(u8, arg, ' ') != null;
@@ -381,7 +387,7 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
     const dir16 = try std.unicode.utf8ToUtf16LeAllocZ(alloc, dir);
     defer alloc.free(dir16);
     if (w.CreateProcessW(
-        self.exe,
+        exe,
         @ptrCast(cmdline.items.ptr),
         null,
         null,
