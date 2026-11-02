@@ -104,6 +104,8 @@ jobs:
           GHOSTTY_GUI_TEST_DIR: ${{ runner.temp }}\gui
           MURRTTY_OPENGL: ${{ github.workspace }}\zig-out\bin\mesa\opengl32.dll
           SCENARIOS: ${{ inputs.scenarios }}
+          # The opt-in spikes run when asked for by name (d3d-spike: S7).
+          GHOSTTY_GUI_SPIKE: ${{ contains(inputs.scenarios, 'spike') && '1' || '' }}
         run: |
           $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
           if ($scenarioArgs.Count -eq 0) { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }

@@ -123,6 +123,7 @@ pub const all = [_]Scenario{
     .{ .name = "pwsh-typeahead", .about = "task 42: PowerShell 7 and 5.1 with integration, commands typed ahead (during a slowed prompt; in pairs after a Ctrl+C) all run (GHOSTTY_GUI_STRESS=1; GHOSTTY_PTY_LOG for a trace)", .run = pwshTypeahead },
     .{ .name = "quit-after-reload", .about ="20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
+    .{ .name = "d3d-spike", .about = "spike S7 (7.8): Direct3D 11 swap chains for a pane (composition, flip, blt) on hardware and WARP, on the hidden desktop and off-screen: presents, latency waits, read-back, captures through a resize, a pane's commit (GHOSTTY_GUI_SPIKE=1)", .run = d3dSpike },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
     .{ .name = "readme-screenshot", .about = "the README's picture: two tabs, a split running PowerShell 7, the second tab's waiting bell; the parts read back on the hidden desktop for test/windows/look/readme_shot.py (GHOSTTY_GUI_SNAPSHOT=folder)", .run = readmeScreenshot },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
@@ -6958,6 +6959,45 @@ fn stressPanes(h: *Harness) anyerror!void {
 /// pixels, it runs on the user's desktop far off-screen. Only the layered
 /// child is required to pass (the roadmap's S1 row has why); run it on
 /// each GPU vendor.
+/// Spike S7 (roadmap 7.8): runs ghostty-gui-d3d.exe (d3d_spike.zig) in
+/// each combination and prints what it reports; the findings go in the
+/// roadmap's S7 row.
+fn d3dSpike(h: *Harness) anyerror!void {
+    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SPIKE"), null, 0) == 0) {
+        return h.skip("set GHOSTTY_GUI_SPIKE=1 to run it", .{});
+    }
+    const Run = struct { args: []const []const u8, where: Harness.Where };
+    const runs = [_]Run{
+        .{ .args = &.{"dll"}, .where = .default },
+        .{ .args = &.{ "present", "comp", "hw" }, .where = .default },
+        .{ .args = &.{ "present", "comp", "warp" }, .where = .default },
+        .{ .args = &.{ "present", "hwnd", "hw" }, .where = .default },
+        .{ .args = &.{ "present", "hwnd", "warp" }, .where = .default },
+        .{ .args = &.{ "present", "blt", "hw" }, .where = .default },
+        .{ .args = &.{ "present", "blt", "warp" }, .where = .default },
+        .{ .args = &.{ "present", "comp", "hw", "capture" }, .where = .offscreen },
+        .{ .args = &.{ "present", "comp", "warp", "capture" }, .where = .offscreen },
+        .{ .args = &.{ "present", "hwnd", "hw", "capture" }, .where = .offscreen },
+        .{ .args = &.{ "present", "blt", "hw", "capture" }, .where = .offscreen },
+        .{ .args = &.{ "commit", "hw", "8" }, .where = .default },
+        .{ .args = &.{ "commit", "warp", "8" }, .where = .default },
+    };
+    for (runs, 0..) |run, i| {
+        const name = try std.fmt.allocPrint(h.alloc, "d3d-spike-{d}", .{i});
+        defer h.alloc.free(name);
+        var r = try h.runHelper("ghostty-gui-d3d.exe", name, run.args, run.where);
+        defer r.deinit();
+        std.debug.print("  --- {s}", .{@tagName(run.where)});
+        for (run.args) |a| std.debug.print(" {s}", .{a});
+        std.debug.print(" (exit {d})\n", .{r.code});
+        var lines = std.mem.splitScalar(u8, r.out, '\n');
+        while (lines.next()) |line| {
+            const l = std.mem.trimEnd(u8, line, "\r");
+            if (l.len > 0) std.debug.print("    {s}\n", .{l});
+        }
+    }
+}
+
 fn overlayHost(h: *Harness) anyerror!void {
     if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SPIKE"), null, 0) == 0) {
         return h.skip("set GHOSTTY_GUI_SPIKE=1 to run it", .{});

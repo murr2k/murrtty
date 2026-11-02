@@ -44,6 +44,27 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(uia);
 
+    // The d3d-spike scenario's Direct3D 11 probe (spike S7, roadmap 7.8),
+    // on murrtty's own bindings.
+    const d3d11 = b.createModule(.{
+        .root_source_file = b.path("../../../pkg/d3d11/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const d3d = b.addExecutable(.{
+        .name = "ghostty-gui-d3d",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("d3d_spike.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "d3d11", .module = d3d11 }},
+        }),
+    });
+    // murrtty's manifest: layered child windows need its Windows 10
+    // supportedOS entry, and its DPI awareness is murrtty's.
+    d3d.win32_manifest = b.path("../../../dist/windows/murrtty.manifest");
+    b.installArtifact(d3d);
+
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
     b.step("run", "Run the GUI tests").dependOn(&run.step);
