@@ -17,6 +17,7 @@ const CoreSurface = @import("../../Surface.zig");
 const c = @import("c.zig");
 const Banner = @import("Banner.zig");
 const AlertDialog = @import("AlertDialog.zig");
+const AboutDialog = @import("AboutDialog.zig");
 const CommandPalette = @import("CommandPalette.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const draw = @import("draw.zig");
@@ -1047,6 +1048,33 @@ fn openUrl(self: *App, req: OpenUrl) void {
     }
 }
 
+/// A file the release package puts beside bin\ (LICENSE.txt,
+/// THIRD-PARTY-NOTICES.txt), when this murrtty runs from one; the caller
+/// frees it.
+fn packagedFile(alloc: Allocator, name: []const u8) ?[]u8 {
+    var buf: [1024]u16 = undefined;
+    const n = c.GetModuleFileNameW(null, &buf, buf.len);
+    if (n == 0 or n >= buf.len) return null;
+    const exe = std.unicode.utf16LeToUtf8Alloc(alloc, buf[0..n]) catch return null;
+    defer alloc.free(exe);
+    const bin = std.fs.path.dirname(exe) orelse return null;
+    // The package's layout only: murrtty.exe in a bin folder.
+    if (!std.ascii.eqlIgnoreCase(std.fs.path.basename(bin), "bin")) return null;
+    const root = std.fs.path.dirname(bin) orelse return null;
+    const path = std.fs.path.join(alloc, &.{ root, name }) catch return null;
+    const wide = std.unicode.utf8ToUtf16LeAllocZ(alloc, path) catch {
+        alloc.free(path);
+        return null;
+    };
+    defer alloc.free(wide);
+    const attrs = c.GetFileAttributesW(wide);
+    if (attrs == c.INVALID_FILE_ATTRIBUTES or attrs & c.FILE_ATTRIBUTE_DIRECTORY != 0) {
+        alloc.free(path);
+        return null;
+    }
+    return path;
+}
+
 fn launch(self: *App, owner: ?c.HWND, target: url.Target) void {
     if (test_hooks.recordLaunch(&self.test_state, self.core_app.alloc, @tagName(target.verb), target.value)) return;
     // The shell can show dialogs of its own.
@@ -1129,10 +1157,77 @@ fn linkBlocked(self: *App, owner: ?c.HWND, denial: url.Denial) void {
     }
 }
 
-/// murrtty's About box, from the main menu (GTK's About dialog, which no
-/// core action shows).
+/// murrtty's About, from the main menu and the system menu (GTK's About
+/// Ghostty, which no core action shows): libadwaita's about dialog
+/// (AboutDialog) with murrtty's name, icon, developer, version and links,
+/// a Credits page naming Ghostty's authors and a Legal page with the
+/// license, the copyrights, the third-party notices and that murrtty is
+/// not Ghostty's. A task dialog only if that can't be shown.
 pub fn showAbout(self: *App, owner: ?c.HWND) void {
     const alloc = self.core_app.alloc;
+    {
+        const based = std.fmt.allocPrint(alloc, "murrtty is a native Windows terminal forked from Ghostty {s}.", .{build_config.ghostty_version_string}) catch return;
+        defer alloc.free(based);
+        // The package's LICENSE.txt and THIRD-PARTY-NOTICES.txt beside
+        // bin\, or the repository's license where they aren't.
+        const license_file = packagedFile(alloc, "LICENSE.txt");
+        defer if (license_file) |p| alloc.free(p);
+        const notices_file = packagedFile(alloc, "THIRD-PARTY-NOTICES.txt");
+        defer if (notices_file) |p| alloc.free(p);
+        const license = [_]AboutDialog.Link{if (license_file) |p|
+            .{ .label = "&MIT License", .target = p, .file = true }
+        else
+            .{ .label = "&MIT License", .target = "https://github.com/murr2k/murrtty/blob/main/LICENSE" }};
+        const notices = [_]AboutDialog.Link{.{ .label = "&Third-Party Notices", .target = notices_file orelse "", .file = true }};
+        const legal_all = [_]AboutDialog.Block{
+            .{ .text = "\u{a9} 2024 Mitchell Hashimoto, Ghostty contributors\n\u{a9} 2026 Murray Kopit (murrtty, the Windows fork)" },
+            .{ .text = "This application comes with absolutely no warranty. See the MIT License for details." },
+            .{ .links = &license },
+            .{ .text = "murrtty is not affiliated with or endorsed by the Ghostty project." },
+            .{ .links = &notices },
+        };
+        const credits = [_]AboutDialog.Block{
+            .{ .text = based },
+            .{ .heading = "Developed by" },
+            .{ .links = &.{.{ .label = "Murray Kopit", .target = "https://github.com/murr2k/murrtty" }} },
+            .{ .heading = "Ghostty by" },
+            .{ .links = &.{.{ .label = "Mitchell Hashimoto and the Ghostty contributors", .target = "https://ghostty.org" }} },
+        };
+        const Ctx = struct {
+            app: *App,
+            owner: ?c.HWND,
+            fn open(ptr: *anyopaque, link: AboutDialog.Link) void {
+                const ctx: *@This() = @ptrCast(@alignCast(ptr));
+                const value = ctx.app.core_app.alloc.dupe(u8, link.target) catch return;
+                defer ctx.app.core_app.alloc.free(value);
+                ctx.app.launch(ctx.owner, .{ .value = value, .item = link.file });
+            }
+            fn copy(ptr: *anyopaque, text: []const u8) bool {
+                const ctx: *@This() = @ptrCast(@alignCast(ptr));
+                Surface.writeClipboardText(ctx.app.core_app.alloc, ctx.owner orelse ctx.app.wakeup_hwnd, text) catch return false;
+                return true;
+            }
+        };
+        var ctx: Ctx = .{ .app = self, .owner = owner };
+        var modal = self.beginModal(owner, .{});
+        defer modal.end();
+        if (AboutDialog.run(alloc, .{
+            .owner = owner,
+            .dark = self.chromeTheme().dark,
+            .title = "About murrtty",
+            .name = "murrtty",
+            .developer = "Murray Kopit",
+            .version = build_config.version_string,
+            .website = "https://murrtty.org",
+            .issues = "https://github.com/murr2k/murrtty/issues",
+            .credits = &credits,
+            // Without the package's notices, no row for them.
+            .legal = if (notices_file != null) &legal_all else legal_all[0 .. legal_all.len - 1],
+            .ctx = &ctx,
+            .open = Ctx.open,
+            .copy = Ctx.copy,
+        })) return;
+    }
     const content = std.fmt.allocPrint(alloc,
         \\Version {s}, based on Ghostty {s}
         \\

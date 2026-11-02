@@ -552,7 +552,13 @@ roadmap item behind it.
   Windows dialogs drawn that way: their own window centered over the
   dimmed one (GTK's sit inside the window), with Windows 11's rounded
   frame (libadwaita rounds 18 px); Escape, Enter and Tab behave as in any
-  Windows dialog. Text boxes are in Consolas, not GNOME's monospace.
+  Windows dialog. Text boxes are in Consolas, not GNOME's monospace. The
+  same holds for About murrtty, libadwaita's about dialog as GTK's About
+  Ghostty is (since 2026-11-01, `AboutDialog.zig`): its pages turn without
+  libadwaita's sliding, its version pill's toast is drawn opaque, and,
+  where GTK's About Ghostty has none, Credits (Ghostty's authors) and
+  Legal (the license, the copyrights, the third-party notices, and that
+  murrtty is not Ghostty's) pages.
 - **Configuration errors** (0.x, 4.3b): the dialog adds Open
   Configuration, which opens the file and leaves the dialog open; GTK's
   offers Ignore and Reload Configuration.
@@ -1965,8 +1971,8 @@ a button with three lines at the strip's right end opens GTK's main menu
 (*observed*): Copy, Paste; Change Window Title..., New Window, Close
 Window; Change Tab Title..., New Tab, Close Tab, the Split submenu; Clear,
 Reset; Command Palette, Terminal Inspector (grayed until 5.12), the Config
-submenu; About murrtty (a task dialog with the version, `App.showAbout`),
-Quit. Both open on the press under their button and act on the active
+submenu; About murrtty (a task dialog with the version, `App.showAbout`;
+libadwaita's about dialog since 2026-11-01, `AboutDialog.zig`), Quit. Both open on the press under their button and act on the active
 tab's focused pane, as the core's actions. Tabs that don't fit run under
 the buttons until 3.8c. Scenario `tab-buttons`; the dump reports both
 buttons' rectangles. The system menu's items are 3.9's.

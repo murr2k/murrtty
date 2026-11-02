@@ -27,6 +27,7 @@ pub const all = [_]Scenario{
     .{ .name = "clipboard-queue", .about = "a burst of OSC 52 writes asks one dialog at a time", .run = clipboardQueue },
     .{ .name = "clipboard-dialog", .about = "GTK's clipboard dialog: the whole text in a box, Deny the default, remember for OSC 52; an unsafe paste's warning", .run = clipboardDialog },
     .{ .name = "system-menu", .about = "murrtty's items in the system menu (Alt+Space) after Windows' own: About, New Tab; its Close still asks", .run = systemMenu },
+    .{ .name = "about", .about = "About murrtty is libadwaita's about dialog, as GTK's About Ghostty: the icon, name, developer and version, the version pill copying it (a toast), Website and Report an Issue opening murrtty's links, Credits and Legal opening their pages and Back returning, Escape closing", .run = aboutDialog },
     .{ .name = "close-all", .about = "close-all asks and disables the other windows meanwhile", .run = closeAll },
     .{ .name = "window-size", .about = "window-width/height give the exact grid", .run = windowSize },
     .{ .name = "links", .about = "Ctrl+click links: programs and UNC paths blocked, web opens, other schemes ask", .run = links },
@@ -1169,6 +1170,127 @@ fn waitNoDialog(h: *Harness, g: *Harness.Ghostty) !void {
         w.Sleep(100);
     }
     return h.fail("the dialog did not close", .{});
+}
+
+/// About murrtty (system menu, Alt+Space then U): libadwaita's about
+/// dialog (AboutDialog.zig's ids). The version pill shows +version's
+/// version and copies it, with a toast; Website and Report an Issue open
+/// murrtty's site and issues (recorded, not opened); Credits and Legal
+/// show their pages with the back button, whose rows open Ghostty's site
+/// and the license; Back (and Backspace) returns; Enter on the focused
+/// pill copies; the Escape key closes. GHOSTTY_GUI_SNAPSHOT saves each
+/// page, dark and light.
+fn aboutDialog(h: *Harness) anyerror!void {
+    const ids = struct {
+        const back = 200;
+        const version = 201;
+        const website = 210;
+        const issues = 211;
+        const credits = 212;
+        const legal = 213;
+        const toast = 240;
+        const credit_links = 300;
+        const legal_links = 400;
+    };
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+
+    const printed = blk: {
+        var r = try h.runCli("about", &.{"+version"});
+        defer r.deinit();
+        const head = "murrtty ";
+        const marker = ", based on Ghostty ";
+        const head_at = std.mem.indexOf(u8, r.out, head) orelse return h.fail("+version names no version", .{});
+        const at = std.mem.indexOfPos(u8, r.out, head_at, marker) orelse return h.fail("+version names no Ghostty version", .{});
+        break :blk try h.alloc.dupe(u8, r.out[head_at + head.len .. at]);
+    };
+    defer h.alloc.free(printed);
+
+    for ([_][]const u8{ "", "window-theme = light\n" }, 0..) |extra, pass| {
+        const name = if (pass == 0) "about" else "about-light";
+        var g = try start(h, name, extra, ">");
+        defer g.deinit();
+        const win = try h.mainWindow(&g);
+        const menu = try openSystemMenu(h, &g, win);
+        h.menuKey(menu, 'u');
+        const dlg = try h.waitDialog(&g, 5000);
+        try expectTitle(h, dlg, "About murrtty");
+        const shown = struct {
+            fn get(d: w.HWND, id: c_int) bool {
+                const ctl = w.GetDlgItem(d, id) orelse return false;
+                return w.IsWindowVisible(ctl) != 0;
+            }
+        }.get;
+        try h.expect(shown(dlg, ids.version) and shown(dlg, ids.website) and shown(dlg, ids.issues) and shown(dlg, ids.credits) and shown(dlg, ids.legal), "the main page: the version, Website, Report an Issue, Credits, Legal", .{});
+        try h.expect(!shown(dlg, ids.back) and !shown(dlg, ids.toast), "no back button or toast there", .{});
+        {
+            const v = try h.title(w.GetDlgItem(dlg, ids.version).?);
+            defer h.alloc.free(v);
+            try h.expect(std.mem.eql(u8, v, printed), "the version pill reads +version's ('{s}', +version '{s}')", .{ v, printed });
+        }
+        try snapshotDialog(h, dlg, if (pass == 0) "about-main.bmp" else "about-main-light.bmp");
+        if (pass == 1) {
+            h.answer(&g, dlg, w.IDCANCEL);
+            try waitNoDialog(h, &g);
+            continue;
+        }
+
+        // The links, recorded instead of opened.
+        h.answer(&g, dlg, ids.website);
+        try expectLaunch(h, &g, 1, "default https://murrtty.org");
+        h.answer(&g, dlg, ids.issues);
+        try expectLaunch(h, &g, 2, "default https://github.com/murr2k/murrtty/issues");
+
+        // Credits: its page, Ghostty's authors, back.
+        h.answer(&g, dlg, ids.credits);
+        w.Sleep(200);
+        try h.expect(shown(dlg, ids.back) and !shown(dlg, ids.website) and shown(dlg, ids.credit_links) and shown(dlg, ids.credit_links + 1), "Credits: its page with the back button", .{});
+        {
+            const who = try h.title(w.GetDlgItem(dlg, ids.credit_links + 1).?);
+            defer h.alloc.free(who);
+            try h.expect(std.mem.eql(u8, who, "Mitchell Hashimoto and the Ghostty contributors"), "it names Ghostty's authors ('{s}')", .{who});
+        }
+        try snapshotDialog(h, dlg, "about-credits.bmp");
+        h.answer(&g, dlg, ids.credit_links + 1);
+        try expectLaunch(h, &g, 3, "default https://ghostty.org");
+        // A page's keyboard starts on Back; Backspace goes back too.
+        h.key(w.GetDlgItem(dlg, ids.back).?, .{}, 0x08); // VK_BACK
+        w.Sleep(200);
+        try h.expect(!shown(dlg, ids.back) and shown(dlg, ids.website), "Backspace returns to the main page", .{});
+
+        // Legal: the license's row (the repository's, outside a package).
+        h.answer(&g, dlg, ids.legal);
+        w.Sleep(200);
+        try h.expect(shown(dlg, ids.back) and shown(dlg, ids.legal_links), "Legal: its page with the license's row", .{});
+        try snapshotDialog(h, dlg, "about-legal.bmp");
+        h.answer(&g, dlg, ids.legal_links);
+        try expectLaunch(h, &g, 4, "default https://github.com/murr2k/murrtty/blob/main/LICENSE");
+
+        // Back to the main page: the pill copies the version, a toast
+        // says so.
+        h.answer(&g, dlg, ids.back);
+        w.Sleep(200);
+        try h.expect(!shown(dlg, ids.back) and shown(dlg, ids.version), "Back returns to the main page", .{});
+        // The main page's keyboard starts on the pill: Enter clicks it.
+        h.key(w.GetDlgItem(dlg, ids.version).?, .{}, w.VK_RETURN);
+        var waited: u32 = 0;
+        var copied: ?[]u8 = null;
+        defer if (copied) |t| h.alloc.free(t);
+        while (waited <= 3000) : (waited += 100) {
+            if (copied) |t| h.alloc.free(t);
+            copied = null;
+            copied = try h.getClipboard();
+            if (copied) |t| if (std.mem.eql(u8, t, printed) and shown(dlg, ids.toast)) break;
+            w.Sleep(100);
+        }
+        try h.expect(copied != null and std.mem.eql(u8, copied.?, printed), "the version pill copies '{s}' (clipboard '{s}')", .{ printed, copied orelse "" });
+        try h.expect(shown(dlg, ids.toast), "and a toast says so", .{});
+        try snapshotDialog(h, dlg, "about-toast.bmp");
+
+        // The Escape key closes.
+        h.key(w.GetDlgItem(dlg, ids.version).?, .{}, w.VK_ESCAPE);
+        try waitNoDialog(h, &g);
+    }
 }
 
 /// Wait for `n` recorded launches and check the last one.

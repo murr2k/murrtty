@@ -531,6 +531,14 @@ pub extern "user32" fn LoadIconW(?HINSTANCE, usize) callconv(.winapi) ?HICON;
 /// LoadImageW with a resource id (MAKEINTRESOURCE) for the name.
 pub extern "user32" fn LoadImageW(?HINSTANCE, usize, UINT, c_int, c_int, UINT) callconv(.winapi) ?HANDLE;
 pub extern "user32" fn DestroyIcon(HICON) callconv(.winapi) BOOL;
+pub extern "user32" fn DrawIconEx(HDC, c_int, c_int, HICON, c_int, c_int, UINT, ?HBRUSH, UINT) callconv(.winapi) BOOL;
+pub const DI_NORMAL = 0x0003;
+pub extern "user32" fn RedrawWindow(HWND, ?*const RECT, ?*anyopaque, UINT) callconv(.winapi) BOOL;
+pub const RDW_INVALIDATE = 0x0001;
+pub const RDW_ERASE = 0x0004;
+pub const RDW_ALLCHILDREN = 0x0080;
+/// A static control its parent draws (WM_DRAWITEM).
+pub const SS_OWNERDRAW = 0x0000000D;
 pub extern "user32" fn GetSystemMetricsForDpi(c_int, UINT) callconv(.winapi) c_int;
 pub const IMAGE_ICON = 1;
 pub const WM_SETICON = 0x0080;
@@ -777,6 +785,7 @@ pub const DT_END_ELLIPSIS = 0x00008000;
 pub const DT_CALCRECT = 0x00000400;
 pub const DT_RIGHT = 0x00000002;
 pub const DT_HIDEPREFIX = 0x00100000;
+pub const DT_LEFT = 0x00000000;
 pub const PS_SOLID = 0;
 pub const WS_EX_TRANSPARENT = 0x00000020;
 pub const SW_SHOWNA = 8;
