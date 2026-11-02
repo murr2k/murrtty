@@ -115,12 +115,19 @@ jobs:
           # Direct3D 11 (roadmap 7.8): no GPU here, so WARP, asked for
           # (the software notice stays out of every window).
           MURRTTY_D3D: ${{ inputs.renderer != 'opengl' && 'warp' || '' }}
-          # The opt-in spikes run when asked for by name (d3d-spike: S7).
-          GHOSTTY_GUI_SPIKE: ${{ contains(inputs.scenarios, 'spike') && '1' || '' }}
+          # The opt-in spike runs when asked for by name (overlay-host,
+          # S1; with no display here it skips). An empty value is off.
+          GHOSTTY_GUI_SPIKE: ${{ contains(inputs.scenarios, 'overlay-host') && '1' || '' }}
+          # The stress scenarios (16 flooding panes, 20 quits after a
+          # reload, typing ahead in PowerShell): free minutes here.
+          GHOSTTY_GUI_STRESS: '1'
         run: |
           $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
           if ($scenarioArgs.Count -eq 0 -and $env:GHOSTTY_GUI_RENDERER -eq 'opengl') { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }
-          & .\test\windows\gui\run.cmd --verbose @scenarioArgs
+          # Expected here: pixels (no display is driven) and tab-drag's
+          # second half (no room for two windows). Any other skip the
+          # runner causes shows as a warning.
+          & .\test\windows\gui\run.cmd --verbose --expect-skip pixels --expect-skip tab-drag @scenarioArgs
           exit $LASTEXITCODE
 
       # With murrtty's symbols, for a crash report's addresses.

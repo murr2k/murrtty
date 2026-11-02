@@ -985,10 +985,61 @@ pub fn expect(self: *const Harness, ok: bool, comptime fmt: []const u8, args: an
     self.log("ok: " ++ fmt, args);
 }
 
+/// Why a scenario skips, for the summary: only a machine's skips can mean
+/// a run left out what it should have checked.
+pub const SkipKind = enum {
+    /// An opt-in whose switch is off (optIn), or a value it needs unset.
+    opt_in,
+    /// Not for this build: the other renderer's.
+    build,
+    /// This machine or session can't run it now: no display, a picture on
+    /// the clipboard, a hot key taken, no room for two windows.
+    machine,
+};
+
+/// The last skip's kind and reason (main reads it after each scenario;
+/// one scenario runs at a time).
+pub var last_skip: struct {
+    kind: SkipKind = .machine,
+    buf: [240]u8 = undefined,
+    len: usize = 0,
+
+    pub fn why(self: *const @This()) []const u8 {
+        return self.buf[0..self.len];
+    }
+} = .{};
+
+/// Skip because this machine or session can't run the scenario now.
 pub fn skip(self: *const Harness, comptime fmt: []const u8, args: anytype) error{Skipped} {
+    return self.skipAs(.machine, fmt, args);
+}
+
+/// Skip an opt-in scenario whose switch is off.
+pub fn skipOptIn(self: *const Harness, comptime fmt: []const u8, args: anytype) error{Skipped} {
+    return self.skipAs(.opt_in, fmt, args);
+}
+
+/// Skip a scenario that isn't for this build.
+pub fn skipBuild(self: *const Harness, comptime fmt: []const u8, args: anytype) error{Skipped} {
+    return self.skipAs(.build, fmt, args);
+}
+
+fn skipAs(self: *const Harness, kind: SkipKind, comptime fmt: []const u8, args: anytype) error{Skipped} {
     _ = self;
     std.debug.print("    SKIP: " ++ fmt ++ "\n", args);
+    last_skip.kind = kind;
+    var out: std.Io.Writer = .fixed(&last_skip.buf);
+    out.print(fmt, args) catch {};
+    last_skip.len = out.end;
     return error.Skipped;
+}
+
+/// Whether the opt-in switch `name` (GHOSTTY_GUI_STRESS and the like) is
+/// on: set to something. Windows reports a variable set to "" as present,
+/// and a workflow's `NAME: ''` sets it so: that is off.
+pub fn optIn(comptime name: []const u8) bool {
+    var buf: [8]u16 = undefined;
+    return w.GetEnvironmentVariableW(w.L(name), &buf, buf.len) > 0;
 }
 
 /// Whether the user's desktop is the one on screen, and so drawn by DWM.
@@ -1033,7 +1084,7 @@ pub fn capturesWork(self: *const Harness) ?[]const u8 {
     // DWM's vblank count also idles (a few a second) on a static screen with
     // the monitor on, so with GHOSTTY_GUI_ONSCREEN (the owner is at the
     // screen) it isn't asked.
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) != 0) return null;
+    if (optIn("GHOSTTY_GUI_ONSCREEN")) return null;
     if (!self.displayDriven()) return "DWM isn't driving a display (the monitor may be off; set GHOSTTY_GUI_ONSCREEN=1 if you are at the screen), so captures may come back blank";
     return null;
 }

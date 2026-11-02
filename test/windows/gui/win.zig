@@ -412,6 +412,8 @@ pub extern "advapi32" fn RegDeleteTreeW(HKEY, ?LPCWSTR) callconv(.winapi) c_long
 pub extern "kernel32" fn CreateFileW(LPCWSTR, DWORD, DWORD, ?*anyopaque, DWORD, DWORD, ?HANDLE) callconv(.winapi) HANDLE;
 pub extern "kernel32" fn ReadFile(HANDLE, [*]u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
 pub extern "kernel32" fn WriteFile(HANDLE, [*]const u8, DWORD, ?*DWORD, ?*anyopaque) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetStdHandle(DWORD) callconv(.winapi) ?HANDLE;
+pub const STD_OUTPUT_HANDLE: DWORD = @bitCast(@as(i32, -11));
 pub extern "kernel32" fn GetFileSize(HANDLE, ?*DWORD) callconv(.winapi) DWORD;
 pub extern "kernel32" fn GetCommandLineW() callconv(.winapi) LPCWSTR;
 pub extern "kernel32" fn LocalFree(?*anyopaque) callconv(.winapi) ?*anyopaque;

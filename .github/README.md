@@ -91,9 +91,10 @@ the modifier keys set as held where needed, and checked the results with
 window captures, a Debug-build state dump and logs. Those GUI tests are in
 `test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
 desktop. murrtty has not yet had much use on a physical keyboard. Every
-push runs the unit tests (about 4,300) and the GUI tests (121 scenarios,
-16 of them opt-in because they show something on the screen, save
-pictures, need Clink, compare two builds or run long) on a self-hosted
+push runs the unit tests (about 4,300) and the GUI tests (118 scenarios,
+12 of them opt-in because they show something on the screen, need Clink,
+compare two builds or run long; 3 more tools save pictures), and compares
+the Direct3D 11 and OpenGL builds' frames, on a self-hosted
 runner on the development machine, in a private
 mirror of this repository
 (`.github/workflows/windows-port-desktop.yml`). A manually started workflow

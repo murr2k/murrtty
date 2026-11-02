@@ -9,6 +9,9 @@ pub const Scenario = struct {
     name: []const u8,
     about: []const u8,
     run: *const fn (*Harness) anyerror!void,
+    /// A tool, not a test: it makes pictures and checks nothing, so it runs
+    /// only when named and never counts as skipped.
+    tool: bool = false,
 };
 
 pub const all = [_]Scenario{
@@ -120,15 +123,14 @@ pub const all = [_]Scenario{
     .{ .name = "session-settings", .about = "what was changed while murrtty ran comes back: a pane's font size set by a binding and a split's inherited one, read-only, the zoomed split, the window's float and decorations (its size kept), the opacity toggle", .run = sessionSettings },
     .{ .name = "session-restore",.about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-numbers", .about = "the configuration editor's numbers: a percentage on a slider (pressed, dragged, Escape), shown in the terminals before a save and put back by Discard, stepped with the arrow keys, typed in percent and refused past its range; spin rows in their unit, stepped by their buttons, saved as Ghostty's numbers", .run = configEditorNumbers },
-    .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook },
+    .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook, .tool = true },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "pwsh-typeahead", .about = "task 42: PowerShell 7 and 5.1 with integration, commands typed ahead (during a slowed prompt; in pairs after a Ctrl+C) all run (GHOSTTY_GUI_STRESS=1; GHOSTTY_PTY_LOG for a trace)", .run = pwshTypeahead },
     .{ .name = "quit-after-reload", .about ="20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
-    .{ .name = "d3d-spike", .about = "spike S7 (7.8): Direct3D 11 swap chains for a pane (composition, flip, blt) on hardware and WARP, on the hidden desktop and off-screen: presents, latency waits, read-back, captures through a resize, a pane's commit (GHOSTTY_GUI_SPIKE=1)", .run = d3dSpike },
     .{ .name = "render-parity", .about = "7.8: the same scenes drawn by this build and another (GHOSTTY_GUI_PARITY, the other renderer's murrtty.exe) read back within 1 per channel: 16, 256 and true colors, attributes, box drawing, fallback fonts and a kitty graphics image in each alpha-blending mode, a custom shader, a background image, a translucent window (alpha too), a split's dimming", .run = renderParity },
-    .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot },
-    .{ .name = "readme-screenshot", .about = "the README's picture: two tabs, a split running PowerShell 7, the second tab's waiting bell; the parts read back on the hidden desktop for test/windows/look/readme_shot.py (GHOSTTY_GUI_SNAPSHOT=folder)", .run = readmeScreenshot },
+    .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot, .tool = true },
+    .{ .name = "readme-screenshot", .about = "the README's picture: two tabs, a split running PowerShell 7, the second tab's waiting bell; the parts read back on the hidden desktop for test/windows/look/readme_shot.py (GHOSTTY_GUI_SNAPSHOT=folder)", .run = readmeScreenshot, .tool = true },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
     .{ .name = "blur-display", .about = "background-blur blurs a striped backdrop seen through the background ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = blurDisplay },
     .{ .name = "taskbar-shown", .about = "OSC 9;4 on a real taskbar button: the button is made (TaskbarButtonCreated) and ITaskbarList3 takes the progress, off-screen on the user's desktop (GHOSTTY_GUI_ONSCREEN=1: a button shows on the taskbar)", .run = taskbarShown },
@@ -256,7 +258,7 @@ const look_text = "The quick brown fox jumps over the lazy dog 0123456789 []{}=+
 fn snapshot(h: *Harness) anyerror!void {
     var dir_w: [260:0]u16 = undefined;
     const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &dir_w, dir_w.len);
-    if (n == 0 or n >= dir_w.len) return h.skip("set GHOSTTY_GUI_SNAPSHOT to a folder to run it", .{});
+    if (n == 0 or n >= dir_w.len) return h.skipOptIn("set GHOSTTY_GUI_SNAPSHOT to a folder to run it", .{});
     var dir_buf: [1024]u8 = undefined;
     const dir_len = std.unicode.utf16LeToUtf8(&dir_buf, dir_w[0..n]) catch return h.fail("bad folder name", .{});
     try snapshotFrame(h, dir_buf[0..dir_len]);
@@ -282,7 +284,7 @@ fn snapshot(h: *Harness) anyerror!void {
 fn readmeScreenshot(h: *Harness) anyerror!void {
     var dir_w: [260:0]u16 = undefined;
     const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &dir_w, dir_w.len);
-    if (n == 0 or n >= dir_w.len) return h.skip("set GHOSTTY_GUI_SNAPSHOT to a folder to run it", .{});
+    if (n == 0 or n >= dir_w.len) return h.skipOptIn("set GHOSTTY_GUI_SNAPSHOT to a folder to run it", .{});
     var dir_buf: [1024]u8 = undefined;
     const dir = dir_buf[0 .. std.unicode.utf16LeToUtf8(&dir_buf, dir_w[0..n]) catch return h.fail("bad folder name", .{})];
     // Claude Code's NO_COLOR would have PowerShell drop its colors.
@@ -4939,8 +4941,8 @@ fn onScreenKeyboard(h: *Harness) anyerror!void {
 /// then the hooks hide it (TryHide). Windows may decline to show it (with
 /// a keyboard attached, by default); the calls must still succeed.
 fn oskShown(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
-        return h.skip("it may show the touch keyboard on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
+        return h.skipOptIn("it may show the touch keyboard on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
     }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
@@ -5519,7 +5521,7 @@ fn customShaderBroken(h: *Harness, dir: []const u8) !void {
 fn renderParity(h: *Harness) anyerror!void {
     var buf: [1024]u16 = undefined;
     const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_PARITY"), &buf, buf.len);
-    if (n == 0 or n >= buf.len) return h.skip("set GHOSTTY_GUI_PARITY to the other renderer's murrtty.exe to run it", .{});
+    if (n == 0 or n >= buf.len) return h.skipOptIn("set GHOSTTY_GUI_PARITY to the other renderer's murrtty.exe to run it", .{});
     const other = try std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
     defer h.alloc.free(other);
 
@@ -5949,7 +5951,7 @@ fn conptyBundled(h: *Harness) anyerror!void {
 /// it; one that can't load, or a path that isn't a full one, is said so
 /// at start.
 fn glLibrary(h: *Harness) anyerror!void {
-    if (h.renderer() == .d3d11) return h.skip("OpenGL builds only: the Direct3D 11 build loads no opengl32", .{});
+    if (h.renderer() == .d3d11) return h.skipBuild("OpenGL builds only: the Direct3D 11 build loads no opengl32", .{});
     {
         var g = try h.launchWith("gl-library-system", base_config, .{ .env = &.{.{ "MURRTTY_OPENGL", "C:\\Windows\\System32\\opengl32.dll" }} });
         defer g.deinit();
@@ -7251,7 +7253,7 @@ fn configEditorNumbers(h: *Harness) anyerror!void {
 fn configEditorLook(h: *Harness) anyerror!void {
     var out_buf: [512]u16 = undefined;
     const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &out_buf, out_buf.len);
-    if (n == 0 or n >= out_buf.len) return h.skip("set GHOSTTY_GUI_SNAPSHOT to a folder", .{});
+    if (n == 0 or n >= out_buf.len) return h.skipOptIn("set GHOSTTY_GUI_SNAPSHOT to a folder", .{});
     const out_dir = try std.unicode.utf16LeToUtf8Alloc(h.alloc, out_buf[0..n]);
     defer h.alloc.free(out_dir);
     for ([_]struct { []const u8, []const u8 }{
@@ -7462,8 +7464,8 @@ fn waitPrompts(h: *Harness, g: *Harness.Ghostty) !void {
 /// frame counts say whether all panes keep up, not how fast a release
 /// build is.
 fn stressPanes(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_STRESS"), null, 0) == 0) {
-        return h.skip("set GHOSTTY_GUI_STRESS=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_STRESS")) {
+        return h.skipOptIn("set GHOSTTY_GUI_STRESS=1 to run it", .{});
     }
     var g = try start(h, "stress-panes", "window-width = 160\nwindow-height = 48\n", ">");
     defer g.deinit();
@@ -7548,48 +7550,9 @@ fn stressPanes(h: *Harness) anyerror!void {
 /// pixels, it runs on the user's desktop far off-screen. Only the layered
 /// child is required to pass (the roadmap's S1 row has why); run it on
 /// each GPU vendor.
-/// Spike S7 (roadmap 7.8): runs ghostty-gui-d3d.exe (d3d_spike.zig) in
-/// each combination and prints what it reports; the findings go in the
-/// roadmap's S7 row.
-fn d3dSpike(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SPIKE"), null, 0) == 0) {
-        return h.skip("set GHOSTTY_GUI_SPIKE=1 to run it", .{});
-    }
-    const Run = struct { args: []const []const u8, where: Harness.Where };
-    const runs = [_]Run{
-        .{ .args = &.{"dll"}, .where = .default },
-        .{ .args = &.{ "present", "comp", "hw" }, .where = .default },
-        .{ .args = &.{ "present", "comp", "warp" }, .where = .default },
-        .{ .args = &.{ "present", "hwnd", "hw" }, .where = .default },
-        .{ .args = &.{ "present", "hwnd", "warp" }, .where = .default },
-        .{ .args = &.{ "present", "blt", "hw" }, .where = .default },
-        .{ .args = &.{ "present", "blt", "warp" }, .where = .default },
-        .{ .args = &.{ "present", "comp", "hw", "capture" }, .where = .offscreen },
-        .{ .args = &.{ "present", "comp", "warp", "capture" }, .where = .offscreen },
-        .{ .args = &.{ "present", "hwnd", "hw", "capture" }, .where = .offscreen },
-        .{ .args = &.{ "present", "blt", "hw", "capture" }, .where = .offscreen },
-        .{ .args = &.{ "commit", "hw", "8" }, .where = .default },
-        .{ .args = &.{ "commit", "warp", "8" }, .where = .default },
-    };
-    for (runs, 0..) |run, i| {
-        const name = try std.fmt.allocPrint(h.alloc, "d3d-spike-{d}", .{i});
-        defer h.alloc.free(name);
-        var r = try h.runHelper("ghostty-gui-d3d.exe", name, run.args, run.where);
-        defer r.deinit();
-        std.debug.print("  --- {s}", .{@tagName(run.where)});
-        for (run.args) |a| std.debug.print(" {s}", .{a});
-        std.debug.print(" (exit {d})\n", .{r.code});
-        var lines = std.mem.splitScalar(u8, r.out, '\n');
-        while (lines.next()) |line| {
-            const l = std.mem.trimEnd(u8, line, "\r");
-            if (l.len > 0) std.debug.print("    {s}\n", .{l});
-        }
-    }
-}
-
 fn overlayHost(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SPIKE"), null, 0) == 0) {
-        return h.skip("set GHOSTTY_GUI_SPIKE=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_SPIKE")) {
+        return h.skipOptIn("set GHOSTTY_GUI_SPIKE=1 to run it", .{});
     }
     if (h.capturesWork()) |why| return h.skip("{s}", .{why});
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
@@ -7814,8 +7777,8 @@ fn overlayRemoved(h: *Harness, g: *Harness.Ghostty, win: w.HWND, kind: u8) !usiz
 /// screen. Both windows show on the owner's screen for a few seconds,
 /// above everything else, so it runs only when asked.
 fn transparency(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
-        return h.skip("it shows windows on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
+        return h.skipOptIn("it shows windows on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
     }
     if (h.capturesWork()) |why| return h.skip("{s}", .{why});
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
@@ -7943,8 +7906,8 @@ fn transparencyOnScreen(h: *Harness) !void {
 /// It shows windows ON SCREEN, so it runs only with
 /// GHOSTTY_GUI_ONSCREEN=1.
 fn blurDisplay(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
-        return h.skip("it shows windows on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
+        return h.skipOptIn("it shows windows on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
     }
     if (h.capturesWork()) |why| return h.skip("{s}", .{why});
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
@@ -10553,8 +10516,8 @@ fn pwshKeys(h: *Harness) anyerror!void {
 /// both directions (pty_trace.zig). Its versions lost nothing in 400
 /// rounds (2026-10-29).
 fn pwshTypeahead(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_STRESS"), null, 0) == 0) {
-        return h.skip("set GHOSTTY_GUI_STRESS=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_STRESS")) {
+        return h.skipOptIn("set GHOSTTY_GUI_STRESS=1 to run it", .{});
     }
     for ([_][2][]const u8{ .{ "pwsh-typeahead-7", "pwsh -NoLogo" }, .{ "pwsh-typeahead-5", "powershell -NoLogo" } }) |shell| {
         const extra = try std.fmt.allocPrint(h.alloc, "command = {s}\nshell-integration = detect\n", .{shell[1]});
@@ -11971,8 +11934,8 @@ fn notifications(h: *Harness) anyerror!void {
 /// window is off-screen on the user's desktop; the toast shows on screen
 /// for a moment, so only with GHOSTTY_GUI_ONSCREEN=1.
 fn notifyShown(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
-        return h.skip("it shows a toast on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
+        return h.skipOptIn("it shows a toast on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
     }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
@@ -12279,8 +12242,8 @@ fn quickCli(h: *Harness, g: *Harness.Ghostty, class_arg: []const u8, shown: bool
 /// GHOSTTY_GUI_ONSCREEN=1. It quits without a dialog, which would show on
 /// screen.
 fn trayShown(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
-        return h.skip("its icon shows in the notification area; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
+        return h.skipOptIn("its icon shows in the notification area; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
     }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
@@ -12583,8 +12546,8 @@ fn progressScenario(h: *Harness) anyerror!void {
 /// progress (S_OK). Its button shows on the taskbar meanwhile, so only with
 /// GHOSTTY_GUI_ONSCREEN=1.
 fn taskbarShown(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_ONSCREEN"), null, 0) == 0) {
-        return h.skip("its button shows on the taskbar; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
+        return h.skipOptIn("its button shows on the taskbar; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
     }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
@@ -14502,7 +14465,7 @@ fn sessionSettings(h: *Harness) anyerror!void {
 fn clinkHistory(h: *Harness) anyerror!void {
     var buf: [1024]u16 = undefined;
     const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_CLINK"), &buf, buf.len);
-    if (n == 0 or n >= buf.len) return h.skip("set GHOSTTY_GUI_CLINK to a Clink folder to run it", .{});
+    if (n == 0 or n >= buf.len) return h.skipOptIn("set GHOSTTY_GUI_CLINK to a Clink folder to run it", .{});
     const clink_dir = try std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
     defer h.alloc.free(clink_dir);
 
@@ -14610,8 +14573,8 @@ fn logClinkProfile(h: *Harness, profile: []const u8, comptime when: []const u8) 
 /// (drainForExit). Racy by nature, so many launches; opt-in
 /// (GHOSTTY_GUI_STRESS=1).
 fn quitAfterReload(h: *Harness) anyerror!void {
-    if (w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_STRESS"), null, 0) == 0) {
-        return h.skip("set GHOSTTY_GUI_STRESS=1 to run it", .{});
+    if (!Harness.optIn("GHOSTTY_GUI_STRESS")) {
+        return h.skipOptIn("set GHOSTTY_GUI_STRESS=1 to run it", .{});
     }
     var failed: usize = 0;
     for (0..20) |i| {
