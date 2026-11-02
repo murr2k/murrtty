@@ -1046,6 +1046,15 @@ pub fn optIn(comptime name: []const u8) bool {
     return w.GetEnvironmentVariableW(w.L(name), &buf, buf.len) > 0;
 }
 
+/// Whether a scenario may show something on the screen for a moment (a
+/// toast, a tray icon, a taskbar button): the owner is at it
+/// (GHOSTTY_GUI_ONSCREEN) or nobody watches it (GHOSTTY_GUI_UNWATCHED,
+/// which the hosted runners set). What reads the display back still needs
+/// GHOSTTY_GUI_ONSCREEN and a display DWM drives.
+pub fn mayShow() bool {
+    return optIn("GHOSTTY_GUI_ONSCREEN") or optIn("GHOSTTY_GUI_UNWATCHED");
+}
+
 /// Whether the user's desktop is the one on screen, and so drawn by DWM.
 /// It isn't while a screen saver or the lock screen is up (each has a
 /// desktop of its own), and captures of its windows then come back blank.

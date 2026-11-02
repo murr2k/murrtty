@@ -121,6 +121,11 @@ jobs:
           # The stress scenarios (16 flooding panes, 20 quits after a
           # reload, typing ahead in PowerShell): free minutes here.
           GHOSTTY_GUI_STRESS: '1'
+          # Nobody watches this screen: the scenarios that show a toast, a
+          # tray icon, a taskbar button or the touch keyboard for a moment
+          # run here, on a clean machine (a toast's first registration is
+          # the one Windows keeps).
+          GHOSTTY_GUI_UNWATCHED: '1'
         run: |
           $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
           if ($scenarioArgs.Count -eq 0 -and $env:GHOSTTY_GUI_RENDERER -eq 'opengl') { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }

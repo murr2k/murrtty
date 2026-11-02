@@ -4964,8 +4964,8 @@ fn onScreenKeyboard(h: *Harness) anyerror!void {
 /// then the hooks hide it (TryHide). Windows may decline to show it (with
 /// a keyboard attached, by default); the calls must still succeed.
 fn oskShown(h: *Harness) anyerror!void {
-    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
-        return h.skipOptIn("it may show the touch keyboard on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.mayShow()) {
+        return h.skipOptIn("it may show the touch keyboard on the screen; set GHOSTTY_GUI_ONSCREEN=1 (or GHOSTTY_GUI_UNWATCHED=1 where nobody watches the screen) to run it", .{});
     }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
@@ -11967,8 +11967,8 @@ fn notifications(h: *Harness) anyerror!void {
 /// window is off-screen on the user's desktop; the toast shows on screen
 /// for a moment, so only with GHOSTTY_GUI_ONSCREEN=1.
 fn notifyShown(h: *Harness) anyerror!void {
-    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
-        return h.skipOptIn("it shows a toast on the screen; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.mayShow()) {
+        return h.skipOptIn("it shows a toast on the screen; set GHOSTTY_GUI_ONSCREEN=1 (or GHOSTTY_GUI_UNWATCHED=1 where nobody watches the screen) to run it", .{});
     }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
@@ -12275,8 +12275,8 @@ fn quickCli(h: *Harness, g: *Harness.Ghostty, class_arg: []const u8, shown: bool
 /// GHOSTTY_GUI_ONSCREEN=1. It quits without a dialog, which would show on
 /// screen.
 fn trayShown(h: *Harness) anyerror!void {
-    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
-        return h.skipOptIn("its icon shows in the notification area; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.mayShow()) {
+        return h.skipOptIn("its icon shows in the notification area; set GHOSTTY_GUI_ONSCREEN=1 (or GHOSTTY_GUI_UNWATCHED=1 where nobody watches the screen) to run it", .{});
     }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
@@ -12579,8 +12579,8 @@ fn progressScenario(h: *Harness) anyerror!void {
 /// progress (S_OK). Its button shows on the taskbar meanwhile, so only with
 /// GHOSTTY_GUI_ONSCREEN=1.
 fn taskbarShown(h: *Harness) anyerror!void {
-    if (!Harness.optIn("GHOSTTY_GUI_ONSCREEN")) {
-        return h.skipOptIn("its button shows on the taskbar; set GHOSTTY_GUI_ONSCREEN=1 to run it", .{});
+    if (!Harness.mayShow()) {
+        return h.skipOptIn("its button shows on the taskbar; set GHOSTTY_GUI_ONSCREEN=1 (or GHOSTTY_GUI_UNWATCHED=1 where nobody watches the screen) to run it", .{});
     }
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
