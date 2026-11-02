@@ -130,9 +130,14 @@ jobs:
           $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
           if ($scenarioArgs.Count -eq 0 -and $env:GHOSTTY_GUI_RENDERER -eq 'opengl') { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }
           # Expected here: pixels (no display is driven) and tab-drag's
-          # second half (no room for two windows). Any other skip the
-          # runner causes shows as a warning.
-          & .\test\windows\gui\run.cmd --verbose --expect-skip pixels --expect-skip tab-drag @scenarioArgs
+          # second half (no room for two windows); on windows-11-arm also
+          # taskbar-shown and tray-shown, as its Explorer gives no program
+          # a taskbar button or a notification area icon (the harness's own
+          # control included). Any other skip the runner causes shows as a
+          # warning.
+          $expect = @('--expect-skip', 'pixels', '--expect-skip', 'tab-drag')
+          if ($env:GHOSTTY_GUI_TARGET -like 'aarch64*') { $expect += @('--expect-skip', 'taskbar-shown', '--expect-skip', 'tray-shown') }
+          & .\test\windows\gui\run.cmd --verbose @expect @scenarioArgs
           exit $LASTEXITCODE
 
       # With murrtty's symbols, for a crash report's addresses.

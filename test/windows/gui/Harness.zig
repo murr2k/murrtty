@@ -1081,7 +1081,10 @@ pub fn needTaskbar(self: *const Harness, need: ShellNeed) error{Skipped}!void {
     });
     if (!answers) return self.skip("the taskbar doesn't answer (Explorer's Shell_TrayWnd is hung or not ready)", .{});
     const own = self.shellProbe(need);
-    std.debug.print("    the harness's own: taskbar button {}, notification area icon {} (error {d})\n", .{ own.button, own.icon, own.icon_error });
+    switch (need) {
+        .button => std.debug.print("    the harness's own window: taskbar button {}\n", .{own.button}),
+        .icon => std.debug.print("    the harness's own icon: taken {} (error {d})\n", .{ own.icon, own.icon_error }),
+    }
     switch (need) {
         .button => if (!own.button) return self.skip("Explorer here gives no program a taskbar button (none came for the harness's own window in 5 s)", .{}),
         .icon => if (!own.icon) return self.skip("Explorer here takes no program's notification area icon (it refused the harness's own, error {d})", .{own.icon_error}),

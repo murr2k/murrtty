@@ -3779,7 +3779,17 @@ build, renderer, GPU, DPI, light or dark, elevated) in
 over; one where over 0.05% of the pixels differ by more than 4 fails,
 with a diff beside it. Those scenarios run cmd at `C:\` with its banner
 cleared and a steady cursor, so the screen is the same on every run
-(checked with the read-back frame: two launches 0 pixels apart).
+(checked with the read-back frame: two launches 0 pixels apart). The
+scenarios that show something for a moment without reading the display
+(`taskbar-shown`, `notify-shown`, `tray-shown`, `osk-shown`) also run on
+the hosted runners, where nobody watches (`GHOSTTY_GUI_UNWATCHED`): all
+four pass on x64. On windows-11-arm the toast and the touch keyboard
+pass, but its Explorer gives no program a taskbar button or a
+notification area icon (E_FAIL): before those two checks the harness
+asks the same for a window and an icon of its own (`Harness.needTaskbar`),
+and there it got neither, so they skip, expected. Clink's scenarios run
+on the desktop runner (`GHOSTTY_GUI_CLINK` in its `.env`, the owner's
+go-ahead).
 
 **7.4 Packaging and signing, L.**
 - A zip of `bin` plus `share` (themes, shell integration, terminfo), LICENSE
