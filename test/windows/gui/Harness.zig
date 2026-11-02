@@ -1056,11 +1056,25 @@ pub fn mayShow() bool {
 }
 
 /// Skip unless the calling thread's desktop has Explorer's taskbar
-/// (Shell_TrayWnd): taskbar buttons and notification area icons need it.
+/// (Shell_TrayWnd) answering: taskbar buttons and notification area
+/// icons need it. Prints what it found (the hosted ARM64 runner's taskbar
+/// made no buttons and refused icons, E_FAIL, while x64's worked).
 pub fn needTaskbar(self: *const Harness) error{Skipped}!void {
-    if (w.FindWindowW(w.L("Shell_TrayWnd"), null) == null) {
+    const tray = w.FindWindowW(w.L("Shell_TrayWnd"), null) orelse {
         return self.skip("no taskbar on this desktop (Explorer's Shell_TrayWnd isn't there)", .{});
-    }
+    };
+    var pid: w.DWORD = 0;
+    _ = w.GetWindowThreadProcessId(tray, &pid);
+    var result: usize = 0;
+    const answers = w.SendMessageTimeoutW(tray, 0, 0, 0, w.SMTO_ABORTIFHUNG, 3000, &result) != 0;
+    const notify_area = w.FindWindowExW(tray, null, w.L("TrayNotifyWnd"), null) != null;
+    var lua: w.DWORD = 0;
+    var size: w.DWORD = @sizeOf(w.DWORD);
+    const lua_rc = w.RegGetValueW(w.HKEY_LOCAL_MACHINE, w.L("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"), w.L("EnableLUA"), w.RRF_RT_REG_DWORD, null, &lua, &size);
+    std.debug.print("\n    taskbar: Shell_TrayWnd 0x{x}, Explorer pid {d}, answers {}, TrayNotifyWnd {}, UAC {s}, harness admin {}\n", .{
+        @intFromPtr(tray), pid, answers, notify_area, if (lua_rc != 0) "unknown" else if (lua != 0) "on" else "off", w.IsUserAnAdmin() != 0,
+    });
+    if (!answers) return self.skip("the taskbar doesn't answer (Explorer's Shell_TrayWnd is hung or not ready)", .{});
 }
 
 /// Whether the user's desktop is the one on screen, and so drawn by DWM.

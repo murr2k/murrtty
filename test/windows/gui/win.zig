@@ -401,6 +401,7 @@ pub extern "kernel32" fn MoveFileW(LPCWSTR, LPCWSTR) callconv(.winapi) BOOL;
 
 pub const HKEY = *opaque {};
 pub const HKEY_CURRENT_USER: HKEY = @ptrFromInt(0x80000001);
+pub const HKEY_LOCAL_MACHINE: HKEY = @ptrFromInt(0x80000002);
 pub const KEY_WRITE = 0x20006;
 pub const REG_SZ = 1;
 pub const REG_OPTION_VOLATILE = 1;
