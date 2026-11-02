@@ -8,11 +8,14 @@
 # isn't at startup. The guard job checks that. The self-hosted desktop
 # runner never serves this repository.
 #
-# Hosted runners have no GPU: murrtty draws with the Mesa llvmpipe it
-# ships (bin\mesa, roadmap 6.3b), named by MURRTTY_OPENGL for every
-# launch so that none starts itself again (the harness follows the process
-# it started). The scenarios of the graphics driver's own OpenGL
-# (gl-missing, gl-library, gl-fallback) are left out for that reason.
+# Hosted runners have no GPU. Direct3D 11, the default (roadmap 7.8),
+# draws with Windows' WARP, asked for by MURRTTY_D3D so the software
+# notice stays out of every window. An OpenGL build
+# (renderer: opengl) draws with the Mesa llvmpipe it ships (bin\mesa,
+# roadmap 6.3b), named by MURRTTY_OPENGL for every launch so that none
+# starts itself again (the harness follows the process it started), and
+# leaves out the scenarios of the graphics driver's own OpenGL
+# (gl-missing, gl-library, gl-fallback) for that reason.
 name: Windows port (hosted GUI suite)
 
 on:
@@ -23,7 +26,7 @@ on:
         type: string
         default: ''
       renderer:
-        description: The renderer to build (opengl or d3d11; the default when empty)
+        description: The renderer to build (d3d11 or opengl; the default, d3d11, when empty)
         type: string
         default: ''
 
@@ -106,17 +109,17 @@ jobs:
         env:
           GHOSTTY_GUI_TARGET: ${{ matrix.target }}
           GHOSTTY_GUI_TEST_DIR: ${{ runner.temp }}\gui
-          MURRTTY_OPENGL: ${{ github.workspace }}\zig-out\bin\mesa\opengl32.dll
+          MURRTTY_OPENGL: ${{ inputs.renderer == 'opengl' && format('{0}\zig-out\bin\mesa\opengl32.dll', github.workspace) || '' }}
           SCENARIOS: ${{ inputs.scenarios }}
           GHOSTTY_GUI_RENDERER: ${{ inputs.renderer }}
           # Direct3D 11 (roadmap 7.8): no GPU here, so WARP, asked for
           # (the software notice stays out of every window).
-          MURRTTY_D3D: ${{ inputs.renderer == 'd3d11' && 'warp' || '' }}
+          MURRTTY_D3D: ${{ inputs.renderer != 'opengl' && 'warp' || '' }}
           # The opt-in spikes run when asked for by name (d3d-spike: S7).
           GHOSTTY_GUI_SPIKE: ${{ contains(inputs.scenarios, 'spike') && '1' || '' }}
         run: |
           $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
-          if ($scenarioArgs.Count -eq 0) { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }
+          if ($scenarioArgs.Count -eq 0 -and $env:GHOSTTY_GUI_RENDERER -eq 'opengl') { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }
           & .\test\windows\gui\run.cmd --verbose @scenarioArgs
           exit $LASTEXITCODE
 

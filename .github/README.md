@@ -38,10 +38,18 @@ produces a native `murrtty.exe`:
   quick terminal, session restore and the rest listed under Status, built
   directly on the Windows API (mainly `user32`, `gdi32`, `imm32`, `dwmapi`
   and UI Automation).
+- **A Direct3D 11 renderer** (`src/renderer/D3D11.zig`,
+  `src/renderer/d3d11/`, its HLSL in `src/renderer/shaders/hlsl/`), the
+  default since November 2026: each terminal gets a Direct3D 11 device and
+  presents through DirectComposition, on the graphics card or, without a
+  Direct3D 11 driver, on Windows' own software renderer (WARP). It draws
+  what the OpenGL renderer draws, pixel for pixel; the GUI tests compare the
+  two.
 - **A WGL path in the OpenGL renderer** (`pkg/opengl/wgl.zig`,
-  `src/renderer/OpenGL.zig`): each terminal gets an OpenGL 4.3 core context
-  on its own window and presents with `SwapBuffers`. Other platforms keep
-  their existing EGL and Metal paths.
+  `src/renderer/OpenGL.zig`), the earlier default, built with
+  `-Drenderer=opengl`: each terminal gets an OpenGL 4.3 core context on its
+  own window and presents with `SwapBuffers`. Other platforms keep their
+  existing EGL and Metal paths.
 - **Fixes to Windows-only code in the shared core** that had stopped
   compiling or misbehaved, such as a hang when a terminal closed
   (`src/termio/Exec.zig`).
@@ -83,14 +91,15 @@ the modifier keys set as held where needed, and checked the results with
 window captures, a Debug-build state dump and logs. Those GUI tests are in
 `test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
 desktop. murrtty has not yet had much use on a physical keyboard. Every
-push runs the unit tests (about 4,300) and the GUI tests (110 scenarios,
-14 of them opt-in because they show something on the screen, save
-pictures, need Clink or run long) on a self-hosted runner on the
-development machine, in a private
+push runs the unit tests (about 4,300) and the GUI tests (121 scenarios,
+16 of them opt-in because they show something on the screen, save
+pictures, need Clink, compare two builds or run long) on a self-hosted
+runner on the development machine, in a private
 mirror of this repository
-(`.github/workflows/windows-port-desktop.yml`); the GUI tests need an
-OpenGL 4.3 driver, which GitHub's hosted runners lack. A manually started
-workflow (`.github/workflows/windows-port.yml`) runs the builder on a clean
+(`.github/workflows/windows-port-desktop.yml`). A manually started workflow
+(`.github/workflows/windows-port-hosted.yml`) runs both on GitHub's hosted
+x64 and ARM64 runners, which have no GPU: there murrtty draws with WARP.
+Another (`.github/workflows/windows-port.yml`) runs the builder on a clean
 hosted Windows runner and then the unit tests.
 
 **Tested and working**
@@ -426,17 +435,22 @@ hosted Windows runner and then the unit tests.
 - Clicking a notification's toast: the tests click through the message a
   click posts, and check that Windows takes a real toast.
 - Surviving a graphics driver reset (Windows restarting a hung GPU):
-  murrtty draws again in a new OpenGL context, and shows the renderer's
-  failure panel until it can. The tests fake the reset.
-- `MURRTTY_OPENGL`: the full path of another opengl32.dll to draw with, a
-  software OpenGL such as Mesa's llvmpipe for machines without OpenGL 4.3.
-  The tests name Windows' own and the bundled Mesa.
-- Software OpenGL: without OpenGL 4.3 from the graphics driver, murrtty
-  starts again on the Mesa llvmpipe it ships in `bin\mesa` (built from
-  source by [murr2k/murrtty-mesa](https://github.com/murr2k/murrtty-mesa))
-  and says in its window that it draws in software. The tests make
-  Windows' own OpenGL fail; no real Remote Desktop session or virtual
-  machine without 3D has run it yet.
+  murrtty draws again on a new Direct3D device (a new context in OpenGL
+  builds), and shows the renderer's failure panel until it can. The tests
+  fake the reset.
+- Drawing in software: without a Direct3D 11 driver (no graphics driver,
+  Windows' basic display adapter, a virtual machine without 3D), murrtty
+  draws with WARP in the same process and says in its window that it
+  draws in software; `MURRTTY_D3D=warp` asks for WARP anywhere. The tests
+  make the graphics card's device fail, and GitHub's runners, which have
+  no GPU, run the whole GUI suite on WARP.
+- OpenGL builds (`-Drenderer=opengl`): `MURRTTY_OPENGL` names another
+  opengl32.dll to draw with, and without OpenGL 4.3 from the graphics
+  driver murrtty starts again on the Mesa llvmpipe it ships in `bin\mesa`
+  (built from source by
+  [murr2k/murrtty-mesa](https://github.com/murr2k/murrtty-mesa)) and says
+  so. The tests name Windows' own opengl32 and the bundled Mesa, and make
+  Windows' own OpenGL fail.
 
 **Not implemented yet**
 
@@ -454,14 +468,10 @@ hosted Windows runner and then the unit tests.
   which the Store signs, is the other route (see the
   [code signing policy](https://murrtty.org/code-signing)). An installer,
   winget and update checks follow.
-- A Direct3D 11 renderer, for machines without OpenGL 4.3 (roadmap 7.8,
-  in progress: `-Drenderer=d3d11` builds it and passes the GUI suite here,
-  but OpenGL stays the default until its frames match OpenGL's pixel for
-  pixel).
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was
-built and why, and plans what is left: the items above, tests on hosted CI,
-and testing on AMD and Intel graphics, ARM64 hardware and Windows 10.
+built and why, and plans what is left: the items above, and testing on AMD
+and Intel graphics, ARM64 hardware with a GPU and Windows 10.
 
 **Known issues**
 
@@ -482,19 +492,19 @@ and testing on AMD and Intel graphics, ARM64 hardware and Windows 10.
 
 ## Requirements
 
-- Windows 10 version 1809 or newer, or Windows 11, on x64. Windows 11 on ARM64
-  should run the x64 build under emulation, but this has not been tested.
-  Windows 10 on ARM cannot run x64 programs. A native ARM64 build
-  (`-Target aarch64-windows-gnu`, also with `-Package`) builds, but has not
-  been run: it needs OpenGL 4.3, which on ARM64 GPUs comes from Microsoft's
-  OpenGL compatibility pack, or else from the Mesa it ships.
-- A GPU driver with OpenGL 4.3 support, for drawing on the GPU. Most GPUs
-  from the last decade have it; virtual machines and Remote Desktop
-  sessions often don't. Without it murrtty draws in software with the Mesa
-  llvmpipe in `bin\mesa`, using more CPU, and says so in its window; if
-  that can't draw either, or `bin\mesa` is missing, it says at start what
-  is missing (no graphics driver, Windows' basic display adapter, a Remote
-  Desktop session, an old driver) and what to do, and exits.
+- Windows 10 version 1809 or newer, or Windows 11, on x64 or ARM64. The
+  native ARM64 build (`-Target aarch64-windows-gnu`, also with `-Package`)
+  runs the GUI tests on GitHub's ARM64 runners, which have no GPU, but has
+  not run on ARM64 hardware with one. Windows 11 on ARM64 should also run
+  the x64 build under emulation, untested; Windows 10 on ARM cannot run x64
+  programs.
+- Nothing more for drawing: murrtty draws with Direct3D 11, on the graphics
+  card, or on the CPU with WARP where there is no Direct3D 11 driver
+  (virtual machines without 3D, Windows' basic display adapter), using more
+  CPU and saying so in its window. A Windows without even WARP is broken;
+  murrtty then says so at start and exits. OpenGL builds
+  (`-Drenderer=opengl`) need a driver with OpenGL 4.3, or else draw with
+  the Mesa llvmpipe in `bin\mesa`.
 
 To build you also need an internet connection for the first build. Git is
 optional: without it, or in a source tree that isn't a git checkout, the
@@ -647,14 +657,17 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
 | `src/apprt/win32/Undo.zig`, `Inspector.zig`, `Uia.zig`, `uia_text.zig` | Undo of closes, the terminal inspector, UI Automation for screen readers |
 | `src/apprt/win32/ConfigEditor.zig`, `src/config/EditableFile.zig`, `src/config/option_list.zig`, `src/apprt/win32/shells.zig`, `src/apprt/win32/file_dialog.zig` | The configuration editor, the in-place editing of the config file behind it, and its shell and folder pickers |
 | `src/font/dwrite.zig` | Font discovery through DirectWrite (FreeType still draws) |
-| `src/apprt/win32/gl_diagnosis.zig` | Says at start why OpenGL 4.3 is missing |
-| `src/apprt/win32/software_gl.zig` | Starts murrtty again on its Mesa (`bin\mesa`) when OpenGL 4.3 is missing |
+| `src/apprt/win32/gl_diagnosis.zig` | OpenGL builds: says at start why OpenGL 4.3 is missing |
+| `src/apprt/win32/software_gl.zig` | OpenGL builds: starts murrtty again on its Mesa (`bin\mesa`) when OpenGL 4.3 is missing |
 | `src/apprt/win32/console.zig` | Attaches to the parent console for CLI actions |
 | `src/apprt/win32/url.zig` | Decides whether a link from terminal output opens, asks first or is blocked |
 | `src/apprt/win32/c.zig` | Hand-written Win32 bindings |
 | `src/shell-integration/powershell/`, `src/shell-integration/cmd/` | Shell integration for PowerShell and for cmd (with Clink) |
-| `pkg/opengl/wgl.zig` | Minimal WGL bindings and context creation |
-| `src/renderer/OpenGL.zig`, `src/renderer/opengl/Device.zig` | WGL context per surface and `SwapBuffers` presentation on Windows |
+| `src/renderer/D3D11.zig`, `src/renderer/d3d11/`, `src/renderer/shaders/hlsl/` | The Direct3D 11 renderer: a device per terminal, presentation through DirectComposition, WARP without a driver; its HLSL programs |
+| `pkg/d3d11/`, `src/build/DxbcStep.zig` | Direct3D 11, DXGI and DirectComposition bindings; the shaders compiled at build time |
+| `src/renderer/win32_present.zig` | What either renderer shares with the app: translucency, the present pass's shapes, the tests' read-back |
+| `pkg/opengl/wgl.zig` | OpenGL builds: minimal WGL bindings and context creation |
+| `src/renderer/OpenGL.zig`, `src/renderer/opengl/Device.zig` | OpenGL builds: WGL context per surface and `SwapBuffers` presentation on Windows |
 | `build-windows.ps1`, `build-windows.cmd`, `dist/windows/` | The builder, the release package and its third-party notices |
 | `test/windows/gui/`, `src/apprt/win32/test_hooks.zig` | GUI tests, and the Debug-only state dump they read |
 | `.github/workflows/windows-port.yml` | CI, started by hand: the builder and the unit tests on a clean hosted Windows runner |

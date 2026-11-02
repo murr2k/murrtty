@@ -458,12 +458,20 @@ roadmap item behind it.
   header bar, or with `gtk-titlebar-style = tabs` in the tab row that
   holds them; a window with neither (`gtk-titlebar = false` or server
   decorations without the tab-row style, the quick terminal) shows none.
-- **Software OpenGL** (6.3b): with no OpenGL 4.3 from the graphics driver
-  (Remote Desktop without the card, a virtual machine without 3D, the
-  basic display adapter, an old driver), murrtty starts again on the Mesa
-  llvmpipe it ships in `bin\mesa` and says in its window that it draws in
-  software, where GTK's app has no fallback of its own (on Linux the
-  system's Mesa already falls back to llvmpipe when there is no driver).
+- **Direct3D 11 instead of OpenGL** (7.8, the default since 2026-11-01):
+  murrtty draws with Direct3D 11, and without a Direct3D 11 driver with
+  Windows' WARP in the same process (saying in its window that it draws in
+  software), where GTK's app draws with OpenGL. It looks the same:
+  `render-parity` finds its frames identical to the OpenGL backend's, and
+  custom shaders see OpenGL's coordinates. `-Drenderer=opengl` builds the
+  OpenGL backend until 7.8's step 7 retires it.
+- **Software OpenGL** (6.3b, OpenGL builds): with no OpenGL 4.3 from the
+  graphics driver (Remote Desktop without the card, a virtual machine
+  without 3D, the basic display adapter, an old driver), murrtty starts
+  again on the Mesa llvmpipe it ships in `bin\mesa` and says in its window
+  that it draws in software, where GTK's app has no fallback of its own (on
+  Linux the system's Mesa already falls back to llvmpipe when there is no
+  driver).
 - **The prompt on a resize** (2.2, 2.3): a resize keeps the prompt's rows and
   reflows them like any text. GTK's clears them for the shell to redraw
   (OSC 133's `redraw` defaults to on there, and its shells redraw on
@@ -552,13 +560,7 @@ roadmap item behind it.
   Command Palette, Terminal Inspector, Config, About murrtty and Quit
   after Windows' own items; GTK has no such menu.
 
-*Decided, not built yet:*
-
-- **Direct3D 11 instead of OpenGL** (7.8, planned 2026-11-01): murrtty
-  will draw with Direct3D 11, and without a GPU with Windows' WARP in the
-  same process, where GTK's app draws with OpenGL. It looks the same: its
-  frames are compared with the OpenGL backend's pixel by pixel. It ends
-  6.3b's Mesa and second start.
+*Decided, not built yet:* none at present.
 
 ## Rules every item keeps
 
@@ -4311,7 +4313,17 @@ gain is on those with a card but no OpenGL driver.
   6. **The switch (a few days):** Direct3D 11 becomes the Windows default
      (`backend.zig`); the hosted CI drops `MURRTTY_OPENGL` and runs on
      WARP; the desktop CI also builds OpenGL (compile only); README, site,
-     Differences; then a release, with the owner's go-ahead.
+     Differences; then a release, with the owner's go-ahead. *Switched
+     2026-11-01,* after the owner's on-screen runs here: `transparency` and
+     `blur-display` passed on Direct3D 11 once a translucent window's pane
+     painted its part of the window black (GDI's alpha 0, clear to DWM);
+     unpainted, it was white, and the frame showed over white, not the
+     desktop. `pixels` passed too. The hosted workflow builds Direct3D 11
+     unless asked for `opengl` (then Mesa, `MURRTTY_OPENGL` and the three
+     `gl-*` skips as before); the desktop CI compiles OpenGL for x64 and
+     ARM64. The site and the comparison page describe the latest release,
+     so they change with the release; `bin\mesa` stays in the package until
+     step 7.
   7. **Retirement, a release later:** the WGL branches of `OpenGL.zig`
      and `pkg/opengl/wgl.zig`'s use, `software_gl.zig`, most of
      `gl_diagnosis.zig`, the Mesa packages and `bin\mesa` with their
