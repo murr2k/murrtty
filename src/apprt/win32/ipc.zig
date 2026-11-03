@@ -242,7 +242,10 @@ pub const Overrides = struct {
                 switch (wd) {
                     .inherit => continue,
                     .home => wd = .{ .path = homeDir(arena) orelse continue },
-                    .path => try wd.finalize(arena),
+                    .path => {
+                        try wd.finalize(arena);
+                        wd = .{ .path = try windowsFullPath(arena, wd.path) };
+                    },
                 }
                 result.working_directory = wd;
                 continue;
@@ -277,6 +280,33 @@ pub const Overrides = struct {
         if (self.working_directory) |wd| config.@"working-directory" = try wd.clone(alloc);
     }
 };
+
+/// A drive-absolute or UNC path as Windows takes it (GetFullPathNameW, a
+/// string operation: `.` and `..` resolved, a name's trailing dots and
+/// spaces dropped). The installer's "Open in murrtty" passes `%V.`, as Git
+/// Bash's does, because a quoted drive root, `"C:\"`, would end in `\"`,
+/// which escapes the quote; this gives `C:\folder` for `C:\folder.`. Any
+/// other path stays as it is, for the pane to resolve against the caller's
+/// directory.
+fn windowsFullPath(arena: Allocator, path: []const u8) Allocator.Error![]const u8 {
+    const sep = struct {
+        fn is(ch: u8) bool {
+            return ch == '\\' or ch == '/';
+        }
+    }.is;
+    const drive = path.len >= 3 and std.ascii.isAlphabetic(path[0]) and path[1] == ':' and sep(path[2]);
+    const unc = path.len >= 2 and sep(path[0]) and sep(path[1]);
+    if (!drive and !unc) return path;
+    const wide = std.unicode.wtf8ToWtf16LeAllocZ(arena, path) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return path,
+    };
+    // The longest path Windows accepts.
+    const buf = try arena.alloc(u16, 32768);
+    const n = c.GetFullPathNameW(wide.ptr, @intCast(buf.len), buf.ptr, null);
+    if (n == 0 or n >= buf.len) return path;
+    return try std.unicode.wtf16LeToWtf8Alloc(arena, buf[0..n]);
+}
 
 /// The user's home directory, as the config's finalize finds it.
 fn homeDir(arena: Allocator) ?[]const u8 {
@@ -1196,6 +1226,29 @@ test "Overrides.parse reads GTK's arguments" {
     if (homeDir(a)) |want| {
         try testing.expectEqualStrings(want, q.working_directory.?.path);
     } else try testing.expect(q.working_directory == null);
+}
+
+test "Overrides take an absolute directory as Windows does" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const cases = [_][2][]const u8{
+        // What "Open in murrtty" passes: the folder, a drive root.
+        .{ "C:\\Program Files.", "C:\\Program Files" },
+        .{ "C:\\.", "C:\\" },
+        .{ "\\\\server\\share\\dir.", "\\\\server\\share\\dir" },
+        .{ "C:\\Windows\\..\\Users", "C:\\Users" },
+        .{ "c:/x/y", "c:\\x\\y" },
+        // Relative, or relative to the current drive: the caller's.
+        .{ "relative.", "relative." },
+        .{ "\\rooted.", "\\rooted." },
+    };
+    for (cases) |case| {
+        const arg = try std.fmt.allocPrintSentinel(a, "--working-directory={s}", .{case[0]}, 0);
+        const o = try Overrides.parse(a, &[_][:0]const u8{arg});
+        try testing.expectEqualStrings(case[1], o.working_directory.?.path);
+    }
 }
 
 test "labelRid reads a SACL's mandatory label" {
