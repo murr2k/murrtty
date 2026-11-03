@@ -4011,6 +4011,19 @@ go-ahead).
   icon (`share\ghostty\murrtty.png`). `version` then went to 0.4.0, and
   the Scoop and winget manifests to 0.3.0 (winget's 0.3.0 waits for
   #467277, the first submission, still in review).
+  *0.4.0 released 2026-11-02* (the owner's go-ahead): Direct3D 11 as the
+  renderer (7.8, WARP without a driver), the session kept however
+  murrtty closes (5.10c) and with what bindings changed, the
+  configuration editor's numbers, menus and bar (F1d to F1f), Close All
+  but This, the palette's By Key tab, the About dialog, the fix for
+  0.3.0's software OpenGL crash at start (#18), and the builder's
+  messages, `-Repair` and `-Deps`. The first release with
+  `murrtty-0.4.0-deps.zip` (31 packages, both architectures' Mesa).
+  Tag `murrtty-v0.4.0` on `8eaae465a`; both packages built from the
+  tagged sources, Defender clean. The on-screen run before a release
+  (`run-onscreen.cmd`) didn't run: the screen was locked and no golden
+  samples exist yet, so the first one records them. `version` then went
+  to 0.5.0, and the Scoop and winget manifests to 0.4.0.
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored

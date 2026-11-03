@@ -34,10 +34,10 @@
     <li>Tabs and splits, GTK's header bar as the title bar, its menus, dialogs and command palette.</li>
     <li>Shell integration for PowerShell 7, Windows PowerShell 5.1 and cmd (with Clink): the working directory follows the shell, idle prompts close without asking, jump between prompts.</li>
     <li>Keys reach console programs whole, as Windows key events; keyboard layouts and input methods.</li>
-    <li>Session restore: windows, tabs, splits and each terminal's command history come back.</li>
+    <li>Session restore: windows, tabs, splits and each terminal's command history come back, however murrtty was closed.</li>
     <li>A bell in the header bar for each terminal waiting for you in the background (an agent asking for input, say): a click goes there.</li>
     <li>Notifications, taskbar progress, global key bindings, the tray, a quick terminal, drag and drop, undo of closes, the terminal inspector.</li>
-    <li>A configuration editor that edits your Ghostty-format file in place.</li>
+    <li>A configuration editor that edits your Ghostty-format file in place, with undo and a review of each change before it saves.</li>
     <li>Screen readers read its terminals through UI Automation.</li>
   </ul>
 
@@ -56,7 +56,9 @@ cd murrtty
       below (it names itself after the branch and commit, as in
       <code>-main+1a2b3c4d5</code>). To build release @RELEASE@ instead,
       run <code>git checkout murrtty-v@RELEASE@</code> before
-      <code>.\build-windows.cmd</code>.
+      <code>.\build-windows.cmd</code>. Behind a proxy the Zig compiler
+      can't use, <code>.\build-windows.cmd -Deps release</code> downloads
+      the dependencies as one zip, with Windows' proxy settings.
     </p>
     <p>
       <strong>Or download</strong> <a href="/download">murrtty @RELEASE@</a>
@@ -72,8 +74,9 @@ scoop install murrtty/murrtty</code></pre>
     <p>
       It needs Windows 10 (1809 or newer) or Windows 11 on x64 (an ARM64
       build is out too, so far tested only on GitHub's ARM64 runners, which
-      have no GPU). Without a graphics driver's OpenGL 4.3, it draws in
-      software, slower but the same. The
+      have no GPU). It draws with Direct3D 11; without a graphics driver
+      for it, it draws with Windows' own software renderer, slower but the
+      same. The
       <a href="https://github.com/murr2k/murrtty#readme">README</a> says what
       is tested, what isn't, and what isn't built yet.
     </p>
