@@ -129,13 +129,15 @@ jobs:
         run: |
           $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
           if ($scenarioArgs.Count -eq 0 -and $env:GHOSTTY_GUI_RENDERER -eq 'opengl') { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }
-          # Expected here: pixels (no display is driven) and tab-drag's
-          # second half (no room for two windows); on windows-11-arm also
+          # Expected here: pixels (no display is driven), tab-drag's
+          # second half (no room for two windows) and bell-audio (no audio
+          # output device: Media Foundation's engine reports
+          # MF_E_NO_AUDIO_PLAYBACK_DEVICE, 0xc00d36fa); on windows-11-arm also
           # taskbar-shown and tray-shown, as its Explorer gives no program
           # a taskbar button or a notification area icon (the harness's own
           # control included). Any other skip the runner causes shows as a
           # warning.
-          $expect = @('--expect-skip', 'pixels', '--expect-skip', 'tab-drag')
+          $expect = @('--expect-skip', 'pixels', '--expect-skip', 'tab-drag', '--expect-skip', 'bell-audio')
           if ($env:GHOSTTY_GUI_TARGET -like 'aarch64*') { $expect += @('--expect-skip', 'taskbar-shown', '--expect-skip', 'tray-shown') }
           & .\test\windows\gui\run.cmd --verbose @expect @scenarioArgs
           exit $LASTEXITCODE

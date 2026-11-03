@@ -1920,7 +1920,11 @@ Scenarios `bell-border` (the overlay's pixels, read back, its fade in and
 out, no title bell without `title`, nothing for the pane with the
 keyboard) and `bell-audio` (a silent WAV: nothing made before a bell,
 then two bells each loaded and played at the volume; it skips, after the
-rest, without Media Foundation or an audio device). Both passed here.
+rest, without Media Foundation or an audio device). Both passed here and
+in the desktop CI; on the hosted runners (x64 and ARM64, WARP)
+`bell-border` passed and `bell-audio` skips: Media Foundation is there,
+but no audio output device (the engine's error 4, 0xc00d36fa), so the
+hosted workflow expects that skip.
 
 *End-of-phase review, 2026-10-26.* Three independent reviews of 3.4 to
 3.7a and the icon (Win32 lifetimes and reentrancy, parity with GTK and the
