@@ -10,7 +10,10 @@ commit to the public repository first, then build and deploy.
 The newest murrtty-vX.Y.Z tag is the release the site offers: @RELEASE@
 and @RELEASE_URL@ in the pages become its version and its release page,
 and /download redirects to its zip. Push the tag (and publish the
-release) before building.
+release) before building. Cloudflare's clone holds no tags, so there the
+release comes from GitHub's API: one request a build, shared with the
+release list below, with GITHUB_TOKEN when the build's environment has
+one (see github()).
 
 Usage statistics: each page view and download by a browser (bots left
 out) is written to Workers Analytics Engine (binding VISITS, dataset
@@ -46,9 +49,15 @@ import os
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 
 here = os.path.dirname(os.path.abspath(__file__))
+
+# A release's tag: murrtty-vX.Y.Z, with a pre-release part for the tip
+# channel.
+RELEASE_TAG = re.compile(r'murrtty-v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?')
 
 PAGES = {
     '/': ('index.html', 'text/html; charset=utf-8'),
@@ -75,12 +84,66 @@ def git(*args):
     return r.stdout.strip() if r.returncode == 0 else ''
 
 
+def rate_limit_wait(e):
+    """Seconds until GitHub takes requests again, when `e` is its refusal
+    for a rate limit; None for any other error."""
+    if e.code not in (403, 429):
+        return None
+    retry = e.headers.get('Retry-After')
+    if retry and retry.strip().isdigit():
+        return int(retry.strip())
+    if e.headers.get('X-RateLimit-Remaining') == '0':
+        reset = e.headers.get('X-RateLimit-Reset', '')
+        if reset.isdigit():
+            return max(1, int(reset) - int(time.time()) + 1)
+        return 3600
+    return 60 if e.code == 429 else None
+
+
 def github(path):
-    req = urllib.request.Request(
-        'https://api.github.com/repos/murr2k/murrtty' + path,
-        headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'murrtty-site-build'})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    """GitHub's API for the public repository. Without a token GitHub
+    allows 60 requests an hour per address, and Cloudflare's build
+    machines share theirs with other builds (a build failed on
+    2026-11-03 for it), so a build asks once (`releases`) and sends
+    GITHUB_TOKEN when its environment has one: a Workers Builds secret,
+    a fine-grained token with no permissions, which reads public
+    repositories at 5,000 requests an hour. A refusal for the limit is
+    tried once more when the limit resets within five minutes."""
+    headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'murrtty-site-build',
+               'X-GitHub-Api-Version': '2022-11-28'}
+    token = os.environ.get('GITHUB_TOKEN', '').strip()
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    url = 'https://api.github.com/repos/murr2k/murrtty' + path
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            wait = rate_limit_wait(e)
+            if wait is None:
+                raise
+            if attempt == 1 and wait <= 300:
+                print(f'GitHub API rate limit ({e.code}): trying again in {wait} s', file=sys.stderr)
+                time.sleep(wait)
+                continue
+            sys.exit(f'GitHub API rate limit ({e.code}, {"with" if token else "without"} a token): '
+                     f'it resets in {wait} s. '
+                     + ('' if token else 'A GITHUB_TOKEN build secret (a fine-grained token with no '
+                        'permissions) raises the limit. ')
+                     + 'Retry the build later.')
+
+
+_releases = None
+
+
+def releases():
+    """GitHub's releases of the public repository, newest first: asked
+    for once a build, for the site's release and the update list."""
+    global _releases
+    if _releases is None:
+        _releases = github('/releases?per_page=100')
+    return _releases
 
 
 def pictures():
@@ -102,11 +165,11 @@ def release():
     tag = git('describe', '--tags', '--abbrev=0', '--match', 'murrtty-v*')
     if not tag:
         # No tags in the clone: the newest murrtty release on GitHub.
-        tags = [r['tag_name'] for r in github('/releases?per_page=20')
-                if not r.get('draft') and r['tag_name'].startswith('murrtty-v')]
+        tags = [r['tag_name'] for r in releases()
+                if not r.get('draft') and RELEASE_TAG.fullmatch(r['tag_name'])]
         if not tags:
             sys.exit('no murrtty-v release found in git or on GitHub')
-        tag = tags[0]
+        tag = max(tags, key=lambda t: version_key(t[len('murrtty-v'):]))
     version = tag[len('murrtty-v'):]
     base = 'https://github.com/murr2k/murrtty/releases'
     return {
@@ -138,10 +201,10 @@ def update_list():
     """The release list: every published murrtty-vX.Y.Z release, newest
     first, with its date, page and files (each architecture's zip and
     installer: address, size, SHA-256 from GitHub's digest)."""
-    releases = []
-    for r in github('/releases?per_page=100'):
+    listed = []
+    for r in releases():
         tag = r['tag_name']
-        if r.get('draft') or not re.fullmatch(r'murrtty-v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?', tag):
+        if r.get('draft') or not RELEASE_TAG.fullmatch(tag):
             continue
         version = tag[len('murrtty-v'):]
         files = {}
@@ -156,7 +219,7 @@ def update_list():
                 'size': a['size'],
                 'sha256': digest[len('sha256:'):] if digest.startswith('sha256:') else None,
             }
-        releases.append({
+        listed.append({
             'version': version,
             'tag': tag,
             # murrtty's channels go by the version: X.Y.Z is a release
@@ -169,12 +232,12 @@ def update_list():
             'notes': r.get('body') or '',
             'files': files,
         })
-    releases.sort(key=lambda e: version_key(e['version']), reverse=True)
-    for e in releases[LIST_NOTES:]:
+    listed.sort(key=lambda e: version_key(e['version']), reverse=True)
+    for e in listed[LIST_NOTES:]:
         del e['notes']
-    if not releases:
+    if not listed:
         sys.exit('no murrtty-v release on GitHub for the update list')
-    return {'schema': 1, 'releases': releases}
+    return {'schema': 1, 'releases': listed}
 
 
 TEMPLATE = r"""// murrtty.org, built by site/build_worker.py; edit the site's files, not this.
