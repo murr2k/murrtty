@@ -60,8 +60,11 @@ VersionInfoProductVersion={#Version}
 VersionInfoDescription=murrtty setup
 ; A running murrtty holds murrtty.exe, conpty.dll and OpenConsole.exe:
 ; Restart Manager closes it (murrtty quits at a session end without
-; asking, and keeps its session for the next start).
-CloseApplications=yes
+; asking, and keeps its session for the next start). `force`, because
+; Restart Manager won't ask the pseudoconsole hosts (OpenConsole.exe, no
+; window) to close and refused the whole shutdown without it; murrtty
+; still gets the session end first, and its quitting ends them.
+CloseApplications=force
 RestartApplications=no
 ChangesAssociations=yes
 SetupLogging=yes
