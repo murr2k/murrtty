@@ -260,6 +260,13 @@ pub fn source(self: *const EditorSession, name: []const u8) ?usize {
     return null;
 }
 
+/// Where the loader takes a single-valued `name` from: the file (an index
+/// into `files`) and its line, from 1. Null when no file sets it.
+pub fn sourceLine(self: *const EditorSession, name: []const u8) ?struct { file: usize, line: usize } {
+    const i = self.source(name) orelse return null;
+    return .{ .file = i, .line = self.files.items[i].doc.lineOf(name) orelse return null };
+}
+
 /// Whether any file sets `name`.
 pub fn isSet(self: *const EditorSession, name: []const u8) bool {
     return self.source(name) != null;

@@ -758,6 +758,17 @@ pub fn bellsChanged(self: *Window) void {
     self.invalidateTabBar();
 }
 
+/// What update checks know changed (roadmap 7.6a): the header bar's pill
+/// again, and with the tab row as the title bar the tabs before it. A
+/// hovered pill that is gone is no longer hovered.
+pub fn updatesChanged(self: *Window) void {
+    self.syncBars();
+    if (self.tabsTitlebar()) self.tab_bar.clampScroll(self.tabs.items.len, self.clientWidth());
+    if (self.tab_bar.hover == .update and self.header.pillPlace(self.clientWidth()) == null) self.tab_bar.hover = .none;
+    if (self.tooltip) |tip| _ = c.SendMessageW(tip, c.TTM_POP, 0, 0);
+    self.invalidateTabBar();
+}
+
 /// Close tabs relative to the one holding `surface`, for the close_tab
 /// action, confirming first if a process is running in any of them.
 pub fn closeTabs(self: *Window, surface: *Surface, mode: apprt.action.CloseTabMode) void {
@@ -1351,6 +1362,16 @@ fn syncBars(self: *Window) void {
     self.header.tabs_style = tabs_style;
     self.header.controls = self.csd();
     self.header.bells = self.app.waiting.count();
+    // The update pill (roadmap 7.6a), in macOS Ghostty's colors.
+    var pill_buf: [64]u8 = undefined;
+    self.header.setPill(switch (self.app.updates.pill()) {
+        .hidden => .hidden,
+        .checking => .plain,
+        .available => .accent,
+        .permission => .accent_dim,
+        .not_found => .accent_dark,
+        .failed => .warning,
+    }, self.app.updates.pillText(&pill_buf));
     self.tab_bar.top_bar = self.headerHeight() == 0;
     self.tab_bar.inset = if (tabs_style) self.header.tabsInsetAt(self.clientWidth()) else null;
     self.tab_bar.inverted = self.app.config.@"gtk-tabs-inverted";
@@ -2378,6 +2399,11 @@ pub fn tooltipText(self: *Window, alloc: std.mem.Allocator, hit: TabBar.Hit) ![]
         .bell => |i| try self.app.waiting.describe(self.app, w, i, self.header.bellPlace(self.clientWidth()).isMore(i)),
         .list => try self.writeButton(w, "Tab List", .toggle_tab_overview),
         .menu => try w.writeAll("Menu"),
+        // macOS Ghostty's: the pill's own words.
+        .update => {
+            var buf: [64]u8 = undefined;
+            try w.writeAll(self.app.updates.pillText(&buf));
+        },
         .scroll_left => try w.writeAll("Scroll Tabs Left"),
         .scroll_right => try w.writeAll("Scroll Tabs Right"),
         // The window's buttons are the caption's: Windows' own tips.
@@ -2573,6 +2599,7 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
                 .list => self.toggleTabList(),
                 .scroll_left => self.scrollTabs(-1),
                 .scroll_right => self.scrollTabs(1),
+                .update => self.app.updatePillClicked(),
             }
             return 0;
         },
@@ -2592,7 +2619,9 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             self.last_press = hit;
             self.bell_press = null;
             switch (hit) {
-                .none, .minimize, .maximize, .window_close, .bell => {},
+                // The pill's first press opened the window, or took the
+                // pill away.
+                .none, .minimize, .maximize, .window_close, .bell, .update => {},
                 .tab => |i| {
                     self.select(i);
                     if (same_tab) if (self.activeSurface()) |s| self.app.promptTitle(s, .tab);

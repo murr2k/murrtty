@@ -294,6 +294,12 @@ pub fn remove(self: *EditableFile, key: []const u8) void {
     }
 }
 
+/// The line (from 1) the loader takes `key` from in this file: the last
+/// that sets it. Null when none does.
+pub fn lineOf(self: *const EditableFile, key: []const u8) ?usize {
+    return if (self.lastIndex(key)) |i| i + 1 else null;
+}
+
 fn lastIndex(self: *const EditableFile, key: []const u8) ?usize {
     var i = self.lines.items.len;
     while (i > 0) {

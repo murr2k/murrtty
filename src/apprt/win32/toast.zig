@@ -334,6 +334,11 @@ pub const Target = union(enum) {
     surface: u64,
     /// murrtty's own.
     app,
+    /// The update notifications' (roadmap 7.6a): the Updates window, and
+    /// the one-time notice's buttons.
+    updates,
+    updates_keep,
+    updates_off,
 
     comptime {
         // The id goes in a WPARAM.
@@ -343,7 +348,7 @@ pub const Target = union(enum) {
     pub fn wparam(self: Target) c.WPARAM {
         return switch (self) {
             .surface => |id| @intCast(id),
-            .app => 0,
+            .app, .updates, .updates_keep, .updates_off => 0,
         };
     }
 
@@ -351,6 +356,9 @@ pub const Target = union(enum) {
         return switch (self) {
             .surface => 1,
             .app => 2,
+            .updates => 3,
+            .updates_keep => 4,
+            .updates_off => 5,
         };
     }
 
@@ -359,6 +367,9 @@ pub const Target = union(enum) {
         return switch (lp) {
             1 => .{ .surface = @intCast(wp) },
             2 => .app,
+            3 => .updates,
+            4 => .updates_keep,
+            5 => .updates_off,
             else => null,
         };
     }
@@ -366,12 +377,22 @@ pub const Target = union(enum) {
 
 const launch_prefix = "murrtty-pane=";
 const launch_app = "murrtty-app";
+/// The update targets' arguments (`updates` is the toast's own, the others
+/// its buttons').
+const launch_updates = [_]struct { Target, []const u8 }{
+    .{ .updates, "murrtty-updates" },
+    .{ .updates_keep, "murrtty-updates-keep" },
+    .{ .updates_off, "murrtty-updates-off" },
+};
 
-/// A toast's launch argument for `target` (ASCII).
+/// A toast's launch argument for `target` (ASCII), or a button's.
 fn launchFor(buf: []u8, target: Target) []const u8 {
     return switch (target) {
         .surface => |id| std.fmt.bufPrint(buf, launch_prefix ++ "{d}", .{id}) catch unreachable,
         .app => launch_app,
+        .updates, .updates_keep, .updates_off => for (launch_updates) |u| {
+            if (std.meta.eql(u[0], target)) break u[1];
+        } else unreachable,
     };
 }
 
@@ -384,6 +405,7 @@ fn parseLaunch(arg: []const u16) ?Target {
     }
     const s = buf[0..arg.len];
     if (std.mem.eql(u8, s, launch_app)) return .app;
+    for (launch_updates) |u| if (std.mem.eql(u8, s, u[1])) return u[0];
     if (!std.mem.startsWith(u8, s, launch_prefix)) return null;
     return .{ .surface = std.fmt.parseInt(u64, s[launch_prefix.len..], 10) catch return null };
 }
@@ -399,9 +421,18 @@ pub const Toast = struct {
     tag: []const u8,
     title: []const u8,
     body: []const u8,
+    /// Buttons under the text: a click on one is Activated with the
+    /// button's target instead of the toast's.
+    actions: []const Action = &.{},
     /// Straight to the notification center, without showing (the unit
     /// test's).
     silent: bool = false,
+};
+
+/// A toast's button.
+pub const Action = struct {
+    label: []const u8,
+    target: Target,
 };
 
 /// Toasts' text is cut to this many bytes (a toast's payload is limited,
@@ -563,7 +594,22 @@ fn xml(alloc: Allocator, toast: Toast) ![]u8 {
         try escape(alloc, &out, text_util.truncate(text, max_text));
         try out.appendSlice(alloc, "</text>");
     }
-    try out.appendSlice(alloc, "</binding></visual></toast>");
+    try out.appendSlice(alloc, "</binding></visual>");
+    if (toast.actions.len > 0) {
+        // In the foreground: Activated in this process, as the toast's own
+        // click is (no COM activator is registered).
+        try out.appendSlice(alloc, "<actions>");
+        for (toast.actions) |a| {
+            var arg_buf: [64]u8 = undefined;
+            try out.appendSlice(alloc, "<action content=\"");
+            try escape(alloc, &out, text_util.truncate(a.label, 64));
+            try out.appendSlice(alloc, "\" arguments=\"");
+            try escape(alloc, &out, launchFor(&arg_buf, a.target));
+            try out.appendSlice(alloc, "\" activationType=\"foreground\"/>");
+        }
+        try out.appendSlice(alloc, "</actions>");
+    }
+    try out.appendSlice(alloc, "</toast>");
     return out.toOwnedSlice(alloc);
 }
 
@@ -653,6 +699,13 @@ test "launch arguments" {
     try testing.expectEqual(Target.app, parseLaunch(wide[0..launch_app.len]).?);
     for ("murrtty-pane=x1", 0..) |ch, i| wide[i] = ch;
     try testing.expect(parseLaunch(wide[0..15]) == null);
+    // The update targets, each back from its argument and its message.
+    for ([_]Target{ .updates, .updates_keep, .updates_off }) |t| {
+        const arg = launchFor(&buf, t);
+        for (arg, 0..) |ch, i| wide[i] = ch;
+        try testing.expectEqual(t, parseLaunch(wide[0..arg.len]).?);
+        try testing.expectEqual(t, Target.fromMessage(t.wparam(), t.lparam()).?);
+    }
     try testing.expectEqual(Target{ .surface = 7 }, Target.fromMessage((Target{ .surface = 7 }).wparam(), (Target{ .surface = 7 }).lparam()).?);
     try testing.expect(Target.fromMessage(1, 0) == null);
 }
@@ -670,6 +723,28 @@ test "toast XML escapes its text" {
     try testing.expectEqualStrings(
         "<toast launch=\"murrtty-app\"><visual><binding template=\"ToastGeneric\">" ++
             "<text>a&lt;b &amp; &quot;c&quot;</text><text>x[0m\ny\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF</text></binding></visual></toast>",
+        out,
+    );
+}
+
+test "toast XML: buttons" {
+    const testing = std.testing;
+    const out = try xml(testing.allocator, .{
+        .target = .updates,
+        .group = "g",
+        .tag = "t",
+        .title = "T",
+        .body = "",
+        .actions = &.{
+            .{ .label = "Keep On", .target = .updates_keep },
+            .{ .label = "Turn <Off>", .target = .updates_off },
+        },
+    });
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings(
+        "<toast launch=\"murrtty-updates\"><visual><binding template=\"ToastGeneric\"><text>T</text></binding></visual>" ++
+            "<actions><action content=\"Keep On\" arguments=\"murrtty-updates-keep\" activationType=\"foreground\"/>" ++
+            "<action content=\"Turn &lt;Off&gt;\" arguments=\"murrtty-updates-off\" activationType=\"foreground\"/></actions></toast>",
         out,
     );
 }

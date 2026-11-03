@@ -551,8 +551,14 @@ roadmap item behind it.
   macOS Ghostty asks; turning it on passes through a consent dialog that
   says what a check sends, which writes `auto-update = check`.
   `check_for_updates` opens the window and checks; Check for Updates in the
-  main menu, system menu and tray opens it; About has an Updates row. GTK's
-  app has no updater (Linux builds come from package managers).
+  main menu, system menu and tray opens it; About has an Updates row. The
+  header bar has macOS Ghostty's update pill (its words and colors), whose
+  click opens the window. A `check` the configuration has but nobody agreed
+  to on this computer waits for a one-time notice (a toast naming the file
+  and line, Keep On or Turn Off, the second kept for this computer only);
+  macOS Ghostty asks on its second start. A release an automatic check
+  finds is told once, by a toast or the window (murrtty's Update Settings).
+  GTK's app has no updater (Linux builds come from package managers).
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -4386,6 +4392,22 @@ dialog's Turn On then writes nothing to the file); Download opens the
 release's page (only `releases/tag/<tag>` pages of murrtty's own
 repository). Entry points: Check for Updates in the main menu, system menu and
 tray, About's Updates row, `check_for_updates` (now offered by the palette).
+*7.6a step 3, 2026-11-03:* macOS Ghostty's update pill in the header bar
+(before the tab list's button, the title and bells making way; in the tab
+row with `gtk-titlebar-style = tabs`): hidden when there is nothing to say;
+"Update Available: X" for any check; "Checking for Updates...", "No
+Updates Available" (5 s, or until clicked) and "Update Check Failed" (until
+the window opens) only for checks the user asked for, as Sparkle reports
+them; "Enable Automatic Updates?" while a configuration's `check` waits for
+the OK. A click opens the Updates window. The one-time notice is a toast
+with Keep On and Turn Off buttons (in-process activation, as the toasts'
+clicks), sent when the first automatic check would come; Turn Off keeps
+`declined` in `updates.json` and leaves the file, which may be a Mac's too.
+A release an automatic check finds is told once per release (`notified`):
+a toast whose click opens the window, or, with When an Update Is Found set
+to the window, the window opened without taking the keyboard. Where
+Windows has no toasts, balloons; theirs open the window too. The README
+says what a check sends; murrtty.org says it with 0.5.0.
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build

@@ -126,6 +126,10 @@ hwnd: c.HWND,
 /// The window has been made: until then a WM_NCDESTROY (a failed creation)
 /// leaves freeing it to `create`.
 created: bool = false,
+/// Opened without taking the keyboard (openQuietly): no control takes it
+/// until the window is activated. SetFocus activates the window it is
+/// in, and then the Enter of someone typing would press Download.
+quiet: bool = false,
 page: Page = .main,
 dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 dark: bool = false,
@@ -177,10 +181,28 @@ pub fn registerClass(instance: c.HINSTANCE) !void {
     if (c.RegisterClassExW(&wc) == 0) return error.RegisterClassFailed;
 }
 
-/// Open the window, or bring it forward.
+/// Open the window, or bring it forward. What the update notifications
+/// and the pill's note said is here now: they go.
 pub fn open(app: *App) void {
+    // Another murrtty may have changed the state.
+    app.updates.reload();
+    defer {
+        app.notifications.withdrawUpdates();
+        app.updates.dismissNote();
+    }
     if (app.updates_window) |w| return w.present();
-    const self = create(app) catch |err| {
+    const self = create(app, true) catch |err| {
+        log.warn("updates window not opened err={}", .{err});
+        return;
+    };
+    app.updates_window = self;
+}
+
+/// Open the window without taking the keyboard (a release found, Update
+/// Settings saying to open it: the user may be typing).
+pub fn openQuietly(app: *App) void {
+    if (app.updates_window != null) return;
+    const self = create(app, false) catch |err| {
         log.warn("updates window not opened err={}", .{err});
         return;
     };
@@ -197,12 +219,12 @@ pub fn destroy(self: *UpdatesWindow) void {
     _ = c.DestroyWindow(self.hwnd);
 }
 
-fn create(app: *App) !*UpdatesWindow {
+fn create(app: *App, activate: bool) !*UpdatesWindow {
     const alloc = app.core_app.alloc;
     const self = try alloc.create(UpdatesWindow);
     var owned = true;
     errdefer if (owned) alloc.destroy(self);
-    self.* = .{ .app = app, .hwnd = undefined, .pal = draw.dialogPalette(false) };
+    self.* = .{ .app = app, .hwnd = undefined, .pal = draw.dialogPalette(false), .quiet = !activate };
     self.initControls();
     _ = c.CreateWindowExW(
         c.WS_EX_CONTROLPARENT,
@@ -224,7 +246,7 @@ fn create(app: *App) !*UpdatesWindow {
     };
     owned = false;
     self.created = true;
-    _ = c.ShowWindow(self.hwnd, c.SW_SHOWNORMAL);
+    _ = c.ShowWindow(self.hwnd, if (activate) c.SW_SHOWNORMAL else c.SW_SHOWNOACTIVATE);
     return self;
 }
 
@@ -347,6 +369,16 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             const self = fromHwnd(hwnd) orelse return 0;
             self.command(c.loword(wparam), c.hiword(wparam));
             return 0;
+        },
+        // A quiet window's first activation: the keyboard to its first
+        // control, as on opening.
+        c.WM_ACTIVATE => {
+            const r = c.DefWindowProcW(hwnd, msg, wparam, lparam);
+            if (fromHwnd(hwnd)) |self| if (self.quiet and c.loword(wparam) != c.WA_INACTIVE) {
+                self.quiet = false;
+                if (self.applyVisibility()) |f| _ = c.SetFocus(f);
+            };
+            return r;
         },
         c.WM_SETTINGCHANGE, c.WM_THEMECHANGED => {
             if (fromHwnd(hwnd)) |self| self.themeChanged();
@@ -531,9 +563,18 @@ fn describe(self: *UpdatesWindow) void {
     const checked = checkedText(&checked_buf, u.state.last_check);
     const off = u.mode() == .off;
     // On in the configuration (written by hand, or copied from another
-    // computer) but not agreed to here: no automatic check runs yet.
-    const waiting = !off and !u.state.consent;
-    const off_note: []const u8 = if (off) " Automatic checks are off." else if (waiting) " Automatic checks wait for your OK." else "";
+    // computer) but not agreed to here: no automatic check runs yet, or
+    // they were turned off here (the notice's Turn Off).
+    const waiting = u.waiting();
+    const declined = u.declinedHere();
+    const off_note: []const u8 = if (off)
+        " Automatic checks are off."
+    else if (waiting)
+        " Automatic checks wait for your OK."
+    else if (declined)
+        " Automatic checks are off on this computer."
+    else
+        "";
     self.primary = .none;
     self.secondary = .none;
     if (!u.release_build) {
@@ -556,14 +597,14 @@ fn describe(self: *UpdatesWindow) void {
             setText(&self.heading, &self.heading_len, "murrtty is up to date", .{});
             setText(&self.subtitle, &self.subtitle_len, "You have {s}. {s}.{s}", .{ running, checked, off_note });
             self.primary = .check_now;
-            if (off or waiting) self.secondary = .turn_on;
+            if (off or waiting or declined) self.secondary = .turn_on;
         },
         .failed => {
             var why_buf: [160]u8 = undefined;
             setText(&self.heading, &self.heading_len, "murrtty couldn't get its list of releases", .{});
             setText(&self.subtitle, &self.subtitle_len, "{s}{s}", .{ failureText(&why_buf, u), off_note });
             self.primary = .check_now;
-            if (off or waiting) self.secondary = .turn_on;
+            if (off or waiting or declined) self.secondary = .turn_on;
         },
         .idle => if (off) {
             setText(&self.heading, &self.heading_len, "Update checks are off", .{});
@@ -573,6 +614,11 @@ fn describe(self: *UpdatesWindow) void {
         } else if (waiting) {
             setText(&self.heading, &self.heading_len, "Automatic checks wait for your OK", .{});
             setText(&self.subtitle, &self.subtitle_len, "You have murrtty {s}. Your configuration turns them on (auto-update = {t}), but murrtty asks on each computer before it checks on its own.", .{ running, u.mode() });
+            self.primary = .check_now;
+            self.secondary = .turn_on;
+        } else if (declined) {
+            setText(&self.heading, &self.heading_len, "Automatic checks are off on this computer", .{});
+            setText(&self.subtitle, &self.subtitle_len, "You have murrtty {s}. Your configuration turns them on (auto-update = {t}); you turned them off here, which leaves the file as it is.", .{ running, u.mode() });
             self.primary = .check_now;
             self.secondary = .turn_on;
         } else {
@@ -664,7 +710,9 @@ fn settingsValues(self: *UpdatesWindow) void {
     const auto = self.find(id_auto).?;
     // On only when checks run: the configuration's, and the OK here.
     auto.on = u.mode() != .off and u.state.consent;
-    auto.subtitle = if (u.mode() != .off and !u.state.consent)
+    auto.subtitle = if (u.declinedHere())
+        "On in your configuration: turned off on this computer"
+    else if (u.mode() != .off and !u.state.consent)
         "On in your configuration: murrtty waits for your OK before checking"
     else
         "Saved in your configuration as auto-update";
@@ -776,7 +824,9 @@ fn showPage(self: *UpdatesWindow, page: Page) void {
     self.page = page;
     const first = self.applyVisibility();
     self.layout();
-    if (first) |f| _ = c.SetFocus(f);
+    if (first) |f| if (!self.quiet) {
+        _ = c.SetFocus(f);
+    };
     _ = c.RedrawWindow(self.hwnd, null, null, c.RDW_INVALIDATE | c.RDW_ERASE | c.RDW_ALLCHILDREN);
 }
 
@@ -1547,7 +1597,10 @@ pub fn clientSize(self: *const UpdatesWindow) c.RECT {
 /// each control (id, label, shown, enabled, on, value), the history
 /// (version, bold, installed) and the selection, and the notes shown.
 pub fn writeDump(self: *UpdatesWindow, alloc: Allocator, out: *std.ArrayList(u8)) !void {
-    try out.print(alloc, "{{\"hwnd\":{d},\"page\":\"{t}\",\"heading\":", .{ @intFromPtr(self.hwnd), self.page });
+    // Whether the keyboard is in the window (a quiet one's isn't).
+    const focus = c.GetFocus();
+    const has_focus = if (focus) |f| f == self.hwnd or c.IsChild(self.hwnd, f) != 0 else false;
+    try out.print(alloc, "{{\"hwnd\":{d},\"has_focus\":{},\"page\":\"{t}\",\"heading\":", .{ @intFromPtr(self.hwnd), has_focus, self.page });
     try test_hooks.writeString(alloc, out, self.heading[0..self.heading_len]);
     try out.appendSlice(alloc, ",\"subtitle\":");
     try test_hooks.writeString(alloc, out, self.subtitle[0..self.subtitle_len]);

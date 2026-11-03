@@ -442,14 +442,30 @@ pub fn present(self: *ConfigEditor) void {
 /// every one the loader reads at start, in its order.
 const Loaded = struct { session: EditorSession, path: []u8 };
 
-fn loadSession(app: *App) !Loaded {
+/// With `report`, a file that can't be read is said in a dialog
+/// (cantOpen); without, only the error says it.
+fn loadSession(app: *App, report: bool) !Loaded {
     const alloc = app.core_app.alloc;
     // The main file: the one open_config opens (made if there is none).
-    const open_path = configpkg.edit.openPath(alloc) catch |err| {
-        cantOpen(app, "The configuration file", @errorName(err));
-        return err;
+    // A lookup (no `report`) makes nothing: the first file the loader
+    // reads stands for it, and with none there is nothing to look up.
+    var made: ?[:0]const u8 = null;
+    defer if (made) |m| alloc.free(m);
+    var first: ?[]u8 = null;
+    defer if (first) |f| alloc.free(f);
+    const open_path: []const u8 = if (report) p: {
+        made = configpkg.edit.openPath(alloc) catch |err| {
+            cantOpen(app, "The configuration file", @errorName(err));
+            return err;
+        };
+        break :p made.?;
+    } else p: {
+        const files = try configpkg.edit.defaultFiles(alloc);
+        defer configpkg.edit.freeDefaultFiles(alloc, files);
+        if (files.len == 0) return error.NoConfigFile;
+        first = try alloc.dupe(u8, files[0]);
+        break :p first.?;
     };
-    defer alloc.free(open_path);
     const path = try alloc.dupe(u8, open_path);
     errdefer alloc.free(path);
     std.mem.replaceScalar(u8, path, '/', '\\');
@@ -457,7 +473,7 @@ fn loadSession(app: *App) !Loaded {
     // Every file the loader reads at start, in its order, the main one
     // among them.
     const defaults = configpkg.edit.defaultFiles(alloc) catch |err| {
-        cantOpen(app, "The configuration file", @errorName(err));
+        if (report) cantOpen(app, "The configuration file", @errorName(err));
         return err;
     };
     defer configpkg.edit.freeDefaultFiles(alloc, defaults);
@@ -493,7 +509,7 @@ fn loadSession(app: *App) !Loaded {
             .not_found => if (is_main) try alloc.dupe(u8, "") else continue,
             // Shown as empty, a save would replace what it holds.
             .failed => |reason| {
-                cantOpen(app, p, reason);
+                if (report) cantOpen(app, p, reason);
                 return error.ConfigUnreadable;
             },
         };
@@ -505,7 +521,7 @@ fn loadSession(app: *App) !Loaded {
         var doc = configpkg.EditableFile.parse(alloc, text) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => {
-                cantOpen(app, p, "a line in it is longer than murrtty reads, so it can't be changed safely");
+                if (report) cantOpen(app, p, "a line in it is longer than murrtty reads, so it can't be changed safely");
                 return err;
             },
         };
@@ -526,7 +542,7 @@ fn loadSession(app: *App) !Loaded {
 pub fn setOption(app: *App, name: []const u8, value: ?[]const u8) !void {
     const alloc = app.core_app.alloc;
     // loadSession says what it couldn't read (cantOpen) but for memory.
-    var loaded = loadSession(app) catch |err| return if (err == error.OutOfMemory) err else error.Reported;
+    var loaded = loadSession(app, true) catch |err| return if (err == error.OutOfMemory) err else error.Reported;
     defer {
         loaded.session.deinit();
         alloc.free(loaded.path);
@@ -541,9 +557,30 @@ pub fn setOption(app: *App, name: []const u8, value: ?[]const u8) !void {
     app.reloadConfigFiles();
 }
 
+/// Where an option is set: a file and its line (from 1).
+pub const OptionSource = struct {
+    /// Owned by the caller (`alloc`'s).
+    path: []u8,
+    line: usize,
+};
+
+/// The file and line the loader takes the single-valued option `name`
+/// from, read without a dialog (the update notice names them: roadmap
+/// 7.6a); null when no file sets it, or one can't be read.
+pub fn optionSource(app: *App, alloc: Allocator, name: []const u8) ?OptionSource {
+    var loaded = loadSession(app, false) catch return null;
+    defer {
+        loaded.session.deinit();
+        app.core_app.alloc.free(loaded.path);
+    }
+    const where = loaded.session.sourceLine(name) orelse return null;
+    const path = alloc.dupe(u8, loaded.session.files.items[where.file].path) catch return null;
+    return .{ .path = path, .line = where.line };
+}
+
 fn create(app: *App) !*ConfigEditor {
     const alloc = app.core_app.alloc;
-    const loaded = try loadSession(app);
+    const loaded = try loadSession(app, true);
     var session = loaded.session;
     errdefer session.deinit();
     const path = loaded.path;

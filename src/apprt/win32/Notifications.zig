@@ -81,6 +81,15 @@ warned_toast: bool = false,
 test_identity: bool = false,
 /// The toasts standing, oldest first.
 standing: std.ArrayList(Standing) = .empty,
+/// An update notification's toast was shown (roadmap 7.6a), in a group of
+/// its own, outside `standing`.
+update_toasts: bool = false,
+/// The balloon pending is an update notification's: its click opens the
+/// Updates window.
+balloon_updates: bool = false,
+/// The one-time notice stands: only then do its buttons answer it (any
+/// process on the desktop can post WM_TOAST).
+notice_standing: bool = false,
 /// The most kept in `standing`: Windows keeps fewer in its notification
 /// center, so older ones are gone there, and a chatty pane in the
 /// background can't grow the list.
@@ -194,8 +203,10 @@ pub fn deinit(self: *Notifications) void {
     const hwnd = self.hwnd orelse return;
     _ = c.KillTimer(hwnd, focused_timer);
     _ = c.KillTimer(hwnd, toast_timer);
-    // Toasts of panes that are gone would present nothing.
+    // Toasts of panes that are gone would present nothing, nor would an
+    // update notification's of a murrtty that is gone.
     self.withdrawToasts();
+    self.withdrawUpdates();
     self.standing.deinit(self.app.core_app.alloc);
     self.standing = .empty;
     if (self.toasts) |*t| t.deinit();
@@ -314,7 +325,80 @@ pub fn latestSurface(self: *const Notifications) u64 {
 pub fn send(self: *Notifications, surface: ?u64, focused: bool, title: []const u8, body: []const u8) void {
     if (self.hwnd == null) return;
     if (self.use_toasts and self.sendToast(surface, focused, title, body)) return;
-    self.sendBalloon(surface, focused, title, body);
+    _ = self.sendBalloon(surface, focused, title, body);
+}
+
+/// What an update notification is (roadmap 7.6a): a release found, or the
+/// one-time notice about automatic checks a configuration turns on. Its
+/// toast opens the Updates window, and the notice's buttons answer it; a
+/// balloon's click opens the window.
+pub const UpdateKind = enum { found, notice };
+
+/// Show an update notification, replacing the one of the same kind.
+pub fn sendUpdate(self: *Notifications, kind: UpdateKind, title: []const u8, body: []const u8) void {
+    if (self.hwnd == null) return;
+    if (self.use_toasts and self.sendUpdateToast(kind, title, body)) {
+        if (kind == .notice) self.notice_standing = true;
+        return;
+    }
+    if (self.sendBalloon(null, false, title, body)) {
+        self.balloon_updates = true;
+        test_hooks.markNotification(&self.app.test_state, @tagName(kind));
+    }
+}
+
+fn sendUpdateToast(self: *Notifications, kind: UpdateKind, title: []const u8, body: []const u8) bool {
+    if (!self.ensureToasts()) return false;
+    const alloc = self.app.core_app.alloc;
+    const answers = [_]toast.Action{
+        .{ .label = "Keep On", .target = .updates_keep },
+        .{ .label = "Turn Off", .target = .updates_off },
+    };
+    var group_buf: [32]u8 = undefined;
+    if (self.toasts) |*t| {
+        t.show(alloc, .{
+            .target = .updates,
+            .group = updatesGroup(&group_buf),
+            .tag = @tagName(kind),
+            .title = title,
+            .body = body,
+            .actions = if (kind == .notice) &answers else &.{},
+        }) catch |err| {
+            if (!self.warned_toast) log.warn("a toast could not be shown, a balloon instead err={}", .{err});
+            self.warned_toast = true;
+            if (err == error.ToastNotShown) self.dropToasts();
+            return false;
+        };
+    }
+    self.update_toasts = true;
+    test_hooks.recordNotificationText(&self.app.test_state, alloc, null, title, body);
+    test_hooks.markNotification(&self.app.test_state, @tagName(kind));
+    return true;
+}
+
+/// The update notifications' group (this process's, as murrtty's own).
+fn updatesGroup(buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, "updates-{d}", .{c.GetCurrentProcessId()}) catch unreachable;
+}
+
+/// Take back the update notifications (the Updates window opened, the
+/// notice was answered, murrtty quits).
+pub fn withdrawUpdates(self: *Notifications) void {
+    self.notice_standing = false;
+    if (self.balloon_updates and self.pending) self.withdrawBalloon();
+    if (!self.update_toasts) return;
+    self.update_toasts = false;
+    if (self.ensureToasts()) if (self.toasts) |*t| {
+        var group_buf: [32]u8 = undefined;
+        _ = t.removeGroup(self.app.core_app.alloc, updatesGroup(&group_buf));
+    };
+}
+
+/// For the GUI tests: click an update notification's toast or button, as
+/// Windows would (the message its handler posts).
+pub fn clickUpdate(self: *Notifications, target: toast.Target) void {
+    const hwnd = self.hwnd orelse return;
+    _ = c.PostMessageW(hwnd, WM_TOAST, target.wparam(), target.lparam());
 }
 
 /// As a toast; false if Windows refused it (then a balloon instead).
@@ -352,8 +436,9 @@ fn sendToast(self: *Notifications, surface: ?u64, focused: bool, title: []const 
     return true;
 }
 
-fn sendBalloon(self: *Notifications, surface: ?u64, focused: bool, title: []const u8, body: []const u8) void {
-    const hwnd = self.hwnd orelse return;
+/// Whether the balloon was placed.
+fn sendBalloon(self: *Notifications, surface: ?u64, focused: bool, title: []const u8, body: []const u8) bool {
+    const hwnd = self.hwnd orelse return false;
     var data = self.iconOnly();
     data.uFlags |= c.NIF_INFO;
     // With no body the title says it under murrtty's (a balloon with no
@@ -374,14 +459,16 @@ fn sendBalloon(self: *Notifications, surface: ?u64, focused: bool, title: []cons
         // No notification area (no Explorer, another desktop).
         if (!self.warned) log.warn("a notification could not be shown err={}", .{c.GetLastError()});
         self.warned = true;
-        return;
+        return false;
     }
     self.shown = true;
     self.pending = true;
     self.surface = surface;
+    self.balloon_updates = false;
     test_hooks.recordNotification(&self.app.test_state, self.app.core_app.alloc, surface, shown_title, shown_body);
     _ = c.KillTimer(hwnd, focused_timer);
     if (focused) _ = c.SetTimer(hwnd, focused_timer, focused_timeout_ms, null);
+    return true;
 }
 
 /// A pane's toasts' group, or murrtty's own (this process's: another
@@ -495,6 +582,7 @@ fn withdrawBalloon(self: *Notifications) void {
     if (!self.pending) return;
     self.pending = false;
     self.surface = null;
+    self.balloon_updates = false;
     self.remove();
     if (self.tray) {
         var data = self.iconOnly();
@@ -515,7 +603,9 @@ pub fn surfaceDone(self: *Notifications, id: u64) void {
 pub fn clicked(self: *Notifications) void {
     if (!self.pending) return;
     const id = self.surface;
+    const updates = self.balloon_updates;
     self.withdrawBalloon();
+    if (updates) return self.app.request(.{ .updates = false });
     if (id) |v| self.app.request(.{ .present_surface = v });
 }
 
@@ -528,6 +618,19 @@ fn activated(self: *Notifications, target: toast.Target) void {
             self.app.request(.{ .present_surface = id });
         },
         .app => self.withdrawPane(null),
+        // An update notification: the Updates window, from the message
+        // loop once no dialog is open; the notice's buttons answer it (a
+        // process of the user's that posts one could as well write the
+        // state file).
+        .updates => {
+            self.withdrawUpdates();
+            self.app.request(.{ .updates = false });
+        },
+        .updates_keep, .updates_off => {
+            if (!self.notice_standing) return;
+            self.withdrawUpdates();
+            self.app.updates.answerNotice(target == .updates_keep);
+        },
     }
 }
 
@@ -571,8 +674,8 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             }
             return 0;
         },
-        // Posted by toast.zig's handler, or another process: it only
-        // names a pane, which then comes forward.
+        // Posted by toast.zig's handler, or another process: it names a
+        // pane, which then comes forward, or an update notification.
         WM_TOAST => {
             if (self.use_toasts) if (toast.Target.fromMessage(wparam, lparam)) |target| self.activated(target);
             return 0;

@@ -71,6 +71,8 @@ pub const Hit = union(enum) {
     /// A waiting pane's bell in the header bar (Waiting), by its place in
     /// the list.
     bell: usize,
+    /// The header bar's update pill (roadmap 7.6a).
+    update,
     /// The window's buttons.
     minimize,
     maximize,

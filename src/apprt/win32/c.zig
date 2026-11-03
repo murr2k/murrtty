@@ -243,6 +243,7 @@ pub const GWLP_USERDATA = -21;
 
 pub const SW_HIDE = 0;
 pub const SW_SHOWNORMAL = 1;
+pub const SW_SHOWNOACTIVATE = 4;
 pub const SW_SHOWMAXIMIZED = 3;
 pub const SW_SHOWMINIMIZED = 2;
 pub const WPF_RESTORETOMAXIMIZED = 0x0002;

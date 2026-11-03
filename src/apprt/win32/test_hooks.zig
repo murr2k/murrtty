@@ -97,6 +97,8 @@ pub const Notified = struct {
     /// As they show: a toast's whole, a balloon's cut to its fields.
     title: []u8,
     body: []u8,
+    /// An update notification's kind (`found`, `notice`), else "".
+    kind: []const u8 = "",
 };
 
 /// Crash for the crash report scenario: the report must come from Sentry's
@@ -201,6 +203,15 @@ pub fn recordNotificationText(state: *State, alloc: Allocator, surface: ?u64, ti
         alloc.free(t);
         alloc.free(b);
     };
+}
+
+/// The notification recorded last is an update notification of `kind`
+/// (a static string).
+pub fn markNotification(state: *State, kind: []const u8) void {
+    if (comptime !enabled) return;
+    if (state.msg == 0) return;
+    if (state.notifications.items.len == 0) return;
+    state.notifications.items[state.notifications.items.len - 1].kind = kind;
 }
 
 /// Record a balloon as it shows (its title and body as UTF-16, cut).
@@ -410,9 +421,15 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
         2 => .no,
         else => .real,
     };
-    if (wparam == 15) {
-        if (lparam == 0) app.notifications.clickLatest() else app.notifications.withdraw();
-    }
+    // Notifications: 0 clicks the latest, 1 withdraws them all, 2 to 4
+    // click an update notification's toast, Keep On and Turn Off.
+    if (wparam == 15) switch (lparam) {
+        0 => app.notifications.clickLatest(),
+        2 => app.notifications.clickUpdate(.updates),
+        3 => app.notifications.clickUpdate(.updates_keep),
+        4 => app.notifications.clickUpdate(.updates_off),
+        else => app.notifications.withdraw(),
+    };
     if (wparam == 1) {
         const point: u32 = @truncate(@as(usize, @bitCast(lparam)));
         for (app.windows.items) |w| {
@@ -635,6 +652,22 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             const bells = w.header.bellPlace(client.right);
             const title_at = w.header.titleAt(client.right, true) orelse .{ 0, 0 };
             const title_alone = w.header.titleAt(client.right, false) orelse .{ 0, 0 };
+            // The update pill (roadmap 7.6a), its rectangle in client
+            // coordinates (zeros while it doesn't show).
+            const pill_rect = w.header.pillPlace(client.right) orelse c.RECT{};
+            try out.print(alloc, ",\"update\":{{\"look\":\"{t}\",\"rect\":[{d},{d},{d},{d}],\"tooltip\":", .{
+                if (w.header.pillPlace(client.right) != null) w.header.pill else .hidden,
+                pill_rect.left,
+                pill_rect.top,
+                pill_rect.right,
+                pill_rect.bottom,
+            });
+            {
+                const pill_tip = try w.tooltipText(alloc, .update);
+                defer alloc.free(pill_tip);
+                try writeString(alloc, out, pill_tip);
+            }
+            try out.append(alloc, '}');
             try out.print(alloc, ",\"title_px\":{d},\"title_at\":[{d},{d}],\"title_alone\":[{d},{d}],\"bells\":[", .{
                 w.header.title_px,
                 title_at[0],
@@ -803,6 +836,8 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         try writeString(alloc, out, n.title);
         try out.appendSlice(alloc, ",\"body\":");
         try writeString(alloc, out, n.body);
+        try out.appendSlice(alloc, ",\"kind\":");
+        try writeString(alloc, out, n.kind);
         try out.append(alloc, '}');
     }
     try out.print(alloc, "],\"notify_icon\":{},\"notify_pending\":{},\"notify_surface\":{d},\"notify_toasts\":{}", .{
@@ -1494,6 +1529,10 @@ fn dumpUpdates(alloc: Allocator, out: *std.ArrayList(u8), u: *const Updates) !vo
         u.status, u.owner, u.automaticOn(), u.release_build, u.mode(), u.channel(), u.requests, u.job != null,
     });
     try out.print(alloc, ",\"kind\":\"{t}\",\"asked\":{}", .{ u.job_kind, u.asked });
+    // The header bars' pill (roadmap 7.6a step 3) and its note.
+    var pill_buf: [64]u8 = undefined;
+    try out.print(alloc, ",\"pill\":\"{t}\",\"note\":\"{t}\",\"waiting\":{},\"pill_text\":", .{ u.pill(), u.note, u.waiting() });
+    try writeString(alloc, out, u.pillText(&pill_buf));
     if (u.due_ms) |due| try out.print(alloc, ",\"due_ms\":{d}", .{due -| now}) else try out.appendSlice(alloc, ",\"due_ms\":null");
     if (u.last_outcome) |o| try out.print(alloc, ",\"outcome\":\"{t}\"", .{o}) else try out.appendSlice(alloc, ",\"outcome\":null");
     try out.print(alloc, ",\"error\":{d},\"http\":{d},\"found\":", .{ u.last_error, u.last_status });
@@ -1504,12 +1543,14 @@ fn dumpUpdates(alloc: Allocator, out: *std.ArrayList(u8), u: *const Updates) !vo
         try writeString(alloc, out, r.version);
     };
     const s = u.state;
-    try out.print(alloc, "],\"state\":{{\"consent\":{},\"interval\":\"{t}\",\"on_found\":\"{t}\",\"last_check\":{d},\"next_check\":{d},\"lease_until\":{d},\"failures\":{d},\"etag\":", .{
-        s.consent, s.interval, s.on_found, s.last_check, s.next_check, s.lease_until, s.failures,
+    try out.print(alloc, "],\"state\":{{\"consent\":{},\"declined\":{},\"noticed\":{},\"interval\":\"{t}\",\"on_found\":\"{t}\",\"last_check\":{d},\"next_check\":{d},\"lease_until\":{d},\"failures\":{d},\"etag\":", .{
+        s.consent, s.declined, s.noticed, s.interval, s.on_found, s.last_check, s.next_check, s.lease_until, s.failures,
     });
     if (s.etag) |e| try writeString(alloc, out, e) else try out.appendSlice(alloc, "null");
     try out.appendSlice(alloc, ",\"skipped\":");
     if (s.skipped) |v| try writeString(alloc, out, v) else try out.appendSlice(alloc, "null");
+    try out.appendSlice(alloc, ",\"notified\":");
+    if (s.notified) |v| try writeString(alloc, out, v) else try out.appendSlice(alloc, "null");
     try out.print(alloc, "}},\"now\":{d}}}", .{Updates.unixNow()});
 }
 

@@ -1695,6 +1695,7 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 Undo.timer_id => self.undo.tick(),
                 Session.timer_id => self.session.tick(),
                 Updates.timer_id => self.updates.tick(),
+                Updates.note_timer_id => self.updates.noteTimer(),
                 software_gl.timer_id => software_gl.tick(self),
                 else => {},
             }
@@ -1814,12 +1815,34 @@ pub fn openUpdates(self: *App, check: bool) void {
 
 /// The Updates window closed: murrtty may now quit (checkQuit).
 pub fn updatesWindowClosed(self: *App) void {
+    // The window showed what the pill's note says.
+    self.updates.dismissNote();
     self.checkQuit();
 }
 
-/// What update checks know changed: the Updates window shows it.
+/// What update checks know changed: the Updates window shows it, and every
+/// window's header bar its pill.
 pub fn updatesChanged(self: *App) void {
     if (self.updates_window) |w| w.refresh();
+    for (self.windows.items) |w| {
+        // One being destroyed.
+        if (c.GetWindowLongPtrW(w.hwnd, c.GWLP_USERDATA) == 0) continue;
+        w.updatesChanged();
+    }
+}
+
+/// The header bar's update pill was clicked: "No Updates Available" goes,
+/// as macOS Ghostty's does; anything else opens the Updates window.
+pub fn updatePillClicked(self: *App) void {
+    if (self.updates.pill() == .not_found) return self.updates.dismissNote();
+    self.openUpdates(false);
+}
+
+/// A release was found and Update Settings say to open the Updates window:
+/// opened without taking the keyboard, which may be typing.
+pub fn openUpdatesQuietly(self: *App) void {
+    if (self.updates_window != null) return;
+    UpdatesWindow.openQuietly(self);
 }
 
 /// Reload the configuration from its files, as a reload_config the user

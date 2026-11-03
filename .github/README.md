@@ -493,8 +493,9 @@ release for the maintainer to publish.
   murrtty in October 2026, days after the repository was published), so
   murrtty will apply again once it has users; a Microsoft Store package,
   which the Store signs, is the other route (see the
-  [code signing policy](https://murrtty.org/code-signing)). An installer,
-  winget and update checks follow.
+  [code signing policy](https://murrtty.org/code-signing)). The installer
+  and update checks (both on `main`) come with 0.5.0; updates that download
+  and install themselves come later.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was
 built and why, and plans what is left: the items above, and testing on AMD
@@ -699,6 +700,19 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   that is set; a crash's comes when murrtty next starts);
   `murrtty +crash-report` lists them. Nothing is sent anywhere:
   attach a report to an issue if you want it looked at.
+- **Update checks and privacy.** murrtty makes no network connections of
+  its own unless you check for updates (Check for Updates in the menus and
+  the command palette) or turn automatic checks on, which asks first. A
+  check sends one request to murrtty.org, with no version, ID or cookie.
+  Cloudflare, which serves murrtty.org, sees your IP address, as for any
+  website. murrtty.org logs nothing. Downloads come from GitHub, only when
+  you choose one. Automatic checks are Ghostty's `auto-update = check` in
+  your configuration, agreed to once on each computer (a file shared with
+  another computer asks once, naming its line), and come once a day, week
+  or month, a few minutes after murrtty starts, never on a metered
+  connection. A release found shows in the header bar's update pill and, as
+  Update Settings say, in a notification or the Updates window. Development
+  builds never check.
 
 ## How it works
 

@@ -130,6 +130,9 @@ pub const all = [_]Scenario{
     .{ .name = "updates-schedule", .about = "automatic update checks: none before start plus the delay, then one, the next a day away within a tenth; four starts, one request; due again, the ETag and a 304 (a local server)", .run = updatesSchedule },
     .{ .name = "updates-backoff", .about = "update checks when the server can't answer: a 503's Retry-After honored, no retry at once; a server that never answers holds nothing (dumps answer, Cancel, quitting mid-request exits at once); a metered connection waits an hour, sending nothing (a local server)", .run = updatesBackoff },
     .{ .name = "updates-window", .about = "the Updates window: opening it and its pages sends nothing; Check Now shows the history (unread bold, Installed), notes read in place (Escape goes back), Skip This Version; turning checks on asks first (Cancel writes nothing, Turn On writes auto-update = check and the consent), off writes off; the channel, How Often, Clear Cached Update Information, Close; checks on in the file but not agreed to wait for the OK, which writes nothing (a local server)", .run = updatesWindow },
+    .{ .name = "updates-pill", .about = "the header bar's update pill (macOS Ghostty's): hidden with nothing to say; checking, an update (a click opens the Updates window), No Updates Available (gone after 5 s or at a click), a failure (until the window opens), for checks asked for (a local server)", .run = updatesPill },
+    .{ .name = "updates-notice", .about = "auto-update = check in a file nobody agreed to here: no check, the pill asks; a one-time notice naming the file and line when the first check would come; Keep On agrees, Turn Off turns them off here, neither writes the file; never twice (a local server)", .run = updatesNotice },
+    .{ .name = "updates-found", .about = "a release an automatic check finds is told once, by a notification whose click opens the Updates window, or with When an Update Is Found set to the window, by the window (a local server)", .run = updatesFound },
     .{ .name = "updates-window-look", .about = "pictures of the Updates window's pages, dark and light, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = updatesWindowLook, .tool = true },
     .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook, .tool = true },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
@@ -15372,6 +15375,326 @@ fn updatesBackoff(h: *Harness) anyerror!void {
         }
         try h.expect(seen, "the automatic check ran (metered)", .{});
         try h.expect(srv.requests.load(.acquire) == 3, "nothing sent on a metered connection ({d})", .{srv.requests.load(.acquire)});
+        try quitPane(h, &g);
+    }
+}
+
+/// The dump once the first window's update pill looks `look` ("hidden"
+/// while it doesn't show), waiting up to `ms`.
+fn pillWait(h: *Harness, g: *const Harness.Ghostty, look: []const u8, ms: u32, what: []const u8) !std.json.Parsed(Harness.Dump) {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        var d = try h.dump(g);
+        if (d.value.windows.len > 0 and std.mem.eql(u8, d.value.windows[0].header.update.look, look)) return d;
+        d.deinit();
+        w.Sleep(100);
+    }
+    var d = try h.dump(g);
+    defer d.deinit();
+    const now = if (d.value.windows.len > 0) d.value.windows[0].header.update.look else "(no window)";
+    return h.fail("{s}: the pill never looked {s} (it looks {s}, Updates says {s})", .{ what, look, now, if (d.value.updates) |u| u.pill else "?" });
+}
+
+/// The pill's middle, in the first window's client area.
+fn pillCenter(d: *const std.json.Parsed(Harness.Dump)) struct { x: c_int, y: c_int } {
+    const r = d.value.windows[0].header.update.rect;
+    return .{ .x = @divTrunc(r[0] + r[2], 2), .y = @divTrunc(r[1] + r[3], 2) };
+}
+
+/// Wait until the Updates window is open (`open`) or not.
+fn uwOpen(h: *Harness, g: *const Harness.Ghostty, open: bool, what: []const u8) !u64 {
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 100) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        if (d.value.updates_window) |u| {
+            if (open) return u.hwnd;
+        } else if (!open) return 0;
+        w.Sleep(100);
+    }
+    return h.fail("{s}: the Updates window never {s}", .{ what, if (open) "opened" else "closed" });
+}
+
+/// The header bar's update pill (roadmap 7.6a), macOS Ghostty's: hidden
+/// while there is nothing to say; a check the user asks for shows it
+/// checking, then what came of it: an update (the accent, its version; a
+/// click opens the Updates window), nothing ("No Updates Available", gone
+/// by itself after 5 s or at a click, which opens nothing), or a failure
+/// (orange, until the Updates window is opened).
+fn updatesPill(h: *Harness) anyerror!void {
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    var g = try startUpdates(h, srv, "updates-pill", "auto-update-channel = stable\n", "300", &.{}, true);
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(std.mem.eql(u8, d.value.updates.?.pill, "hidden") and std.mem.eql(u8, d.value.windows[0].header.update.look, "hidden"), "no pill while there is nothing to say", .{});
+    }
+    // Checking, while the server holds the request.
+    srv.setMode(.hang);
+    try h.checkUpdates(&g);
+    {
+        var d = try pillWait(h, &g, "plain", 5000, "a check asked for");
+        defer d.deinit();
+        const bar = d.value.windows[0].header;
+        try h.expect(std.mem.eql(u8, bar.update.tooltip, "Checking for Updates\u{2026}"), "it says it checks ('{s}')", .{bar.update.tooltip});
+        try h.expect(bar.update.rect[0] > bar.new_tab_menu[2] and bar.update.rect[2] < bar.list[0], "between the split button and the tab list's", .{});
+    }
+    try h.cancelUpdateCheck(&g);
+    (try pillWait(h, &g, "hidden", 5000, "a check cancelled")).deinit();
+
+    // An update: a click opens the Updates window.
+    srv.setMode(.list);
+    try h.checkUpdates(&g);
+    var at: struct { x: c_int, y: c_int } = undefined;
+    {
+        var d = try pillWait(h, &g, "accent", 10000, "an update found");
+        defer d.deinit();
+        const p = d.value.windows[0].header.update;
+        try h.expect(std.mem.eql(u8, p.tooltip, "Update Available: 0.6.0"), "it names the version ('{s}')", .{p.tooltip});
+        const at_ = pillCenter(&d);
+        at = .{ .x = at_.x, .y = at_.y };
+        try h.expect(d.value.updates_window == null, "the window isn't open yet", .{});
+    }
+    h.click(win, at.x, at.y, .left);
+    const uw = try uwOpen(h, &g, true, "a click on the pill");
+    // Skip This Version: nothing left to say.
+    uwClick(uw, uw_secondary);
+    (try pillWait(h, &g, "hidden", 5000, "the version skipped")).deinit();
+    uwClick(uw, uw_close);
+    _ = try uwOpen(h, &g, false, "Close");
+
+    // Nothing found: "No Updates Available", gone by itself.
+    try h.checkUpdates(&g);
+    {
+        var d = try pillWait(h, &g, "accent_dark", 10000, "nothing found");
+        defer d.deinit();
+        try h.expect(std.mem.eql(u8, d.value.windows[0].header.update.tooltip, "No Updates Available"), "it says so ('{s}')", .{d.value.windows[0].header.update.tooltip});
+    }
+    const t0 = w.GetTickCount64();
+    (try pillWait(h, &g, "hidden", 9000, "No Updates Available going")).deinit();
+    const took = w.GetTickCount64() - t0;
+    try h.expect(took >= 3000, "it stays a few seconds first ({d} ms)", .{took});
+    // Again, and a click takes it away at once, opening nothing.
+    try h.checkUpdates(&g);
+    {
+        var d = try pillWait(h, &g, "accent_dark", 10000, "nothing found again");
+        defer d.deinit();
+        const c2 = pillCenter(&d);
+        at = .{ .x = c2.x, .y = c2.y };
+    }
+    h.click(win, at.x, at.y, .left);
+    {
+        var d = try pillWait(h, &g, "hidden", 1500, "a click on No Updates Available");
+        defer d.deinit();
+        try h.expect(d.value.updates_window == null, "the click opened nothing", .{});
+    }
+
+    // A failure: orange, and it stays until the window is opened.
+    srv.setMode(.unavailable);
+    try h.checkUpdates(&g);
+    {
+        var d = try pillWait(h, &g, "warning", 10000, "a failed check");
+        defer d.deinit();
+        try h.expect(std.mem.eql(u8, d.value.windows[0].header.update.tooltip, "Update Check Failed"), "it says so ('{s}')", .{d.value.windows[0].header.update.tooltip});
+    }
+    w.Sleep(6000);
+    (try pillWait(h, &g, "warning", 100, "a failure staying")).deinit();
+    try h.openUpdatesWindow(&g, false);
+    (try pillWait(h, &g, "hidden", 5000, "the window opened over a failure")).deinit();
+    // A check from the window: its failure seen there goes with it.
+    try h.checkUpdates(&g);
+    (try pillWait(h, &g, "warning", 10000, "a failed check from the window")).deinit();
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        uwClick(d.value.updates_window.?.hwnd, uw_close);
+    }
+    _ = try uwOpen(h, &g, false, "Close after a failure");
+    (try pillWait(h, &g, "hidden", 2000, "the window closed over a failure")).deinit();
+    try quitPane(h, &g);
+    try expectNoLeaks(h, &g, "the pill leaks nothing");
+}
+
+/// The update notification recorded last of `kind`, waiting up to `ms`.
+fn updateNoticeWait(h: *Harness, g: *const Harness.Ghostty, kind: []const u8, ms: u32, what: []const u8) !std.json.Parsed(Harness.Dump) {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        var d = try h.dump(g);
+        for (d.value.notifications) |n| if (std.mem.eql(u8, n.kind, kind)) return d;
+        d.deinit();
+        w.Sleep(100);
+    }
+    return h.fail("{s}: no {s} notification came", .{ what, kind });
+}
+
+fn countKind(d: *const std.json.Parsed(Harness.Dump), kind: []const u8) usize {
+    var n: usize = 0;
+    for (d.value.notifications) |x| if (std.mem.eql(u8, x.kind, kind)) {
+        n += 1;
+    };
+    return n;
+}
+
+/// A configuration that turns automatic checks on, which nobody agreed to
+/// on this computer (a file shared with a Mac, say): no check, and the pill
+/// asks "Enable Automatic Updates?"; when the first check would come, a
+/// one-time notice naming the file and line, with Keep On and Turn Off.
+/// Keep On agrees and leaves the file (the check then runs); Turn Off turns
+/// them off here and leaves the file too; an unanswered notice never comes
+/// again, the pill still asking.
+fn updatesNotice(h: *Harness) anyerror!void {
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    const config = "auto-update = check\nauto-update-channel = stable\n";
+    // Keep On.
+    {
+        const name = "updates-notice";
+        // A delay well past start, so a slow runner can't have the notice
+        // before the first look.
+        var g = try startUpdates(h, srv, name, config, "8000", &.{}, true);
+        defer g.deinit();
+        const before = try configText(h, name);
+        defer h.alloc.free(before);
+        {
+            var d = try pillWait(h, &g, "accent_dim", 5000, "checks on, no OK");
+            defer d.deinit();
+            const u = d.value.updates.?;
+            try h.expect(u.waiting and !u.automatic and std.mem.eql(u8, u.pill, "permission"), "they wait for the OK (waiting {}, automatic {})", .{ u.waiting, u.automatic });
+            try h.expect(std.mem.eql(u8, d.value.windows[0].header.update.tooltip, "Enable Automatic Updates?"), "the pill asks ('{s}')", .{d.value.windows[0].header.update.tooltip});
+            try h.expect(countKind(&d, "notice") == 0, "no notice at start", .{});
+        }
+        {
+            var d = try updateNoticeWait(h, &g, "notice", 15000, "the first check's time");
+            defer d.deinit();
+            var notice: ?[]const u8 = null;
+            var title: []const u8 = "";
+            for (d.value.notifications) |n| if (std.mem.eql(u8, n.kind, "notice")) {
+                notice = n.body;
+                title = n.title;
+            };
+            try h.expect(std.mem.eql(u8, title, "Check for updates automatically?"), "the notice asks ('{s}')", .{title});
+            try h.expect(std.mem.indexOf(u8, notice.?, "config.ghostty, line ") != null and std.mem.indexOf(u8, notice.?, "sets auto-update = check") != null, "it names the file and line ('{s}')", .{notice.?});
+            try h.expect(d.value.updates.?.state.noticed and srv.requests.load(.acquire) == 0, "shown once, nothing sent", .{});
+        }
+        try h.clickUpdateNotification(&g, .keep);
+        {
+            var d = try pillWait(h, &g, "hidden", 5000, "Keep On");
+            defer d.deinit();
+            const u = d.value.updates.?;
+            try h.expect(u.state.consent and u.automatic and !u.state.declined, "agreed on this computer (consent {}, automatic {})", .{ u.state.consent, u.automatic });
+        }
+        const after = try configText(h, name);
+        defer h.alloc.free(after);
+        try h.expect(std.mem.eql(u8, before, after), "Keep On leaves the configuration as it was", .{});
+        // The check it waited for.
+        (try waitUpdateCheck(h, &g, srv, 1, "the check after Keep On")).deinit();
+        try quitPane(h, &g);
+        try expectNoLeaks(h, &g, "the notice leaks nothing");
+    }
+    // Turn Off, on another computer (a state folder of its own).
+    {
+        const name = "updates-notice-off";
+        var g = try startUpdates(h, srv, name, config, "300", &.{}, true);
+        defer g.deinit();
+        const before = try configText(h, name);
+        defer h.alloc.free(before);
+        (try updateNoticeWait(h, &g, "notice", 15000, "the notice again")).deinit();
+        try h.clickUpdateNotification(&g, .off);
+        {
+            var d = try pillWait(h, &g, "hidden", 5000, "Turn Off");
+            defer d.deinit();
+            const u = d.value.updates.?;
+            try h.expect(u.state.declined and !u.state.consent and !u.automatic and !u.waiting, "off here (declined {}, consent {})", .{ u.state.declined, u.state.consent });
+        }
+        const after = try configText(h, name);
+        defer h.alloc.free(after);
+        try h.expect(std.mem.eql(u8, before, after), "Turn Off leaves the configuration as it was", .{});
+        try h.openUpdatesWindow(&g, false);
+        (try uwWait(h, &g, "main", "Automatic checks are off on this computer", "the window after Turn Off")).deinit();
+        w.Sleep(6000);
+        try h.expect(srv.requests.load(.acquire) == 1, "nothing sent after Turn Off ({d})", .{srv.requests.load(.acquire)});
+        try quitPane(h, &g);
+    }
+    // Unanswered: shown once, never again.
+    {
+        const name = "updates-notice-once";
+        {
+            var g = try startUpdates(h, srv, name, config, "300", &.{}, true);
+            defer g.deinit();
+            (try updateNoticeWait(h, &g, "notice", 15000, "the notice, left unanswered")).deinit();
+            try quitPane(h, &g);
+        }
+        var g = try startUpdates(h, srv, name, config, "300", &.{}, true);
+        defer g.deinit();
+        w.Sleep(8000);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(countKind(&d, "notice") == 0, "no second notice", .{});
+        try h.expect(std.mem.eql(u8, d.value.updates.?.pill, "permission") and !d.value.updates.?.automatic, "the pill still asks, nothing checks", .{});
+        try quitPane(h, &g);
+    }
+    try h.expect(srv.requests.load(.acquire) == 1, "one request in all, after Keep On ({d})", .{srv.requests.load(.acquire)});
+}
+
+/// A release an automatic check finds is told once: a notification (its
+/// click opens the Updates window), never again for the same release; with
+/// When an Update Is Found set to the window, the window opens instead,
+/// without a notification.
+fn updatesFound(h: *Harness) anyerror!void {
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    const config = "auto-update = check\nauto-update-channel = stable\n";
+    const name = "updates-found";
+    try writeUpdateState(h, name, "{\"consent\":true}");
+    {
+        var g = try startUpdates(h, srv, name, config, "300", &.{}, true);
+        defer g.deinit();
+        {
+            var d = try updateNoticeWait(h, &g, "found", 15000, "the automatic check");
+            defer d.deinit();
+            var title: []const u8 = "";
+            var body: []const u8 = "";
+            for (d.value.notifications) |n| if (std.mem.eql(u8, n.kind, "found")) {
+                title = n.title;
+                body = n.body;
+            };
+            try h.expect(std.mem.eql(u8, title, "murrtty 0.6.0 is available") and std.mem.eql(u8, body, "You have 0.5.0. Click to see what's new."), "it tells of 0.6.0 ('{s}' / '{s}')", .{ title, body });
+            try h.expect(eql(d.value.updates.?.state.notified, "0.6.0"), "0.6.0 told", .{});
+            try h.expect(d.value.updates_window == null, "no window: a notification", .{});
+        }
+        try h.clickUpdateNotification(&g, .toast);
+        _ = try uwOpen(h, &g, true, "a click on the notification");
+        try quitPane(h, &g);
+        try expectNoLeaks(h, &g, "the found notification leaks nothing");
+    }
+    // Due again, the same release: not told twice.
+    try writeUpdateState(h, name, "{\"consent\":true,\"notified\":\"0.6.0\"}");
+    {
+        var g = try startUpdates(h, srv, name, config, "300", &.{}, true);
+        defer g.deinit();
+        var d = try waitUpdateCheck(h, &g, srv, 2, "the check due again");
+        defer d.deinit();
+        try h.expect(eql(d.value.updates.?.found, "0.6.0") and countKind(&d, "found") == 0, "0.6.0 found, not told again", .{});
+        try quitPane(h, &g);
+    }
+    // When an update is found: the window.
+    const name_w = "updates-found-window";
+    try writeUpdateState(h, name_w, "{\"consent\":true,\"on_found\":\"window\"}");
+    {
+        var g = try startUpdates(h, srv, name_w, config, "300", &.{}, true);
+        defer g.deinit();
+        var d = try waitUpdateCheck(h, &g, srv, 3, "the check with the window set");
+        d.deinit();
+        _ = try uwOpen(h, &g, true, "an update found, the window set");
+        var d2 = try h.dump(&g);
+        defer d2.deinit();
+        try h.expect(countKind(&d2, "found") == 0, "the window, no notification", .{});
+        // Opened quietly: no button of it took the keyboard (an Enter typed
+        // in the terminal would press Download).
+        try h.expect(!d2.value.updates_window.?.has_focus, "the window opened without the keyboard", .{});
         try quitPane(h, &g);
     }
 }

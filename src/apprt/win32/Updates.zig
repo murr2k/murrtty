@@ -29,6 +29,7 @@ const configpkg = @import("../../config.zig");
 const c = @import("c.zig");
 const text_util = @import("text.zig");
 const App = @import("App.zig");
+const ConfigEditor = @import("ConfigEditor.zig");
 const Session = @import("Session.zig");
 const test_hooks = @import("test_hooks.zig");
 const update_list = @import("update_list.zig");
@@ -64,6 +65,12 @@ pub const State = struct {
     on_found: OnFound = .notify,
     /// The user agreed to automatic checks on this machine.
     consent: bool = false,
+    /// The configuration turns automatic checks on but the user turned them
+    /// off on this machine (the notice's Turn Off). The file is left alone:
+    /// it may be another computer's too.
+    declined: bool = false,
+    /// The one-time notice about checks a configuration turns on was shown.
+    noticed: bool = false,
     /// Unix seconds: the last check that got an answer; when the next
     /// automatic one is due (0: now); until when a murrtty's check in
     /// flight holds the others off.
@@ -91,6 +98,16 @@ pub const Status = enum {
 };
 
 pub const Kind = enum { automatic, manual };
+
+pub const Note = enum { none, not_found, failed };
+
+/// The header bars' update pill (roadmap 7.6a), macOS Ghostty's: hidden
+/// when there is nothing to say.
+pub const Pill = enum { hidden, permission, checking, available, not_found, failed };
+
+/// The note's timer, on the wakeup window.
+pub const note_timer_id = 0x5D7F;
+const note_ms = 5_000;
 
 app: *App,
 /// The state folder, or null where there is none: nothing is kept, and no
@@ -130,7 +147,14 @@ due_ms: ?u64 = null,
 earliest_ms: u64 = 0,
 /// Requests sent this run (the GUI tests count them).
 requests: u32 = 0,
+/// What the header bars' pill says after a check the user asked for,
+/// until it is dismissed: nothing found (for 5 s, as macOS Ghostty's), or
+/// the check failed.
+note: Note = .none,
 prng: std.Random.DefaultPrng,
+/// The state has been read (start): until then the pill says nothing (it
+/// would ask for an OK given earlier).
+loaded: bool = false,
 /// The version this murrtty compares with (a test build may pretend), and
 /// whether it checks at all (a release build).
 running: std.SemanticVersion,
@@ -193,6 +217,7 @@ pub fn start(self: *Updates, owner: bool) void {
     self.earliest_ms = c.GetTickCount64() + self.startDelay();
     self.loadState();
     self.loadList();
+    self.loaded = true;
     self.refresh();
     self.schedule();
     self.notify();
@@ -230,9 +255,12 @@ pub fn channel(self: *const Updates) update_list.Channel {
 pub fn checkNow(self: *Updates) void {
     if (!self.release_build) return;
     self.collect();
+    self.setNote(.none);
     if (self.job != null) {
-        // The check in flight answers this one too.
+        // The check in flight answers this one too (the pill says it
+        // checks now).
         self.asked = true;
+        self.notify();
         return;
     }
     _ = self.startJob(.manual);
@@ -268,6 +296,10 @@ pub fn cancel(self: *Updates) void {
 pub fn tick(self: *Updates) void {
     self.stopTimer();
     self.collect();
+    // The state file couldn't be read: look again (it may only have been
+    // busy, or a newer murrtty's file is gone).
+    if (self.state_unreadable and self.job == null) return self.reload();
+    if (self.job == null and self.noticeDue()) return self.showNotice();
     if (!self.automaticOn() or self.job != null) return;
     // The state read (another murrtty may have changed it) and the check
     // started under the lock; the window told after it is let go.
@@ -311,15 +343,40 @@ pub fn finished(self: *Updates) void {
     self.last_status = job.status;
     log.info("update check ({t}): {t} status={} err={} {}ms", .{ kind, job.outcome, job.status, job.error_code, job.elapsed_ms });
 
-    // The window is told after the lock is let go (its own drawing
+    // What the check learned, written under the lock; the window, the
+    // header bars and the notification after it is let go (their drawing
     // shouldn't hold other murrttys off).
-    defer self.notify();
-    const lock = Lock.take(self);
-    defer if (lock == .held) lock.held.release();
-    // Busy past its retries: what this check learned is still worth
-    // writing (a missed lock risks one more check, a missed write a check
-    // per tick).
-    if (lock == .held) self.loadState();
+    const tell = locked: {
+        const lock = Lock.take(self);
+        defer if (lock == .held) lock.held.release();
+        // Busy past its retries: what this check learned is still worth
+        // writing (a missed lock risks one more check, a missed write a
+        // check per tick).
+        if (lock == .held) self.loadState();
+        self.learn(job, kind, now);
+        if (kind == .automatic) self.state.lease_until = 0;
+        self.refresh();
+        const found_new = self.noteFound(kind == .automatic and !asked);
+        self.saveState();
+        break :locked found_new;
+    };
+    // A check the user asked for: the pill says how it went.
+    if (kind == .manual or asked) self.setNote(if (self.status == .failed)
+        .failed
+    else if (self.found == null and (job.outcome == .ok or job.outcome == .not_modified))
+        .not_found
+    else
+        .none);
+    // The user asked while an automatic check found the connection
+    // metered: theirs runs anyway.
+    if (asked and job.outcome == .metered) _ = self.startJob(.manual);
+    self.schedule();
+    if (tell) self.announce();
+    self.notify();
+}
+
+/// What a finished check's answer means for the state and the list.
+fn learn(self: *Updates, job: *update_fetch.Job, kind: Kind, now: i64) void {
     switch (job.outcome) {
         .ok => switch (self.takeList(job.body, job.etag)) {
             // The state's ETag names the list file: none if it wasn't
@@ -348,13 +405,178 @@ pub fn finished(self: *Updates) void {
         .metered => self.state.next_check = now + metered_retry_s,
         .cancelled => {},
     }
-    if (kind == .automatic) self.state.lease_until = 0;
-    self.saveState();
+}
+
+/// A release found that no notification has told of: recorded as told,
+/// and whether to tell of it now (an automatic check's: one the user asked
+/// for shows it in the window).
+fn noteFound(self: *Updates, automatic: bool) bool {
+    const f = self.found orelse return false;
+    if (self.state.notified) |n| if (std.mem.eql(u8, n, f.version)) return false;
+    self.setString(&self.state.notified, f.version);
+    return automatic;
+}
+
+/// Tell of the release found, as Update Settings say: a notification, or
+/// the Updates window opened without taking the keyboard (a notification
+/// while a dialog is open).
+fn announce(self: *Updates) void {
+    const f = self.found orelse return;
+    if (self.state.on_found == .window and self.app.modal_depth == 0) return self.app.openUpdatesQuietly();
+    var title_buf: [96]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "murrtty {s} is available", .{f.version}) catch "A murrtty update is available";
+    var body_buf: [128]u8 = undefined;
+    const body = std.fmt.bufPrint(&body_buf, "You have {d}.{d}.{d}. Click to see what's new.", .{ self.running.major, self.running.minor, self.running.patch }) catch "";
+    self.app.notifications.sendUpdate(.found, title, body);
+}
+
+/// Whether the configuration's automatic checks wait for the OK on this
+/// machine (a file murrtty didn't write: another computer's, or written by
+/// hand).
+pub fn waiting(self: *const Updates) bool {
+    // Without a state that can be kept or read, the OK can't be known.
+    if (self.dir == null or self.state_unreadable) return false;
+    return self.release_build and self.mode() != .off and !self.state.consent and !self.state.declined;
+}
+
+/// Read the state again: another murrtty (another class's) may have
+/// changed it. Before the Updates window shows it, and on the unreadable
+/// state's retry.
+pub fn reload(self: *Updates) void {
+    if (self.dir == null) return;
+    {
+        const lock = Lock.take(self);
+        if (lock == .busy) return self.schedule();
+        defer if (lock == .held) lock.held.release();
+        self.loadState();
+    }
     self.refresh();
-    // The user asked while an automatic check found the connection
-    // metered: theirs runs anyway.
-    if (asked and job.outcome == .metered) _ = self.startJob(.manual);
     self.schedule();
+    self.notify();
+}
+
+/// Whether the configuration turns automatic checks on, and the user
+/// turned them off on this machine.
+pub fn declinedHere(self: *const Updates) bool {
+    if (self.dir == null or self.state_unreadable) return false;
+    return self.release_build and self.mode() != .off and !self.state.consent and self.state.declined;
+}
+
+pub fn pill(self: *const Updates) Pill {
+    if (!self.release_build or !self.loaded) return .hidden;
+    if (self.job != null and (self.job_kind == .manual or self.asked)) return .checking;
+    if (self.note == .failed) return .failed;
+    if (self.found != null) return .available;
+    if (self.note == .not_found) return .not_found;
+    if (self.waiting()) return .permission;
+    return .hidden;
+}
+
+/// The pill's text, macOS Ghostty's words ("" while hidden).
+pub fn pillText(self: *const Updates, buf: []u8) []const u8 {
+    return switch (self.pill()) {
+        .hidden => "",
+        .permission => "Enable Automatic Updates?",
+        .checking => "Checking for Updates\u{2026}",
+        .available => std.fmt.bufPrint(buf, "Update Available: {s}", .{self.found.?.version}) catch "Update Available",
+        .not_found => "No Updates Available",
+        .failed => "Update Check Failed",
+    };
+}
+
+/// Set the pill's note: nothing found goes by itself after 5 s.
+fn setNote(self: *Updates, note: Note) void {
+    self.note = note;
+    _ = c.KillTimer(self.app.wakeup_hwnd, note_timer_id);
+    if (note == .not_found) _ = c.SetTimer(self.app.wakeup_hwnd, note_timer_id, note_ms, null);
+}
+
+/// The note dismissed (a click on the pill, the Updates window opened).
+pub fn dismissNote(self: *Updates) void {
+    if (self.note == .none) return;
+    self.setNote(.none);
+    self.notify();
+}
+
+/// The note's 5 s are up.
+pub fn noteTimer(self: *Updates) void {
+    _ = c.KillTimer(self.app.wakeup_hwnd, note_timer_id);
+    if (self.note == .not_found) self.dismissNote();
+}
+
+/// Whether the one-time notice is due here: the configuration turns
+/// automatic checks on, nobody agreed on this machine, and no murrtty of
+/// this user has shown it. Only the pipe's owner shows it, at the time its
+/// first automatic check would come.
+fn noticeDue(self: *const Updates) bool {
+    return self.owner and self.waiting() and !self.state.noticed and self.app.notifications.hwnd != null;
+}
+
+/// The one-time notice (roadmap 7.6a): the configuration turns automatic
+/// checks on, but nobody agreed on this machine (a file shared with another
+/// computer, say), so the first check waits for it. Shown once, naming the
+/// file and line; its buttons answer it (answerNotice), and until then the
+/// pill and the Updates window offer the same.
+fn showNotice(self: *Updates) void {
+    const shown = shown: {
+        const lock = Lock.take(self);
+        switch (lock) {
+            .busy => return self.arm(min_wait_ms + self.prng.random().uintLessThan(u64, 5_000)),
+            .failed, .held => {},
+        }
+        defer if (lock == .held) lock.held.release();
+        self.loadState();
+        // Another murrtty may have shown it, or the user answered.
+        if (!self.noticeDue()) break :shown false;
+        self.state.noticed = true;
+        self.saveState();
+        break :shown true;
+    };
+    if (shown) {
+        const alloc = self.app.core_app.alloc;
+        const how_often: []const u8 = switch (self.state.interval) {
+            .daily => "once a day",
+            .weekly => "once a week",
+            .monthly => "once a month",
+        };
+        var where_buf: [320]u8 = undefined;
+        const where: []const u8 = if (ConfigEditor.optionSource(self.app, alloc, "auto-update")) |src| where: {
+            defer alloc.free(src.path);
+            break :where std.fmt.bufPrint(&where_buf, "{s}, line {d}, sets auto-update = {t}", .{ folderAndName(src.path), src.line, self.mode() }) catch "Your configuration turns them on";
+        } else "Your configuration turns them on";
+        var body_buf: [640]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf, "{s}. murrtty asks murrtty.org for its list of releases ({s}, with no version, ID or cookie) only once you agree on this computer.", .{ where, how_often }) catch where;
+        self.app.notifications.sendUpdate(.notice, "Check for updates automatically?", body);
+    }
+    self.schedule();
+    self.notify();
+}
+
+/// A file's folder and name ("murrtty\config.ghostty"): which program's
+/// configuration it is, short enough for a notification.
+fn folderAndName(file: []const u8) []const u8 {
+    const name = std.mem.lastIndexOfAny(u8, file, "\\/") orelse return file;
+    const folder = std.mem.lastIndexOfAny(u8, file[0..name], "\\/") orelse return file;
+    return file[folder + 1 ..];
+}
+
+test "folderAndName" {
+    try std.testing.expectEqualStrings("murrtty\\config.ghostty", folderAndName("C:\\Users\\u\\AppData\\Local\\murrtty\\config.ghostty"));
+    try std.testing.expectEqualStrings("ghostty/config", folderAndName("/home/u/.config/ghostty/config"));
+    try std.testing.expectEqualStrings("config", folderAndName("config"));
+}
+
+/// The notice's answer: Keep On agrees on this machine (the configuration
+/// already says check), Turn Off turns them off here and leaves the file.
+pub fn answerNotice(self: *Updates, keep: bool) void {
+    if (keep) return self.setConsent(true);
+    self.change({}, struct {
+        fn f(u: *Updates, _: void) void {
+            u.state.consent = false;
+            u.state.declined = true;
+            u.state.noticed = true;
+        }
+    }.f);
 }
 
 // ---------------------------------------------------------------- the user's changes
@@ -433,6 +655,7 @@ pub fn setConsent(self: *Updates, consent: bool) void {
     self.change(consent, struct {
         fn f(u: *Updates, on: bool) void {
             u.state.consent = on;
+            if (on) u.state.declined = false;
         }
     }.f);
 }
@@ -545,7 +768,8 @@ fn schedule(self: *Updates) void {
         // Look at the file again later: it may only have been busy.
         return self.arm(unreadable_retry_ms);
     }
-    if (!self.automaticOn()) return;
+    // The notice comes when the first check would.
+    if (!self.automaticOn() and !self.noticeDue()) return;
     const now = unixNow();
     const due = @max(self.state.next_check, self.state.lease_until);
     const wait: u64 = if (due > now) secondsToMs(due - now) else 0;

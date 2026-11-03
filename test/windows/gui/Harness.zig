@@ -1737,6 +1737,14 @@ pub const Updates = struct {
     checking: bool,
     kind: []const u8,
     asked: bool,
+    /// The header bars' pill (roadmap 7.6a step 3): "hidden",
+    /// "permission", "checking", "available", "not_found", "failed"; the
+    /// note after a check asked for ("none", "not_found", "failed"); whether
+    /// the configuration's checks wait for the OK here; the pill's words.
+    pill: []const u8 = "hidden",
+    note: []const u8 = "none",
+    waiting: bool = false,
+    pill_text: []const u8 = "",
     due_ms: ?u64,
     outcome: ?[]const u8,
     @"error": u32,
@@ -1745,6 +1753,10 @@ pub const Updates = struct {
     versions: []const []const u8,
     state: struct {
         consent: bool,
+        /// Turned off here though the configuration says check (the
+        /// notice's Turn Off), and whether the one-time notice was shown.
+        declined: bool = false,
+        noticed: bool = false,
         interval: []const u8,
         on_found: []const u8,
         last_check: i64,
@@ -1753,6 +1765,8 @@ pub const Updates = struct {
         failures: u32,
         etag: ?[]const u8,
         skipped: ?[]const u8,
+        /// The last release a notification told of.
+        notified: ?[]const u8 = null,
     },
     /// murrtty's clock, Unix seconds.
     now: i64,
@@ -1764,6 +1778,8 @@ pub const Updates = struct {
 /// and the notes shown.
 pub const UpdatesWindow = struct {
     hwnd: u64,
+    /// Whether the keyboard is in it (a window opened quietly has none).
+    has_focus: bool = false,
     page: []const u8,
     heading: []const u8,
     subtitle: []const u8,
@@ -1794,7 +1810,9 @@ pub const Dump = struct {
     /// pane's core id (0 for murrtty's own), the title and body (a toast's
     /// whole, a balloon's cut to its fields); whether the notification
     /// area's icon is there (the balloon's, or the tray).
-    notifications: []const struct { surface: u64, title: []const u8, body: []const u8 } = &.{},
+    /// An update notification's `kind` is "found" or "notice" (roadmap
+    /// 7.6a), "" for the others.
+    notifications: []const struct { surface: u64, title: []const u8, body: []const u8, kind: []const u8 = "" } = &.{},
     notify_icon: bool = false,
     /// Whether a notification stands (a toast, or the balloon; the icon
     /// may stay as the tray), and the latest's pane.
@@ -2119,6 +2137,10 @@ pub const Dump = struct {
         /// pane (its core id), its rectangle, whether it stands for the
         /// rest (more wait than fit), its tooltip.
         bells: []const Bell = &.{},
+        /// The update pill (roadmap 7.6a): its look ("hidden" while it
+        /// doesn't show, "plain", "accent", "accent_dim", "accent_dark",
+        /// "warning"), its rectangle and its tooltip (its words).
+        update: struct { look: []const u8 = "hidden", rect: [4]i32 = .{ 0, 0, 0, 0 }, tooltip: []const u8 = "" } = .{},
 
         pub const Bell = struct {
             surface: u64 = 0,
@@ -2524,6 +2546,18 @@ pub fn dragResize(self: *Harness, g: *const Ghostty, dx: i16, dy: i16) !void {
 /// after this returns.
 pub fn clickNotification(self: *Harness, g: *const Ghostty) !void {
     var d = try self.dumpWith(g, 15, 0);
+    d.deinit();
+}
+
+/// Click an update notification (roadmap 7.6a) as Windows would: its toast
+/// (the Updates window), or the notice's Keep On or Turn Off (dump wparam
+/// 15, lparam 2 to 4).
+pub fn clickUpdateNotification(self: *Harness, g: *const Ghostty, what: enum { toast, keep, off }) !void {
+    var d = try self.dumpWith(g, 15, switch (what) {
+        .toast => 2,
+        .keep => 3,
+        .off => 4,
+    });
     d.deinit();
 }
 

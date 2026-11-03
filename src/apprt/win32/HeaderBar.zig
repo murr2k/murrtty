@@ -19,12 +19,14 @@
 //!
 //! murrtty's own: after the split button, a bell for each pane waiting for
 //! its user (Waiting), up to where the title is centered, so their coming
-//! never moves it.
+//! never moves it. Before the tab list's button, the update pill (roadmap
+//! 7.6a), macOS Ghostty's: hidden when there is nothing to say.
 const HeaderBar = @This();
 
 const std = @import("std");
 const c = @import("c.zig");
 const draw = @import("draw.zig");
+const text_util = @import("text.zig");
 const Hit = @import("TabBar.zig").Hit;
 
 /// Unscaled metrics, in device-independent pixels.
@@ -42,6 +44,19 @@ const button_radius = 9;
 const icon_inset = 9;
 /// A waiting pane's bell: as tall as a button, narrower, so more fit.
 const bell_width = 28;
+/// The update pill: a capsule as macOS Ghostty's (its 11 pt text, 8 and 4
+/// px of padding, a 14 px badge), in libadwaita's metrics.
+const pill_height = 26;
+const pill_pad = 10;
+const pill_icon = 14;
+const pill_gap = 6;
+const pill_max = 64;
+
+/// How the update pill looks, by what it says (macOS Ghostty's colors):
+/// the window controls' gray while checking, the accent for an update, the
+/// accent darkened for the permission request and "no updates", orange for
+/// a failure.
+pub const PillLook = enum { hidden, plain, accent, accent_dim, accent_dark, warning };
 
 dpi: c.UINT = c.USER_DEFAULT_SCREEN_DPI,
 title_font: ?c.HFONT = null,
@@ -57,10 +72,19 @@ bells: usize = 0,
 /// The title's width as last painted, in pixels (0 for none): the bells
 /// stop where it is centered.
 title_px: c_int = 0,
+/// The update pill: its look, its text (UTF-16) and that text's width in
+/// pixels, measured as it is set (setPill), so placing it needs no DC.
+pill: PillLook = .hidden,
+pill_text: [pill_max]u16 = undefined,
+pill_len: usize = 0,
+pill_px: c_int = 0,
+pill_font: ?c.HFONT = null,
 
 pub fn deinit(self: *HeaderBar) void {
     if (self.title_font) |f| _ = c.DeleteObject(f);
     self.title_font = null;
+    if (self.pill_font) |f| _ = c.DeleteObject(f);
+    self.pill_font = null;
 }
 
 /// Recreate the title's font for `dpi`: bold, in `family` if set
@@ -69,6 +93,50 @@ pub fn setDpi(self: *HeaderBar, dpi: c.UINT, family: ?[]const u8) void {
     self.dpi = dpi;
     if (self.title_font) |f| _ = c.DeleteObject(f);
     self.title_font = draw.chromeFont(dpi, family, true);
+    if (self.pill_font) |f| _ = c.DeleteObject(f);
+    self.pill_font = draw.chromeFontSized(dpi, null, 9, true);
+    self.measurePill();
+}
+
+/// Show the update pill as `look` with `text` (UTF-8), or hide it.
+pub fn setPill(self: *HeaderBar, look: PillLook, text: []const u8) void {
+    var wide: [pill_max]u16 = undefined;
+    const w = text_util.utf16Into(&wide, if (look == .hidden) "" else text);
+    if (look == self.pill and std.mem.eql(u16, w, self.pill_text[0..self.pill_len])) return;
+    self.pill = look;
+    @memcpy(self.pill_text[0..w.len], w);
+    self.pill_len = w.len;
+    self.measurePill();
+}
+
+fn measurePill(self: *HeaderBar) void {
+    self.pill_px = 0;
+    if (self.pill == .hidden or self.pill_len == 0) return;
+    const dc = c.GetDC(null) orelse return;
+    defer _ = c.ReleaseDC(null, dc);
+    const old = if (self.pill_font) |f| c.SelectObject(dc, f) else null;
+    defer if (old) |o| {
+        _ = c.SelectObject(dc, o);
+    };
+    var r: c.RECT = .{};
+    _ = c.DrawTextW(dc, &self.pill_text, @intCast(self.pill_len), &r, c.DT_CALCRECT | c.DT_SINGLELINE | c.DT_NOPREFIX);
+    self.pill_px = @max(0, r.right - r.left);
+}
+
+/// Where the update pill goes in a bar `width` pixels wide: before the tab
+/// list's button, GTK's spacing apart. Null while it is hidden, or with no
+/// room for it after the split button (in the tab row, and a narrowest
+/// tab's): the title then ellipsizes first.
+pub fn pillPlace(self: *const HeaderBar, width: c_int) ?c.RECT {
+    if (self.pill == .hidden or self.pill_px <= 0) return null;
+    const p = self.place(width);
+    const w = self.scale(2 * pill_pad + pill_icon + pill_gap) + self.pill_px;
+    const right = p.list.left - self.scale(spacing);
+    const left = right - w;
+    const lo = p.new_tab_menu.right + self.scale(spacing) + (if (self.tabs_style) self.scale(min_tab) else 0);
+    if (left < lo) return null;
+    const top = self.scale(pad_top) + @divTrunc(self.scale(button) - self.scale(pill_height), 2);
+    return .{ .left = left, .top = top, .right = right, .bottom = top + self.scale(pill_height) };
 }
 
 fn scale(self: *const HeaderBar, v: c_int) c_int {
@@ -129,10 +197,12 @@ pub fn tabsInset(self: *const HeaderBar) [2]c_int {
 
 /// tabsInset in a row `width` pixels wide, after the bells shown there.
 pub fn tabsInsetAt(self: *const HeaderBar, width: c_int) [2]c_int {
-    const inset = self.tabsInset();
+    var inset = self.tabsInset();
     const b = self.bellPlace(width);
-    if (b.shown == 0) return inset;
-    return .{ b.end(), inset[1] };
+    if (b.shown > 0) inset[0] = b.end();
+    // The update pill takes the tabs' end.
+    if (self.pillPlace(width)) |r| inset[1] = width - r.left + self.scale(spacing);
+    return inset;
 }
 
 /// The waiting panes' bells (Waiting): after the split button, side by
@@ -175,9 +245,10 @@ pub fn bellPlace(self: *const HeaderBar, width: c_int) Bells {
     const start = p.new_tab_menu.right + self.scale(spacing);
     var b: Bells = .{ .start = start, .width = bw };
     if (self.bells == 0) return b;
-    const room = p.list.left - self.scale(spacing);
+    const room = (if (self.pillPlace(width)) |r| r.left else p.list.left) - self.scale(spacing);
+    const edge = if (self.pillPlace(width)) |r| r.left else p.list.left;
     const limit = if (self.tabs_style)
-        @min(p.list.left - self.scale(min_tab), start + @divTrunc(p.list.left - start, 2))
+        @min(edge - self.scale(min_tab), start + @divTrunc(edge - start, 2))
     else if (self.titlePlace(p, width, b)) |t|
         t[0] - self.scale(spacing)
     else
@@ -202,7 +273,7 @@ pub fn titleAt(self: *const HeaderBar, width: c_int, with_bells: bool) ?[2]c_int
 /// show. Its left edge and width, or null with no title or no room.
 fn titlePlace(self: *const HeaderBar, p: Place, width: c_int, bells: Bells) ?[2]c_int {
     var lo = p.new_tab_menu.right + self.scale(spacing + 12);
-    const hi = p.list.left - self.scale(spacing + 12);
+    const hi = (if (self.pillPlace(width)) |r| r.left else p.list.left) - self.scale(spacing + 12);
     if (bells.shown > 0) lo = @max(lo, bells.end() + self.scale(spacing));
     if (self.title_px <= 0 or hi <= lo) return null;
     const tw = @min(self.title_px, hi - lo);
@@ -239,6 +310,7 @@ pub fn hitTest(self: *const HeaderBar, x: c_int, y: c_int, width: c_int) Hit {
     for (columns) |col| {
         if (x >= col[1].left and x < col[1].right) return col[0];
     }
+    if (self.pillPlace(width)) |r| if (x >= r.left and x < r.right) return .update;
     const b = self.bellPlace(width);
     for (0..b.shown) |i| {
         const r = b.rect(i, 0, 0);
@@ -418,6 +490,8 @@ pub fn paint(
         _ = c.DrawTextW(mem, title.ptr, @intCast(title.len), &rect, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_END_ELLIPSIS | c.DT_NOPREFIX);
     }
 
+    if (self.pillPlace(width)) |r| self.paintPill(mem, r, state(.update, hover, pressed), pal);
+
     _ = c.BitBlt(hdc, 0, 0, width, h, mem, 0, 0, c.SRCCOPY);
 }
 
@@ -445,14 +519,121 @@ fn bellGlyph(self: *const HeaderBar, hdc: c.HDC, r: c.RECT, color: c.COLORREF) v
     draw.roundRect(hdc, g.rect(6, 13, 10, 16), self.scale(2), color, null, 0);
 }
 
+/// The update pill: a capsule in its look's colors (lighter hovered,
+/// more pressed), a badge for what it says, and its text.
+fn paintPill(self: *const HeaderBar, hdc: c.HDC, r: c.RECT, s: State, pal: draw.Palette) void {
+    const accent = c.rgb(0x35, 0x84, 0xe4);
+    const white = c.rgb(0xff, 0xff, 0xff);
+    const black = c.rgb(0, 0, 0);
+    // Adwaita's orange 2 on a dark bar, its orange 5 on a light one.
+    const warn = if (isDark(pal.bar)) c.rgb(0xff, 0xa3, 0x48) else c.rgb(0xc6, 0x46, 0x00);
+    const colors: [2]c.COLORREF = switch (self.pill) {
+        .hidden => return,
+        .plain => .{ pal.control, pal.text },
+        .accent => .{ accent, white },
+        .accent_dim => .{ mix(accent, black, 0.3), white },
+        .accent_dark => .{ mix(accent, black, 0.5), white },
+        .warning => .{ mix(pal.bar, warn, 0.2), warn },
+    };
+    const fore = colors[1];
+    const back = switch (s) {
+        .normal => colors[0],
+        .hover => mix(colors[0], fore, 0.1),
+        .pressed => mix(colors[0], fore, 0.2),
+    };
+    draw.roundRect(hdc, r, @divTrunc(r.bottom - r.top, 2), back, null, 0);
+
+    const icon = self.scale(pill_icon);
+    const g: Glyph = .{
+        .bar = self,
+        .hdc = hdc,
+        .x = r.left + self.scale(pill_pad),
+        .y = r.top + @divTrunc(r.bottom - r.top - icon, 2),
+        .color = fore,
+    };
+    switch (self.pill) {
+        .hidden => {},
+        // An arrow down to a tray: something to download.
+        .accent => {
+            g.fill(6, 1, 8, 7);
+            const tri = g.rect(3, 6, 11, 10);
+            draw.polygon(hdc, &.{
+                .{ .x = tri.left, .y = tri.top },
+                .{ .x = tri.right, .y = tri.top },
+                .{ .x = @divTrunc(tri.left + tri.right, 2), .y = tri.bottom },
+            }, fore);
+            g.fill(2, 12, 12, 14);
+        },
+        // A ring open at the top right: going round.
+        .plain => {
+            draw.roundRect(hdc, g.rect(1, 1, 13, 13), self.scale(6), fore, null, 0);
+            draw.roundRect(hdc, g.rect(3, 3, 11, 11), self.scale(4), back, null, 0);
+            draw.fill(hdc, g.rect(7, 0, 14, 6), back);
+        },
+        // A ring around a dot: a question.
+        .accent_dim => {
+            draw.roundRect(hdc, g.rect(1, 1, 13, 13), self.scale(6), fore, null, 0);
+            draw.roundRect(hdc, g.rect(3, 3, 11, 11), self.scale(4), back, null, 0);
+            draw.roundRect(hdc, g.rect(5, 5, 9, 9), self.scale(2), fore, null, 0);
+        },
+        // A check mark: nothing to do.
+        .accent_dark => {
+            const a = g.rect(2, 7, 5, 10);
+            const b = g.rect(5, 10, 12, 3);
+            const stroke = @max(1, self.scale(2));
+            draw.line(hdc, a.left, a.top, a.right, a.bottom, fore, stroke);
+            draw.line(hdc, b.left, b.top, b.right, b.bottom, fore, stroke);
+        },
+        // A warning triangle.
+        .warning => {
+            const tri = g.rect(1, 1, 13, 13);
+            draw.polygon(hdc, &.{
+                .{ .x = @divTrunc(tri.left + tri.right, 2), .y = tri.top },
+                .{ .x = tri.right, .y = tri.bottom },
+                .{ .x = tri.left, .y = tri.bottom },
+            }, fore);
+            draw.fill(hdc, g.rect(6, 5, 8, 9), back);
+            draw.fill(hdc, g.rect(6, 10, 8, 12), back);
+        },
+    }
+
+    const old = if (self.pill_font) |f| c.SelectObject(hdc, f) else null;
+    defer if (old) |o| {
+        _ = c.SelectObject(hdc, o);
+    };
+    _ = c.SetTextColor(hdc, fore);
+    var tr: c.RECT = .{
+        .left = g.x + icon + self.scale(pill_gap),
+        .top = r.top,
+        .right = r.right - self.scale(pill_pad) + 1,
+        .bottom = r.bottom,
+    };
+    _ = c.DrawTextW(hdc, &self.pill_text, @intCast(self.pill_len), &tr, c.DT_SINGLELINE | c.DT_VCENTER | c.DT_NOPREFIX | c.DT_END_ELLIPSIS);
+}
+
+/// `a` toward `b` by `t` (0 to 1), channel by channel.
+fn mix(a: c.COLORREF, b: c.COLORREF, t: f32) c.COLORREF {
+    const ch = struct {
+        fn f(x: c.COLORREF, y: c.COLORREF, shift: u5, k: f32) u8 {
+            const xa: f32 = @floatFromInt((x >> shift) & 0xFF);
+            const ya: f32 = @floatFromInt((y >> shift) & 0xFF);
+            return @intFromFloat(@round(xa + (ya - xa) * k));
+        }
+    }.f;
+    return c.rgb(ch(a, b, 0, t), ch(a, b, 8, t), ch(a, b, 16, t));
+}
+
+fn isDark(color: c.COLORREF) bool {
+    const r: u32 = color & 0xFF;
+    const g: u32 = (color >> 8) & 0xFF;
+    const b: u32 = (color >> 16) & 0xFF;
+    return r * 299 + g * 587 + b * 114 < 128 * 1000;
+}
+
 /// The bell's color: yellow, as the bell emoji is drawn (Adwaita's yellow 2
 /// on a dark bar, its darker yellow 5 on a light one).
 fn bellColor(pal: draw.Palette) c.COLORREF {
-    const r: u32 = pal.bar & 0xFF;
-    const g: u32 = (pal.bar >> 8) & 0xFF;
-    const b: u32 = (pal.bar >> 16) & 0xFF;
-    const dark = r * 299 + g * 587 + b * 114 < 128 * 1000;
-    return if (dark) c.rgb(0xf6, 0xd3, 0x2d) else c.rgb(0xe5, 0xa5, 0x0a);
+    return if (isDark(pal.bar)) c.rgb(0xf6, 0xd3, 0x2d) else c.rgb(0xe5, 0xa5, 0x0a);
 }
 
 const State = enum { normal, hover, pressed };
@@ -497,6 +678,29 @@ test "hitTest: the buttons, the caption between them, close to the edge" {
     try testing.expect(p.new_tab_menu.left >= p.new_tab.right);
     try testing.expect(p.list.right == p.menu.left and p.menu.right <= p.minimize.left);
     try testing.expect(p.minimize.right <= p.maximize.left and p.maximize.right <= p.window_close.left);
+}
+
+test "pillPlace: before the tab list's button; the title and bells make way" {
+    const testing = std.testing;
+    var bar: HeaderBar = .{ .pill = .accent, .pill_px = 120, .title_px = 5000 };
+    const width = 1000;
+    const p = bar.place(width);
+    const r = bar.pillPlace(width).?;
+    try testing.expectEqual(p.list.left - spacing, r.right);
+    try testing.expect(r.left > p.new_tab_menu.right and r.bottom <= p.list.bottom and r.top >= p.list.top);
+    try testing.expectEqual(Hit.update, bar.hitTest(@divTrunc(r.left + r.right, 2), 20, width));
+    // A title too long to center ends before the pill.
+    const t = bar.titleAt(width, true).?;
+    try testing.expect(t[0] + t[1] <= r.left - spacing);
+    // Hidden, or with no room: nothing there.
+    bar.pill = .hidden;
+    try testing.expect(bar.pillPlace(width) == null);
+    bar.pill = .accent;
+    try testing.expect(bar.pillPlace(bar.minWidth()) == null);
+    // In the tab row the tabs end before it.
+    bar.tabs_style = true;
+    const rr = bar.pillPlace(width).?;
+    try testing.expectEqual(width - rr.left + spacing, bar.tabsInsetAt(width)[1]);
 }
 
 test "place: GTK's geometry at 96 DPI" {
