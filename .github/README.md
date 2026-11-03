@@ -654,7 +654,14 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   murrtty folder to give murrtty settings of its own. With neither, murrtty
   creates its file as a commented template on first launch. Open
   Configuration Editor (in the Config menu and the command palette) edits
-  it without a text editor and keeps it a file Ghostty reads. Everything handled by Ghostty's
+  it without a text editor and keeps it a file Ghostty reads. murrtty adds
+  no options or keybind actions of its own, so a file it reads loads in
+  Ghostty too: its own settings (the saved session, for one) are kept in
+  `%LOCALAPPDATA%\murrtty` beside the configuration, and its own commands
+  are in the menus and the command palette. The one exception is
+  `shell-integration = cmd` or `powershell`, which Ghostty reports as an
+  error on that line; the default, `detect`, needs neither. The roadmap's
+  "The configuration file stays Ghostty's" says how. Everything handled by Ghostty's
   shared core works as documented in the
   [configuration reference](https://ghostty.org/docs/config): fonts, colors,
   themes, keybindings, the shell and so on. Most options that the macOS

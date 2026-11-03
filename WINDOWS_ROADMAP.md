@@ -119,8 +119,9 @@ not affiliated with the Ghostty project.
   `rerere` stays on. Internal names in shared code (`Ghostty*` types, the
   `GHOSTTY_*` variables the shell integration uses, the `ghostty` resource
   folder) stay as they are, so those merges stay cheap.
-- **What stays compatible.** The configuration format (and, by default, an
-  existing Ghostty configuration, R3), `TERM=xterm-ghostty` and its terminfo
+- **What stays compatible.** The configuration format and the file itself
+  (by default an existing Ghostty configuration, R3; how, in "The
+  configuration file stays Ghostty's" below), `TERM=xterm-ghostty` and its terminfo
   (programs get the capabilities the shared core implements), the shell
   integration, themes and key bindings.
 - **What is murrtty's own.** The executable `murrtty.exe`, window classes,
@@ -211,6 +212,66 @@ Fork items, ahead of the rest of Phase 3:
   their forms show nowhere. The private repository stays the CI mirror,
   and the desktop workflow runs only there. murrtty.org went up the same
   day (7.6).
+
+### The configuration file stays Ghostty's
+
+*The owner's requirement, 2026-10-28.* A configuration file murrtty reads
+must still load in Ghostty 1.4, so one file can serve murrtty on Windows and
+Ghostty on macOS or Linux, and copying it either way never breaks it.
+murrtty keeps that, and still has settings of its own, by never adding to
+the file's vocabulary:
+
+1. **One set of options.** murrtty parses its configuration with Ghostty's
+   own `src/config/Config.zig`, kept in step by each upstream merge, and adds
+   no field to it. No option name exists in murrtty that Ghostty doesn't
+   know.
+2. **Ghostty's options, with Windows meanings.** Where Ghostty already has
+   an option for something, murrtty implements that option rather than
+   adding its own: GTK's (`gtk-titlebar-style`, `gtk-tabs-inverted`,
+   `gtk-toolbar-style`, `gtk-single-instance`,
+   `gtk-titlebar-hide-when-maximized`), since murrtty looks like the GTK
+   app, and those Ghostty has only on some platforms (`auto-update` and
+   `auto-update-channel`, macOS-only there; `quick-terminal-*`;
+   `window-save-state`). Where murrtty's meaning differs, the difference is
+   documented (below, or in the option's Windows note), never a new option:
+   an unset `auto-update` means off here, where macOS Ghostty asks its
+   updater.
+3. **No new keybind actions.** murrtty's own commands (the configuration
+   editor, Fit Window to Screen, Close All but This, About murrtty) are
+   menu and command palette entries, not actions: an action name Ghostty
+   doesn't know makes its `keybind` line an error there. The cost is that
+   these commands can't be bound to keys.
+4. **Settings Ghostty has no option for live outside the file:**
+   - murrtty's state folder (`%LOCALAPPDATA%\murrtty`, or
+     `XDG_STATE_HOME\murrtty`): `updates.json` (how often to check, what
+     happens when an update is found, consent, a skipped version; 7.6) and
+     `session.json` (the windows kept for the next start; 5.10b);
+   - environment variables, for Windows-only switches and diagnostics:
+     `MURRTTY_D3D=warp` (7.8), `MURRTTY_OPENGL` (6.3),
+     `MURRTTY_CONPTY=system` (2.6).
+
+   A new murrtty-only setting goes in one of these, never into the
+   configuration.
+5. **The configuration editor keeps the file Ghostty's** (F1):
+   - it edits the file murrtty loaded, Ghostty's own included, in place,
+     and never copies it into a murrtty-only file (`config-editor` checks
+     that editing a Ghostty-only configuration makes no murrtty file);
+     murrtty reads its own `config.ghostty` first and Ghostty's when it has
+     none (`file_load.zig`);
+   - it rewrites only the lines of the options changed, and saving with
+     nothing changed keeps every byte (`EditableFile`);
+   - an option renamed since keeps the spelling its line has
+     (`option_list.renamed`, such as `background-blur-radius` for
+     `background-blur`), so an older Ghostty still reads it;
+   - it refuses a line longer than the loader's buffer reads
+     (`EditableFile.fits`).
+6. **The one exception: two values.** `shell-integration = cmd` and
+   `shell-integration = powershell` name Windows' shells, which Ghostty's
+   list lacks: Ghostty reports that one line as an error and loads the
+   rest. They are seldom needed, since the default `detect` finds cmd and
+   PowerShell, and the editor marks them (`option_list.ghosttyLacks`, unit
+   tested). Any other murrtty-only value joins that list in the commit that
+   adds it.
 
 ### Differences from Ghostty's GTK app
 
