@@ -18,6 +18,11 @@
   "analytics_engine_datasets": [
     { "binding": "VISITS", "dataset": "murrtty_site" }
   ],
+  // The release list murrtty's update checks read (/updates/v1.json, with
+  // its headers in _headers), written by the build. Static assets are
+  // served before the Worker runs, so checks are neither counted nor
+  // billed. Never turn on Workers caching: it would bill them.
+  "assets": { "directory": "dist/assets" },
   // No Workers Logs: their request records carry more than the footer's
   // promise (page, referring site, country, browser type).
   "observability": { "enabled": false }

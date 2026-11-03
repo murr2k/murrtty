@@ -29,9 +29,21 @@ metadata file is for deploying by hand through the API.
 Routes: /, /code-signing and /compare (no .html), /style.css, /icon.png,
 /screenshot.png, /download; www.murrtty.org redirects to murrtty.org;
 anything else is 404. Every page carries a strict Content-Security-Policy.
+
+The release list murrtty's update checks read (roadmap 7.6),
+/updates/v1.json, is a static asset beside the module (<out dir>/assets,
+wrangler.jsonc's assets directory) with its headers in assets/_headers:
+Cloudflare serves it from its edge without running the Worker, so a check
+is neither counted nor billed, and an unchanged list answers 304 to the
+ETag murrtty sends back. It holds every murrtty-vX.Y.Z release (newest
+first; the newest ones' notes in full), built from GitHub's releases, and
+nothing that changes between builds of the same releases, so its ETag
+only changes with them. Deploying by hand through the API (the metadata
+file) leaves the assets out: deploy through Workers Builds.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -102,6 +114,67 @@ def release():
         'page': f'{base}/tag/{tag}',
         'zip': f'{base}/download/{tag}/murrtty-{version}-windows-x86_64.zip',
     }
+
+
+# How many of the newest releases carry their notes in the list (the rest
+# link to their pages), and the list's headers.
+LIST_NOTES = 10
+LIST_HEADERS = """/updates/*
+  Cache-Control: public, max-age=3600
+  X-Content-Type-Options: nosniff
+  Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+  Referrer-Policy: no-referrer
+"""
+
+
+def version_key(version):
+    """X.Y.Z[-pre] in release order: a pre-release before its release."""
+    core, _, pre = version.partition('-')
+    nums = tuple(int(n) for n in core.split('.'))
+    return nums + ((1, '') if not pre else (0, pre))
+
+
+def update_list():
+    """The release list: every published murrtty-vX.Y.Z release, newest
+    first, with its date, page and files (each architecture's zip and
+    installer: address, size, SHA-256 from GitHub's digest)."""
+    releases = []
+    for r in github('/releases?per_page=100'):
+        tag = r['tag_name']
+        if r.get('draft') or not re.fullmatch(r'murrtty-v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?', tag):
+            continue
+        version = tag[len('murrtty-v'):]
+        files = {}
+        for a in r.get('assets', []):
+            m = re.fullmatch(r'murrtty-(.+)-windows-(x86_64|aarch64)(-setup\.exe|\.zip)', a['name'])
+            if not m or m.group(1) != version:
+                continue
+            digest = a.get('digest') or ''
+            files.setdefault(m.group(2), {})['setup' if m.group(3) == '-setup.exe' else 'zip'] = {
+                'name': a['name'],
+                'url': a['browser_download_url'],
+                'size': a['size'],
+                'sha256': digest[len('sha256:'):] if digest.startswith('sha256:') else None,
+            }
+        releases.append({
+            'version': version,
+            'tag': tag,
+            # murrtty's channels go by the version: X.Y.Z is a release
+            # (GitHub's "pre-release" flag marks murrtty's previews).
+            'channel': 'tip' if '-' in version else 'stable',
+            'preview': bool(r.get('prerelease')),
+            'date': (r.get('published_at') or r.get('created_at') or '')[:10],
+            'title': r.get('name') or f'murrtty {version}',
+            'url': r['html_url'],
+            'notes': r.get('body') or '',
+            'files': files,
+        })
+    releases.sort(key=lambda e: version_key(e['version']), reverse=True)
+    for e in releases[LIST_NOTES:]:
+        del e['notes']
+    if not releases:
+        sys.exit('no murrtty-v release on GitHub for the update list')
+    return {'schema': 1, 'releases': releases}
 
 
 TEMPLATE = r"""// murrtty.org, built by site/build_worker.py; edit the site's files, not this.
@@ -209,8 +282,15 @@ def main():
         f.write(module)
     with open(sys.argv[1] + '.meta.json', 'w', encoding='utf-8', newline='\n') as f:
         json.dump(METADATA, f, indent=1)
+    assets = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), 'assets')
+    os.makedirs(os.path.join(assets, 'updates'), exist_ok=True)
+    listing = update_list()
+    with open(os.path.join(assets, 'updates', 'v1.json'), 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(listing, f, ensure_ascii=True, sort_keys=True, separators=(',', ':'))
+    with open(os.path.join(assets, '_headers'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write(LIST_HEADERS)
     print(f'{sys.argv[1]}: {len(module)} bytes, {len(pages) + len(pics) + 1} routes, '
-          f'release {rel["version"]}')
+          f'release {rel["version"]}; updates/v1.json: {len(listing["releases"])} releases')
 
 
 if __name__ == '__main__':
