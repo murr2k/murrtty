@@ -29,6 +29,7 @@ const PaneDrag = @import("PaneDrag.zig");
 const Session = @import("Session.zig");
 const Undo = @import("Undo.zig");
 const Waiting = @import("Waiting.zig");
+const BellAudio = @import("BellAudio.zig");
 const Inspector = @import("Inspector.zig");
 const ConfigEditor = @import("ConfigEditor.zig");
 const wgl = @import("opengl").wgl;
@@ -252,6 +253,8 @@ undo: Undo = undefined,
 session: Session = undefined,
 /// The panes waiting for their user: the header bars' bells.
 waiting: Waiting = .{},
+/// The bell's `audio` (roadmap 3.7b), made at the first bell that asks.
+bell_audio: ?BellAudio = null,
 /// The id of the pane a restore is making (its history's), which
 /// Surface.init takes; else the pane gets a new one.
 restore_id: ?Session.Id = null,
@@ -589,6 +592,9 @@ pub fn terminate(self: *App) void {
     self.selection = null;
     // Its icon goes with murrtty.
     self.notifications.deinit();
+    // Before COM goes.
+    if (self.bell_audio) |*audio| audio.deinit();
+    self.bell_audio = null;
     if (self.taskbar_list) |list| list.release();
     self.taskbar_list = null;
     for (self.requests.items) |req| req.deinit(self.core_app.alloc);
@@ -3003,6 +3009,20 @@ fn commandFinished(self: *App, surface: *Surface, value: apprt.action.CommandFin
 ///   configured background and foreground.
 /// - `system`: Adwaita's, following the system's light or dark setting.
 /// - `light`, `dark`: Adwaita's, as named.
+/// The bell's `audio` (roadmap 3.7b), for every bell, as GTK's
+/// application plays it whether or not the pane has the keyboard.
+pub fn ringAudio(self: *App) void {
+    const config = &self.config;
+    if (!config.@"bell-features".audio) return;
+    const configured = config.@"bell-audio-path" orelse return;
+    const path: []const u8, const required = switch (configured) {
+        .optional => |p| .{ p, false },
+        .required => |p| .{ p, true },
+    };
+    if (self.bell_audio == null) self.bell_audio = .init(self.core_app.alloc);
+    self.bell_audio.?.ring(path, required, config.@"bell-audio-volume");
+}
+
 pub fn chromeTheme(self: *const App) draw.Theme {
     const config = &self.config;
     var theme = switch (config.@"window-theme") {

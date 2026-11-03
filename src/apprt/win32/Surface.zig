@@ -89,6 +89,12 @@ session_dir: ?[]u8 = null,
 /// Whether the bell rang here since the pane last had the keyboard or
 /// input (bell-features title: a bell before its tab's title, GTK's).
 bell_ringing: bool = false,
+/// The `border` bell feature's opacity (roadmap 3.7b), 0 to 1: GTK's
+/// revealer crossfades the bell overlay in and out over 500 ms. The fade
+/// began at `bell_fade_start` (GetTickCount64) from `bell_fade_from`.
+bell_border: f32 = 0,
+bell_fade_from: f32 = 0,
+bell_fade_start: u64 = 0,
 
 /// The terminal's background and foreground as they are now, which the
 /// window's caption and tab strip follow: the surface's config's until a
@@ -415,6 +421,8 @@ pub fn updateOverlay(self: *Surface) void {
     // Under the dimming and the bars' shade, as GTK's unfocused-split
     // overlay and header bar lie over its progress bar.
     n += self.progressRects(rects[n..]);
+    // Over the progress bar, under the dimming, as in GTK's surface.
+    n += self.bellRects(rects[n..]);
     if (self.dim_color) |col| {
         // The whole window, whatever its size later.
         rects[n] = .{
@@ -499,6 +507,11 @@ pub const Progress = struct {
 /// The progress report that removes a stalled program's bar goes after
 /// this, as GTK's.
 const progress_timer_id = 0x5404;
+/// The bell border's fade.
+const bell_timer_id = 0x5BE1;
+/// GTK's bell overlay: its revealer's crossfade, and its border's width.
+const bell_fade_ms = 500;
+const bell_border_px = 3;
 const progress_timeout_ms = 15000;
 
 /// OSC 9;4 (roadmap 5.4): GTK's setProgressReport, for the bar over the
@@ -1339,10 +1352,11 @@ pub fn setTitleOverride(self: *Surface, title: ?[]const u8) void {
 }
 
 /// The bell rang here (ring_bell), GTK's way: in a background tab, a mark
-/// on the tab until it is selected, whatever bell-features says; with its
-/// `title`, a bell before the tab's title and the caption until the pane
-/// gets the keyboard, a key or a click, though not for the pane that has
-/// the keyboard now (a shell's bell on Tab completion).
+/// on the tab until it is selected, whatever bell-features says; and the
+/// pane rings (GTK's bell-ringing) until it gets the keyboard, a key or a
+/// click, though not when it has the keyboard now (a shell's bell on Tab
+/// completion). While it rings, `title` puts a bell before the tab's title
+/// and the caption, and `border` GTK's bell overlay over the pane.
 pub fn ringBell(self: *Surface) void {
     const window = self.window;
     if (window.tabIndexOf(self)) |i| {
@@ -1351,9 +1365,10 @@ pub fn ringBell(self: *Surface) void {
             window.invalidateTabBar();
         }
     }
-    if (!self.app.config.@"bell-features".title or self.has_focus) return;
+    if (self.has_focus or self.bell_ringing) return;
     self.bell_ringing = true;
     window.surfaceTitleChanged(self);
+    self.fadeBellBorder();
 }
 
 /// The pane got the keyboard or input: the bell is answered.
@@ -1361,6 +1376,65 @@ fn clearBell(self: *Surface) void {
     if (!self.bell_ringing) return;
     self.bell_ringing = false;
     self.window.surfaceTitleChanged(self);
+    self.fadeBellBorder();
+}
+
+/// The bell border's opacity to fade to: shown while the bell rings, if
+/// bell-features asks for it.
+fn bellBorderTarget(self: *const Surface) f32 {
+    return if (self.bell_ringing and self.app.config.@"bell-features".border) 1 else 0;
+}
+
+/// Fade the bell border towards what the bell and the config now ask for
+/// (a config change calls this too), from where it is.
+pub fn fadeBellBorder(self: *Surface) void {
+    const target = self.bellBorderTarget();
+    if (self.bell_border == target) {
+        _ = c.KillTimer(self.hwnd, bell_timer_id);
+        return;
+    }
+    self.bell_fade_from = self.bell_border;
+    self.bell_fade_start = c.GetTickCount64();
+    _ = c.SetTimer(self.hwnd, bell_timer_id, 16, null);
+}
+
+/// The fade's timer: the next step, linear as GTK's crossfade.
+fn bellBorderTick(self: *Surface) void {
+    const target = self.bellBorderTarget();
+    const elapsed: f32 = @floatFromInt(c.GetTickCount64() -| self.bell_fade_start);
+    const t = @min(1, elapsed / bell_fade_ms);
+    self.bell_border = self.bell_fade_from + (target - self.bell_fade_from) * t;
+    if (t >= 1) {
+        self.bell_border = target;
+        _ = c.KillTimer(self.hwnd, bell_timer_id);
+    }
+    self.updateOverlay();
+}
+
+/// GTK's bell overlay (its `.bell-overlay`): the accent color at half
+/// opacity over the whole pane, and a 3 px border in the text color
+/// (libadwaita's window foreground: white in dark, rgb(0 0 6 / 80%) in
+/// light), all at the fade's opacity.
+fn bellRects(self: *Surface, out: []Shapes.Rect) usize {
+    if (self.bell_border <= 0 or out.len < 5) return 0;
+    var rc: c.RECT = undefined;
+    if (c.GetClientRect(self.hwnd, &rc) == 0) return 0;
+    const w = rc.right - rc.left;
+    const h = rc.bottom - rc.top;
+    const dpi: i32 = @intCast(c.GetDpiForWindow(self.hwnd));
+    const b: i32 = @max(1, @divTrunc(bell_border_px * dpi + 48, 96));
+    if (w <= 2 * b or h <= 2 * b) return 0;
+    const a = self.bell_border;
+    const dark = self.window.chromeTheme().dark;
+    const ink: [4]f32 = if (dark) .{ 1, 1, 1, a } else .{ 0, 0, 6.0 / 255.0, 0.8 * a };
+    // libadwaita's accent, GNOME's blue #3584e4 (draw.zig's).
+    const accent = [3]f32{ @as(f32, 0x35) / 255.0, @as(f32, 0x84) / 255.0, @as(f32, 0xe4) / 255.0 };
+    out[0] = .{ .x = 0, .y = 0, .width = w, .height = h, .color = .{ accent[0], accent[1], accent[2], 0.5 * a } };
+    out[1] = .{ .x = 0, .y = 0, .width = w, .height = b, .color = ink };
+    out[2] = .{ .x = 0, .y = h - b, .width = w, .height = b, .color = ink };
+    out[3] = .{ .x = 0, .y = b, .width = b, .height = h - 2 * b, .color = ink };
+    out[4] = .{ .x = w - b, .y = b, .width = b, .height = h - 2 * b, .color = ink };
+    return 5;
 }
 
 /// What the pane is called: the user's name for it, else the program's
@@ -1582,6 +1656,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
             if (wparam == PaneDrag.timer_id) PaneDrag.tick(self.app);
             // No report for 15 s: a program that stalled, or left.
             if (wparam == progress_timer_id) self.setProgress(.{ .state = .remove });
+            if (wparam == bell_timer_id) self.bellBorderTick();
             return 0;
         },
 

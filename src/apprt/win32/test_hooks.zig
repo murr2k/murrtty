@@ -849,6 +849,16 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     try out.print(alloc, ",\"sentry_ready\":{}", .{@import("../../crash/main.zig").sentry.ready()});
     // toggle_background_opacity's state (4.1), app-wide.
     try out.print(alloc, ",\"force_opaque\":{}", .{app.force_opaque});
+    // The bell's audio (3.7b): null until a bell asks for it; the media
+    // engine's events counted on its thread.
+    if (app.bell_audio) |*audio| {
+        const s = audio.state();
+        try out.print(alloc, ",\"bell_audio\":{{\"available\":{},\"rings\":{d},\"volume\":{d},\"path\":", .{ s.available, s.rings, s.volume });
+        try writeString(alloc, out, s.path orelse "");
+        try out.print(alloc, ",\"loadstart\":{d},\"playing\":{d},\"ended\":{d},\"errors\":{d},\"error_code\":{d},\"error_hr\":{d}}}", .{
+            s.loadstart, s.playing, s.ended, s.errors, s.error_code, s.error_hr,
+        });
+    } else try out.appendSlice(alloc, ",\"bell_audio\":null");
     // Which ConPTY new panes get: the bundled one or Windows' own (2.6).
     try out.print(alloc, ",\"conpty\":\"{t}\"", .{@import("../../os/main.zig").conpty.get().source});
     // The renderer this build draws with (roadmap 7.8): "opengl" or
@@ -1007,6 +1017,9 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             if (s.drop_dir) |dir| @tagName(dir) else "",
             s.dim_color != null,
         });
+        // The bell (3.7b): ringing whatever bell-features says, and the
+        // border's opacity as the fade has it.
+        try out.print(alloc, "\"ringing\":{},\"bell_border\":{d},", .{ s.bell_ringing, s.bell_border });
         // Its picture's number for saveFrames (`frame-<n>.bmp`), which counts
         // every pane of every window in tree order, not this layout order.
         const frame_index = frame: {

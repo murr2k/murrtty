@@ -3306,11 +3306,13 @@ keybind: Keybinds = .{},
 ///    for instance under the "Sound > Alert Sound" setting in GNOME,
 ///    or the "Accessibility > System Bell" settings in KDE Plasma.
 ///
-///    On macOS, this plays the system alert sound.
+///    On macOS, this plays the system alert sound. On Windows (murrtty),
+///    this plays Windows' Default Beep sound.
 ///
 ///  * `audio`
 ///
-///    Play a custom sound. (Available since 1.3.0 on macOS)
+///    Play a custom sound. (Available since 1.3.0 on macOS; on Windows,
+///    murrtty plays it through Media Foundation.)
 ///
 ///  * `attention` *(enabled by default)*
 ///
@@ -3329,6 +3331,9 @@ keybind: Keybinds = .{},
 ///
 ///    - On other systems this may have no effect at all.
 ///
+///    On Windows (murrtty), the window's taskbar button flashes until the
+///    window is focused.
+///
 ///  * `title` *(enabled by default)*
 ///
 ///    Prepend a bell emoji (🔔) to the title of the alerted surface until the
@@ -3339,7 +3344,7 @@ keybind: Keybinds = .{},
 ///    Display a border around the alerted surface until the terminal is
 ///    re-focused or interacted with (such as on keyboard input).
 ///
-///    Available since: 1.2.0 on GTK, 1.2.1 on macOS
+///    Available since: 1.2.0 on GTK, 1.2.1 on macOS; murrtty on Windows
 ///
 /// Example: `audio`, `no-audio`, `system`, `no-system`
 ///
@@ -3351,6 +3356,9 @@ keybind: Keybinds = .{},
 /// configuration file that it is referenced from, or from the current working
 /// directory if this is used as a CLI flag. The path may be prefixed with `~/`
 /// to reference the user's home directory.
+///
+/// On Windows (murrtty), the file can be in any format Windows plays: WAV,
+/// MP3, AAC, WMA or FLAC (Ogg with Microsoft's Web Media Extensions).
 ///
 /// Available since: 1.2.0 on GTK, 1.3.0 on macOS.
 @"bell-audio-path": ?Path = null,

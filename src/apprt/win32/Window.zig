@@ -1779,6 +1779,7 @@ pub fn presentSurface(self: *Window, surface: *Surface) void {
 pub fn ringBell(self: *Window) void {
     const features = self.app.config.@"bell-features";
     if (features.system) _ = c.MessageBeep(c.MB_OK);
+    self.app.ringAudio();
     if (features.attention and c.GetForegroundWindow() != self.hwnd) {
         _ = c.FlashWindowEx(&.{
             .hwnd = self.hwnd,
@@ -1858,7 +1859,12 @@ pub fn configChanged(self: *Window) void {
     // background-opacity and background-blur may have changed.
     self.syncTranslucent();
     self.syncBlur();
-    for (self.tabs.items) |t| t.syncDim();
+    for (self.tabs.items) |t| {
+        t.syncDim();
+        // bell-features' border may have changed while a pane rings.
+        var it = t.tree.iterator();
+        while (it.next()) |entry| entry.view.fadeBellBorder();
+    }
     // The quick terminal's position and size may have changed.
     if (self.quick) |*q| q.replace(self);
     self.layout();

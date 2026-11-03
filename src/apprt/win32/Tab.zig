@@ -178,11 +178,12 @@ pub fn title(self: *const Tab) []const u8 {
 }
 
 /// What the tab bar and caption show: the title, after a bell while its
-/// focused pane's bell rings and a magnifier while a pane is zoomed (GTK's
-/// order). The caller frees it.
+/// focused pane's bell rings (with bell-features `title`) and a magnifier
+/// while a pane is zoomed (GTK's order). The caller frees it.
 pub fn label(self: *const Tab, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
+    const bell = self.focused.bell_ringing and self.window.app.config.@"bell-features".title;
     return std.fmt.allocPrint(alloc, "{s}{s}{s}", .{
-        if (self.focused.bell_ringing) "\u{1F514} " else "",
+        if (bell) "\u{1F514} " else "",
         if (self.tree.zoomed != null) "\u{1F50D} " else "",
         self.title(),
     });

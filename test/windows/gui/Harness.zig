@@ -1785,6 +1785,22 @@ pub const Dump = struct {
     sentry_ready: bool = false,
     /// toggle_background_opacity made the windows opaque (4.1).
     force_opaque: bool = false,
+    /// The bell's audio (3.7b), null until a bell asks for it: Media
+    /// Foundation's engine made, the bells that asked, the volume and file
+    /// last asked for, and the engine's events (MF_MEDIA_ENGINE_EVENT)
+    /// counted, with the last error's code and HRESULT.
+    bell_audio: ?struct {
+        available: bool,
+        rings: u32,
+        volume: f64,
+        path: []const u8,
+        loadstart: u32,
+        playing: u32,
+        ended: u32,
+        errors: u32,
+        error_code: u32,
+        error_hr: u32,
+    } = null,
     /// The renderer the build draws with ("opengl", "d3d11"; 7.8), and
     /// with Direct3D 11 the first pane's adapter and whether it draws on
     /// the CPU.
@@ -2129,6 +2145,11 @@ pub const Dump = struct {
         drop: []const u8 = "",
         /// Dimmed as an unfocused pane of its tab (unfocused-split-*).
         dimmed: bool = false,
+        /// Its bell rings (3.7b: whatever bell-features says, until the
+        /// pane gets the keyboard or input), and the border's opacity as
+        /// its fade has it (0 to 1).
+        ringing: bool = false,
+        bell_border: f32 = 0,
         /// Its inspector window (roadmap 5.12), while open: frames drawn and
         /// where ImGui has the mouse; and the core's inspector on.
         inspector: ?struct { hwnd: u64, frames: u32, mouse: [2]f32 } = null,

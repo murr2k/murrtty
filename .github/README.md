@@ -270,10 +270,15 @@ release for the maintainer to publish.
   `abnormal-command-exit-runtime`, or with `wait-after-command`, and
   otherwise the terminal closes), a panel if the renderer fails, and toasts
   for copying and for reloading the configuration (`app-notifications`).
-- The bell's `title` feature: a 🔔 before the tab's title and the caption
-  when a terminal rings while it doesn't have the keyboard, until it gets
-  the keyboard, a key or a click; and a mark on a background tab until you
-  select it.
+- The bell's features. A terminal that rings while it doesn't have the
+  keyboard rings until it gets the keyboard, a key or a click: `title` puts
+  a 🔔 before the tab's title and the caption, and `border` lays GTK's bell
+  overlay over it (the accent color at half opacity and a 3 px border,
+  fading in and out). `audio` plays `bell-audio-path` at
+  `bell-audio-volume` on every bell, through Media Foundation (the formats
+  Windows plays: WAV, MP3, AAC, WMA, FLAC). `system` plays Windows'
+  default beep and `attention` flashes the taskbar button. A bell in a
+  background tab also marks the tab until you select it.
 - Waiting bells, murrtty's own: when a terminal without the keyboard rings,
   sends a notification or reports a finished command
   (`notify-on-command-finish`), as an agent asking for input in a
@@ -470,7 +475,6 @@ release for the maintainer to publish.
 
 **Not implemented yet**
 
-- The bell's `audio` and `border` features.
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
 - Signed releases. 0.4.0 is out as a
@@ -648,8 +652,7 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   [configuration reference](https://ghostty.org/docs/config): fonts, colors,
   themes, keybindings, the shell and so on. Most options that the macOS
   and GTK apps implement in their own user interface work here too; the
-  exceptions are the missing features listed above, such as the `audio`
-  and `border` bell features (`system`, `attention` and `title` work).
+  exceptions are the missing features listed above.
 - **Shell.** The default is PowerShell 7 (`pwsh.exe -NoLogo`) when it is
   installed, else `cmd.exe` (`%COMSPEC%`); `command` picks another. Shell
   integration is automatic for PowerShell 7, Windows PowerShell and `cmd`

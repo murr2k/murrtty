@@ -1877,8 +1877,8 @@ default `bell-features`, so its part (S) is in M1; audio and border are M2.
 *Done when:* a BEL in a background tab marks it until selected, and the audio
 file plays at the configured volume.
 
-*Still open (2026-10-29): `audio` and `border`, M2's last items (5.2b
-built 2026-10-31).* *3.7a (`title`) done 2026-10-26.* A BEL with `bell-features = title` (the
+*3.7b (`audio`, `border`) done 2026-11-02 (issue #4), M2's last items.*
+*3.7a (`title`) done 2026-10-26.* A BEL with `bell-features = title` (the
 default) in a pane that doesn't have the keyboard puts "🔔 " before the
 tab's title, and the caption, while the pane's bell rings
 (`Surface.bell_ringing`), until the pane gets the keyboard, a key or a
@@ -1889,6 +1889,38 @@ tab also underlines the tab (`Tab.attention`) until it is selected.
 Scenario `bell`; the dump reports each tab's `bell` and `attention`, and
 what the tab bar last painted (`painted_bell`, `painted_attention`). Audio
 and border (the rest of 3.7) are M2.
+
+*3.7b, 2026-11-02.* The pane rings as GTK's surface does
+(`bell-ringing`): whenever it hasn't the keyboard, whatever
+`bell-features` says, until the keyboard, a key or a press; `title` and
+`border` each show it (`Tab.label` asks for `title` now; before, ringing
+was set only with `title`).
+- `border`: GTK's `.bell-overlay`, the accent (GNOME's blue) at half
+  opacity over the pane and a 3 px border (scaled by DPI) in the text
+  color (libadwaita's window foreground: white in dark, rgb(0 0 6 / 80%)
+  in light), as present-pass shapes (`Surface.bellRects`) stacked as in
+  GTK's surface: over the progress bar, under the unfocused dimming. Its
+  revealer's 500 ms crossfade is a linear fade on a pane timer
+  (`fadeBellBorder`, `bellBorderTick`); a config change re-aims it
+  (`Window.configChanged`).
+- `audio`: `BellAudio.zig`, as GTK's one MediaFile per application
+  (gtk/media.zig): Media Foundation's media engine, audio only, in the
+  Alerts category, made at the first bell, given the file again when the
+  path changes, rewound and played on each bell (the focused pane's too,
+  as GTK's application plays it), at the volume clamped to 0 to 1.
+  mfplat.dll and oleaut32.dll (for the BSTR SetSource takes) are loaded
+  from System32 at the first bell, so a Windows without Media Foundation
+  (a Server without its feature) just has no sound. Hand-written COM
+  vtables in the headers' order; the notify object only counts the
+  engine's events in atomics (the dump's `bell_audio`), and logs a
+  required file's failure, as GTK logs one. The unit test calls every
+  slot used (round trips of volume and loop catch a wrong slot) and plays
+  a silent WAV.
+Scenarios `bell-border` (the overlay's pixels, read back, its fade in and
+out, no title bell without `title`, nothing for the pane with the
+keyboard) and `bell-audio` (a silent WAV: nothing made before a bell,
+then two bells each loaded and played at the volume; it skips, after the
+rest, without Media Foundation or an audio device). Both passed here.
 
 *End-of-phase review, 2026-10-26.* Three independent reviews of 3.4 to
 3.7a and the icon (Win32 lifetimes and reentrancy, parity with GTK and the

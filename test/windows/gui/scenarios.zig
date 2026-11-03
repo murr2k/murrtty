@@ -49,6 +49,8 @@ pub const all = [_]Scenario{
     .{ .name = "tab-buttons", .about = "the arrow beside + opens the split menu; the menu button opens GTK's main menu (New Tab, Command Palette, About murrtty)", .run = tabButtons },
     .{ .name = "tab-menu", .about = "a tab's right-click menu: Change Tab Title, Close Tab, Close Other Tabs, Close Tabs to the Right, on the tab clicked; graying", .run = tabMenu },
     .{ .name = "bell", .about = "bell-features title: a bell before the tab's title and caption until input; a background tab's mark until selected", .run = bell },
+    .{ .name = "bell-border", .about = "bell-features border: GTK's bell overlay fades in over a pane without the keyboard and out when answered; no title bell without title", .run = bellBorder },
+    .{ .name = "bell-audio", .about = "bell-features audio: bell-audio-path through Media Foundation at bell-audio-volume, on every bell (a silent file)", .run = bellAudio },
     .{ .name = "header-bells", .about = "murrtty's waiting bells: a bell or notification from a pane without the keyboard puts a bell in every window's header bar, oldest first, the title unmoved; tooltips name the pane; left click goes to it, right click dismisses with no menu; the keyboard, a close, overflow", .run = headerBells },
     .{ .name = "status-overlays", .about = "link preview, read-only badge, key sequence and table, renderer panel, toasts (copy, reload), child-exited banner (Close, any key)", .run = statusOverlays },
     .{ .name = "titles", .about = "rename prompts (tab, terminal) over program titles, blank restores, Cancel, set_window_title, copy_title_to_clipboard, double-click a tab", .run = titles },
@@ -2417,6 +2419,180 @@ fn bell(h: *Harness) anyerror!void {
     }
     t = try waitTabState(h, &g, 0, TabState.seen, "the tab seen");
     try h.expect(true, "selecting it clears the mark and answers the bell", .{});
+    try quit(h, &g, first);
+}
+
+/// GTK's `border` bell feature (roadmap 3.7b): while a pane without the
+/// keyboard rings, its bell overlay, the accent at half opacity over the
+/// pane and a 3 px border in the text color, crossfaded in over 500 ms and
+/// out when the pane is answered (here a click). Read back in the pane's
+/// pixels with the dimming off and the dark window theme (a white border).
+/// The pane rings whatever bell-features says, but without `title` no bell
+/// goes before the tab's title; a bell in the pane with the keyboard rings
+/// nothing.
+fn bellBorder(h: *Harness) anyerror!void {
+    var g = try start(h, "bell-border", "bell-features = border,no-title,no-attention,no-system\n" ++
+        "unfocused-split-opacity = 1\nwindow-theme = dark\n", ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const first = try h.surface(&g, win);
+    const bg: u32 = 0x282c34;
+
+    // A bell from the first pane 3 s from now; a split then takes its
+    // keyboard.
+    try h.typeText(first, "powershell -NoProfile -Command \"Start-Sleep 3; [Console]::Write([char]7)\"");
+    h.enter(first);
+    h.key(first, .{ .ctrl = true, .shift = true }, 'O');
+    try waitPanes(h, &g, 2);
+    var size: [2]u32 = .{ 0, 0 };
+    {
+        var waited: u32 = 0;
+        var shown = false;
+        while (waited <= 15000) : (waited += 200) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const dw = d.value.windows[0];
+            const p = dw.tabs[dw.active].panes orelse return h.fail("no panes", .{});
+            if (p[0].ringing and p[0].bell_border >= 1) {
+                try h.expect(!p[1].ringing and p[1].bell_border == 0, "the pane with the keyboard doesn't ring", .{});
+                try h.expect(!std.mem.startsWith(u8, dw.tabs[dw.active].label, "\u{1F514}"), "no bell before the title without `title` ('{s}')", .{dw.tabs[dw.active].label});
+                size = .{ @intCast(p[0].rect[2] - p[0].rect[0]), @intCast(p[0].rect[3] - p[0].rect[1]) };
+                shown = true;
+                break;
+            }
+            w.Sleep(200);
+        }
+        try h.expect(shown, "the unfocused pane rings and its border fades in to full", .{});
+    }
+    const tint = blendSrgb(0x3584e4, bg, 0.5);
+    try expectColor(h, try h.probePane(&g, 0, 1, size[1] / 2), 0xffffff, "the border, in the dark theme's text color");
+    try expectColor(h, try h.probePane(&g, 0, size[0] / 2, size[1] - 8), tint, "the accent at half opacity over the pane");
+    try expectColor(h, try h.probePane(&g, 1, 1, size[1] / 2), bg, "nothing over the pane with the keyboard");
+
+    // Answered: a click on it, then the fade out.
+    const left = try paneHwnd(h, &g, 0);
+    h.click(left, @intCast(size[0] / 2), @intCast(size[1] / 2), .left);
+    {
+        var waited: u32 = 0;
+        var gone = false;
+        while (waited <= 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const dw = d.value.windows[0];
+            const p = dw.tabs[dw.active].panes orelse return h.fail("no panes", .{});
+            if (!p[0].ringing and p[0].bell_border == 0) {
+                gone = true;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(gone, "a click answers the bell and the border fades out", .{});
+    }
+    try expectColor(h, try h.probePane(&g, 0, 1, size[1] / 2), bg, "the pane is clear again");
+
+    // A bell in the pane with the keyboard: nothing.
+    try h.typeText(left, "powershell -nop -c \"[Console]::Write([char]7)\" & echo rang-here");
+    h.enter(left);
+    try h.waitText(&g, "rang-here", 2, 15000);
+    h.sync(left);
+    w.Sleep(800);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const dw = d.value.windows[0];
+        const p = dw.tabs[dw.active].panes orelse return h.fail("no panes", .{});
+        try h.expect(!p[0].ringing and p[0].bell_border == 0, "a bell in the pane with the keyboard shows no border", .{});
+    }
+    try quit(h, &g, left);
+}
+
+extern "winmm" fn waveOutGetNumDevs() callconv(.winapi) u32;
+
+/// The `audio` bell feature (roadmap 3.7b): bell-audio-path played through
+/// Media Foundation's media engine at bell-audio-volume, on every bell,
+/// the pane with the keyboard's too (GTK's application plays it so). The
+/// file is a silent WAV, so the test makes no sound. Nothing is made before
+/// a bell asks; the first bell makes the engine, gives it the file and
+/// plays; a second plays again from the start. Without Media Foundation (a
+/// Windows Server without its feature) or an audio device the playing
+/// can't be checked: it skips, after the rest.
+fn bellAudio(h: *Harness) anyerror!void {
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\bell-audio", .{h.temp_dir});
+    defer h.alloc.free(dir);
+    try h.makeDirAt(dir);
+    const wav_path = try std.fmt.allocPrint(h.alloc, "{s}\\silence.wav", .{dir});
+    defer h.alloc.free(wav_path);
+    {
+        // 300 ms of 16-bit mono silence at 8 kHz.
+        const samples = 2400;
+        var wav: [44 + samples * 2]u8 = @splat(0);
+        @memcpy(wav[0..4], "RIFF");
+        std.mem.writeInt(u32, wav[4..8], 36 + samples * 2, .little);
+        @memcpy(wav[8..16], "WAVEfmt ");
+        std.mem.writeInt(u32, wav[16..20], 16, .little);
+        std.mem.writeInt(u16, wav[20..22], 1, .little);
+        std.mem.writeInt(u16, wav[22..24], 1, .little);
+        std.mem.writeInt(u32, wav[24..28], 8000, .little);
+        std.mem.writeInt(u32, wav[28..32], 16000, .little);
+        std.mem.writeInt(u16, wav[32..34], 2, .little);
+        std.mem.writeInt(u16, wav[34..36], 16, .little);
+        @memcpy(wav[36..40], "data");
+        std.mem.writeInt(u32, wav[40..44], samples * 2, .little);
+        try h.writeFileAt(wav_path, &wav);
+    }
+    const extra = try std.fmt.allocPrint(h.alloc, "bell-features = audio,no-title,no-attention,no-system\n" ++
+        "bell-audio-path = {s}\nbell-audio-volume = 0.25\n", .{wav_path});
+    defer h.alloc.free(extra);
+    var g = try start(h, "bell-audio", extra, ">");
+    defer g.deinit();
+    const win = try h.mainWindow(&g);
+    const first = try h.surface(&g, win);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(d.value.bell_audio == null, "nothing made before a bell asks", .{});
+    }
+
+    var plays: u32 = 0;
+    for (1..3) |n| {
+        const marker = if (n == 1) "rang-once" else "rang-twice";
+        const cmd = try std.fmt.allocPrint(h.alloc, "powershell -nop -c \"[Console]::Write([char]7)\" & echo {s}", .{marker});
+        defer h.alloc.free(cmd);
+        try h.typeText(first, cmd);
+        h.enter(first);
+        try h.waitText(&g, marker, 2, 15000);
+        h.sync(first);
+        var waited: u32 = 0;
+        var heard = false;
+        while (waited <= 10000) : (waited += 200) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const a = d.value.bell_audio orelse {
+                w.Sleep(200);
+                continue;
+            };
+            if (a.rings < n) {
+                w.Sleep(200);
+                continue;
+            }
+            try h.expect(a.rings == n, "bell {d} asked for the sound (rings {d})", .{ n, a.rings });
+            try h.expect(a.volume == 0.25, "at bell-audio-volume (got {d})", .{a.volume});
+            try h.expect(std.mem.eql(u8, a.path, wav_path), "of bell-audio-path ('{s}')", .{a.path});
+            if (!a.available) return h.skip("Media Foundation isn't here (no mfplat.dll): bell audio is off", .{});
+            if (a.errors > 0) {
+                if (waveOutGetNumDevs() == 0)
+                    return h.skip("no audio output device: the engine reported error {d}, 0x{x:0>8}", .{ a.error_code, a.error_hr });
+                return h.fail("the engine reported error {d}, 0x{x:0>8}", .{ a.error_code, a.error_hr });
+            }
+            if (a.loadstart > 0 and a.playing + a.ended > plays) {
+                plays = a.playing + a.ended;
+                heard = true;
+                break;
+            }
+            w.Sleep(200);
+        }
+        try h.expect(heard, "bell {d}: the engine loaded the file and played it", .{n});
+    }
     try quit(h, &g, first);
 }
 
