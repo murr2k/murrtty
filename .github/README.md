@@ -68,12 +68,12 @@ it. It last merged Ghostty 1.4.0 (the release tag `v1.4.0`, October 2026).
 murrtty numbers its own releases, apart from Ghostty's: semantic versions
 starting at 0.1.0, each release tagged `murrtty-vX.Y.Z`. While it is 0.x, a
 minor version brings new features or an upstream merge and a patch version
-brings fixes. `murrtty +version` names both versions, as in `murrtty 0.4.0,
+brings fixes. `murrtty +version` names both versions, as in `murrtty 0.5.0,
 based on Ghostty 1.4.0`; a build of any other commit is a development build
-of the next release, such as `0.5.0-main+1a2b3c4`. The latest release,
-[0.4.0](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.4.0) (x64
-and ARM64), is a preview. Besides building from source (see [Build](#build))
-and the release zips, it installs with [Scoop](https://scoop.sh):
+of the next release, such as `0.6.0-main+1a2b3c4`. The latest release,
+[0.5.0](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.5.0) (x64
+and ARM64), is a preview. Besides building from source (see [Build](#build)),
+the release zips and the installers, it installs with [Scoop](https://scoop.sh):
 
 ```powershell
 scoop bucket add murrtty https://github.com/murr2k/scoop-murrtty
@@ -484,18 +484,18 @@ release for the maintainer to publish.
 
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
-- Signed releases. 0.4.0 is out as a
-  [preview](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.4.0):
-  zips without a code signature, so Windows SmartScreen warns before
+- Signed releases. 0.5.0 is out as a
+  [preview](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.5.0):
+  zips and installers without a code signature, so Windows SmartScreen warns before
   running it the first time; building from source is recommended.
   Code signing comes later: the SignPath Foundation's free signing for
   open-source projects asks for more public visibility first (it declined
   murrtty in October 2026, days after the repository was published), so
   murrtty will apply again once it has users; a Microsoft Store package,
   which the Store signs, is the other route (see the
-  [code signing policy](https://murrtty.org/code-signing)). The installer
-  and update checks (both on `main`) come with 0.5.0; updates that download
-  and install themselves come later.
+  [code signing policy](https://murrtty.org/code-signing)). 0.5.0 brought
+  the installer and update checks; updates that download and install
+  themselves come later.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was
 built and why, and plans what is left: the items above, and testing on AMD

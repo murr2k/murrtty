@@ -1,26 +1,26 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 
 PackageIdentifier: MurrayKopit.murrtty
-PackageVersion: 0.4.0
+PackageVersion: 0.5.0
 InstallerType: zip
 NestedInstallerType: portable
 # murrtty needs the files beside it (conpty.dll, OpenConsole.exe, share\):
 # its bin folder goes on PATH rather than a link to the exe elsewhere.
 ArchiveBinariesDependOnPath: true
 MinimumOSVersion: 10.0.17763.0
-ReleaseDate: 2026-11-02
+ReleaseDate: 2026-11-03
 Installers:
 - Architecture: x64
   NestedInstallerFiles:
-  - RelativeFilePath: murrtty-0.4.0-windows-x86_64\bin\murrtty.exe
+  - RelativeFilePath: murrtty-0.5.0-windows-x86_64\bin\murrtty.exe
     PortableCommandAlias: murrtty
-  InstallerUrl: https://github.com/murr2k/murrtty/releases/download/murrtty-v0.4.0/murrtty-0.4.0-windows-x86_64.zip
-  InstallerSha256: 6A09139E7E86009340363193560A28A7ED61C0BE1F00AFDB24EACD4C9C5ADE61
+  InstallerUrl: https://github.com/murr2k/murrtty/releases/download/murrtty-v0.5.0/murrtty-0.5.0-windows-x86_64.zip
+  InstallerSha256: 7C2B7E42E1ED1857A25BC89C3D41F6E50F4217E2CFDEC24510378913207BA0CE
 - Architecture: arm64
   NestedInstallerFiles:
-  - RelativeFilePath: murrtty-0.4.0-windows-aarch64\bin\murrtty.exe
+  - RelativeFilePath: murrtty-0.5.0-windows-aarch64\bin\murrtty.exe
     PortableCommandAlias: murrtty
-  InstallerUrl: https://github.com/murr2k/murrtty/releases/download/murrtty-v0.4.0/murrtty-0.4.0-windows-aarch64.zip
-  InstallerSha256: 3DDF72D768F1830FF249BCFDAB9021D80EBE2596346717BD3623F87DD41C6D86
+  InstallerUrl: https://github.com/murr2k/murrtty/releases/download/murrtty-v0.5.0/murrtty-0.5.0-windows-aarch64.zip
+  InstallerSha256: E70105360D35704A3E26906C257C70DFEE206829403656E5B8F6853A73B2B5DD
 ManifestType: installer
 ManifestVersion: 1.12.0

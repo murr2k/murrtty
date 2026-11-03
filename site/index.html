@@ -39,6 +39,7 @@
     <li>Notifications, taskbar progress, global key bindings, the tray, a quick terminal, drag and drop, undo of closes, the terminal inspector.</li>
     <li>A configuration editor that edits your Ghostty-format file in place, with undo and a review of each change before it saves.</li>
     <li>Screen readers read its terminals through UI Automation.</li>
+    <li>Update checks, off until you turn them on: what a check sends is <a href="#privacy">below</a>.</li>
   </ul>
 
   <h2 id="get-it">Get it</h2>
@@ -61,12 +62,17 @@ cd murrtty
       the dependencies as one zip, with Windows' proxy settings.
     </p>
     <p>
-      <strong>Or download</strong> <a href="/download">murrtty @RELEASE@</a>
-      (zip, x64), a preview tested on one machine so far; its
-      <a href="@RELEASE_URL@">release notes</a> list the known risks. It is
-      not code signed, so Windows SmartScreen warns before running it the
-      first time; the <a href="/code-signing">code signing policy</a> says
-      what comes after.
+      <strong>Or install</strong> murrtty @RELEASE@, a preview tested on one
+      machine so far; its <a href="@RELEASE_URL@">release notes</a> list the
+      known risks. The installer
+      (<a href="https://github.com/murr2k/murrtty/releases/download/murrtty-v@RELEASE@/murrtty-@RELEASE@-windows-x86_64-setup.exe">x64</a>,
+      <a href="https://github.com/murr2k/murrtty/releases/download/murrtty-v@RELEASE@/murrtty-@RELEASE@-windows-aarch64-setup.exe">ARM64</a>)
+      installs it for you alone, no administrator needed, with a Start menu
+      shortcut and Open in murrtty on folders; or
+      <a href="/download">download the zip</a> (x64) and run it from any
+      folder. Neither is code signed, so Windows SmartScreen warns before
+      running it the first time; the <a href="/code-signing">code signing
+      policy</a> says what comes after.
     </p>
     <p><strong>Or with <a href="https://scoop.sh">Scoop</a>:</strong></p>
 <pre><code>scoop bucket add murrtty https://github.com/murr2k/scoop-murrtty
@@ -81,6 +87,16 @@ scoop install murrtty/murrtty</code></pre>
       is tested, what isn't, and what isn't built yet.
     </p>
   </div>
+
+  <h2 id="privacy">Privacy</h2>
+  <p>
+    murrtty makes no network connections of its own unless you check for
+    updates or turn automatic checks on, which asks first. A check sends one
+    request to murrtty.org, with no version, ID or cookie. Cloudflare, which
+    serves murrtty.org, sees your IP address, as for any website.
+    murrtty.org neither logs nor counts checks. Downloads come from GitHub,
+    only when you choose one. Crash reports stay on your computer.
+  </p>
 
   <h2>Links</h2>
   <div class="links">

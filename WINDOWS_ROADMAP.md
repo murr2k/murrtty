@@ -4195,6 +4195,22 @@ go-ahead).
   (`run-onscreen.cmd`) didn't run: the screen was locked and no golden
   samples exist yet, so the first one records them. `version` then went
   to 0.5.0, and the Scoop and winget manifests to 0.4.0.
+  *0.5.0 released 2026-11-03* (the owner's go-ahead): update checks, off
+  until turned on (7.6a: the Updates window, consent, the header bar's
+  pill, the one-time notice, the found notification), the per-user
+  installer (#5), the bell's audio and border (3.7b, #4), and the fix for
+  a request's directory ending in a dot. The first release built by the
+  release job (7.2, #1) from its tag, `murrtty-v0.5.0` on `4bc33667f`
+  (run 41738762177): both zips, both installers (installed, upgraded and
+  uninstalled on each architecture's runner), the deps zip and
+  `SHA256SUMS.txt`, each with a build provenance attestation. Here the
+  files matched their sums, Defender found nothing, the zips' and
+  installers' attestations verified, and the x64 build said `murrtty
+  0.5.0, based on Ghostty 1.4.0`, channel stable. The on-screen run was
+  deferred again (the owner's choice). murrtty.org names the installers
+  and says what a check sends; the comparison page's murrtty entries
+  follow 0.5.0 (148 commits behind Ghostty's main). `version` then went
+  to 0.6.0, and the Scoop and winget manifests to 0.5.0.
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored
