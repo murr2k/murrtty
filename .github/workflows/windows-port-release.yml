@@ -157,12 +157,17 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    # Outside the checkout, whose dist\ is the repository's own.
-    env:
-      ASSETS: ${{ runner.temp }}/assets
-      DEPS: ${{ runner.temp }}/deps
-      PUBLISHED: ${{ runner.temp }}/published
     steps:
+      # Outside the checkout, whose dist\ is the repository's own (a job's
+      # env can't name runner.temp).
+      - name: Folders
+        run: |
+          {
+            echo "ASSETS=$RUNNER_TEMP/assets"
+            echo "DEPS=$RUNNER_TEMP/deps"
+            echo "PUBLISHED=$RUNNER_TEMP/published"
+          } >> "$GITHUB_ENV"
+
       - name: Checkout the tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
