@@ -8,8 +8,9 @@ The hosted release job's (windows-port-release.yml) way to its Inno Setup:
 a pinned release, 7.1.0 of 2026-08-12, whose download must match the
 SHA-256 GitHub lists for the asset and carry a valid Authenticode
 signature by Pyrsys B.V. (Inno Setup's publisher); with -Attest also its
-GitHub build provenance attestation (gh attestation verify, which needs
-GH_TOKEN). It installs silently for the current user into -Dir.
+GitHub release attestation, that it is the immutable release's asset as
+published (gh release verify-asset, which needs GH_TOKEN). It installs
+silently for the current user into -Dir.
 
 It runs an installer: use it on a CI runner, or where its owner allows it.
 Windows PowerShell 5.1 and PowerShell 7; keep it ASCII.
@@ -42,8 +43,10 @@ if ($sig.SignerCertificate.Subject -notmatch [regex]::Escape($signer)) {
 }
 Write-Host "Inno Setup ${version}: SHA-256 $got, signed by $signer"
 if ($Attest) {
-    & gh attestation verify $exe -R jrsoftware/issrc | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "Inno Setup $version's attestation didn't verify (exit $LASTEXITCODE)." }
+    # An immutable release's attestation (in-toto release/v0.2, not build
+    # provenance): the file is the release's asset as published.
+    & gh release verify-asset is-7_1_0 $exe -R jrsoftware/issrc | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "Inno Setup $version isn't attested as release is-7_1_0's asset (exit $LASTEXITCODE)." }
 }
 
 $log = Join-Path $work 'install.log'
