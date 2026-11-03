@@ -3733,6 +3733,38 @@ decisions 6 and 8 allow the minutes), upload
 artifacts, add the GUI suite (7.3), the ARM64 build (7.7) and the release job
 (7.4).
 
+*Release job built 2026-11-02* (the owner's go-ahead, issue #1):
+`.github/workflows/windows-port-release.yml`, in the public repository
+only. A pushed `murrtty-vX.Y.Z` tag builds both packages from the tag with
+`build-windows.cmd -Package` on clean hosted runners, x64 on windows-2025
+and ARM64 natively on windows-11-arm (where the package's own check runs
+the unpacked murrtty, which it can't on this x64 desktop); merges the two
+runners' dependencies zips, each holding only its own architecture's Mesa,
+into one (stored, in name order, one timestamp); writes `SHA256SUMS.txt`;
+attests every zip (`actions/attest-build-provenance`, so `gh attestation
+verify <zip> -R murr2k/murrtty` names the run and the commit); and opens a
+draft pre-release. Publishing stays the maintainer's: notes, a Defender scan
+of the draft's files here, then publish. A run takes about 20 minutes.
+Started by hand for a tag already released, it builds the tag again and
+compares the result with the published files entry by entry, saying of a
+differing exe or DLL whether it differs only in its build ID; for a draft
+it replaces the files.
+Its first run rebuilt 0.4.0, which had been built on this desktop: 848 of
+849 entries of each release zip were identical, and `murrtty.exe`
+differed in 20 bytes, all of its build ID (the PE header's and the debug
+directory's time stamps and the CodeView GUID). The linker's
+reproducible mode derives those from the PDB, which records the folders a
+build ran in (this desktop's user and worktree paths are in every symbols
+zip so far; a hosted build's are the runner's). Every byte of code and
+data matched. The hosted dependencies zip held 26 packages to the local
+31: the 5 more were lazy packages a Windows release build never fetches
+(fontconfig among them), there because this desktop's cache had them. The
+builder's zips now give each entry the commit's time (as its committer's
+clock read it) and take files in ordinal order, so a commit packs the same
+zips again (two packagings here were byte-identical) and differs elsewhere
+only by that build ID and the PDB. Not run yet: the draft path itself,
+which only a new tag takes.
+
 **7.3 GUI tests in CI, L.** Run 0.8's harness, with its test-hook state dump,
 on a runner. Put a pinned Mesa llvmpipe `opengl32.dll` next to the
 `ghostty.exe` under test (or load it through 6.3's dynamic loader), not next to

@@ -586,19 +586,53 @@ function Invoke-Packaged([string]$Exe, [string[]]$Arguments, [string]$CheckHome)
     }
 }
 
+# The time every entry of the package's zips carries: the commit's, as its
+# committer's clock read it (a zip keeps local times), so one commit packs
+# the same zips on any machine and on any day. $null without git: the
+# files' own times then.
+function Get-EntryTime {
+    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $git) { return $null }
+    $ErrorActionPreference = 'Continue'
+    try { $iso = & $git.Path -C $Root log -1 --format=%cI 2>$null } finally { $ErrorActionPreference = 'Stop' }
+    if ($LASTEXITCODE -ne 0 -or -not $iso) { return $null }
+    return [DateTimeOffset]::Parse(([string]$iso).Trim(), [Globalization.CultureInfo]::InvariantCulture)
+}
+
+# One file into a zip being created, as $Entry, carrying $Stamp (else the
+# file's own time, as CreateEntryFromFile gives it). A Create-mode entry's
+# time can't change once it is written, so it is set first.
+function Add-ZipEntry($Archive, [string]$Path, [string]$Entry, $Level, $Stamp) {
+    $e = $Archive.CreateEntry($Entry, $Level)
+    if ($Stamp) {
+        $e.LastWriteTime = $Stamp
+    } else {
+        $e.LastWriteTime = [DateTimeOffset](Get-Item -LiteralPath $Path).LastWriteTime
+    }
+    $in = [IO.File]::OpenRead($Path)
+    try {
+        $out = $e.Open()
+        try { $in.CopyTo($out) } finally { $out.Dispose() }
+    } finally {
+        $in.Dispose()
+    }
+}
+
 # A zip of the files under $Folder, under $Base in the archive. Entries are
 # written one by one: Windows PowerShell's ZipFile.CreateFromDirectory
 # names them with backslashes, which the zip format doesn't allow (unzip
-# elsewhere makes files named "bin\murrtty.exe").
-function New-Zip([string]$Folder, [string]$ZipPath, [string]$Base) {
+# elsewhere makes files named "bin\murrtty.exe"). They go in ordinal order
+# (Sort-Object follows the culture) and carry $Stamp when given.
+function New-Zip([string]$Folder, [string]$ZipPath, [string]$Base, $Stamp) {
     $archive = [IO.Compression.ZipFile]::Open($ZipPath, [IO.Compression.ZipArchiveMode]::Create)
     try {
         $rootLength = $Folder.TrimEnd('\').Length + 1
-        foreach ($f in @(Get-ChildItem -LiteralPath $Folder -Recurse -File -Force | Sort-Object FullName)) {
-            $entry = $f.FullName.Substring($rootLength).Replace('\', '/')
+        $files = [string[]]@(Get-ChildItem -LiteralPath $Folder -Recurse -File -Force | ForEach-Object { $_.FullName })
+        [Array]::Sort($files, [StringComparer]::Ordinal)
+        foreach ($full in $files) {
+            $entry = $full.Substring($rootLength).Replace('\', '/')
             if ($Base) { $entry = "$Base/$entry" }
-            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f.FullName, $entry,
-                [IO.Compression.CompressionLevel]::Optimal)
+            Add-ZipEntry $archive $full $entry ([IO.Compression.CompressionLevel]::Optimal) $Stamp
         }
     } finally {
         $archive.Dispose()
@@ -666,11 +700,12 @@ function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
     # ZipArchive and its modes are in System.IO.Compression itself.
     Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
-    New-Zip $dir "$zip.partial" $name
+    $stamp = Get-EntryTime
+    New-Zip $dir "$zip.partial" $name $stamp
     $symDir = Join-Path $Work 'symbols'
     New-Item -ItemType Directory -Path $symDir -Force | Out-Null
     Copy-Item -LiteralPath $pdb -Destination $symDir
-    New-Zip $symDir "$symZip.partial" ''
+    New-Zip $symDir "$symZip.partial" '' $stamp
 
     # Unpack it fresh and ask it: its version, and the themes it finds in
     # share\ (each listed as "(resources)"), which proves the layout works.
@@ -706,7 +741,7 @@ function New-Package([string]$Stage, [string]$Work, [string]$OutDir) {
 
     Move-Item -LiteralPath "$zip.partial" -Destination $zip
     Move-Item -LiteralPath "$symZip.partial" -Destination $symZip
-    $packages = New-DepsZip "$depsZip.partial"
+    $packages = New-DepsZip "$depsZip.partial" $stamp
     Move-Item -LiteralPath "$depsZip.partial" -Destination $depsZip
     Write-Host "    the dependencies zip holds $packages packages"
     foreach ($f in @($zip, $symZip, $depsZip)) {
@@ -1201,7 +1236,7 @@ function Repair-Dependencies {
 # package this build uses that its per-user cache holds (both
 # architectures' after both were packaged), stored as they are (they are
 # compressed already). Returns how many.
-function New-DepsZip([string]$OutPath) {
+function New-DepsZip([string]$OutPath, $Stamp) {
     $cache = Get-ZigGlobalCache
     if (-not $cache) { Fail "zig env didn't report its cache folder, so no dependencies zip can be made." }
     $p = Join-Path $cache 'p'
@@ -1216,9 +1251,11 @@ function New-DepsZip([string]$OutPath) {
     try {
         $archive = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArchiveMode]::Create)
         try {
-            foreach ($f in $files) {
+            $names = [string[]]$files
+            [Array]::Sort($names, [StringComparer]::Ordinal)
+            foreach ($f in $names) {
                 $entry = 'p/' + [IO.Path]::GetFileName($f)
-                [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $f, $entry, [IO.Compression.CompressionLevel]::NoCompression)
+                Add-ZipEntry $archive $f $entry ([IO.Compression.CompressionLevel]::NoCompression) $Stamp
             }
         } finally {
             $archive.Dispose()

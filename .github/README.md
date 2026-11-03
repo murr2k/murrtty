@@ -82,6 +82,12 @@ scoop install murrtty/murrtty
 
 A winget package (`MurrayKopit.murrtty`) is under review.
 
+From 0.5.0 on, each release is built from its tag on GitHub's hosted
+runners, and each zip carries a build provenance attestation:
+`gh attestation verify <zip> -R murr2k/murrtty` names the workflow run and
+the commit it was built from. 0.1.0 to 0.4.0 were built on the development
+machine.
+
 ## Status
 
 murrtty is early. It has been tested on one machine: Windows 11 Pro
@@ -104,7 +110,10 @@ Before each release, the checks that show something on the screen run
 with the developer present, and compare the display's look with the
 previous release's (`test\windows\gui\run-onscreen.cmd`).
 Another (`.github/workflows/windows-port.yml`) runs the builder on a clean
-hosted Windows runner and then the unit tests.
+hosted Windows runner and then the unit tests. A release tag starts
+`.github/workflows/windows-port-release.yml`, which packages the tag on
+GitHub's hosted x64 and ARM64 runners, attests every zip and opens a draft
+release for the maintainer to publish.
 
 **Tested and working**
 
@@ -593,7 +602,11 @@ written from `dist\windows\third-party.json`), and `-symbols.zip` holds
 dependency the build used (for `-Deps`). It checks the package by
 unpacking it and asking the
 unpacked murrtty for its version and its themes. It stops when a
-dependency is added or changes until `third-party.json` covers it.
+dependency is added or changes until `third-party.json` covers it. Every
+entry carries the commit's time, in name order, so the same commit packs
+the same zips again; another machine packs the same files but for
+`murrtty.exe`'s build ID (20 bytes the linker derives from the PDB) and
+`murrtty.pdb` itself, which records the folders the build ran in.
 
 When a build fails, the builder checks the dependencies again with the
 output kept, and says what it finds:

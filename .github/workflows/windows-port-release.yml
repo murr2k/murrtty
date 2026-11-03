@@ -157,6 +157,11 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+    # Outside the checkout, whose dist\ is the repository's own.
+    env:
+      ASSETS: ${{ runner.temp }}/assets
+      DEPS: ${{ runner.temp }}/deps
+      PUBLISHED: ${{ runner.temp }}/published
     steps:
       - name: Checkout the tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -168,14 +173,14 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*
-          path: dist
+          path: ${{ env.ASSETS }}
           merge-multiple: true
 
       - name: Dependencies zips
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: deps-*
-          path: deps
+          path: ${{ env.DEPS }}
 
       # Each runner's zip holds the packages its build used: the same but
       # for Mesa, whose x64 and ARM64 zips are lazy. One zip holds them
@@ -185,11 +190,11 @@ jobs:
         run: |
           set -euo pipefail
           ver="${TAG#murrtty-v}"
-          python3 - "dist/murrtty-$ver-deps.zip" <<'EOF'
-          import glob, hashlib, re, sys, zipfile
+          python3 - "$ASSETS/murrtty-$ver-deps.zip" <<'EOF'
+          import glob, hashlib, os, re, sys, zipfile
           out = sys.argv[1]
           entries, digests = {}, {}
-          for path in sorted(glob.glob("deps/*/*.zip")):
+          for path in sorted(glob.glob(os.path.join(os.environ["DEPS"], "*", "*.zip"))):
               with zipfile.ZipFile(path) as z:
                   for info in z.infolist():
                       data = z.read(info)
@@ -215,14 +220,14 @@ jobs:
       - name: Checksums
         run: |
           set -euo pipefail
-          cd dist
+          cd "$ASSETS"
           LC_ALL=C ls *.zip | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/*.zip
+          subject-path: ${{ env.ASSETS }}/*.zip
 
       - name: Draft release, or compare with the published one
         env:
@@ -239,23 +244,48 @@ jobs:
 
           Each zip carries a build provenance attestation: \`gh attestation verify <zip> -R $GITHUB_REPOSITORY\`.
           EOF
-            gh release create "$TAG" dist/*.zip dist/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" \
+            gh release create "$TAG" "$ASSETS"/*.zip "$ASSETS/SHA256SUMS.txt" -R "$GITHUB_REPOSITORY" \
               --draft --prerelease --verify-tag --title "murrtty $ver (preview)" --notes-file notes.md
             echo "Draft release $TAG made: publish it after writing its notes." >> "$GITHUB_STEP_SUMMARY"
           elif [ "$state" = true ]; then
-            gh release upload "$TAG" dist/*.zip dist/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$TAG" "$ASSETS"/*.zip "$ASSETS/SHA256SUMS.txt" -R "$GITHUB_REPOSITORY" --clobber
             echo "Draft release $TAG: its files replaced by this run's." >> "$GITHUB_STEP_SUMMARY"
           else
-            mkdir published
-            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D published -p '*.zip' -p SHA256SUMS.txt
+            mkdir -p "$PUBLISHED"
+            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D "$PUBLISHED" -p '*.zip' -p SHA256SUMS.txt
             python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
-          import hashlib, os, zipfile
+          import hashlib, os, struct, zipfile
           def sha(b): return hashlib.sha256(b).hexdigest()
+          # A PE file without its build ID: the linker derives the header's
+          # and the debug directory's time stamps, the CodeView GUID and the
+          # repro hash from the PDB, which holds the build machine's paths.
+          def without_build_id(data):
+              d = bytearray(data)
+              pe = struct.unpack_from("<I", d, 0x3C)[0]
+              nsec, optsz = struct.unpack_from("<H", d, pe + 6)[0], struct.unpack_from("<H", d, pe + 20)[0]
+              opt = pe + 24
+              struct.pack_into("<I", d, pe + 8, 0)
+              struct.pack_into("<I", d, opt + 64, 0)
+              dd = opt + (112 if struct.unpack_from("<H", d, opt)[0] == 0x20B else 96)
+              rva, size = struct.unpack_from("<II", d, dd + 6 * 8)
+              def off(r):
+                  for i in range(nsec):
+                      vs, va, rs, raw = struct.unpack_from("<IIII", d, opt + optsz + i * 40 + 8)
+                      if va <= r < va + max(vs, rs): return raw + r - va
+              base = off(rva) if size else None
+              for i in range(size // 28 if base is not None else 0):
+                  e = base + i * 28
+                  struct.pack_into("<I", d, e + 4, 0)
+                  typ, sz, _, ptr = struct.unpack_from("<IIII", d, e + 12)
+                  if typ == 2 and d[ptr:ptr + 4] == b"RSDS": d[ptr + 4:ptr + 24] = bytes(20)
+                  if typ == 16: d[ptr:ptr + sz] = bytes(sz)
+              return bytes(d)
+          assets, published = os.environ["ASSETS"], os.environ["PUBLISHED"]
           print(f"### {os.environ['TAG']} built again, compared with its published release\n")
           print("| File | Result |\n|---|---|")
           notes = []
-          for name in sorted(os.listdir("dist")):
-              built, pub = os.path.join("dist", name), os.path.join("published", name)
+          for name in sorted(os.listdir(assets)):
+              built, pub = os.path.join(assets, name), os.path.join(published, name)
               if not os.path.exists(pub):
                   print(f"| {name} | not in the release |"); continue
               a, b = open(built, "rb").read(), open(pub, "rb").read()
@@ -269,7 +299,11 @@ jobs:
               only = sorted(ea.keys() ^ eb.keys())
               same = len(ea.keys() & eb.keys()) - len(differ)
               print(f"| {name} | zip differs: {same} entries the same, {len(differ)} differ, {len(only)} in one only |")
-              for n in differ: notes.append(f"- {name}: `{n}` differs ({ea[n].file_size} bytes built, {eb[n].file_size} published)")
+              for n in differ:
+                  how = ""
+                  if n.endswith((".exe", ".dll")) and without_build_id(za.read(n)) == without_build_id(zb.read(n)):
+                      how = ", the same but for its build ID"
+                  notes.append(f"- {name}: `{n}` differs ({ea[n].file_size} bytes built, {eb[n].file_size} published{how})")
               for n in only: notes.append(f"- {name}: `{n}` only {'built' if n in ea else 'published'}")
           if notes:
               print("\n" + "\n".join(notes))
