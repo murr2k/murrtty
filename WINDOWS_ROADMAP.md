@@ -4246,6 +4246,51 @@ code and documentation. Facts and a "which one suits what" list only, no
 verdicts on others' work; it says murrtty's author wrote it and asks for
 corrections. It is dated: refresh it, or mark it stale, as the projects
 move.
+*Ghostty column, 2026-11-03* (the owner's idea): Ghostty itself, its
+macOS and Linux apps at 1.4, comes first in the feature table for
+reference (and a reference row in the projects table), read from
+Ghostty's own code at `v1.4.0`; rows about Windows show "doesn't apply".
+*Planned 2026-11-03, the owner's decisions* (the plan with mockups:
+https://claude.ai/artifact/JgpoKmJB19PPQZHkNYDsrF). Off unless turned on,
+and never a question about it: a check sends one HTTPS request for
+`murrtty.org/updates/v1.json` with the user agent `murrtty` (no version,
+ID or cookie; the list's ETag, the same for every copy, after the first),
+and murrtty.org neither logs nor counts it (the list is a static asset of
+the site Worker, served without running its code). Where Ghostty has an
+answer murrtty follows it: `auto-update` (`off`, which an unset value
+means here, `check`, `download`) and `auto-update-channel` (`stable`,
+`tip`, which has nothing yet); `check_for_updates`; Sparkle's daily
+interval by default; dev builds never check; `download` installs when
+murrtty quits, as Sparkle does for Ghostty; each update file signed with
+an Ed25519 key (Sparkle's EdDSA), its public key built into murrtty; and
+an update pill in the header bar, hidden when idle, as macOS Ghostty has
+in its title bar. Directory Opus's window, in murrtty's look: an Updates
+window (status, the release history with unread releases bold, the notes
+read in place, Update Settings), whose settings murrtty keeps in its
+state folder where Ghostty has no option (how often, what happens when an
+update is found). Turning checks on passes through a consent dialog that
+says what a check sends; a `check` in a config file murrtty didn't write
+gets a one-time notice before the first check. Never in the way: no
+check until murrtty has finished starting plus a random 2 to 10 minutes,
+all network work on one worker thread (results posted without pointers),
+time limits, quitting never waits; built for many copies: one check per
+interval per user however often murrtty starts (only the instance
+holding the pipe, under a lock), at a random point in the interval, 304s
+for an unchanged list, `Retry-After` and back-off, a minimum interval the
+list can raise, and rollout percentages decided by a number each copy
+keeps to itself. The owner holds the signing key (a GitHub Actions secret
+in the release environment). Steps: 7.6a the window, consent, scheduled
+checks and the list; 7.6b verified downloads and installs (installer and
+zip copies; Scoop and winget copies are told their command); 7.6c a
+pre-release channel and Authenticode checks (#2).
+*The list, 2026-11-03:* `site/build_worker.py` writes `updates/v1.json`
+from GitHub's releases (every `murrtty-vX.Y.Z` release, newest first:
+version, channel by the version's form, preview flag, date, title, page,
+the ten newest releases' notes, each architecture's zip and installer
+with size and SHA-256 from GitHub's digest; nothing that changes between
+builds of the same releases, so its ETag changes only with them) and
+`_headers` (an hour's caching), as static assets (`wrangler.jsonc`'s
+`assets`).
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build
