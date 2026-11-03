@@ -108,24 +108,35 @@ def github(path):
     GITHUB_TOKEN when its environment has one: a Workers Builds secret,
     a fine-grained token with no permissions, which reads public
     repositories at 5,000 requests an hour. A refusal for the limit is
-    tried once more when the limit resets within five minutes."""
+    tried once more when the limit resets within five minutes. A token
+    GitHub refuses (expired or revoked: 401) is dropped, with a warning,
+    and the request made without it, so a lapsed token never stops a
+    build that would succeed without one."""
     headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'murrtty-site-build',
                'X-GitHub-Api-Version': '2022-11-28'}
     token = os.environ.get('GITHUB_TOKEN', '').strip()
     if token:
         headers['Authorization'] = 'Bearer ' + token
     url = 'https://api.github.com/repos/murr2k/murrtty' + path
-    for attempt in (1, 2):
+    waited = False
+    while True:
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
+            if e.code == 401 and token:
+                print('warning: GitHub refused GITHUB_TOKEN (expired or revoked?): '
+                      'asking without it. Replace the build secret.', file=sys.stderr)
+                token = ''
+                del headers['Authorization']
+                continue
             wait = rate_limit_wait(e)
             if wait is None:
                 raise
-            if attempt == 1 and wait <= 300:
+            if not waited and wait <= 300:
                 print(f'GitHub API rate limit ({e.code}): trying again in {wait} s', file=sys.stderr)
                 time.sleep(wait)
+                waited = True
                 continue
             sys.exit(f'GitHub API rate limit ({e.code}, {"with" if token else "without"} a token): '
                      f'it resets in {wait} s. '
