@@ -604,9 +604,10 @@ unpacking it and asking the
 unpacked murrtty for its version and its themes. It stops when a
 dependency is added or changes until `third-party.json` covers it. Every
 entry carries the commit's time, in name order, so the same commit packs
-the same zips again; another machine packs the same files but for
-`murrtty.exe`'s build ID (20 bytes the linker derives from the PDB) and
-`murrtty.pdb` itself, which records the folders the build ran in.
+the same zips again. Another build of the commit, here or elsewhere,
+packs the same files but for `murrtty.pdb`, which differs between any two
+builds (it also records the folders the build ran in), and `murrtty.exe`'s
+build ID, 20 bytes the linker derives from it.
 
 When a build fails, the builder checks the dependencies again with the
 output kept, and says what it finds:

@@ -3755,14 +3755,16 @@ differed in 20 bytes, all of its build ID (the PE header's and the debug
 directory's time stamps and the CodeView GUID). The linker's
 reproducible mode derives those from the PDB, which records the folders a
 build ran in (this desktop's user and worktree paths are in every symbols
-zip so far; a hosted build's are the runner's). Every byte of code and
-data matched. The hosted dependencies zip held 26 packages to the local
+zip so far; a hosted build's are the runner's) and differs between any two
+builds: a second hosted run's PDB, the same size, differed from the
+first's, and so did its build ID. Every byte of code and data matched
+across all three builds. The hosted dependencies zip held 26 packages to the local
 31: the 5 more were lazy packages a Windows release build never fetches
 (fontconfig among them), there because this desktop's cache had them. The
 builder's zips now give each entry the commit's time (as its committer's
 clock read it) and take files in ordinal order, so a commit packs the same
-zips again (two packagings here were byte-identical) and differs elsewhere
-only by that build ID and the PDB. Not run yet: the draft path itself,
+zips again (two packagings here were byte-identical, from one build) and
+another build differs only by that build ID and the PDB. Not run yet: the draft path itself,
 which only a new tag takes.
 
 **7.3 GUI tests in CI, L.** Run 0.8's harness, with its test-hook state dump,
