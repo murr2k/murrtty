@@ -2,9 +2,10 @@
 # pushed to the public repository, murr2k/murrtty, builds both packages
 # from the tag on clean hosted runners (x64 on windows-2025, ARM64
 # natively on windows-11-arm, where its package's murrtty is run too)
-# with build-windows.cmd -Package, merges the two dependencies zips,
-# attests every zip's build provenance and opens a DRAFT release with the
-# zips and SHA256SUMS.txt. Publishing stays the maintainer's: write the
+# with build-windows.cmd -Package, builds and tests both per-user
+# installers (Inno Setup), merges the two dependencies zips, attests every
+# zip's and installer's build provenance and opens a DRAFT release with
+# them and SHA256SUMS.txt. Publishing stays the maintainer's: write the
 # notes, check the draft's files (Defender), then publish.
 #
 # By hand, for a tag already released (gh workflow run
@@ -147,9 +148,102 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Inno Setup's per-user installers (roadmap 7.4), from the packaged zips,
+  # with the pinned Inno Setup fetched and checked here, never on the
+  # maintainer's machine. The scripts come from the workflow's own commit
+  # (the tag's, for a pushed tag).
+  installers:
+    name: Installers
+    needs: build
+    if: github.repository == 'murr2k/murrtty'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}\packages
+          merge-multiple: true
+
+      - name: Inno Setup
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $iscc = & dist\windows\installer\get-innosetup.ps1 -Dir "$env:RUNNER_TEMP\innosetup" -Attest | Select-Object -Last 1
+          "ISCC=$iscc" >> $env:GITHUB_ENV
+
+      - name: Build the installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $zips = @(Get-ChildItem "$env:RUNNER_TEMP\packages" -Filter 'murrtty-*-windows-*.zip' | Where-Object { $_.Name -notlike '*-symbols.zip' })
+          if ($zips.Count -ne 2) { throw "expected 2 release zips, found $($zips.Count)" }
+          foreach ($zip in $zips) {
+            & dist\windows\installer\make-installer.ps1 -Zip $zip.FullName -Iscc $env:ISCC -OutDir out
+          }
+          Get-ChildItem out | ForEach-Object { '{0}  {1}' -f $_.Length, $_.Name }
+
+      - name: Keep the installers
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installers
+          path: out\
+          if-no-files-found: error
+          retention-days: 30
+
+  # Each installer on its own architecture's clean runner: install, the
+  # files, shortcut and verbs, an upgrade over a running murrtty, uninstall.
+  installer-test:
+    name: Installer test (${{ matrix.arch }})
+    needs: installers
+    if: github.repository == 'murr2k/murrtty'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            name: x86_64
+          - arch: arm64
+            runner: windows-11-arm
+            name: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Installers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: installers
+          path: ${{ runner.temp }}\installers
+
+      - name: Install, check, upgrade, uninstall
+        shell: pwsh
+        env:
+          ARCHNAME: ${{ matrix.name }}
+        run: |
+          $ver = $env:TAG.Substring('murrtty-v'.Length)
+          $setup = Join-Path "$env:RUNNER_TEMP\installers" "murrtty-$ver-windows-$env:ARCHNAME-setup.exe"
+          & dist\windows\installer\test-installer.ps1 -Setup $setup -Version $ver
+
   release:
     name: Draft release
-    needs: build
+    needs: [build, installer-test]
     if: github.repository == 'murr2k/murrtty'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -180,6 +274,12 @@ jobs:
           pattern: release-*
           path: ${{ env.ASSETS }}
           merge-multiple: true
+
+      - name: Installers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: installers
+          path: ${{ env.ASSETS }}
 
       - name: Dependencies zips
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -226,13 +326,13 @@ jobs:
         run: |
           set -euo pipefail
           cd "$ASSETS"
-          LC_ALL=C ls *.zip | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt
+          LC_ALL=C ls *.zip *.exe | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ env.ASSETS }}/*.zip
+          subject-path: ${{ env.ASSETS }}/murrtty-*
 
       - name: Draft release, or compare with the published one
         env:
@@ -247,13 +347,13 @@ jobs:
             cat > notes.md <<EOF
           **Draft.** Built from tag \`$TAG\` (\`$sha\`) by [this workflow run]($RUN_URL) on GitHub's hosted runners: x64 on windows-2025, ARM64 natively on windows-11-arm, where its package was run too. Write the release notes here before publishing.
 
-          Each zip carries a build provenance attestation: \`gh attestation verify <zip> -R $GITHUB_REPOSITORY\`.
+          Each zip and installer carries a build provenance attestation: \`gh attestation verify <file> -R $GITHUB_REPOSITORY\`.
           EOF
-            gh release create "$TAG" "$ASSETS"/*.zip "$ASSETS/SHA256SUMS.txt" -R "$GITHUB_REPOSITORY" \
+            gh release create "$TAG" "$ASSETS"/*.zip "$ASSETS"/*.exe "$ASSETS/SHA256SUMS.txt" -R "$GITHUB_REPOSITORY" \
               --draft --prerelease --verify-tag --title "murrtty $ver (preview)" --notes-file notes.md
             echo "Draft release $TAG made: publish it after writing its notes." >> "$GITHUB_STEP_SUMMARY"
           elif [ "$state" = true ]; then
-            gh release upload "$TAG" "$ASSETS"/*.zip "$ASSETS/SHA256SUMS.txt" -R "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$TAG" "$ASSETS"/*.zip "$ASSETS"/*.exe "$ASSETS/SHA256SUMS.txt" -R "$GITHUB_REPOSITORY" --clobber
             echo "Draft release $TAG: its files replaced by this run's." >> "$GITHUB_STEP_SUMMARY"
           else
             mkdir -p "$PUBLISHED"
