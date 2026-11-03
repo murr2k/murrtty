@@ -1726,6 +1726,38 @@ pub fn menuKey(self: *Harness, menu: w.HWND, letter: u8) void {
 //---------------------------------------------------------------
 // State dump
 
+pub const Updates = struct {
+    status: []const u8,
+    owner: bool,
+    automatic: bool,
+    release_build: bool,
+    mode: []const u8,
+    channel: []const u8,
+    requests: u32,
+    checking: bool,
+    kind: []const u8,
+    asked: bool,
+    due_ms: ?u64,
+    outcome: ?[]const u8,
+    @"error": u32,
+    http: u32,
+    found: ?[]const u8,
+    versions: []const []const u8,
+    state: struct {
+        consent: bool,
+        interval: []const u8,
+        on_found: []const u8,
+        last_check: i64,
+        next_check: i64,
+        lease_until: i64,
+        failures: u32,
+        etag: ?[]const u8,
+        skipped: ?[]const u8,
+    },
+    /// murrtty's clock, Unix seconds.
+    now: i64,
+};
+
 pub const Dump = struct {
     modal_depth: u32,
     /// Context menus shown so far.
@@ -1801,6 +1833,12 @@ pub const Dump = struct {
         error_code: u32,
         error_hr: u32,
     } = null,
+    /// Update checks (roadmap 7.6a): the status ("idle", "checking",
+    /// "up_to_date", "available", "failed"), whether this murrtty checks
+    /// on its own, how long until its timer fires (null: none), the checks
+    /// sent this run, the last answer, the release found and the list's
+    /// versions, and the state file as murrtty last read or wrote it.
+    updates: ?Updates = null,
     /// The renderer the build draws with ("opengl", "d3d11"; 7.8), and
     /// with Direct3D 11 the first pane's adapter and whether it draws on
     /// the CPU.
@@ -2318,6 +2356,18 @@ fn probeOnce(self: *Harness, g: *const Ghostty, pane: ?usize, x: u32, y: u32) !u
 /// forward.
 pub fn openConfigEditor(self: *Harness, g: *const Ghostty) !void {
     var d = try self.dumpWith(g, 22, 0);
+    d.deinit();
+}
+
+/// An update check the user asked for (roadmap 7.6a; dump wparam 25), as
+/// Check Now starts one, or cancel the one in flight.
+pub fn checkUpdates(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 25, 0);
+    d.deinit();
+}
+
+pub fn cancelUpdateCheck(self: *Harness, g: *const Ghostty) !void {
+    var d = try self.dumpWith(g, 25, 1);
     d.deinit();
 }
 

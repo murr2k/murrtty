@@ -30,6 +30,7 @@ const Session = @import("Session.zig");
 const Undo = @import("Undo.zig");
 const Waiting = @import("Waiting.zig");
 const BellAudio = @import("BellAudio.zig");
+const Updates = @import("Updates.zig");
 const Inspector = @import("Inspector.zig");
 const ConfigEditor = @import("ConfigEditor.zig");
 const wgl = @import("opengl").wgl;
@@ -251,6 +252,8 @@ global_keys: GlobalKeys = undefined,
 undo: Undo = undefined,
 /// Session restore (roadmap 5.10b), set up in init.
 session: Session = undefined,
+/// Update checks (roadmap 7.6a), set up in init, started once run() has.
+updates: Updates = undefined,
 /// The panes waiting for their user: the header bars' bells.
 waiting: Waiting = .{},
 /// The bell's `audio` (roadmap 3.7b), made at the first bell that asks.
@@ -427,6 +430,7 @@ pub fn init(
     self.global_keys = .{ .app = self };
     self.undo = .{ .app = self };
     self.session = .init(self);
+    self.updates = .init(self);
     self.taskbar_button_msg = c.RegisterWindowMessageW(c.L("TaskbarButtonCreated"));
     _ = c.SetWindowLongPtrW(wakeup_hwnd, c.GWLP_USERDATA, @bitCast(@intFromPtr(self)));
 }
@@ -550,6 +554,9 @@ pub fn run(self: *App) !void {
     self.queueConfigErrors();
     self.started = true;
     self.registerRestart();
+    // Update checks (roadmap 7.6a): only now, and a due one waits 2 to 10
+    // minutes more; the murrtty keeping the session checks on its own.
+    self.updates.start(self.session.owner);
     // On murrtty's software OpenGL: once a pane has drawn, the murrtty that
     // started this one can end and the window says why it draws in
     // software (6.3b); the shaders are only built for the first frame.
@@ -584,6 +591,8 @@ pub fn terminate(self: *App) void {
     // What undo kept, and the shelf.
     self.undo.deinit();
     self.session.deinit();
+    // A check in flight is cancelled, never waited for.
+    self.updates.deinit();
     self.waiting.deinit(self.core_app.alloc);
     // After the windows, whose teardown can still ask for a refresh.
     self.global_keys.deinit();
@@ -1621,6 +1630,15 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
             }
             return 0;
         },
+        // An update check's thread is done (roadmap 7.6a). Nothing comes
+        // with it: Updates takes its own job's results.
+        Updates.message => {
+            const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
+            if (ptr == 0) return 0;
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(ptr)));
+            self.updates.finished();
+            return 0;
+        },
         // A global binding's hot key (roadmap 5.5).
         c.WM_HOTKEY => {
             const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
@@ -1649,6 +1667,7 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 GlobalKeys.retry_timer => self.global_keys.retry(),
                 Undo.timer_id => self.undo.tick(),
                 Session.timer_id => self.session.tick(),
+                Updates.timer_id => self.updates.tick(),
                 software_gl.timer_id => software_gl.tick(self),
                 else => {},
             }
@@ -2735,6 +2754,8 @@ pub fn performAction(
                 // restart.
                 self.session.configChanged();
                 if (self.started) self.registerRestart();
+                // auto-update or its channel may have changed.
+                if (self.started) self.updates.configChanged();
                 if (self.windows_hidden and !self.canShowHidden()) self.showWindows();
                 // The tray gone with no window: as if the last had just
                 // closed (a delay still applies).

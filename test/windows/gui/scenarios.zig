@@ -126,6 +126,9 @@ pub const all = [_]Scenario{
     .{ .name = "session-restore",.about = "a saved session back at start (a class's own file): windows, names, sizes, tabs, splits' sizes, directories, a gone folder (home, a toast), cmd of its own, a lost oversized window pulled on screen, the quick terminal's tabs when summoned; saved back, kept by quitting; initial-window = false restores on the first window asked for; never; the crash guard", .run = sessionRestore },
     .{ .name = "config-editor-numbers", .about = "the configuration editor's numbers: a percentage on a slider (pressed, dragged, Escape), shown in the terminals before a save and put back by Discard, stepped with the arrow keys, typed in percent and refused past its range; spin rows in their unit, stepped by their buttons, saved as Ghostty's numbers", .run = configEditorNumbers },
     .{ .name = "config-editor-review", .about = "the configuration editor's bar and status line (F1f, the owner's design): 'No unsaved changes \u{25AA} config valid'; a change counted, Undo and Redo by button and key, a held change one step, Discard as one step Undo brings back, Review & Save showing the lines it saves; a category's options, a search through all; a refused line counted as a problem", .run = configEditorReview },
+    .{ .name = "updates-off", .about = "update checks are off and silent unless asked (a development build never checks); Check Now sends one GET of the list with the user agent murrtty and nothing of murrtty's; the second sends the ETag back and takes the 304; the list kept is read at start; the channel picks the release (a local server)", .run = updatesOff },
+    .{ .name = "updates-schedule", .about = "automatic update checks: none before start plus the delay, then one, the next a day away within a tenth; four starts, one request; due again, the ETag and a 304 (a local server)", .run = updatesSchedule },
+    .{ .name = "updates-backoff", .about = "update checks when the server can't answer: a 503's Retry-After honored, no retry at once; a server that never answers holds nothing (dumps answer, Cancel, quitting mid-request exits at once); a metered connection waits an hour, sending nothing (a local server)", .run = updatesBackoff },
     .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook, .tool = true },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "pwsh-typeahead", .about = "task 42: PowerShell 7 and 5.1 with integration, commands typed ahead (during a slowed prompt; in pairs after a Ctrl+C) all run (GHOSTTY_GUI_STRESS=1; GHOSTTY_PTY_LOG for a trace)", .run = pwshTypeahead },
@@ -15032,4 +15035,338 @@ fn quitAfterReload(h: *Harness) anyerror!void {
         }
     }
     try h.expect(failed == 0, "every quit right after reloads exits 0 ({d} of 20 didn't)", .{failed});
+}
+
+// ---------------------------------------------------------------- update checks (roadmap 7.6a)
+
+const update_server = @import("update_server.zig");
+
+/// The version a scenario's murrtty pretends to be: a release, so it may
+/// check (a Debug build is a development build, which never does).
+const updates_version = "0.5.0";
+
+/// Launch for an update scenario: the list at `srv`, the delay after start
+/// `delay_ms`, `extra` config, and more environment.
+fn startUpdates(h: *Harness, srv: *update_server.Server, name: []const u8, extra: []const u8, delay_ms: []const u8, more_env: []const [2][]const u8, release: bool) !Harness.Ghostty {
+    var url_buf: [64]u8 = undefined;
+    const url = srv.url(&url_buf);
+    var env: std.ArrayList([2][]const u8) = .empty;
+    defer env.deinit(h.alloc);
+    try env.append(h.alloc, .{ "GHOSTTY_WIN32_TEST_UPDATES_URL", url });
+    try env.append(h.alloc, .{ "GHOSTTY_WIN32_TEST_UPDATES_DELAY_MS", delay_ms });
+    if (release) try env.append(h.alloc, .{ "GHOSTTY_WIN32_TEST_UPDATES_VERSION", updates_version });
+    try env.appendSlice(h.alloc, more_env);
+    const config = try std.mem.concat(h.alloc, u8, &.{ base_config, extra });
+    defer h.alloc.free(config);
+    var g = try h.launchWith(name, config, .{ .env = env.items });
+    errdefer g.deinit();
+    try h.waitText(&g, ">", 1, 20000);
+    return g;
+}
+
+/// The scenario's state folder's updates.json, written before a launch.
+fn writeUpdateState(h: *Harness, name: []const u8, json: []const u8) !void {
+    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\{s}\\state\\murrtty", .{ h.temp_dir, name });
+    defer h.alloc.free(dir);
+    // makeDirAt makes one folder: each in turn.
+    var end = h.temp_dir.len + 1;
+    while (std.mem.indexOfScalarPos(u8, dir, end, '\\')) |i| : (end = i + 1) try h.makeDirAt(dir[0..i]);
+    try h.makeDirAt(dir);
+    const file = try std.fmt.allocPrint(h.alloc, "{s}\\updates.json", .{dir});
+    defer h.alloc.free(file);
+    try h.writeFileAt(file, json);
+}
+
+/// Wait until murrtty's update check is done and `srv` has had `requests`
+/// in all; the dump then, the caller's to free.
+fn waitUpdateCheck(h: *Harness, g: *const Harness.Ghostty, srv: *update_server.Server, requests: u32, what: []const u8) !std.json.Parsed(Harness.Dump) {
+    var waited: u32 = 0;
+    while (waited <= 20000) : (waited += 100) {
+        if (srv.requests.load(.acquire) >= requests) {
+            var d = try h.dump(g);
+            if (d.value.updates) |u| if (!u.checking) return d;
+            d.deinit();
+        }
+        w.Sleep(100);
+    }
+    return h.fail("{s}: the check didn't finish (server had {d} requests, expected {d})", .{ what, srv.requests.load(.acquire), requests });
+}
+
+/// Quit through the first window's pane, as `quit` does.
+fn quitPane(h: *Harness, g: *Harness.Ghostty) !void {
+    try quit(h, g, try h.surface(g, try h.mainWindow(g)));
+}
+
+fn updatesOf(h: *Harness, d: *const std.json.Parsed(Harness.Dump)) !Harness.Updates {
+    return d.value.updates orelse h.fail("the dump has no updates", .{});
+}
+
+fn eql(a: ?[]const u8, b: []const u8) bool {
+    return if (a) |s| std.mem.eql(u8, s, b) else false;
+}
+
+/// Update checks are off unless turned on, and say nothing then (the
+/// owner's rule): a development build never checks, even asked; a release
+/// with auto-update unset schedules nothing and sends nothing. A check the
+/// user asks for sends exactly one request: GET of the list, the user agent
+/// `murrtty` and nothing else of murrtty's (no version, no cookie); the
+/// second sends the list's ETag back and takes the 304. The list kept is
+/// read at the next start without a request, and the channel picks the
+/// release found.
+fn updatesOff(h: *Harness) anyerror!void {
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+
+    // A development build: nothing, even when asked.
+    {
+        var g = try startUpdates(h, srv, "updates-dev", "", "300", &.{}, false);
+        defer g.deinit();
+        try h.checkUpdates(&g);
+        w.Sleep(1500);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(!u.release_build and u.requests == 0 and !u.checking and u.due_ms == null, "a development build never checks (requests {d})", .{u.requests});
+        try quitPane(h, &g);
+    }
+    try h.expect(srv.requests.load(.acquire) == 0, "nothing reached the server from a development build", .{});
+
+    // A release, auto-update unset: off, silent.
+    var g = try startUpdates(h, srv, "updates-off", "auto-update-channel = stable\n", "300", &.{}, true);
+    defer g.deinit();
+    w.Sleep(2000);
+    {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(u.release_build and std.mem.eql(u8, u.mode, "off") and !u.automatic, "off with auto-update unset (mode {s}, automatic {})", .{ u.mode, u.automatic });
+        try h.expect(u.due_ms == null and u.requests == 0 and std.mem.eql(u8, u.status, "idle"), "nothing scheduled or sent (due {?d}, requests {d}, {s})", .{ u.due_ms, u.requests, u.status });
+    }
+    try h.expect(srv.requests.load(.acquire) == 0, "the server heard nothing while checks are off", .{});
+
+    // Check Now: one request, exactly what the privacy text says.
+    try h.checkUpdates(&g);
+    {
+        var d = try waitUpdateCheck(h, &g, srv, 1, "a check asked for");
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(eql(u.outcome, "ok") and std.mem.eql(u8, u.status, "available") and eql(u.found, "0.6.0"), "the list read: 0.6.0 found on the stable channel ({?s}, {s}, {?s})", .{ u.outcome, u.status, u.found });
+        try h.expect(u.versions.len == 3, "the list's three releases kept ({d})", .{u.versions.len});
+        try h.expect(eql(u.state.etag, "\"test-list-1\"") and u.state.last_check > 0 and !u.state.consent, "the ETag and the time kept, consent untouched", .{});
+    }
+    var head_buf: [4096]u8 = undefined;
+    {
+        const head = srv.lastRequest(&head_buf);
+        try h.expect(std.mem.startsWith(u8, head, "GET /updates/v1.json HTTP/1.1\r\n"), "a GET of the list ('{s}')", .{head[0..@min(head.len, 40)]});
+        try h.expect(eql(update_server.header(head, "user-agent"), "murrtty"), "the user agent is murrtty alone ('{?s}')", .{update_server.header(head, "user-agent")});
+        try h.expect(update_server.header(head, "cookie") == null and update_server.header(head, "if-none-match") == null, "no cookie, no ETag the first time", .{});
+        // Only what WinHTTP itself adds: nothing names the version.
+        try h.expect(std.mem.indexOf(u8, head, updates_version) == null, "the version appears nowhere in the request", .{});
+    }
+
+    // Again: the ETag back, a 304, the list kept.
+    try h.checkUpdates(&g);
+    {
+        var d = try waitUpdateCheck(h, &g, srv, 2, "a second check");
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(eql(u.outcome, "not_modified") and srv.not_modified.load(.acquire) == 1, "a 304 for the same list ({?s})", .{u.outcome});
+        try h.expect(std.mem.eql(u8, u.status, "available") and u.versions.len == 3, "the list kept through the 304", .{});
+        const head = srv.lastRequest(&head_buf);
+        try h.expect(eql(update_server.header(head, "if-none-match"), "\"test-list-1\""), "the ETag went back ('{?s}')", .{update_server.header(head, "if-none-match")});
+    }
+    try quitPane(h, &g);
+    try expectNoLeaks(h, &g, "update checks leak nothing");
+
+    // The next start reads the list kept, with no request.
+    {
+        var g2 = try startUpdates(h, srv, "updates-off", "auto-update-channel = stable\n", "300", &.{}, true);
+        defer g2.deinit();
+        w.Sleep(1000);
+        var d = try h.dump(&g2);
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(std.mem.eql(u8, u.status, "available") and eql(u.found, "0.6.0") and u.requests == 0, "the kept list read at start, nothing sent ({s}, {?s}, {d})", .{ u.status, u.found, u.requests });
+        try quitPane(h, &g2);
+    }
+    // The tip channel takes pre-releases too.
+    {
+        var g3 = try startUpdates(h, srv, "updates-off", "auto-update-channel = tip\n", "300", &.{}, true);
+        defer g3.deinit();
+        var d = try h.dump(&g3);
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(std.mem.eql(u8, u.channel, "tip") and eql(u.found, "0.7.0-beta.1"), "on tip, 0.7.0-beta.1 found ({s}, {?s})", .{ u.channel, u.found });
+        try quitPane(h, &g3);
+    }
+    try h.expect(srv.requests.load(.acquire) == 2, "two requests in all ({d})", .{srv.requests.load(.acquire)});
+}
+
+/// Automatic checks: none before murrtty has started plus its delay; then
+/// one, which sets the next a day away (within a tenth); starting murrtty
+/// again and again sends nothing more until that is due; due again, the
+/// next start checks with the ETag and takes the 304.
+fn updatesSchedule(h: *Harness) anyerror!void {
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    const name = "updates-schedule";
+    const config = "auto-update = check\nauto-update-channel = stable\n";
+    // Consent on this machine (the consent dialog's to give).
+    try writeUpdateState(h, name, "{\"consent\":true}");
+    {
+        var g = try startUpdates(h, srv, name, config, "2500", &.{}, true);
+        defer g.deinit();
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(u.automatic and u.owner, "checks on, this murrtty checks (automatic {}, owner {})", .{ u.automatic, u.owner });
+            try h.expect(u.requests == 0 and u.due_ms != null and u.due_ms.? >= 1000, "nothing at start: the check waits its delay (due in {?d} ms)", .{u.due_ms});
+        }
+        // A config reload (the system's light/dark switch) keeps the delay.
+        try h.setSystemDark(&g, true);
+        try h.setSystemDark(&g, false);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(u.requests == 0 and u.due_ms != null and u.due_ms.? >= 500, "a reload keeps the delay after start (due in {?d} ms)", .{u.due_ms});
+        }
+        try h.expect(srv.requests.load(.acquire) == 0, "nothing reached the server at start", .{});
+        var d = try waitUpdateCheck(h, &g, srv, 1, "the automatic check");
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(eql(u.outcome, "ok") and std.mem.eql(u8, u.kind, "automatic"), "the automatic check got the list ({?s}, {s})", .{ u.outcome, u.kind });
+        const day: i64 = 86400;
+        const ahead = u.state.next_check - u.state.last_check;
+        try h.expect(ahead >= day - day / 10 - 5 and ahead <= day + day / 10 + 5, "the next a day away, within a tenth ({d} s)", .{ahead});
+        try h.expect(u.state.failures == 0 and u.state.lease_until == 0, "no failures, no lease left", .{});
+        try h.expect(u.due_ms != null and u.due_ms.? > 3600 * 1000, "the timer set for later ({?d} ms)", .{u.due_ms});
+        try quitPane(h, &g);
+    }
+    // Launches don't turn into requests.
+    for (0..3) |i| {
+        var g = try startUpdates(h, srv, name, config, "300", &.{}, true);
+        defer g.deinit();
+        w.Sleep(1500);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(u.requests == 0 and u.automatic and u.due_ms != null and u.due_ms.? > 3600 * 1000, "start {d}: not due, nothing sent (requests {d}, due {?d})", .{ i + 2, u.requests, u.due_ms });
+        try quitPane(h, &g);
+    }
+    try h.expect(srv.requests.load(.acquire) == 1, "four starts, one request ({d})", .{srv.requests.load(.acquire)});
+
+    // Due again: the next start checks, with the ETag.
+    try writeUpdateState(h, name, "{\"consent\":true,\"next_check\":0,\"last_check\":1,\"etag\":\"\\\"test-list-1\\\"\"}");
+    {
+        var g = try startUpdates(h, srv, name, config, "300", &.{}, true);
+        defer g.deinit();
+        var d = try waitUpdateCheck(h, &g, srv, 2, "the check due again");
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(eql(u.outcome, "not_modified") and srv.not_modified.load(.acquire) == 1, "the ETag sent, a 304 ({?s})", .{u.outcome});
+        try h.expect(std.mem.eql(u8, u.status, "available") and u.state.next_check > u.now + 3600, "the list kept, the next a day away", .{});
+        try quitPane(h, &g);
+    }
+}
+
+/// When the server can't answer: a 503's Retry-After is honored and no
+/// retry follows at once; a server that never answers doesn't hold murrtty
+/// (the dump keeps answering, Cancel ends the check, quitting mid-request
+/// exits at once); on a metered connection an automatic check sends
+/// nothing and looks again in an hour.
+fn updatesBackoff(h: *Harness) anyerror!void {
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    const name = "updates-backoff";
+    const config = "auto-update = check\nauto-update-channel = stable\n";
+    srv.setMode(.unavailable);
+    try writeUpdateState(h, name, "{\"consent\":true}");
+    {
+        var g = try startUpdates(h, srv, name, config, "500", &.{}, true);
+        defer g.deinit();
+        {
+            var d = try waitUpdateCheck(h, &g, srv, 1, "the check of a 503");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(eql(u.outcome, "http_error") and u.http == 503 and std.mem.eql(u8, u.status, "failed"), "a 503 is a failed check ({?s}, {d}, {s})", .{ u.outcome, u.http, u.status });
+            try h.expect(u.state.failures == 1 and u.state.next_check >= u.now + 7200 - 10, "Retry-After honored: the next in two hours ({d} s)", .{u.state.next_check - u.now});
+        }
+        w.Sleep(3000);
+        try h.expect(srv.requests.load(.acquire) == 1, "no retry at once ({d} requests)", .{srv.requests.load(.acquire)});
+
+        // A server that never answers.
+        srv.setMode(.hang);
+        try h.checkUpdates(&g);
+        var waited: u32 = 0;
+        while (srv.requests.load(.acquire) < 2 and waited < 15000) : (waited += 50) w.Sleep(50);
+        try h.expect(srv.requests.load(.acquire) == 2, "the request arrived", .{});
+        var slowest: u64 = 0;
+        for (0..5) |_| {
+            const t0 = w.GetTickCount64();
+            var d = try h.dump(&g);
+            const took = w.GetTickCount64() - t0;
+            defer d.deinit();
+            slowest = @max(slowest, took);
+            const u = try updatesOf(h, &d);
+            try h.expect(u.checking and std.mem.eql(u8, u.status, "checking"), "still checking", .{});
+            w.Sleep(100);
+        }
+        try h.expect(slowest < 500, "murrtty answers while the server hangs (slowest dump {d} ms)", .{slowest});
+        try h.cancelUpdateCheck(&g);
+        waited = 0;
+        var cancelled = false;
+        while (waited <= 3000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            if (!u.checking) {
+                try h.expect(eql(u.outcome, "cancelled") and u.state.failures == 1, "Cancel ends the check, the schedule untouched ({?s}, failures {d})", .{ u.outcome, u.state.failures });
+                cancelled = true;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(cancelled, "Cancel ended the check within 3 s", .{});
+
+        // Quitting mid-request.
+        try h.checkUpdates(&g);
+        waited = 0;
+        while (srv.requests.load(.acquire) < 3 and waited < 15000) : (waited += 50) w.Sleep(50);
+        const pane = try h.surface(&g, try h.mainWindow(&g));
+        h.key(pane, .{ .ctrl = true, .shift = true }, 'Q');
+        const dlg = try h.waitDialog(&g, 5000);
+        h.answer(&g, dlg, w.IDYES);
+        const t0 = w.GetTickCount64();
+        const code = g.waitExit(10000);
+        const took = w.GetTickCount64() - t0;
+        try h.expect(code != null and code.? == 0, "quits mid-request with code 0 (got {?d})", .{code});
+        try h.expect(took < 2500, "quitting doesn't wait for the network ({d} ms)", .{took});
+        try expectNoLeaks(h, &g, "a check cut short leaks nothing");
+    }
+
+    // Metered: an automatic check waits, sending nothing.
+    srv.setMode(.list);
+    try writeUpdateState(h, name, "{\"consent\":true,\"next_check\":0}");
+    {
+        var g = try startUpdates(h, srv, name, config, "300", &.{.{ "GHOSTTY_WIN32_TEST_UPDATES_METERED", "1" }}, true);
+        defer g.deinit();
+        var waited: u32 = 0;
+        var seen = false;
+        while (waited <= 10000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            if (u.outcome != null and !u.checking) {
+                try h.expect(eql(u.outcome, "metered") and u.state.next_check >= u.now + 3600 - 10, "metered: it waits an hour ({?s}, {d} s)", .{ u.outcome, u.state.next_check - u.now });
+                seen = true;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(seen, "the automatic check ran (metered)", .{});
+        try h.expect(srv.requests.load(.acquire) == 3, "nothing sent on a metered connection ({d})", .{srv.requests.load(.acquire)});
+        try quitPane(h, &g);
+    }
 }

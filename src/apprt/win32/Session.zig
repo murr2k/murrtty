@@ -263,7 +263,7 @@ pub fn configChanged(self: *Session) void {
 }
 
 /// murrtty's state folder: XDG_STATE_HOME's or %LOCALAPPDATA%'s murrtty.
-fn stateDir(alloc: Allocator) ![]u8 {
+pub fn stateDir(alloc: Allocator) ![]u8 {
     var environ_map = try global.environMap();
     defer environ_map.deinit();
     const dir = try internal_os.xdg.state(global.io(), alloc, &environ_map, .{ .subdir = build_config.product_id });
@@ -1415,7 +1415,7 @@ fn isDir(a: Allocator, path: []const u8) bool {
     return attrs != 0xFFFFFFFF and attrs & 0x10 != 0;
 }
 
-fn deleteFile(a: Allocator, path: []const u8) void {
+pub fn deleteFile(a: Allocator, path: []const u8) void {
     const w = text_util.utf16Lossy(a, path) catch return;
     _ = c.DeleteFileW(w.ptr);
 }
@@ -1427,7 +1427,7 @@ fn moveFile(a: Allocator, from: []const u8, to: []const u8) bool {
 }
 
 /// The file at `path`, or null (absent, unreadable, too big).
-fn readFile(a: Allocator, path: []const u8) ?[]u8 {
+pub fn readFile(a: Allocator, path: []const u8) ?[]u8 {
     const w = text_util.utf16Lossy(a, path) catch return null;
     const handle = c.CreateFileW(w.ptr, c.GENERIC_READ, c.FILE_SHARE_READ | c.FILE_SHARE_WRITE | c.FILE_SHARE_DELETE, null, c.OPEN_EXISTING, c.FILE_ATTRIBUTE_NORMAL, null);
     if (handle == c.INVALID_HANDLE_VALUE) return null;
@@ -1446,7 +1446,7 @@ fn readFile(a: Allocator, path: []const u8) ?[]u8 {
 
 /// Write `text` to `path` through a file beside it, flushed, then moved
 /// over it, so a failure leaves the old file whole.
-fn writeFile(a: Allocator, path: []const u8, text: []const u8) !void {
+pub fn writeFile(a: Allocator, path: []const u8, text: []const u8) !void {
     const dest = try text_util.utf16Lossy(a, path);
     const tmp = try std.mem.concatWithSentinel(a, u16, &.{ dest, c.L(".tmp") }, 0);
     const handle = c.CreateFileW(tmp.ptr, c.GENERIC_WRITE, 0, null, c.CREATE_ALWAYS, c.FILE_ATTRIBUTE_NORMAL, null);
@@ -1492,7 +1492,7 @@ fn errorOf(err: c.DWORD) anyerror {
 
 /// Make `dir` and the folders above it that are missing. A file in a
 /// folder's place fails it.
-fn makeDirs(a: Allocator, dir: []const u8) !void {
+pub fn makeDirs(a: Allocator, dir: []const u8) !void {
     if (isDir(a, dir)) return;
     // A UNC path's server and share are never made: past them.
     var i: usize = 0;

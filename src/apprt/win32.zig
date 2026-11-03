@@ -41,4 +41,7 @@ test {
     _ = @import("win32/uia_text.zig");
     _ = @import("win32/Uia.zig");
     _ = @import("win32/url.zig");
+    _ = @import("win32/update_list.zig");
+    _ = @import("win32/update_fetch.zig");
+    _ = @import("win32/Updates.zig");
 }

@@ -4291,6 +4291,15 @@ with size and SHA-256 from GitHub's digest; nothing that changes between
 builds of the same releases, so its ETag changes only with them) and
 `_headers` (an hour's caching), as static assets (`wrangler.jsonc`'s
 `assets`).
+*7.6a step 1, 2026-11-03:* the checking, with no window yet (so
+`check_for_updates` stays out of the menus and the palette until the
+window comes): `update_list.zig` (the list, the channel, the schedule's
+arithmetic), `update_fetch.zig` (one GET through WinHTTP from System32 on
+a thread of its own, which the UI never waits for or reaches into; an
+automatic check waits on a metered connection) and `Updates.zig`
+(`updates.json` and the cached list in the state folder, read and written
+under a lock file with a lease for a check in flight, the timer). The GUI
+tests serve a made-up list on 127.0.0.1 (`update_server.zig`).
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build

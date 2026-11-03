@@ -1256,6 +1256,7 @@ pub const FILE_SHARE_READ = 0x1;
 pub const FILE_SHARE_WRITE = 0x2;
 pub const FILE_SHARE_DELETE = 0x4;
 pub const OPEN_EXISTING = 3;
+pub const OPEN_ALWAYS = 4;
 pub const FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
 pub const FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
 pub const FSCTL_GET_REPARSE_POINT = 0x000900A8;
@@ -1272,6 +1273,7 @@ pub extern "kernel32" fn Sleep(DWORD) callconv(.winapi) void;
 pub const DRIVE_FIXED = 3;
 pub extern "kernel32" fn GetDriveTypeW(LPCWSTR) callconv(.winapi) UINT;
 pub const FILETIME = extern struct { dwLowDateTime: DWORD, dwHighDateTime: DWORD };
+pub extern "kernel32" fn GetSystemTimeAsFileTime(*FILETIME) callconv(.winapi) void;
 pub const WIN32_FIND_DATAW = extern struct {
     dwFileAttributes: DWORD,
     ftCreationTime: FILETIME,

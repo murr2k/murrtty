@@ -23,6 +23,7 @@ const global = @import("../../global.zig");
 const App = @import("App.zig");
 const ContextMenu = @import("ContextMenu.zig");
 const Notifications = @import("Notifications.zig");
+const Updates = @import("Updates.zig");
 const DropTarget = @import("DropTarget.zig");
 const Surface = @import("Surface.zig");
 const Tab = @import("Tab.zig");
@@ -301,6 +302,9 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 /// - 23: paint the configuration editor's top bar and page as WM_PAINT does
 ///   and write them as `editor-bar-0.bmp` and `editor-list-0.bmp` beside
 ///   the dump file.
+/// - 24: run the history's garbage collector now.
+/// - 25: an update check the user asked for (roadmap 7.6a; `lparam` 0), or
+///   cancel the one in flight (1).
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -453,6 +457,7 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     if (wparam == 22) app.openConfigEditor();
     // The history's garbage collector now (roadmap 5.10b), not in minutes.
     if (wparam == 24) app.session.collectGarbage();
+    if (wparam == 25) if (lparam == 0) app.updates.checkNow() else app.updates.cancel();
     if (wparam == 23) if (app.config_editor) |editor| {
         var client: c.RECT = .{};
         _ = c.GetClientRect(editor.hwnd, &client);
@@ -859,6 +864,7 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             s.loadstart, s.playing, s.ended, s.errors, s.error_code, s.error_hr,
         });
     } else try out.appendSlice(alloc, ",\"bell_audio\":null");
+    try dumpUpdates(alloc, out, &app.updates);
     // Which ConPTY new panes get: the bundled one or Windows' own (2.6).
     try out.print(alloc, ",\"conpty\":\"{t}\"", .{@import("../../os/main.zig").conpty.get().source});
     // The renderer this build draws with (roadmap 7.8): "opengl" or
@@ -1464,6 +1470,34 @@ fn overlayText(alloc: Allocator, o: anytype) ![]u8 {
 /// A COLORREF (0x00BBGGRR) as 0xRRGGBB.
 fn rgbOf(ref: c.COLORREF) i64 {
     return @as(i64, ref & 0xFF) << 16 | @as(i64, (ref >> 8) & 0xFF) << 8 | @as(i64, (ref >> 16) & 0xFF);
+}
+
+/// Update checks (roadmap 7.6a): what this murrtty knows and does.
+/// `due_ms` is how long until the timer fires (null: it doesn't run),
+/// `requests` the checks sent this run, `versions` the list kept.
+fn dumpUpdates(alloc: Allocator, out: *std.ArrayList(u8), u: *const Updates) !void {
+    const now = c.GetTickCount64();
+    try out.print(alloc, ",\"updates\":{{\"status\":\"{t}\",\"owner\":{},\"automatic\":{},\"release_build\":{},\"mode\":\"{t}\",\"channel\":\"{t}\",\"requests\":{d},\"checking\":{}", .{
+        u.status, u.owner, u.automaticOn(), u.release_build, u.mode(), u.channel(), u.requests, u.job != null,
+    });
+    try out.print(alloc, ",\"kind\":\"{t}\",\"asked\":{}", .{ u.job_kind, u.asked });
+    if (u.due_ms) |due| try out.print(alloc, ",\"due_ms\":{d}", .{due -| now}) else try out.appendSlice(alloc, ",\"due_ms\":null");
+    if (u.last_outcome) |o| try out.print(alloc, ",\"outcome\":\"{t}\"", .{o}) else try out.appendSlice(alloc, ",\"outcome\":null");
+    try out.print(alloc, ",\"error\":{d},\"http\":{d},\"found\":", .{ u.last_error, u.last_status });
+    if (u.found) |f| try writeString(alloc, out, f.version) else try out.appendSlice(alloc, "null");
+    try out.appendSlice(alloc, ",\"versions\":[");
+    if (u.list) |l| for (l.releases, 0..) |r, i| {
+        if (i > 0) try out.append(alloc, ',');
+        try writeString(alloc, out, r.version);
+    };
+    const s = u.state;
+    try out.print(alloc, "],\"state\":{{\"consent\":{},\"interval\":\"{t}\",\"on_found\":\"{t}\",\"last_check\":{d},\"next_check\":{d},\"lease_until\":{d},\"failures\":{d},\"etag\":", .{
+        s.consent, s.interval, s.on_found, s.last_check, s.next_check, s.lease_until, s.failures,
+    });
+    if (s.etag) |e| try writeString(alloc, out, e) else try out.appendSlice(alloc, "null");
+    try out.appendSlice(alloc, ",\"skipped\":");
+    if (s.skipped) |v| try writeString(alloc, out, v) else try out.appendSlice(alloc, "null");
+    try out.print(alloc, "}},\"now\":{d}}}", .{Updates.unixNow()});
 }
 
 /// A JSON string literal. Each byte of invalid UTF-8 becomes U+FFFD: the
