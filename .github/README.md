@@ -80,7 +80,14 @@ scoop bucket add murrtty https://github.com/murr2k/scoop-murrtty
 scoop install murrtty/murrtty
 ```
 
-A winget package (`MurrayKopit.murrtty`) is under review.
+A winget package (`MurrayKopit.murrtty`) is under review. From 0.5.0 on,
+each release also has an installer for each architecture
+(`murrtty-<version>-windows-<x86_64|aarch64>-setup.exe`). It installs for
+you alone, without administrator rights, into
+`%LOCALAPPDATA%\Programs\murrtty`, with a Start menu shortcut and, unless
+you untick it, "Open in murrtty" on folders, folder backgrounds and drives
+(on Windows 11 under **Show more options**). Its uninstaller keeps your
+configuration and session.
 
 From 0.5.0 on, each release is built from its tag on GitHub's hosted
 runners, and each zip carries a build provenance attestation:

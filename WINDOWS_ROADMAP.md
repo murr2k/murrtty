@@ -3931,6 +3931,31 @@ go-ahead).
   association: neither GTK nor macOS opens `.ghostty` files (macOS opens
   folders and scripts). Waits for Inno Setup here: running its installer,
   even portably into `tools\`, is the owner's to allow.
+  *Built 2026-11-02* (issue #5, the owner's go-ahead to build it in the
+  hosted release job, so Inno Setup never runs on this machine):
+  `dist/windows/installer/murrtty.iss` as planned, with an optional desktop
+  shortcut, `bin\` and `share\` replaced whole on an upgrade, a running
+  murrtty closed through Restart Manager (`CloseApplications=force`:
+  without it Restart Manager refused the whole shutdown over the
+  pseudoconsole hosts, OpenConsole.exe, which have no window; murrtty still
+  gets the session end first and saves its session), and the uninstaller
+  also removing the toasts' AppUserModelID registration and keeping
+  `%LOCALAPPDATA%\murrtty`. "Open in murrtty" passes `%V.` (Git Bash's
+  way: a quoted drive root, `"C:\"`, would end in `\"`), and murrtty takes
+  an absolute directory from a request as Windows does (GetFullPathNameW,
+  which drops the dot). `get-innosetup.ps1` fetches Inno Setup 7.1.0
+  (12 weeks old), checked by the SHA-256 GitHub lists, its Authenticode
+  signer (Pyrsys B.V.) and its release attestation (`gh release
+  verify-asset`: an immutable release's, not build provenance);
+  `make-installer.ps1` builds from a release zip; `test-installer.ps1`
+  (CI only) installs silently and checks the files, `+version`, the
+  shortcut's target, arguments and AppUserModelID, each verb's command and
+  how Windows splits it for a drive root and a folder with a space,
+  installs again over a running murrtty, then uninstalls and checks what
+  is left. The release job (7.2) builds both installers on windows-2025,
+  tests each on its own architecture's runner, and attaches, checksums and
+  attests them with the zips. Inno Setup's license allows any use; its
+  copyright stays in the setup's About box as the license asks.
 - Authenticode signing; SmartScreen reputation takes time. Sign release
   tags (perhaps tip builds too), not every push, in a GitHub-hosted
   release job of the public repository (7.2), never on the desktop runner.
