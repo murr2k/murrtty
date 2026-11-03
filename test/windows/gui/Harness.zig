@@ -1165,15 +1165,41 @@ fn dwmRefreshes() ?u64 {
     return std.mem.readInt(u64, info[36..44], .little);
 }
 
+/// Whether a capture holds nothing drawn: one color all over, as a window
+/// comes back when DWM didn't compose what was presented to it (white, or
+/// its GDI background). A terminal's frame never is: its prompt shows.
+pub fn captureBlank(img: *const Image) bool {
+    if (img.width == 0 or img.height == 0) return true;
+    const first = img.rgb(0, 0);
+    for (0..img.height) |y| for (0..img.width) |x| {
+        if (img.rgb(x, y) != first) return false;
+    };
+    return true;
+}
+
+/// After a capture, before checking what it shows: a blank one
+/// (captureBlank) is a skip while DWM isn't drawing a display (the monitor
+/// off: captures then come back blank), and a failure while it is (the
+/// frame never reached the window). Captures can work while DWM's vblank
+/// count idles (over Remote Desktop, on a still screen), so the capture
+/// decides, not a guess made before it (capturesWork's).
+pub fn checkCapture(self: *const Harness, img: *const Image, what: []const u8) error{ Skipped, TestFailed }!void {
+    if (!captureBlank(img)) return;
+    if (!self.displayDriven()) return self.skip("{s}: the capture came back blank and DWM isn't drawing a display (the monitor may be off)", .{what});
+    return self.fail("{s}: the capture came back blank (#{x:0>6} all over) while DWM draws", .{ what, if (img.width > 0 and img.height > 0) img.rgb(0, 0) else 0 });
+}
+
 /// Whether captures of the user's desktop work: it is on screen and DWM is
-/// drawing it. The scenarios that capture skip themselves otherwise.
+/// drawing it. The on-screen scenarios skip themselves otherwise; `pixels`
+/// asks its captures instead (checkCapture), as the vblank count also
+/// idles where captures work.
 pub fn capturesWork(self: *const Harness) ?[]const u8 {
     if (!self.userDesktopShown()) return "the desktop isn't being drawn (screen saver or lock screen is up)";
     // DWM's vblank count also idles (a few a second) on a static screen with
     // the monitor on, so with GHOSTTY_GUI_ONSCREEN (the owner is at the
     // screen) it isn't asked.
     if (optIn("GHOSTTY_GUI_ONSCREEN")) return null;
-    if (!self.displayDriven()) return "DWM isn't driving a display (the monitor may be off; set GHOSTTY_GUI_ONSCREEN=1 if you are at the screen), so captures may come back blank";
+    if (!self.displayDriven()) return "DWM isn't driving a display (the monitor may be off, or the screen still, or the session a remote one; set GHOSTTY_GUI_ONSCREEN=1 if you are at the screen), so captures may come back blank";
     return null;
 }
 

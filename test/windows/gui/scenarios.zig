@@ -232,9 +232,12 @@ fn launch(h: *Harness) anyerror!void {
 /// Captures need a composed window, which a hidden desktop doesn't get, so
 /// this Ghostty runs on the user's desktop far off-screen, driven from a
 /// thread on that desktop, and is terminated rather than closed through a
-/// dialog that would appear on screen.
+/// dialog that would appear on screen. Only a screen saver or the lock
+/// screen stops it beforehand; whether DWM draws is asked of each capture
+/// (Harness.checkCapture): over Remote Desktop and on a still screen its
+/// vblank count idles while captures work.
 fn pixels(h: *Harness) anyerror!void {
-    if (h.capturesWork()) |why| return h.skip("{s}", .{why});
+    if (!h.userDesktopShown()) return h.skip("the desktop isn't being drawn (screen saver or lock screen is up)", .{});
     const Ctx = struct { h: *Harness, err: ?anyerror = null };
     var ctx: Ctx = .{ .h = h };
     h.runOnUserDesktop(&ctx, struct {
@@ -260,6 +263,7 @@ fn pixelsOffscreen(h: *Harness) !void {
     const surf = try h.surface(&g, win);
     var img = h.capture(surf) catch return h.fail("capture failed", .{});
     defer img.deinit();
+    try h.checkCapture(&img, "the pane");
     const px = img.rgb(img.width - 6, img.height - 6);
     try h.expect(px == 0x282c34, "background pixel #{x:0>6}, expected #282c34", .{px});
 
@@ -273,6 +277,7 @@ fn pixelsOffscreen(h: *Harness) !void {
     h.pump(300);
     var settled = h.capture(surf) catch return h.fail("capture failed", .{});
     defer settled.deinit();
+    try h.checkCapture(&settled, "the pane, settled");
     h.golden(&g, "pane.bmp", &settled);
 }
 
