@@ -2125,6 +2125,7 @@ fn runChoice(self: *Window, surface: *Surface, choice: ContextMenu.Choice) void 
     switch (choice) {
         .action => |a| self.performOnPane(surface, a),
         .about => self.app.showAbout(self.hwnd),
+        .updates => self.app.openUpdates(false),
         .notify_next => surface.notify_next_command = !surface.notify_next_command,
         .config_editor => self.app.openConfigEditor(),
         .fit_screen => self.fitToScreen(),

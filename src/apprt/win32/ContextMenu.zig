@@ -37,6 +37,9 @@ const Item = union(enum) {
     submenu: struct { label: []const u8, items: []const Item },
     /// murrtty's About box, which no core action shows.
     about: []const u8,
+    /// The Updates window (roadmap 7.6a), opened without checking (the
+    /// check_for_updates action also checks).
+    updates: []const u8,
     /// The configuration editor (roadmap F1), murrtty's own: no core
     /// action opens it, so a configuration naming one stays Ghostty's.
     config_editor: []const u8,
@@ -53,6 +56,7 @@ const Item = union(enum) {
 pub const Choice = union(enum) {
     action: Action,
     about,
+    updates,
     /// Toggle the pane's Notify on Next Command Finish.
     notify_next,
     config_editor,
@@ -142,6 +146,7 @@ const main_items = [_]Item{
     act("Terminal &Inspector", .{ .inspector = .toggle }),
     .{ .submenu = .{ .label = "C&onfig", .items = &config_submenu } },
     .separator,
+    .{ .updates = "Chec&k for Updates..." },
     .{ .about = "Abo&ut murrtty" },
     act("&Quit", .quit),
 };
@@ -182,6 +187,7 @@ const system_items = [_]Item{
     act("Terminal &Inspector", .{ .inspector = .toggle }),
     .{ .submenu = .{ .label = "C&onfig", .items = &config_submenu } },
     .separator,
+    .{ .updates = "Chec&k for Updates..." },
     .{ .about = "Abo&ut murrtty" },
     act("&Quit", .quit),
 };
@@ -193,6 +199,7 @@ const tray_items = [_]Item{
     act("Quick &Terminal", .toggle_quick_terminal),
     .separator,
     .{ .submenu = .{ .label = "C&onfig", .items = &config_submenu } },
+    .{ .updates = "Chec&k for Updates..." },
     .separator,
     act("&Quit", .quit),
 };
@@ -449,7 +456,7 @@ pub fn trackTray(app: *App, owner: c.HWND, screen: c.POINT) ?Choice {
 fn actionOf(choice: ?Choice) ?Action {
     return switch (choice orelse return null) {
         .action => |a| a,
-        .about, .notify_next, .config_editor, .fit_screen, .close_all_but => null,
+        .about, .updates, .notify_next, .config_editor, .fit_screen, .close_all_but => null,
     };
 }
 
@@ -593,6 +600,12 @@ fn fill(
             var free: [64]u8 = undefined;
             const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
             try built.choices.append(alloc, .about);
+            try append(alloc, built, menu, .item, text, built.nextId(), false, null);
+        },
+        .updates => |label| {
+            var free: [64]u8 = undefined;
+            const text = try addString(alloc, built, freeAccessKey(label, taken, &free));
+            try built.choices.append(alloc, .updates);
             try append(alloc, built, menu, .item, text, built.nextId(), false, null);
         },
         .config_editor => |label| {
@@ -890,7 +903,7 @@ test "system menu items: access keys of their own, clear of the system's" {
         const label = switch (item) {
             .action => |a| a.label,
             .submenu => |s| s.label,
-            .about, .unavailable, .notify_next, .config_editor, .fit_screen, .close_all_but => |l| l,
+            .about, .updates, .unavailable, .notify_next, .config_editor, .fit_screen, .close_all_but => |l| l,
             .separator => continue,
         };
         const k = accessKey(u8, label) orelse return error.NoAccessKey;

@@ -438,7 +438,11 @@ pub fn present(self: *ConfigEditor) void {
     _ = c.SetForegroundWindow(self.hwnd);
 }
 
-fn create(app: *App) !*ConfigEditor {
+/// The files the editor edits, read: the main one (open_config's) and
+/// every one the loader reads at start, in its order.
+const Loaded = struct { session: EditorSession, path: []u8 };
+
+fn loadSession(app: *App) !Loaded {
     const alloc = app.core_app.alloc;
     // The main file: the one open_config opens (made if there is none).
     const open_path = configpkg.edit.openPath(alloc) catch |err| {
@@ -509,8 +513,41 @@ fn create(app: *App) !*ConfigEditor {
         if (is_main) main = tops.items.len;
         try tops.append(alloc, .{ .path = p, .text = text });
     }
-    var session = try EditorSession.initFiles(alloc, tops.items, main, .{ .ctx = @ptrCast(app), .read = readFileFor });
+    const session = try EditorSession.initFiles(alloc, tops.items, main, .{ .ctx = @ptrCast(app), .read = readFileFor });
+    return .{ .session = session, .path = path };
+}
+
+/// Set one option in the configuration file murrtty loaded, in place, as a
+/// change made in the editor and saved would (the Updates window's switch
+/// and channel: roadmap 7.6a), then reload. The file stays Ghostty's: only
+/// that option's line changes. An editor open meanwhile sees the file
+/// changed outside it at its next save, and asks. `error.Reported`: a file
+/// couldn't be read, and a dialog has said so.
+pub fn setOption(app: *App, name: []const u8, value: ?[]const u8) !void {
+    const alloc = app.core_app.alloc;
+    // loadSession says what it couldn't read (cantOpen) but for memory.
+    var loaded = loadSession(app) catch |err| return if (err == error.OutOfMemory) err else error.Reported;
+    defer {
+        loaded.session.deinit();
+        alloc.free(loaded.path);
+    }
+    try loaded.session.set(name, value);
+    const changed = try loaded.session.changedFiles(alloc);
+    defer {
+        for (changed) |ch| alloc.free(ch.text);
+        alloc.free(changed);
+    }
+    for (changed) |ch| try writeFile(alloc, ch.path, ch.text);
+    app.reloadConfigFiles();
+}
+
+fn create(app: *App) !*ConfigEditor {
+    const alloc = app.core_app.alloc;
+    const loaded = try loadSession(app);
+    var session = loaded.session;
     errdefer session.deinit();
+    const path = loaded.path;
+    errdefer alloc.free(path);
 
     const self = try alloc.create(ConfigEditor);
     // Until its window exists; then the window's destroy frees it.

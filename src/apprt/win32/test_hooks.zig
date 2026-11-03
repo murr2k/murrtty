@@ -305,6 +305,8 @@ pub fn isDump(state: *const State, msg: c.UINT) bool {
 /// - 24: run the history's garbage collector now.
 /// - 25: an update check the user asked for (roadmap 7.6a; `lparam` 0), or
 ///   cancel the one in flight (1).
+/// - 26: open the Updates window (7.6a; `lparam` 0), or open it and check
+///   (1), as check_for_updates does.
 /// (5 was spike S2's transparency switch, now background-opacity itself;
 /// 9 is the perf-trace branch's.)
 pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
@@ -458,6 +460,13 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
     // The history's garbage collector now (roadmap 5.10b), not in minutes.
     if (wparam == 24) app.session.collectGarbage();
     if (wparam == 25) if (lparam == 0) app.updates.checkNow() else app.updates.cancel();
+    if (wparam == 26) app.openUpdates(lparam == 1);
+    // The Updates window as it paints, its controls in it, as
+    // `updates-window-<lparam>.bmp` beside the dump file.
+    if (wparam == 27) if (app.updates_window) |uw| {
+        const r = uw.clientSize();
+        savePaint(app, "updates-window", @intCast(lparam), r.right, r.bottom, uw, @import("UpdatesWindow.zig").paintTo);
+    };
     if (wparam == 23) if (app.config_editor) |editor| {
         var client: c.RECT = .{};
         _ = c.GetClientRect(editor.hwnd, &client);
@@ -865,6 +874,10 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
         });
     } else try out.appendSlice(alloc, ",\"bell_audio\":null");
     try dumpUpdates(alloc, out, &app.updates);
+    if (app.updates_window) |w| {
+        try out.appendSlice(alloc, ",\"updates_window\":");
+        try w.writeDump(alloc, out);
+    } else try out.appendSlice(alloc, ",\"updates_window\":null");
     // Which ConPTY new panes get: the bundled one or Windows' own (2.6).
     try out.print(alloc, ",\"conpty\":\"{t}\"", .{@import("../../os/main.zig").conpty.get().source});
     // The renderer this build draws with (roadmap 7.8): "opengl" or

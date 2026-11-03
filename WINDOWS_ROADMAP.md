@@ -544,6 +544,15 @@ roadmap item behind it.
   (OSC 133's `redraw` defaults to on there, and its shells redraw on
   SIGWINCH); no shell behind ConPTY redraws (cmd and PowerShell never do),
   so murrtty takes `redraw=0` unless a shell sends `133;A;redraw=1`.
+- **Update checks** (7.6): macOS Ghostty's updater, in an Updates window
+  of murrtty's own (Directory Opus's News and Updates, in murrtty's look):
+  what murrtty knows, the release history and its notes, Update Settings.
+  Off unless turned on, and an unset `auto-update` is off here, where
+  macOS Ghostty asks; turning it on passes through a consent dialog that
+  says what a check sends, which writes `auto-update = check`.
+  `check_for_updates` opens the window and checks; Check for Updates in the
+  main menu, system menu and tray opens it; About has an Updates row. GTK's
+  app has no updater (Linux builds come from package managers).
 
 *For now:*
 - **Inspector window** (5.12): Windows' title bar, where GTK's has a
@@ -4361,6 +4370,22 @@ automatic check waits on a metered connection) and `Updates.zig`
 (`updates.json` and the cached list in the state folder, read and written
 under a lock file with a lease for a check in flight, the timer). The GUI
 tests serve a made-up list on 127.0.0.1 (`update_server.zig`).
+*7.6a step 2, 2026-11-03:* the Updates window (`UpdatesWindow.zig`):
+modeless, one per murrtty, its controls child windows (IsDialogMessageW in
+App's loop); the main page (heading and buttons by the state, What a
+Check Sends while checks are off, the release history with unread
+releases bold and the running one Installed), a release's notes read in
+place (Markdown as plain text), Update Settings (the automatic switch and
+the channel written to the configuration through the configuration
+editor's in-place edit, `ConfigEditor.setOption`; How Often, When an
+Update Is Found, Clear Cached Update Information kept in `updates.json`;
+downloads shown, off, for 7.6b) and What a Check Sends; the consent
+dialog (a configuration that already says `check`, copied from another
+computer or written by hand, shows checks waiting for the OK, and the
+dialog's Turn On then writes nothing to the file); Download opens the
+release's page (only `releases/tag/<tag>` pages of murrtty's own
+repository). Entry points: Check for Updates in the main menu, system menu and
+tray, About's Updates row, `check_for_updates` (now offered by the palette).
 
 **7.7 ARM64, M.** `aarch64-windows-gnu` builds and tests, with the GPU path
 decided by S6 and 6.3. *Cross-build done 2026-10-28:* `zig build

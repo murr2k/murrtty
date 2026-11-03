@@ -902,6 +902,10 @@ pub const WS_VSCROLL = 0x00200000;
 pub const LBS_NOTIFY = 0x0001;
 pub const LBS_OWNERDRAWFIXED = 0x0010;
 pub const LBS_NOINTEGRALHEIGHT = 0x0100;
+/// Owner-drawn rows that still hold their text (for screen readers).
+pub const LBS_HASSTRINGS = 0x0040;
+pub const LB_GETTOPINDEX = 0x018E;
+pub const LB_SETITEMDATA = 0x019A;
 /// Rows that are only indices (the owner draws them): LB_SETCOUNT.
 pub const LBS_NODATA = 0x2000;
 pub const LB_SETCOUNT = 0x01A7;
@@ -996,6 +1000,7 @@ pub const DM_SETDEFID = 0x0401;
 pub const WM_GETDLGCODE = 0x0087;
 pub extern "user32" fn GetDlgCtrlID(HWND) callconv(.winapi) c_int;
 pub const DLGC_WANTALLKEYS = 0x0004;
+pub const DLGC_HASSETSEL = 0x0008;
 pub const SS_CENTER = 0x0001;
 pub const EN_SETFOCUS = 0x0100;
 pub const EN_KILLFOCUS = 0x0200;
@@ -1274,6 +1279,27 @@ pub const DRIVE_FIXED = 3;
 pub extern "kernel32" fn GetDriveTypeW(LPCWSTR) callconv(.winapi) UINT;
 pub const FILETIME = extern struct { dwLowDateTime: DWORD, dwHighDateTime: DWORD };
 pub extern "kernel32" fn GetSystemTimeAsFileTime(*FILETIME) callconv(.winapi) void;
+pub const SYSTEMTIME = extern struct {
+    wYear: u16,
+    wMonth: u16,
+    wDayOfWeek: u16,
+    wDay: u16,
+    wHour: u16,
+    wMinute: u16,
+    wSecond: u16,
+    wMilliseconds: u16,
+};
+pub extern "kernel32" fn FileTimeToLocalFileTime(*const FILETIME, *FILETIME) callconv(.winapi) BOOL;
+pub extern "kernel32" fn FileTimeToSystemTime(*const FILETIME, *SYSTEMTIME) callconv(.winapi) BOOL;
+pub extern "user32" fn IsDialogMessageW(HWND, *MSG) callconv(.winapi) BOOL;
+pub const WS_EX_CONTROLPARENT = 0x00010000;
+pub const ODT_LISTBOX = 2;
+pub const WM_PRINT = 0x0317;
+pub const PRF_NONCLIENT = 0x02;
+pub const PRF_CLIENT = 0x04;
+pub const PRF_ERASEBKGND = 0x08;
+pub extern "gdi32" fn SetViewportOrgEx(HDC, c_int, c_int, ?*POINT) callconv(.winapi) BOOL;
+pub const WM_THEMECHANGED = 0x031A;
 pub const WIN32_FIND_DATAW = extern struct {
     dwFileAttributes: DWORD,
     ftCreationTime: FILETIME,

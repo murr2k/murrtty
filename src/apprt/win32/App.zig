@@ -31,6 +31,7 @@ const Undo = @import("Undo.zig");
 const Waiting = @import("Waiting.zig");
 const BellAudio = @import("BellAudio.zig");
 const Updates = @import("Updates.zig");
+const UpdatesWindow = @import("UpdatesWindow.zig");
 const Inspector = @import("Inspector.zig");
 const ConfigEditor = @import("ConfigEditor.zig");
 const wgl = @import("opengl").wgl;
@@ -101,6 +102,8 @@ pub const Request = union(enum) {
     redo,
     /// Save the inspector's Terminal IO events (roadmap 5.12), owned.
     export_io: struct { surface: u64, contents: []u8 },
+    /// Open the Updates window (roadmap 7.6a), checking if `true`.
+    updates: bool,
 
     fn deinit(self: Request, alloc: Allocator) void {
         switch (self) {
@@ -254,6 +257,9 @@ undo: Undo = undefined,
 session: Session = undefined,
 /// Update checks (roadmap 7.6a), set up in init, started once run() has.
 updates: Updates = undefined,
+/// The Updates window (7.6a), while it is open; it keeps murrtty running
+/// (checkQuit).
+updates_window: ?*UpdatesWindow = null,
 /// The panes waiting for their user: the header bars' bells.
 waiting: Waiting = .{},
 /// The bell's `audio` (roadmap 3.7b), made at the first bell that asks.
@@ -382,6 +388,7 @@ pub fn init(
     try Notifications.registerClass(instance);
     try Inspector.registerClass(instance);
     try ConfigEditor.registerClass(instance);
+    try UpdatesWindow.registerClass(instance);
 
     const wc: c.WNDCLASSEXW = .{
         .lpfnWndProc = &wakeupWndProc,
@@ -567,6 +574,8 @@ pub fn run(self: *App) !void {
         const ret = c.GetMessageW(&msg, null, 0, 0);
         if (ret == 0) break; // WM_QUIT
         if (ret == -1) return error.GetMessageFailed;
+        // Tab, Enter and Escape among the Updates window's controls.
+        if (self.updates_window) |w| if (c.IsDialogMessageW(w.hwnd, &msg) != 0) continue;
         _ = c.TranslateMessage(&msg);
         _ = c.DispatchMessageW(&msg);
     }
@@ -581,6 +590,7 @@ pub fn terminate(self: *App) void {
     if (self.ipc_server) |s| s.stop();
     self.ipc_server = null;
     if (self.config_editor) |editor| editor.destroy();
+    if (self.updates_window) |w| w.destroy();
     while (self.windows.items.len > 0) {
         _ = c.DestroyWindow(self.windows.items[self.windows.items.len - 1].hwnd);
     }
@@ -1010,6 +1020,7 @@ fn runRequests(self: *App) void {
             .close_all_windows => if (self.confirmCloseAll(.all_windows)) self.closeAllWindows(true),
             .close_all_but => |id| if (self.findSurface(id)) |s| self.closeAllBut(s),
             .quit => self.quit(),
+            .updates => |check| self.openUpdates(check),
             .open_config => {
                 // The shell can show dialogs of its own.
                 var modal = self.beginModal(null, .{});
@@ -1090,7 +1101,7 @@ fn packagedFile(alloc: Allocator, name: []const u8) ?[]u8 {
     return path;
 }
 
-fn launch(self: *App, owner: ?c.HWND, target: url.Target) void {
+pub fn launch(self: *App, owner: ?c.HWND, target: url.Target) void {
     if (test_hooks.recordLaunch(&self.test_state, self.core_app.alloc, @tagName(target.verb), target.value)) return;
     // The shell can show dialogs of its own.
     var modal = self.beginModal(owner, .{});
@@ -1222,8 +1233,21 @@ pub fn showAbout(self: *App, owner: ?c.HWND) void {
                 Surface.writeClipboardText(ctx.app.core_app.alloc, ctx.owner orelse ctx.app.wakeup_hwnd, text) catch return false;
                 return true;
             }
+            /// After the dialog: requests wait for its modal scope.
+            fn openUpdates(ptr: *anyopaque) void {
+                const ctx: *@This() = @ptrCast(@alignCast(ptr));
+                ctx.app.request(.{ .updates = false });
+            }
         };
         var ctx: Ctx = .{ .app = self, .owner = owner };
+        // The Updates row (roadmap 7.6a) says how update checks stand.
+        var updates_buf: [96]u8 = undefined;
+        const updates_label: []const u8 = label: {
+            const u = &self.updates;
+            if (!u.release_build) break :label "&Updates: development build";
+            if (u.found) |f| break :label std.fmt.bufPrint(&updates_buf, "&Updates: murrtty {s} available", .{f.version}) catch "&Updates";
+            break :label if (u.mode() == .off) "&Updates: Off" else "&Updates: On";
+        };
         var modal = self.beginModal(owner, .{});
         defer modal.end();
         if (AboutDialog.run(alloc, .{
@@ -1241,6 +1265,8 @@ pub fn showAbout(self: *App, owner: ?c.HWND) void {
             .ctx = &ctx,
             .open = Ctx.open,
             .copy = Ctx.copy,
+            .updates = updates_label,
+            .open_updates = Ctx.openUpdates,
         })) return;
     }
     const content = std.fmt.allocPrint(alloc,
@@ -1329,6 +1355,7 @@ pub fn beginModal(self: *App, owner: ?c.HWND, opts: ModalOptions) Modal {
         // The configuration editor too: its own dialogs and a reload must
         // not run inside another dialog's loop.
         if (self.config_editor) |e| others.append(alloc, e.hwnd) catch {};
+        if (self.updates_window) |w| others.append(alloc, w.hwnd) catch {};
         for (others.items) |hwnd| {
             if (owner != null and hwnd == owner.?) continue;
             // EnableWindow returns 0 if the window was enabled before.
@@ -1719,6 +1746,8 @@ fn checkQuit(self: *App) void {
     if (!self.started or self.quitting or self.windows.items.len > 0) return;
     // The configuration editor open: it asks before its changes go.
     if (self.config_editor != null) return;
+    // The Updates window open: it goes when it is closed.
+    if (self.updates_window != null) return;
     // Started for a request: its own timer decides.
     if (self.ipc_launch and !self.requested_window) return;
     const config = &self.config;
@@ -1773,6 +1802,24 @@ pub fn openConfigEditor(self: *App) void {
 /// The configuration editor closed: murrtty may now quit (checkQuit).
 pub fn configEditorClosed(self: *App) void {
     self.checkQuit();
+}
+
+/// The Updates window (roadmap 7.6a), opened or brought forward; `check`
+/// also starts a check, as the check_for_updates action asks.
+pub fn openUpdates(self: *App, check: bool) void {
+    if (self.modal_depth > 0) return self.raiseModal();
+    UpdatesWindow.open(self);
+    if (check) self.updates.checkNow();
+}
+
+/// The Updates window closed: murrtty may now quit (checkQuit).
+pub fn updatesWindowClosed(self: *App) void {
+    self.checkQuit();
+}
+
+/// What update checks know changed: the Updates window shows it.
+pub fn updatesChanged(self: *App) void {
+    if (self.updates_window) |w| w.refresh();
 }
 
 /// Reload the configuration from its files, as a reload_config the user
@@ -1927,6 +1974,7 @@ pub fn trayMenu(self: *App, owner: c.HWND, at: c.POINT) void {
     switch (ContextMenu.trackTray(self, owner, at) orelse return) {
         .action => |action| self.runAppAction(action),
         .config_editor => self.openConfigEditor(),
+        .updates => self.openUpdates(false),
         .about, .notify_next, .fit_screen, .close_all_but => {},
     }
 }
@@ -2452,6 +2500,11 @@ pub fn performAction(
         // Closing runs from the message loop: the core is still using
         // the surface that triggered these (see Request).
         .quit => self.request(.quit),
+
+        // Ghostty's Check for Updates (roadmap 7.6a): the Updates window,
+        // and a check, which the user asked for. From the message loop:
+        // a binding's key is still being handled.
+        .check_for_updates => self.request(.{ .updates = true }),
 
         // The terminal inspector (roadmap 5.12): its window, as GTK's.
         .inspector => {
@@ -3092,7 +3145,6 @@ pub fn supportsAction(action: input.Binding.Action) bool {
         // input could use; roadmap 6.5), or not yet.
         .show_gtk_inspector,
         .toggle_secure_input,
-        .check_for_updates,
         => false,
 
         // Only from a global binding (roadmap 5.5), which can also bring

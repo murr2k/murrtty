@@ -66,6 +66,11 @@ pub const Options = struct {
     open: *const fn (ctx: *anyopaque, link: Link) void,
     /// Copy the version (true if the clipboard took it).
     copy: *const fn (ctx: *anyopaque, text: []const u8) bool,
+    /// A row for update checks (roadmap 7.6a), its label saying their
+    /// state ("Updates: Off"): its click closes the dialog and runs
+    /// `open_updates`.
+    updates: ?[]const u8 = null,
+    open_updates: ?*const fn (ctx: *anyopaque) void = null,
 };
 
 /// The controls' ids, for the GUI tests: the close button is IDCANCEL.
@@ -75,6 +80,7 @@ pub const id_website = 210;
 pub const id_issues = 211;
 pub const id_credits = 212;
 pub const id_legal = 213;
+pub const id_updates = 214;
 /// The toast's static: no size (the dialog and the controls under the
 /// toast draw it, as an overlay), shown while the toast is, for screen
 /// readers and the GUI tests.
@@ -247,6 +253,7 @@ fn buildControls(state: *State) !void {
     try state.controls.append(alloc, .{ .id = id_version, .page = .main, .kind = .version });
     try state.controls.append(alloc, .{ .id = id_website, .page = .main, .kind = .row, .icon = .link, .link = .{ .label = "&Website", .target = state.opts.website } });
     try state.controls.append(alloc, .{ .id = id_issues, .page = .main, .kind = .row, .icon = .link, .link = .{ .label = "&Report an Issue", .target = state.opts.issues } });
+    if (state.opts.updates != null) try state.controls.append(alloc, .{ .id = id_updates, .page = .main, .kind = .row, .icon = .next, .last_in_card = false });
     try state.controls.append(alloc, .{ .id = id_credits, .page = .main, .kind = .row, .icon = .next, .last_in_card = false });
     try state.controls.append(alloc, .{ .id = id_legal, .page = .main, .kind = .row, .icon = .next });
     for ([_]struct { Page, []const Block, u16 }{
@@ -311,6 +318,7 @@ fn label(state: *const State, ctl: Control) []const u8 {
         c.IDCANCEL => "Close",
         id_back => "Back",
         id_credits => "&Credits",
+        id_updates => state.opts.updates orelse "",
         id_legal => "&Legal",
         id_toast => "Copied to clipboard",
         else => state.opts.version,
@@ -399,6 +407,11 @@ fn activate(hwnd: c.HWND, state: *State, id: u16) void {
         id_back => showPage(hwnd, state, .main),
         id_credits => showPage(hwnd, state, .credits),
         id_legal => showPage(hwnd, state, .legal),
+        id_updates => {
+            _ = c.KillTimer(hwnd, toast_timer);
+            _ = c.EndDialog(hwnd, id_updates);
+            if (state.opts.open_updates) |f| f(state.opts.ctx);
+        },
         id_version => if (state.opts.copy(state.opts.ctx, state.opts.version)) setToast(hwnd, state, true),
         else => if (state.find(id)) |ctl| if (ctl.link) |l| state.opts.open(state.opts.ctx, l),
     }
@@ -572,7 +585,8 @@ fn layout(hwnd: c.HWND, state: *State) void {
     }
     y += state.scale(main_spacing) + state.scale(lists_margin_top);
     const rh = state.scale(row_height);
-    for ([_][]const u16{ &.{id_website}, &.{id_issues}, &.{ id_credits, id_legal } }, 0..) |group, gi| {
+    const pages: []const u16 = if (state.opts.updates != null) &.{ id_updates, id_credits, id_legal } else &.{ id_credits, id_legal };
+    for ([_][]const u16{ &.{id_website}, &.{id_issues}, pages }, 0..) |group, gi| {
         if (gi > 0) y += state.scale(lists_spacing);
         y = placeCard(state, dc, group, m, inner_w, y, rh);
     }

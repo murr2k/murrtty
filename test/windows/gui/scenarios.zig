@@ -129,6 +129,8 @@ pub const all = [_]Scenario{
     .{ .name = "updates-off", .about = "update checks are off and silent unless asked (a development build never checks); Check Now sends one GET of the list with the user agent murrtty and nothing of murrtty's; the second sends the ETag back and takes the 304; the list kept is read at start; the channel picks the release (a local server)", .run = updatesOff },
     .{ .name = "updates-schedule", .about = "automatic update checks: none before start plus the delay, then one, the next a day away within a tenth; four starts, one request; due again, the ETag and a 304 (a local server)", .run = updatesSchedule },
     .{ .name = "updates-backoff", .about = "update checks when the server can't answer: a 503's Retry-After honored, no retry at once; a server that never answers holds nothing (dumps answer, Cancel, quitting mid-request exits at once); a metered connection waits an hour, sending nothing (a local server)", .run = updatesBackoff },
+    .{ .name = "updates-window", .about = "the Updates window: opening it and its pages sends nothing; Check Now shows the history (unread bold, Installed), notes read in place (Escape goes back), Skip This Version; turning checks on asks first (Cancel writes nothing, Turn On writes auto-update = check and the consent), off writes off; the channel, How Often, Clear Cached Update Information, Close; checks on in the file but not agreed to wait for the OK, which writes nothing (a local server)", .run = updatesWindow },
+    .{ .name = "updates-window-look", .about = "pictures of the Updates window's pages, dark and light, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = updatesWindowLook, .tool = true },
     .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook, .tool = true },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
     .{ .name = "pwsh-typeahead", .about = "task 42: PowerShell 7 and 5.1 with integration, commands typed ahead (during a slowed prompt; in pairs after a Ctrl+C) all run (GHOSTTY_GUI_STRESS=1; GHOSTTY_PTY_LOG for a trace)", .run = pwshTypeahead },
@@ -2210,7 +2212,8 @@ fn commandPalette(h: *Harness) anyerror!void {
     try h.expect(p.count > 20, "it lists the commands ({d})", .{p.count});
     try h.expect(p.has("New Tab"), "New Tab is there", .{});
     try h.expect(p.hasPrefix("Focus: "), "and a jump to the terminal", .{});
-    try h.expect(!p.has("Check for Updates"), "commands this runtime lacks are not", .{});
+    try h.expect(!p.has("Toggle Secure Input") and !p.has("Show the GTK Inspector"), "commands this runtime lacks are not", .{});
+    try h.expect(p.has("Check for Updates"), "Check for Updates is, since 7.6a", .{});
     try h.expect(p.has("Toggle Inspector"), "Toggle Inspector is, since 5.12", .{});
     try h.expect(p.has("Move Tab to New Window"), "Move Tab to New Window is, since 4.5", .{});
     try h.expect(p.has("Change Tab Title\u{2026}"), "the title prompts are (roadmap 3.5)", .{});
@@ -3017,13 +3020,14 @@ fn tabButtons(h: *Harness) anyerror!void {
     {
         const items = try h.menuItems(menu);
         defer h.freeMenuItems(items);
-        try h.expect(items.len == 22, "GTK's main menu and murrtty's Close All but This: 22 entries with separators (got {d})", .{items.len});
-        if (items.len == 22) {
+        try h.expect(items.len == 23, "GTK's main menu, murrtty's Close All but This and Check for Updates: 23 entries with separators (got {d})", .{items.len});
+        if (items.len == 23) {
             try h.expect(std.mem.startsWith(u8, items[0].text, "&Copy") and std.mem.startsWith(u8, items[8].text, "&New Tab"), "Copy first, New Tab with the tab's items", .{});
             try h.expect(items[10].submenu and std.mem.eql(u8, items[10].text, "&Split"), "a Split submenu", .{});
             try h.expect(std.mem.eql(u8, items[11].text, "Close All but T&his"), "Close All but This after it ('{s}')", .{items[11].text});
             try h.expect(std.mem.startsWith(u8, items[17].text, "Terminal &Inspector") and !items[17].grayed, "Terminal Inspector (roadmap 5.12)", .{});
-            try h.expect(std.mem.eql(u8, items[20].text, "Abo&ut murrtty") and std.mem.startsWith(u8, items[21].text, "&Quit"), "About murrtty, then Quit", .{});
+            try h.expect(std.mem.eql(u8, items[20].text, "Chec&k for Updates..."), "Check for Updates (roadmap 7.6a, '{s}')", .{items[20].text});
+            try h.expect(std.mem.eql(u8, items[21].text, "Abo&ut murrtty") and std.mem.startsWith(u8, items[22].text, "&Quit"), "About murrtty, then Quit", .{});
         }
     }
     h.menuKey(menu, 'n');
@@ -13387,10 +13391,11 @@ fn trayScenario(h: *Harness) anyerror!void {
                 labels[n] = it.text;
                 n += 1;
             };
-            const ok = n == 4 and std.mem.startsWith(u8, labels[0], "New &Window") and
+            const ok = n == 5 and std.mem.startsWith(u8, labels[0], "New &Window") and
                 std.mem.startsWith(u8, labels[1], "Quick &Terminal") and
-                std.mem.eql(u8, labels[2], "C&onfig") and std.mem.startsWith(u8, labels[3], "&Quit");
-            try h.expect(ok and items[3].submenu, "the menu: New Window, Quick Terminal, Config, Quit ({d} items)", .{n});
+                std.mem.eql(u8, labels[2], "C&onfig") and std.mem.eql(u8, labels[3], "Chec&k for Updates...") and
+                std.mem.startsWith(u8, labels[4], "&Quit");
+            try h.expect(ok and items[3].submenu, "the menu: New Window, Quick Terminal, Config, Check for Updates, Quit ({d} items)", .{n});
             h.menuKey(menu, 'w');
         }
         try waitWindowCount(h, &g, 2);
@@ -15367,6 +15372,384 @@ fn updatesBackoff(h: *Harness) anyerror!void {
         }
         try h.expect(seen, "the automatic check ran (metered)", .{});
         try h.expect(srv.requests.load(.acquire) == 3, "nothing sent on a metered connection ({d})", .{srv.requests.load(.acquire)});
+        try quitPane(h, &g);
+    }
+}
+
+// The Updates window's control ids (UpdatesWindow.zig).
+const uw_primary = 210;
+const uw_secondary = 211;
+const uw_history = 220;
+const uw_settings = 230;
+const uw_read = 231;
+const uw_close = 233;
+const uw_back = 200;
+const uw_notes = 240;
+const uw_auto = 250;
+const uw_interval = 251;
+const uw_tip = 255;
+const uw_privacy = 256;
+const uw_clear = 257;
+
+fn uwControl(u: Harness.UpdatesWindow, id: u32) ?std.meta.Elem(@TypeOf(u.controls)) {
+    for (u.controls) |ctl| if (ctl.id == id) return ctl;
+    return null;
+}
+
+/// Click one of the Updates window's controls, as a click on it does
+/// (BN_CLICKED to the window); `hwnd` the window's.
+fn uwClick(hwnd: u64, id: u32) void {
+    _ = w.PostMessageW(@ptrFromInt(hwnd), w.WM_COMMAND, id, 0);
+}
+
+/// The dump once the Updates window shows `page` and its heading starts
+/// with `heading` ("" for any).
+fn uwWait(h: *Harness, g: *const Harness.Ghostty, page: []const u8, heading: []const u8, what: []const u8) !std.json.Parsed(Harness.Dump) {
+    var waited: u32 = 0;
+    while (waited <= 10000) : (waited += 100) {
+        var d = try h.dump(g);
+        if (d.value.updates_window) |u| if (std.mem.eql(u8, u.page, page) and std.mem.startsWith(u8, u.heading, heading)) return d;
+        d.deinit();
+        w.Sleep(100);
+    }
+    return h.fail("{s}: the Updates window never showed page {s} with '{s}'", .{ what, page, heading });
+}
+
+fn configText(h: *Harness, name: []const u8) ![]u8 {
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\{s}\\murrtty\\config.ghostty", .{ h.temp_dir, name });
+    defer h.alloc.free(path);
+    return h.readFileOrNull(path) orelse h.fail("no configuration at {s}", .{path});
+}
+
+/// The Updates window (roadmap 7.6a): opening it, its settings and its
+/// privacy page send nothing; Check Now does, and the release history
+/// shows the list (unread releases bold, the running one Installed); a
+/// release's notes read in place mark it read; Skip This Version; turning
+/// automatic checks on asks first (Cancel writes nothing, Turn On writes
+/// auto-update = check and the consent), turning them off writes off; the
+/// channel and How Often; Clear Cached Update Information; Close.
+fn updatesWindow(h: *Harness) anyerror!void {
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    const name = "updates-window";
+    var g = try startUpdates(h, srv, name, "auto-update-channel = stable\n", "300", &.{}, true);
+    defer g.deinit();
+    try h.openUpdatesWindow(&g, false);
+    var hwnd: u64 = 0;
+    {
+        var d = try uwWait(h, &g, "main", "Update checks are off", "opened");
+        defer d.deinit();
+        const u = d.value.updates_window.?;
+        hwnd = u.hwnd;
+        const primary = uwControl(u, uw_primary).?;
+        const secondary = uwControl(u, uw_secondary).?;
+        try h.expect(std.mem.eql(u8, primary.label, "Check Now") and primary.visible, "Check Now offered ('{s}')", .{primary.label});
+        try h.expect(std.mem.eql(u8, secondary.label, "Turn On Automatic Checks...") and secondary.visible, "Turn On offered ('{s}')", .{secondary.label});
+        try h.expect(u.history.len == 0, "no history before a check", .{});
+    }
+    // The settings and privacy pages, and back: nothing sent.
+    uwClick(hwnd, uw_settings);
+    {
+        var d = try uwWait(h, &g, "settings", "", "Update Settings");
+        defer d.deinit();
+        const u = d.value.updates_window.?;
+        try h.expect(!uwControl(u, uw_auto).?.on, "automatic checks shown off", .{});
+        try h.expect(std.mem.eql(u8, uwControl(u, uw_interval).?.value, "Daily"), "daily by default", .{});
+    }
+    uwClick(hwnd, uw_privacy);
+    (try uwWait(h, &g, "privacy", "", "What a check sends")).deinit();
+    uwClick(hwnd, uw_back);
+    (try uwWait(h, &g, "settings", "", "back to settings")).deinit();
+    uwClick(hwnd, uw_back);
+    (try uwWait(h, &g, "main", "", "back to the main page")).deinit();
+    w.Sleep(1000);
+    try h.expect(srv.requests.load(.acquire) == 0, "the window and its pages sent nothing", .{});
+
+    // Check Now: the history, newest first, on the stable channel.
+    uwClick(hwnd, uw_primary);
+    {
+        var d = try uwWait(h, &g, "main", "murrtty 0.6.0 is available", "after Check Now");
+        defer d.deinit();
+        const u = d.value.updates_window.?;
+        try h.expect(srv.requests.load(.acquire) == 1, "one request", .{});
+        try h.expect(u.history.len == 2 and std.mem.eql(u8, u.history[0].version, "0.6.0") and std.mem.eql(u8, u.history[1].version, "0.5.0"), "the stable releases listed, newest first ({d})", .{u.history.len});
+        try h.expect(u.history[0].bold and !u.history[0].installed, "0.6.0 unread", .{});
+        try h.expect(!u.history[1].bold and u.history[1].installed, "0.5.0 installed, not bold", .{});
+        try h.expect(std.mem.eql(u8, uwControl(u, uw_primary).?.label, "Download") and std.mem.eql(u8, uwControl(u, uw_secondary).?.label, "Skip This Version"), "Download and Skip This Version offered", .{});
+        try h.expect(uwControl(u, uw_history).?.visible, "the history shows once there is a list", .{});
+    }
+    // Its notes, read in place.
+    const list = w.GetDlgItem(@ptrFromInt(hwnd), uw_history) orelse return h.fail("no history list", .{});
+    var result: usize = 0;
+    _ = w.SendMessageTimeoutW(list, w.LB_SETCURSEL, 0, 0, 0, 2000, &result);
+    // As a click in the list tells its window (LB_SETCURSEL doesn't).
+    const lbn_selchange = 1;
+    _ = w.PostMessageW(@ptrFromInt(hwnd), w.WM_COMMAND, lbn_selchange << 16 | uw_history, @bitCast(@intFromPtr(list)));
+    uwClick(hwnd, uw_read);
+    {
+        var d = try uwWait(h, &g, "notes", "", "Read");
+        defer d.deinit();
+        const u = d.value.updates_window.?;
+        try h.expect(eql(u.notes_version, "0.6.0"), "0.6.0's notes ({?s})", .{u.notes_version});
+        try h.expect(std.mem.indexOf(u8, u.notes, "What's new") != null and std.mem.indexOf(u8, u.notes, "\u{2022} A test release.") != null, "the notes as text ('{s}')", .{u.notes});
+    }
+    // Escape in the notes goes back, as on the other pages: the notes, a
+    // multiline edit, once took it and closed the window.
+    const notes_edit = w.GetDlgItem(@ptrFromInt(hwnd), uw_notes) orelse return h.fail("no notes", .{});
+    h.key(notes_edit, .{}, w.VK_ESCAPE);
+    {
+        var d = try uwWait(h, &g, "main", "", "Escape in the notes");
+        defer d.deinit();
+        try h.expect(!d.value.updates_window.?.history[0].bold, "0.6.0 read now", .{});
+    }
+    // Skip This Version.
+    uwClick(hwnd, uw_secondary);
+    {
+        var d = try uwWait(h, &g, "main", "murrtty is up to date", "Skip This Version");
+        defer d.deinit();
+        try h.expect(eql(d.value.updates.?.state.skipped, "0.6.0"), "0.6.0 skipped", .{});
+        const u = d.value.updates_window.?;
+        try h.expect(std.mem.eql(u8, uwControl(u, uw_primary).?.label, "Check Now") and uwControl(u, uw_primary).?.visible, "Check Now back", .{});
+        try h.expect(std.mem.eql(u8, uwControl(u, uw_secondary).?.label, "Turn On Automatic Checks...") and uwControl(u, uw_secondary).?.visible, "Turn On in Skip's place", .{});
+    }
+
+    // Consent: Cancel writes nothing.
+    uwClick(hwnd, uw_settings);
+    (try uwWait(h, &g, "settings", "", "settings again")).deinit();
+    const before = try configText(h, name);
+    defer h.alloc.free(before);
+    uwClick(hwnd, uw_auto);
+    {
+        const dlg = try h.waitDialog(&g, 5000);
+        // An alert dialog's window text is its heading.
+        var title_buf: [128]u16 = undefined;
+        const tn: usize = @intCast(@max(w.GetWindowTextW(dlg, &title_buf, title_buf.len), 0));
+        const title = try std.unicode.utf16LeToUtf8Alloc(h.alloc, title_buf[0..tn]);
+        defer h.alloc.free(title);
+        try h.expect(std.mem.eql(u8, title, "Check for Updates Automatically?"), "the consent dialog asks first ('{s}')", .{title});
+        h.answer(&g, dlg, w.IDCANCEL);
+        w.Sleep(500);
+        const after = try configText(h, name);
+        defer h.alloc.free(after);
+        try h.expect(std.mem.eql(u8, before, after), "Cancel leaves the configuration as it was", .{});
+        var d = try h.dump(&g);
+        defer d.deinit();
+        try h.expect(!d.value.updates.?.state.consent and std.mem.eql(u8, d.value.updates.?.mode, "off"), "no consent, still off", .{});
+    }
+    // Turn On: auto-update = check written, the consent kept.
+    uwClick(hwnd, uw_auto);
+    {
+        const dlg = try h.waitDialog(&g, 5000);
+        h.answer(&g, dlg, w.IDOK);
+        var waited: u32 = 0;
+        var on = false;
+        while (waited <= 10000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (std.mem.eql(u8, d.value.updates.?.mode, "check")) {
+                try h.expect(d.value.updates.?.state.consent and d.value.updates.?.automatic, "consent kept, checks on", .{});
+                try h.expect(uwControl(d.value.updates_window.?, uw_auto).?.on, "the switch on", .{});
+                on = true;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(on, "Turn On turned automatic checks on", .{});
+        const text = try configText(h, name);
+        defer h.alloc.free(text);
+        try h.expect(std.mem.indexOf(u8, text, "auto-update = check") != null, "auto-update = check in the file ('{s}')", .{text});
+        try h.expect(std.mem.indexOf(u8, text, "auto-update-channel = stable") != null, "the rest kept", .{});
+    }
+    // Off again: written off, no dialog.
+    uwClick(hwnd, uw_auto);
+    {
+        var waited: u32 = 0;
+        while (waited <= 10000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (std.mem.eql(u8, d.value.updates.?.mode, "off")) break;
+            w.Sleep(100);
+        }
+        const text = try configText(h, name);
+        defer h.alloc.free(text);
+        try h.expect(std.mem.indexOf(u8, text, "auto-update = off") != null, "auto-update = off in the file", .{});
+    }
+    // The pre-release channel: written, and 0.7.0-beta.1 listed.
+    uwClick(hwnd, uw_tip);
+    {
+        var waited: u32 = 0;
+        var tip = false;
+        while (waited <= 10000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (std.mem.eql(u8, d.value.updates.?.channel, "tip")) {
+                tip = d.value.updates_window.?.history.len == 3;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(tip, "the tip channel lists the pre-release too", .{});
+        const text = try configText(h, name);
+        defer h.alloc.free(text);
+        try h.expect(std.mem.indexOf(u8, text, "auto-update-channel = tip") != null, "auto-update-channel = tip in the file", .{});
+    }
+    // How often: weekly, from its menu.
+    uwClick(hwnd, uw_interval);
+    {
+        const menu = try h.waitMenu(&g, 1, 5000);
+        h.menuChoose(menu, 1);
+        var waited: u32 = 0;
+        var weekly = false;
+        while (waited <= 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (std.mem.eql(u8, d.value.updates.?.state.interval, "weekly")) {
+                weekly = std.mem.eql(u8, uwControl(d.value.updates_window.?, uw_interval).?.value, "Weekly");
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(weekly, "weekly chosen and shown", .{});
+    }
+    // Clear Cached Update Information: the list and the skip go.
+    uwClick(hwnd, uw_clear);
+    {
+        var waited: u32 = 0;
+        var cleared = false;
+        while (waited <= 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = d.value.updates.?;
+            if (u.versions.len == 0) {
+                cleared = u.state.skipped == null and u.state.etag == null and std.mem.eql(u8, u.state.interval, "weekly");
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(cleared, "the cache cleared, the settings kept", .{});
+    }
+    uwClick(hwnd, uw_close);
+    {
+        var waited: u32 = 0;
+        var closed = false;
+        while (waited <= 5000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            if (d.value.updates_window == null) {
+                closed = true;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(closed, "Close closes the window", .{});
+    }
+    try h.expect(srv.requests.load(.acquire) == 1, "one request in all ({d})", .{srv.requests.load(.acquire)});
+    try quitPane(h, &g);
+    try expectNoLeaks(h, &g, "the Updates window leaks nothing");
+
+    // Checks on in the configuration, never agreed to here (a file copied
+    // from another computer): the window says they wait, the switch reads
+    // off, and Turn On only records the OK (the file already says check).
+    const ask = "updates-window-ask";
+    var g2 = try startUpdates(h, srv, ask, "auto-update = check\n", "300000", &.{}, true);
+    defer g2.deinit();
+    try h.openUpdatesWindow(&g2, false);
+    var hwnd2: u64 = 0;
+    {
+        var d = try uwWait(h, &g2, "main", "Automatic checks wait for your OK", "checks on, no OK");
+        defer d.deinit();
+        const u = d.value.updates_window.?;
+        hwnd2 = u.hwnd;
+        try h.expect(std.mem.eql(u8, uwControl(u, uw_secondary).?.label, "Turn On Automatic Checks...") and uwControl(u, uw_secondary).?.visible, "Turn On offered", .{});
+        try h.expect(!uwControl(u, uw_auto).?.on, "the switch reads off", .{});
+        try h.expect(!d.value.updates.?.automatic, "no automatic checks", .{});
+    }
+    const before_ask = try configText(h, ask);
+    defer h.alloc.free(before_ask);
+    uwClick(hwnd2, uw_secondary);
+    {
+        const dlg = try h.waitDialog(&g2, 5000);
+        h.answer(&g2, dlg, w.IDOK);
+        var waited: u32 = 0;
+        var agreed = false;
+        while (waited <= 10000) : (waited += 100) {
+            var d = try h.dump(&g2);
+            defer d.deinit();
+            if (d.value.updates.?.state.consent) {
+                agreed = d.value.updates.?.automatic and uwControl(d.value.updates_window.?, uw_auto).?.on;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(agreed, "the OK turned automatic checks on", .{});
+        const after_ask = try configText(h, ask);
+        defer h.alloc.free(after_ask);
+        try h.expect(std.mem.eql(u8, before_ask, after_ask), "the configuration left as it was", .{});
+    }
+    try h.expect(srv.requests.load(.acquire) == 1, "no request from the second murrtty", .{});
+    try quitPane(h, &g2);
+    try expectNoLeaks(h, &g2, "the second Updates window leaks nothing");
+}
+
+/// Pictures of the Updates window's pages, dark and light, for looking at
+/// by eye (GHOSTTY_GUI_SNAPSHOT=folder): off, a release available, Update
+/// Settings, a release's notes, What a Check Sends.
+fn updatesWindowLook(h: *Harness) anyerror!void {
+    var out_buf: [512]u16 = undefined;
+    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &out_buf, out_buf.len);
+    if (n == 0 or n >= out_buf.len) return h.skipOptIn("set GHOSTTY_GUI_SNAPSHOT to a folder", .{});
+    const out_dir = try std.unicode.utf16LeToUtf8Alloc(h.alloc, out_buf[0..n]);
+    defer h.alloc.free(out_dir);
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    for ([_][]const u8{ "dark", "light" }) |look| {
+        const name = try std.fmt.allocPrint(h.alloc, "updates-window-look-{s}", .{look});
+        defer h.alloc.free(name);
+        const extra = try std.fmt.allocPrint(h.alloc, "window-theme = {s}\nauto-update-channel = stable\n", .{look});
+        defer h.alloc.free(extra);
+        var g = try startUpdates(h, srv, name, extra, "300", &.{}, true);
+        defer g.deinit();
+        try h.openUpdatesWindow(&g, false);
+        var hwnd: u64 = 0;
+        {
+            var d = try uwWait(h, &g, "main", "Update checks are off", "opened");
+            defer d.deinit();
+            hwnd = d.value.updates_window.?.hwnd;
+        }
+        w.Sleep(300);
+        try h.snapshotUpdatesWindow(&g, 0);
+        uwClick(hwnd, uw_primary);
+        (try uwWait(h, &g, "main", "murrtty 0.6.0 is available", "checked")).deinit();
+        w.Sleep(300);
+        try h.snapshotUpdatesWindow(&g, 1);
+        uwClick(hwnd, uw_settings);
+        (try uwWait(h, &g, "settings", "", "settings")).deinit();
+        w.Sleep(300);
+        try h.snapshotUpdatesWindow(&g, 2);
+        uwClick(hwnd, uw_privacy);
+        (try uwWait(h, &g, "privacy", "", "privacy")).deinit();
+        w.Sleep(300);
+        try h.snapshotUpdatesWindow(&g, 4);
+        uwClick(hwnd, uw_back);
+        uwClick(hwnd, uw_back);
+        (try uwWait(h, &g, "main", "", "back")).deinit();
+        const list = w.GetDlgItem(@ptrFromInt(hwnd), uw_history) orelse return h.fail("no history list", .{});
+        var result: usize = 0;
+        _ = w.SendMessageTimeoutW(list, w.LB_SETCURSEL, 0, 0, 0, 2000, &result);
+        _ = w.PostMessageW(@ptrFromInt(hwnd), w.WM_COMMAND, 1 << 16 | uw_history, @bitCast(@intFromPtr(list)));
+        uwClick(hwnd, uw_read);
+        (try uwWait(h, &g, "notes", "", "notes")).deinit();
+        w.Sleep(300);
+        try h.snapshotUpdatesWindow(&g, 3);
+        for ([_]struct { u32, []const u8 }{ .{ 0, "off" }, .{ 1, "available" }, .{ 2, "settings" }, .{ 3, "notes" }, .{ 4, "privacy" } }) |pic| {
+            const src = try std.fmt.allocPrint(h.alloc, "{s}\\updates-window-{d}.bmp", .{ g.dir, pic[0] });
+            defer h.alloc.free(src);
+            const data = h.readFileOrNull(src) orelse return h.fail("no {s}", .{src});
+            defer h.alloc.free(data);
+            const dst = try std.fmt.allocPrint(h.alloc, "{s}\\updates-{s}-{s}.bmp", .{ out_dir, look, pic[1] });
+            defer h.alloc.free(dst);
+            try h.writeFileAt(dst, data);
+        }
         try quitPane(h, &g);
     }
 }

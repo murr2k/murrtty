@@ -195,12 +195,14 @@ pub fn start(self: *Updates, owner: bool) void {
     self.loadList();
     self.refresh();
     self.schedule();
+    self.notify();
 }
 
 /// The config changed: `auto-update` or its channel may have.
 pub fn configChanged(self: *Updates) void {
     self.refresh();
     self.schedule();
+    self.notify();
 }
 
 /// `auto-update` as this murrtty reads it: unset is off.
@@ -234,6 +236,7 @@ pub fn checkNow(self: *Updates) void {
         return;
     }
     _ = self.startJob(.manual);
+    self.notify();
 }
 
 /// Cancel the check in flight (the window's Cancel): let go of it at once.
@@ -257,6 +260,7 @@ pub fn cancel(self: *Updates) void {
     }
     self.refresh();
     self.schedule();
+    self.notify();
 }
 
 /// The timer: an automatic check, if it is due (another murrtty may have
@@ -265,6 +269,9 @@ pub fn tick(self: *Updates) void {
     self.stopTimer();
     self.collect();
     if (!self.automaticOn() or self.job != null) return;
+    // The state read (another murrtty may have changed it) and the check
+    // started under the lock; the window told after it is let go.
+    defer self.notify();
     const lock = Lock.take(self);
     switch (lock) {
         // Another murrtty is writing the state this instant.
@@ -304,6 +311,9 @@ pub fn finished(self: *Updates) void {
     self.last_status = job.status;
     log.info("update check ({t}): {t} status={} err={} {}ms", .{ kind, job.outcome, job.status, job.error_code, job.elapsed_ms });
 
+    // The window is told after the lock is let go (its own drawing
+    // shouldn't hold other murrttys off).
+    defer self.notify();
     const lock = Lock.take(self);
     defer if (lock == .held) lock.held.release();
     // Busy past its retries: what this check learned is still worth
@@ -345,6 +355,112 @@ pub fn finished(self: *Updates) void {
     // metered: theirs runs anyway.
     if (asked and job.outcome == .metered) _ = self.startJob(.manual);
     self.schedule();
+}
+
+// ---------------------------------------------------------------- the user's changes
+
+/// A change the user made (the Updates window): the state read under the
+/// lock, changed by `f`, written, and shown once the lock is let go.
+fn change(self: *Updates, ctx: anytype, comptime f: fn (*Updates, @TypeOf(ctx)) void) void {
+    {
+        const lock = Lock.take(self);
+        defer if (lock == .held) lock.held.release();
+        if (lock == .held) self.loadState();
+        f(self, ctx);
+        // Busy past its retries, the choice is still written: the next
+        // read would drop it otherwise.
+        self.saveState();
+    }
+    self.refresh();
+    self.schedule();
+    self.notify();
+}
+
+/// Whether a release's notes count as read: read in the window, or not
+/// newer than this murrtty.
+pub fn isRead(self: *const Updates, version: []const u8) bool {
+    if (!update_list.isNewer(version, self.running)) return true;
+    for (self.state.read) |v| if (std.mem.eql(u8, v, version)) return true;
+    return false;
+}
+
+pub fn markRead(self: *Updates, version: []const u8) void {
+    if (self.isRead(version)) return;
+    self.change(version, struct {
+        fn f(u: *Updates, v: []const u8) void {
+            for (u.state.read) |r| if (std.mem.eql(u8, r, v)) return;
+            const a = u.state_arena.allocator();
+            const read = a.alloc([]const u8, u.state.read.len + 1) catch return;
+            @memcpy(read[0..u.state.read.len], u.state.read);
+            read[u.state.read.len] = a.dupe(u8, v) catch return;
+            u.state.read = read;
+        }
+    }.f);
+}
+
+/// Skip This Version: not offered again, until a newer one comes.
+pub fn skip(self: *Updates, version: []const u8) void {
+    self.change(version, struct {
+        fn f(u: *Updates, v: []const u8) void {
+            u.setString(&u.state.skipped, v);
+        }
+    }.f);
+}
+
+/// How often: the next check moves to the new interval from the last.
+pub fn setInterval(self: *Updates, interval: update_list.Interval) void {
+    self.change(interval, struct {
+        fn f(u: *Updates, i: update_list.Interval) void {
+            u.state.interval = i;
+            if (u.state.last_check > 0) {
+                const min_hours = if (u.list) |l| l.min_check_hours else null;
+                u.state.next_check = update_list.nextCheck(u.state.last_check, i, min_hours, u.prng.random());
+            }
+        }
+    }.f);
+}
+
+pub fn setOnFound(self: *Updates, on_found: OnFound) void {
+    self.change(on_found, struct {
+        fn f(u: *Updates, o: OnFound) void {
+            u.state.on_found = o;
+        }
+    }.f);
+}
+
+/// The consent dialog's answer, kept for this machine.
+pub fn setConsent(self: *Updates, consent: bool) void {
+    self.change(consent, struct {
+        fn f(u: *Updates, on: bool) void {
+            u.state.consent = on;
+        }
+    }.f);
+}
+
+/// Clear Cached Update Information: the list kept and its ETag, the
+/// releases skipped, read and announced. The settings and consent stay.
+pub fn clearCache(self: *Updates) void {
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    if (self.path(arena.allocator(), "updates\\list.json")) |file| Session.deleteFile(arena.allocator(), file);
+    self.found = null;
+    self.list = null;
+    self.list_etag = null;
+    self.last_outcome = null;
+    self.change({}, struct {
+        fn f(u: *Updates, _: void) void {
+            u.state.etag = null;
+            u.state.skipped = null;
+            u.state.notified = null;
+            u.state.read = &.{};
+        }
+    }.f);
+}
+
+/// Tell the window (and, from 7.6a's next step, the header bars) what
+/// changed.
+fn notify(self: *Updates) void {
+    self.app.updatesChanged();
 }
 
 /// A job whose thread is done but whose message never came (a full message
@@ -393,6 +509,7 @@ fn refresh(self: *Updates) void {
 }
 
 /// Start a check; false when it couldn't start (said in `last_outcome`).
+/// The caller tells the window (`notify`), after any lock it holds.
 fn startJob(self: *Updates, kind: Kind) bool {
     var url_buf: [512]u8 = undefined;
     const url = testUrl(&url_buf) orelse update_list.default_url;
@@ -496,7 +613,15 @@ fn loadState(self: *Updates) void {
         self.state_unreadable = true;
         return;
     };
+    // A hand-edited file's times stay where the arithmetic on them (an
+    // interval added, ticks for Windows' clock) can't overflow.
+    for ([_]*i64{ &self.state.last_check, &self.state.next_check, &self.state.lease_until }) |t| {
+        t.* = std.math.clamp(t.*, 0, max_unix);
+    }
 }
+
+/// The last second of 9999, in Unix seconds: the latest time kept.
+pub const max_unix: i64 = 253402300799;
 
 fn saveState(self: *Updates) void {
     if (self.state_unreadable) return;

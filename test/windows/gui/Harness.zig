@@ -1758,8 +1758,26 @@ pub const Updates = struct {
     now: i64,
 };
 
+/// The Updates window (roadmap 7.6a): the page ("main", "notes",
+/// "settings", "privacy"), the main page's heading and subtitle, each
+/// control (UpdatesWindow's ids), the release history and its selection,
+/// and the notes shown.
+pub const UpdatesWindow = struct {
+    hwnd: u64,
+    page: []const u8,
+    heading: []const u8,
+    subtitle: []const u8,
+    controls: []const struct { id: u32, label: []const u8, visible: bool, enabled: bool, on: bool, value: []const u8 },
+    history: []const struct { version: []const u8, bold: bool, installed: bool },
+    selected: i64,
+    notes_version: ?[]const u8,
+    notes: []const u8,
+};
+
 pub const Dump = struct {
     modal_depth: u32,
+    /// The Updates window while it is open.
+    updates_window: ?UpdatesWindow = null,
     /// Context menus shown so far.
     menus_shown: u32 = 0,
     /// The last task dialog's heading and body.
@@ -2368,6 +2386,20 @@ pub fn checkUpdates(self: *Harness, g: *const Ghostty) !void {
 
 pub fn cancelUpdateCheck(self: *Harness, g: *const Ghostty) !void {
     var d = try self.dumpWith(g, 25, 1);
+    d.deinit();
+}
+
+/// Open the Updates window (dump wparam 26), checking too if `check`, as
+/// check_for_updates does.
+pub fn openUpdatesWindow(self: *Harness, g: *const Ghostty, check: bool) !void {
+    var d = try self.dumpWith(g, 26, if (check) 1 else 0);
+    d.deinit();
+}
+
+/// Paint the Updates window into `updates-window-<n>.bmp` beside the dump
+/// (dump wparam 27).
+pub fn snapshotUpdatesWindow(self: *Harness, g: *const Ghostty, n: u32) !void {
+    var d = try self.dumpWith(g, 27, n);
     d.deinit();
 }
 
