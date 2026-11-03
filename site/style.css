@@ -126,6 +126,10 @@ table.matrix td { min-width: 7rem; }
 .m.n::before { content: "\25CB"; color: var(--no); }
 .m.u::before { content: "?"; color: var(--unk); font-weight: 700; }
 .m.n { color: var(--muted); }
+.m.x::before { content: "\25CC"; color: var(--no); }
+.m.x { color: var(--muted); }
+table.data .ref small { font-weight: 400; }
+table.data tr.ref td { color: var(--muted); }
 .legend .m { margin-right: 14px; }
 .note { color: var(--muted); font-size: 0.92rem; }
 
