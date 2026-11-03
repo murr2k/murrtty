@@ -1,0 +1,277 @@
+# murrtty's release builds (WINDOWS_ROADMAP.md 7.2): a murrtty-vX.Y.Z tag
+# pushed to the public repository, murr2k/murrtty, builds both packages
+# from the tag on clean hosted runners (x64 on windows-2025, ARM64
+# natively on windows-11-arm, where its package's murrtty is run too)
+# with build-windows.cmd -Package, merges the two dependencies zips,
+# attests every zip's build provenance and opens a DRAFT release with the
+# zips and SHA256SUMS.txt. Publishing stays the maintainer's: write the
+# notes, check the draft's files (Defender), then publish.
+#
+# By hand, for a tag already released (gh workflow run
+# windows-port-release.yml -R murr2k/murrtty --ref main -f
+# tag=murrtty-vX.Y.Z), it builds the tag again and compares the result
+# with the published files, file by file inside each zip, in the run's
+# summary; the release is left alone. For a draft it replaces the files.
+#
+# It runs only in the public repository (free minutes, ARM64 runners);
+# the guard job checks that no other workflow is active there, as the
+# hosted GUI suite's does, and that the tag is a murrtty release tag.
+name: Windows port (release build)
+
+on:
+  push:
+    tags: ['murrtty-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to build (murrtty-vX.Y.Z)
+        type: string
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: windows-port-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  guard:
+    name: Release tag, and no other workflow active
+    if: github.repository == 'murr2k/murrtty'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check the tag and workflow states
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^murrtty-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$TAG is not a murrtty release tag (murrtty-vX.Y.Z)"
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha > /dev/null
+          registered=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --jq '.workflows[] | "\(.path) \(.state)"')
+          bad=0
+          while read -r path state; do
+            case "$path" in
+              .github/workflows/windows-port-desktop.yml) ;;
+              .github/workflows/windows-port*.yml) continue ;;
+              .github/workflows/*) ;;
+              *) continue ;;
+            esac
+            if [ "$state" = active ]; then
+              echo "::error::$path is active. Disable it: gh workflow disable ${path##*/} -R $GITHUB_REPOSITORY"
+              bad=1
+            fi
+          done <<< "$registered"
+          exit $bad
+
+  build:
+    name: Package (${{ matrix.arch }})
+    needs: guard
+    if: github.repository == 'murr2k/murrtty'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            target: x86_64-windows-gnu
+          - arch: arm64
+            runner: windows-11-arm
+            target: aarch64-windows-gnu
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      # The build names a release after the tag on its commit; without the
+      # tag it would package a development version.
+      - name: The tag is on the commit
+        shell: pwsh
+        run: |
+          $tag = git describe --exact-match --tags
+          if ($LASTEXITCODE -ne 0 -or $tag -ne $env:TAG) { throw "git describe --exact-match --tags gave '$tag', not $env:TAG" }
+          git log -1 --format='%H %s'
+
+      # Zig, the dependencies, the ReleaseFast build, both zips, their
+      # check (the unpacked murrtty's version and themes) and the
+      # dependencies zip, as on the maintainer's machine.
+      - name: Package
+        shell: cmd
+        run: .\build-windows.cmd -Package -Target ${{ matrix.target }}
+
+      - name: Collect
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $ver = $env:TAG.Substring('murrtty-v'.Length)
+          $arch = $env:TARGET.Split('-')[0]
+          $pkg = 'zig-out\package'
+          New-Item -ItemType Directory -Force out\release, out\deps | Out-Null
+          foreach ($n in @("murrtty-$ver-windows-$arch.zip", "murrtty-$ver-windows-$arch-symbols.zip")) {
+            if (-not (Test-Path -LiteralPath "$pkg\$n")) { throw "the build made no $n (found: $((Get-ChildItem $pkg).Name -join ', '))" }
+            Move-Item -LiteralPath "$pkg\$n" -Destination out\release
+          }
+          Move-Item -LiteralPath "$pkg\murrtty-$ver-deps.zip" -Destination out\deps
+          Get-ChildItem out -Recurse -File | ForEach-Object { '{0}  {1}  {2}' -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $_.Length, $_.Name }
+
+      - name: Keep the packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.arch }}
+          path: out\release\
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Keep the dependencies zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deps-${{ matrix.arch }}
+          path: out\deps\
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Draft release
+    needs: build
+    if: github.repository == 'murr2k/murrtty'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: Packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Dependencies zips
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: deps-*
+          path: deps
+
+      # Each runner's zip holds the packages its build used: the same but
+      # for Mesa, whose x64 and ARM64 zips are lazy. One zip holds them
+      # all, stored, in name order with one timestamp, so it is the same
+      # for the same inputs.
+      - name: Merge the dependencies zips
+        run: |
+          set -euo pipefail
+          ver="${TAG#murrtty-v}"
+          python3 - "dist/murrtty-$ver-deps.zip" <<'EOF'
+          import glob, hashlib, re, sys, zipfile
+          out = sys.argv[1]
+          entries, digests = {}, {}
+          for path in sorted(glob.glob("deps/*/*.zip")):
+              with zipfile.ZipFile(path) as z:
+                  for info in z.infolist():
+                      data = z.read(info)
+                      digest = hashlib.sha256(data).hexdigest()
+                      if info.filename in digests:
+                          if digests[info.filename] != digest:
+                              sys.exit(f"{info.filename} differs between the runners' zips")
+                          continue
+                      entries[info.filename], digests[info.filename] = data, digest
+          zon = open("build.zig.zon", encoding="utf-8").read()
+          for name in ("murrtty_mesa_x64", "murrtty_mesa_arm64"):
+              m = re.search(r"\." + name + r"\s*=\s*\.\{[^}]*?\.hash\s*=\s*\"([^\"]+)\"", zon, re.S)
+              if not m or f"p/{m.group(1)}.tar.gz" not in entries:
+                  sys.exit(f"the merged zip lacks {name}")
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+              for name in sorted(entries):
+                  info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                  info.compress_type = zipfile.ZIP_STORED
+                  z.writestr(info, entries[name])
+          print(f"{out}: {len(entries)} packages")
+          EOF
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          LC_ALL=C ls *.zip | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.zip
+
+      - name: Draft release, or compare with the published one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ver="${TAG#murrtty-v}"
+          sha=$(git rev-parse --short=9 HEAD)
+          state=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          if [ "$state" = none ]; then
+            cat > notes.md <<EOF
+          **Draft.** Built from tag \`$TAG\` (\`$sha\`) by [this workflow run]($RUN_URL) on GitHub's hosted runners: x64 on windows-2025, ARM64 natively on windows-11-arm, where its package was run too. Write the release notes here before publishing.
+
+          Each zip carries a build provenance attestation: \`gh attestation verify <zip> -R $GITHUB_REPOSITORY\`.
+          EOF
+            gh release create "$TAG" dist/*.zip dist/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" \
+              --draft --prerelease --verify-tag --title "murrtty $ver (preview)" --notes-file notes.md
+            echo "Draft release $TAG made: publish it after writing its notes." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$state" = true ]; then
+            gh release upload "$TAG" dist/*.zip dist/SHA256SUMS.txt -R "$GITHUB_REPOSITORY" --clobber
+            echo "Draft release $TAG: its files replaced by this run's." >> "$GITHUB_STEP_SUMMARY"
+          else
+            mkdir published
+            gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D published -p '*.zip' -p SHA256SUMS.txt
+            python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import hashlib, os, zipfile
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          print(f"### {os.environ['TAG']} built again, compared with its published release\n")
+          print("| File | Result |\n|---|---|")
+          notes = []
+          for name in sorted(os.listdir("dist")):
+              built, pub = os.path.join("dist", name), os.path.join("published", name)
+              if not os.path.exists(pub):
+                  print(f"| {name} | not in the release |"); continue
+              a, b = open(built, "rb").read(), open(pub, "rb").read()
+              if a == b:
+                  print(f"| {name} | identical |"); continue
+              if not name.endswith(".zip"):
+                  print(f"| {name} | differs |"); continue
+              za, zb = zipfile.ZipFile(built), zipfile.ZipFile(pub)
+              ea = {i.filename: i for i in za.infolist()}; eb = {i.filename: i for i in zb.infolist()}
+              differ = [n for n in sorted(ea.keys() & eb.keys()) if sha(za.read(n)) != sha(zb.read(n))]
+              only = sorted(ea.keys() ^ eb.keys())
+              same = len(ea.keys() & eb.keys()) - len(differ)
+              print(f"| {name} | zip differs: {same} entries the same, {len(differ)} differ, {len(only)} in one only |")
+              for n in differ: notes.append(f"- {name}: `{n}` differs ({ea[n].file_size} bytes built, {eb[n].file_size} published)")
+              for n in only: notes.append(f"- {name}: `{n}` only {'built' if n in ea else 'published'}")
+          if notes:
+              print("\n" + "\n".join(notes))
+          EOF
+          fi
