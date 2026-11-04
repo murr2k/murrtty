@@ -8274,14 +8274,14 @@ fn transparencyOnScreen(h: *Harness) !void {
 
     // Spike S1's three hosts over the opaque pane: which ones show?
     var hosts: [3]u32 = undefined;
-    for (&hosts, 1..) |*px, kind| px.* = try overlayOnDisplay(h, &g, client, @intCast(kind));
+    for (&hosts, 1..) |*px, kind| px.* = try overlayOnDisplay(h, &g, client, @intCast(kind), "overlay");
 
     h.key(surf, .{ .ctrl = true, .shift = true }, w.VK_F3);
     try expectTranslucent(h, &g, &.{true});
     h.pump(500);
     const see_through = try displayPixel(h, &g, client, bx, by, "see-through.bmp");
     const see_through_gdi = try screenPixel(h, client, bx, by);
-    const layered_over_clear = try overlayOnDisplay(h, &g, client, 3);
+    const layered_over_clear = try overlayOnDisplay(h, &g, client, 3, "overlay-see-through");
     // The header bar, as its paint has it.
     const header_px = try displayPixel(h, &g, client, hx, 4, "header.bmp");
     try h.saveChrome(&g);
@@ -8584,8 +8584,11 @@ fn displayPixel(h: *Harness, g: *Harness.Ghostty, area: w.RECT, x: usize, y: usi
 }
 
 /// Put spike S1's overlays of `kind` up and return the display's pixel at
-/// the middle of the first; then take them down.
-fn overlayOnDisplay(h: *Harness, g: *Harness.Ghostty, client: w.RECT, kind: u8) !u32 {
+/// the middle of the first; then take them down. The capture is
+/// `<what>-<kind>.bmp`: each capture a golden of its own (the layered child
+/// over the see-through window once shared the opaque one's name, and
+/// failed against it).
+fn overlayOnDisplay(h: *Harness, g: *Harness.Ghostty, client: w.RECT, kind: u8, what: []const u8) !u32 {
     defer if (h.setOverlays(g, 0)) |d| {
         var dd = d;
         dd.deinit();
@@ -8596,8 +8599,8 @@ fn overlayOnDisplay(h: *Harness, g: *Harness.Ghostty, client: w.RECT, kind: u8) 
     h.pump(300);
     var r: w.RECT = .{};
     _ = w.GetWindowRect(hwndOf(d.value.overlays[0].hwnd), &r);
-    var name_buf: [32]u8 = undefined;
-    const name = std.fmt.bufPrint(&name_buf, "overlay-{d}.bmp", .{kind}) catch "overlay.bmp";
+    var name_buf: [64]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "{s}-{d}.bmp", .{ what, kind }) catch "overlay.bmp";
     return displayPixel(h, g, client, @intCast(@divTrunc(r.left + r.right, 2) - client.left), @intCast(@divTrunc(r.top + r.bottom, 2) - client.top), name);
 }
 
