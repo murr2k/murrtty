@@ -211,7 +211,9 @@ def version_key(version):
 def update_list():
     """The release list: every published murrtty-vX.Y.Z release, newest
     first, with its date, page and files (each architecture's zip and
-    installer: address, size, SHA-256 from GitHub's digest)."""
+    installer: address, size, SHA-256 from GitHub's digest), and its
+    SHA256SUMS.txt with, from 0.6.0 on, the signature murrtty checks
+    (SHA256SUMS.txt.sig, roadmap 7.6b)."""
     listed = []
     for r in releases():
         tag = r['tag_name']
@@ -219,7 +221,15 @@ def update_list():
             continue
         version = tag[len('murrtty-v'):]
         files = {}
+        signed = {}
         for a in r.get('assets', []):
+            if a['name'] in ('SHA256SUMS.txt', 'SHA256SUMS.txt.sig'):
+                signed['sums' if a['name'] == 'SHA256SUMS.txt' else 'signature'] = {
+                    'name': a['name'],
+                    'url': a['browser_download_url'],
+                    'size': a['size'],
+                }
+                continue
             m = re.fullmatch(r'murrtty-(.+)-windows-(x86_64|aarch64)(-setup\.exe|\.zip)', a['name'])
             if not m or m.group(1) != version:
                 continue
@@ -242,6 +252,7 @@ def update_list():
             'url': r['html_url'],
             'notes': r.get('body') or '',
             'files': files,
+            **signed,
         })
     listed.sort(key=lambda e: version_key(e['version']), reverse=True)
     for e in listed[LIST_NOTES:]:

@@ -43,6 +43,7 @@ test {
     _ = @import("win32/url.zig");
     _ = @import("win32/update_list.zig");
     _ = @import("win32/update_fetch.zig");
+    _ = @import("win32/update_keys.zig");
     _ = @import("win32/Updates.zig");
     _ = @import("win32/UpdatesWindow.zig");
 }

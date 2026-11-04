@@ -5,8 +5,10 @@
 # with build-windows.cmd -Package, builds and tests both per-user
 # installers (Inno Setup), merges the two dependencies zips, attests every
 # zip's and installer's build provenance and opens a DRAFT release with
-# them and SHA256SUMS.txt. Publishing stays the maintainer's: write the
-# notes, check the draft's files (Defender), then publish.
+# them and SHA256SUMS.txt, then (once the maintainer approves the release
+# environment) signs SHA256SUMS.txt for murrtty's updates. Publishing stays
+# the maintainer's: write the notes, check the draft's files (Defender)
+# and signature, then publish.
 #
 # By hand, for a tag already released (gh workflow run
 # windows-port-release.yml -R murr2k/murrtty --ref main -f
@@ -247,6 +249,9 @@ jobs:
     if: github.repository == 'murr2k/murrtty'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      # The sums this run made: the only ones the sign job signs.
+      sums_sha256: ${{ steps.sums.outputs.sha256 }}
     permissions:
       contents: write
       id-token: write
@@ -323,11 +328,13 @@ jobs:
           EOF
 
       - name: Checksums
+        id: sums
         run: |
           set -euo pipefail
           cd "$ASSETS"
           LC_ALL=C ls *.zip *.exe | LC_ALL=C sort | xargs sha256sum > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          echo "sha256=$(sha256sum SHA256SUMS.txt | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -343,18 +350,34 @@ jobs:
           ver="${TAG#murrtty-v}"
           sha=$(git rev-parse --short=9 HEAD)
           state=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          # Only a run on the tag's own ref, for that tag, signs (the sign
+          # job); any other leaves the draft unsigned, and says so.
+          unsigned() {
+            if [ "$GITHUB_REF_TYPE" != tag ] || [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+              echo "::warning::$TAG's draft has no SHA256SUMS.txt.sig: this run doesn't sign (run the tag's own run again, or dispatch with --ref $TAG)"
+              echo "**Unsigned:** this run doesn't sign. Run the tag's own run again, or dispatch with \`--ref $TAG\`, before publishing." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
           if [ "$state" = none ]; then
             cat > notes.md <<EOF
           **Draft.** Built from tag \`$TAG\` (\`$sha\`) by [this workflow run]($RUN_URL) on GitHub's hosted runners: x64 on windows-2025, ARM64 natively on windows-11-arm, where its package was run too. Write the release notes here before publishing.
 
-          Each zip and installer carries a build provenance attestation: \`gh attestation verify <file> -R $GITHUB_REPOSITORY\`.
+          Each zip and installer carries a build provenance attestation: \`gh attestation verify <file> -R $GITHUB_REPOSITORY\`. SHA256SUMS.txt.sig, the signature murrtty's updates check, comes from the sign job once the release environment is approved.
           EOF
             gh release create "$TAG" "$ASSETS"/*.zip "$ASSETS"/*.exe "$ASSETS/SHA256SUMS.txt" -R "$GITHUB_REPOSITORY" \
               --draft --prerelease --verify-tag --title "murrtty $ver (preview)" --notes-file notes.md
             echo "Draft release $TAG made: publish it after writing its notes." >> "$GITHUB_STEP_SUMMARY"
+            unsigned
           elif [ "$state" = true ]; then
+            # New files, new sums: an old signature must not stand beside
+            # them (the sign job makes the new one). A failure fails the run.
+            names=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            if printf '%s\n' "$names" | grep -qx 'SHA256SUMS\.txt\.sig'; then
+              gh release delete-asset "$TAG" SHA256SUMS.txt.sig -R "$GITHUB_REPOSITORY" -y
+            fi
             gh release upload "$TAG" "$ASSETS"/*.zip "$ASSETS"/*.exe "$ASSETS/SHA256SUMS.txt" -R "$GITHUB_REPOSITORY" --clobber
             echo "Draft release $TAG: its files replaced by this run's." >> "$GITHUB_STEP_SUMMARY"
+            unsigned
           else
             mkdir -p "$PUBLISHED"
             gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D "$PUBLISHED" -p '*.zip' -p SHA256SUMS.txt
@@ -414,3 +437,100 @@ jobs:
               print("\n" + "\n".join(notes))
           EOF
           fi
+
+  # The update signature (WINDOWS_ROADMAP.md 7.6b): the draft's
+  # SHA256SUMS.txt signed with the release environment's
+  # UPDATE_SIGNING_KEY (Ed25519, as murrtty's update_keys.zig checks it),
+  # SHA256SUMS.txt.sig uploaded beside it. The environment admits only
+  # murrtty-v* tags and asks the maintainer to approve. The job runs only
+  # on the tag's own ref for that tag (its push, a re-run, or a dispatch
+  # with --ref <tag>), signs only the sums the release job made (their
+  # hash passed on: nothing put on the draft while the approval waits is
+  # signed), and leaves a published release alone.
+  sign:
+    name: Sign the checksums
+    needs: release
+    if: github.repository == 'murr2k/murrtty' && github.ref_type == 'tag' && (!inputs.tag || inputs.tag == github.ref_name)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: The release job's SHA256SUMS.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED: ${{ needs.release.outputs.sums_sha256 }}
+        run: |
+          set -euo pipefail
+          state=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          if [ "$state" != true ]; then
+            echo "::notice::$TAG is published: its signature is left as it is"
+            exit 0
+          fi
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::the release job passed on no hash of its SHA256SUMS.txt"
+            exit 1
+          fi
+          work="$RUNNER_TEMP/sign"
+          mkdir -p "$work"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D "$work" -p SHA256SUMS.txt
+          got=$(sha256sum "$work/SHA256SUMS.txt" | cut -d' ' -f1)
+          if [ "$got" != "$EXPECTED" ]; then
+            echo "::error::the draft's SHA256SUMS.txt ($got) isn't the one the release job made ($EXPECTED): not signed"
+            exit 1
+          fi
+          echo "WORK=$work" >> "$GITHUB_ENV"
+
+      # The secret is in this step's environment alone.
+      - name: Sign SHA256SUMS.txt
+        if: env.WORK != ''
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::error::the release environment has no UPDATE_SIGNING_KEY"
+            exit 1
+          fi
+          cd "$WORK"
+          umask 077
+          # The key file goes however this step ends.
+          trap 'rm -f "$WORK/key.pem"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > key.pem
+          openssl pkeyutl -sign -inkey key.pem -rawin -in SHA256SUMS.txt -out SHA256SUMS.txt.sig
+          rm -f key.pem
+          # The key murrtty carries must take it: a wrong secret fails the
+          # release here, not every copy's update later.
+          openssl pkeyutl -verify -pubin -inkey "$GITHUB_WORKSPACE/src/apprt/win32/update_keys/murrtty-update.pub" \
+            -rawin -in SHA256SUMS.txt -sigfile SHA256SUMS.txt.sig
+          test "$(stat -c %s SHA256SUMS.txt.sig)" = 64
+
+      - name: Attest the signature
+        if: env.WORK != ''
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.WORK }}/SHA256SUMS.txt.sig
+
+      - name: Upload the signature
+        if: env.WORK != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Published while the attestation ran: nothing is added to it.
+          state=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          if [ "$state" != true ]; then
+            echo "::error::$TAG was published while this job ran: its signature wasn't uploaded"
+            exit 1
+          fi
+          gh release upload "$TAG" "$WORK/SHA256SUMS.txt.sig" -R "$GITHUB_REPOSITORY" --clobber
+          echo "SHA256SUMS.txt.sig uploaded to the draft: check it (openssl pkeyutl -verify) before publishing." >> "$GITHUB_STEP_SUMMARY"

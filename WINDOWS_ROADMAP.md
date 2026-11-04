@@ -4431,6 +4431,24 @@ percentages, zip copies updating in place and Authenticode checks
 (7.6c) come later. Steps: 7.6b-1 the signing and the list's fields (once
 the public keys are in), 7.6b-2 downloading and checking, 7.6b-3
 installing. 0.6.0 is the first release that can update itself.
+*7.6b-1, 2026-11-03:* the owner's public keys are
+`src/apprt/win32/update_keys/*.pub`, read at compile time by
+`update_keys.zig` (`verify`: either key; its unit test checks the files
+are the owner's two keys and verifies a signature OpenSSL made). The
+release job's `sign` job (tag pushes only, `environment: release`, so
+the owner approves each) signs the draft's `SHA256SUMS.txt`, checks the
+signature with `murrtty-update.pub`, attests it and uploads
+`SHA256SUMS.txt.sig`; a draft whose files are replaced loses its old
+signature first. The release list gives each release `sums` (all of
+them) and `signature` (from 0.6.0) as `{name, url, size}`; murrtty reads
+both (`update_list.Release`) and uses neither yet. After review the sign
+job signs only the sums the release job made (their SHA-256 passed on, so
+nothing put on the draft while the approval waits is signed), runs only
+on the tag's own ref for that tag (a dispatch on `main` replaces a draft's
+files unsigned and warns), keeps the secret in its signing step alone and
+checks the release is still a draft before uploading. The list isn't
+signed: 7.6b-2 believes a listed version only through the file's name in
+the signed sums (`murrtty-<version>-windows-<arch>`).
 *7.6a step 3, 2026-11-03:* macOS Ghostty's update pill in the header bar
 (before the tab list's button, the title and bells making way; in the tab
 row with `gtk-titlebar-style = tabs`): hidden when there is nothing to say;

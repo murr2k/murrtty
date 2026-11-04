@@ -43,6 +43,15 @@ pub const Release = struct {
         x86_64: ?Files = null,
         aarch64: ?Files = null,
     } = .{},
+    /// The release's SHA256SUMS.txt and, from 0.6.0 on, its signature
+    /// (SHA256SUMS.txt.sig, roadmap 7.6b). This list isn't signed, so a
+    /// file is used only if a key murrtty carries signed the sums, its
+    /// hash is in them under the name `murrtty-<version>-windows-<this
+    /// machine's architecture>` (`.zip` or `-setup.exe`) and that version is
+    /// newer than the running one: what the list says of a release is
+    /// believed only where the signed sums say it too.
+    sums: ?File = null,
+    signature: ?File = null,
 };
 
 pub const List = struct {
@@ -201,7 +210,7 @@ test "update list: parse, newest on a channel, skipped" {
     const text =
         \\{"schema":1,"min_check_hours":48,"releases":[
         \\ {"version":"0.7.0-beta.1","channel":"tip","date":"2026-12-01","title":"murrtty 0.7.0 beta 1"},
-        \\ {"version":"0.6.0","channel":"stable","date":"2026-11-20","title":"murrtty 0.6.0","notes":"### What's new","files":{"x86_64":{"zip":{"name":"z","url":"u","size":3,"sha256":"ab"}}},"extra":1},
+        \\ {"version":"0.6.0","channel":"stable","date":"2026-11-20","title":"murrtty 0.6.0","notes":"### What's new","files":{"x86_64":{"zip":{"name":"z","url":"u","size":3,"sha256":"ab"}}},"sums":{"name":"SHA256SUMS.txt","url":"s","size":714},"signature":{"name":"SHA256SUMS.txt.sig","url":"g","size":64},"extra":1},
         \\ {"version":"not a version"},
         \\ {"version":"0.5.0","channel":"stable","date":"2026-11-06"}]}
     ;
@@ -209,6 +218,10 @@ test "update list: parse, newest on a channel, skipped" {
     try testing.expectEqual(@as(usize, 3), list.releases.len);
     try testing.expectEqual(@as(?u32, 48), list.min_check_hours);
     try testing.expectEqual(@as(u64, 3), list.releases[1].files.x86_64.?.zip.?.size);
+    try testing.expectEqual(@as(u64, 64), list.releases[1].signature.?.size);
+    try testing.expectEqualStrings("s", list.releases[1].sums.?.url);
+    // A list from before signatures has neither.
+    try testing.expect(list.releases[2].signature == null and list.releases[2].sums == null);
     const running = try std.SemanticVersion.parse("0.5.0");
     try testing.expectEqualStrings("0.6.0", newest(list, .stable, running, null).?.version);
     try testing.expectEqualStrings("0.7.0-beta.1", newest(list, .tip, running, null).?.version);
