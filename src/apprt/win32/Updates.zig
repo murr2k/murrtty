@@ -34,12 +34,20 @@ const Session = @import("Session.zig");
 const test_hooks = @import("test_hooks.zig");
 const update_list = @import("update_list.zig");
 const update_fetch = @import("update_fetch.zig");
+const update_download = @import("update_download.zig");
+const update_install = @import("update_install.zig");
+const update_keys = @import("update_keys.zig");
+const update_verify = @import("update_verify.zig");
 
 const log = std.log.scoped(.win32_updates);
 
 /// The wakeup window's message when a check is done (posted with nothing:
 /// any process on the desktop could post it).
 pub const message = c.WM_APP + 5;
+/// The wakeup window's messages from a download's thread (roadmap 7.6b):
+/// done, and further (both posted with nothing).
+pub const download_message = c.WM_APP + 6;
+pub const progress_message = c.WM_APP + 7;
 /// The wakeup window's timer for the next automatic check.
 pub const timer_id = 0x5D7E;
 
@@ -101,9 +109,9 @@ pub const Kind = enum { automatic, manual };
 
 pub const Note = enum { none, not_found, failed };
 
-/// The header bars' update pill (roadmap 7.6a), macOS Ghostty's: hidden
-/// when there is nothing to say.
-pub const Pill = enum { hidden, permission, checking, available, not_found, failed };
+/// The header bars' update pill (roadmap 7.6a, 7.6b), macOS Ghostty's:
+/// hidden when there is nothing to say.
+pub const Pill = enum { hidden, permission, checking, available, downloading, ready, installing, download_failed, not_found, failed };
 
 /// The note's timer, on the wakeup window.
 pub const note_timer_id = 0x5D7F;
@@ -159,6 +167,40 @@ loaded: bool = false,
 /// whether it checks at all (a release build).
 running: std.SemanticVersion,
 release_build: bool,
+/// How this copy was installed (update_install): only an installer copy
+/// downloads its updates (roadmap 7.6b).
+install: update_install.Kind = .zip,
+/// The keys a release's sums must be signed with: murrtty's, and under the
+/// test hooks the tests' own (GHOSTTY_WIN32_TEST_UPDATES_KEY).
+keys: [update_keys.keys.len + 1][32]u8 = undefined,
+keys_len: usize = 0,
+/// The download in flight, and what came of the last one (or `ready` for
+/// a verified installer kept from an earlier run).
+download_job: ?*update_download.Job = null,
+/// The last job cancelled, until the next one has waited for its thread
+/// (it may hold the folder's files a while).
+prev_job: ?*update_download.Job = null,
+download: Download = .none,
+/// The release it is for.
+download_version: [64]u8 = undefined,
+download_version_len: usize = 0,
+download_outcome: ?update_download.Outcome = null,
+download_refusal: ?update_verify.Refusal = null,
+download_stage: ?update_download.Stage = null,
+download_error: u32 = 0,
+download_status: u32 = 0,
+download_received: u64 = 0,
+download_total: u64 = 0,
+download_resumed_from: u64 = 0,
+/// A refused or failed download the pill warns of until the window opens.
+download_noted: bool = false,
+/// Downloads started and installers started this run (the GUI tests count
+/// them), and the last installer's start error (0: none).
+downloads: u32 = 0,
+installs: u32 = 0,
+install_error: u32 = 0,
+/// The installer's process while it runs (installerTick).
+installer: ?c.HANDLE = null,
 
 pub fn init(app: *App) Updates {
     const alloc = app.core_app.alloc;
@@ -174,6 +216,16 @@ pub fn init(app: *App) Updates {
         .running = build_config.version,
         .release_build = build_config.release_channel == .stable,
     };
+    for (update_keys.keys, 0..) |k, i| self.keys[i] = k;
+    self.keys_len = update_keys.keys.len;
+    if (comptime test_hooks.enabled) {
+        var key_buf: [80]u8 = undefined;
+        if (testEnv("GHOSTTY_WIN32_TEST_UPDATES_KEY", &key_buf)) |hex| if (hex.len == 64) {
+            if (std.fmt.hexToBytes(&self.keys[self.keys_len], hex)) |_| {
+                self.keys_len += 1;
+            } else |_| {}
+        };
+    }
     if (comptime test_hooks.enabled) {
         var buf: [64]u8 = undefined;
         if (testEnv("GHOSTTY_WIN32_TEST_UPDATES_VERSION", &buf)) |v| {
@@ -193,6 +245,13 @@ pub fn deinit(self: *Updates) void {
     // process, or frees the job if it finishes first.
     if (self.job) |job| job.abandon();
     self.job = null;
+    // Nor for a download: what it wrote resumes next time.
+    if (self.download_job) |job| job.abandon();
+    self.download_job = null;
+    self.dropPrevJob();
+    _ = c.KillTimer(self.app.wakeup_hwnd, install_timer_id);
+    if (self.installer) |h| _ = c.CloseHandle(h);
+    self.installer = null;
     const alloc = self.app.core_app.alloc;
     if (self.dir) |d| alloc.free(d);
     self.dir = null;
@@ -215,10 +274,13 @@ pub fn start(self: *Updates, owner: bool) void {
         };
     }
     self.earliest_ms = c.GetTickCount64() + self.startDelay();
+    if (self.release_build) self.install = update_install.detect(self.app.core_app.alloc);
     self.loadState();
     self.loadList();
     self.loaded = true;
     self.refresh();
+    // Downloads of releases this murrtty is as new as (installed now) go.
+    self.cleanDownloads(.stale);
     self.schedule();
     self.notify();
 }
@@ -465,6 +527,10 @@ pub fn declinedHere(self: *const Updates) bool {
 pub fn pill(self: *const Updates) Pill {
     if (!self.release_build or !self.loaded) return .hidden;
     if (self.job != null and (self.job_kind == .manual or self.asked)) return .checking;
+    if (self.download_job != null and self.download == .downloading) return .downloading;
+    if (self.download == .verifying or self.download == .installing) return .installing;
+    if (self.download == .ready and self.found != null) return .ready;
+    if ((self.download == .refused or self.download == .failed) and self.download_noted) return .download_failed;
     if (self.note == .failed) return .failed;
     if (self.found != null) return .available;
     if (self.note == .not_found) return .not_found;
@@ -479,6 +545,13 @@ pub fn pillText(self: *const Updates, buf: []u8) []const u8 {
         .permission => "Enable Automatic Updates?",
         .checking => "Checking for Updates\u{2026}",
         .available => std.fmt.bufPrint(buf, "Update Available: {s}", .{self.found.?.version}) catch "Update Available",
+        .downloading => if (self.downloadPercent()) |pct|
+            std.fmt.bufPrint(buf, "Downloading: {d}%", .{pct}) catch "Downloading\u{2026}"
+        else
+            "Downloading\u{2026}",
+        .ready => std.fmt.bufPrint(buf, "Ready to Install: {s}", .{self.downloadVersion()}) catch "Ready to Install",
+        .installing => "Installing\u{2026}",
+        .download_failed => "Update Failed",
         .not_found => "No Updates Available",
         .failed => "Update Check Failed",
     };
@@ -491,10 +564,12 @@ fn setNote(self: *Updates, note: Note) void {
     if (note == .not_found) _ = c.SetTimer(self.app.wakeup_hwnd, note_timer_id, note_ms, null);
 }
 
-/// The note dismissed (a click on the pill, the Updates window opened).
+/// The note dismissed (a click on the pill, the Updates window opened),
+/// and the warning of a refused or failed download: the window says why.
 pub fn dismissNote(self: *Updates) void {
-    if (self.note == .none) return;
-    self.setNote(.none);
+    if (self.note == .none and !self.download_noted) return;
+    if (self.note != .none) self.setNote(.none);
+    self.download_noted = false;
     self.notify();
 }
 
@@ -620,8 +695,13 @@ pub fn markRead(self: *Updates, version: []const u8) void {
     }.f);
 }
 
-/// Skip This Version: not offered again, until a newer one comes.
+/// Skip This Version: not offered again, until a newer one comes. Its
+/// download stops.
 pub fn skip(self: *Updates, version: []const u8) void {
+    if (self.download_job != null and self.download == .downloading and std.mem.eql(u8, self.downloadVersion(), version)) {
+        self.stopJob();
+        self.resetDownload();
+    }
     self.change(version, struct {
         fn f(u: *Updates, v: []const u8) void {
             u.setString(&u.state.skipped, v);
@@ -661,11 +741,22 @@ pub fn setConsent(self: *Updates, consent: bool) void {
 }
 
 /// Clear Cached Update Information: the list kept and its ETag, the
-/// releases skipped, read and announced. The settings and consent stay.
+/// releases skipped, read and announced, and downloads. The settings and
+/// consent stay.
 pub fn clearCache(self: *Updates) void {
     var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
     defer arena.deinit();
     if (self.path(arena.allocator(), "updates\\list.json")) |file| Session.deleteFile(arena.allocator(), file);
+    // A job still running deletes its files as it ends.
+    if (self.download_job) |job| {
+        job.discard.store(true, .release);
+        job.abandon();
+    }
+    self.download_job = null;
+    if (self.prev_job) |p| p.discard.store(true, .release);
+    self.dropPrevJob();
+    self.cleanDownloads(.all);
+    self.resetDownload();
     self.found = null;
     self.list = null;
     self.list_etag = null;
@@ -690,6 +781,7 @@ fn notify(self: *Updates) void {
 /// queue): take its results now.
 fn collect(self: *Updates) void {
     if (self.job) |job| if (job.isDone()) self.finished();
+    if (self.download_job) |job| if (job.isDone()) self.downloadFinished();
 }
 
 fn succeeded(self: *Updates, now: i64) void {
@@ -729,6 +821,7 @@ fn refresh(self: *Updates) void {
         .up_to_date
     else
         .idle;
+    self.syncDownload();
 }
 
 /// Start a check; false when it couldn't start (said in `last_outcome`).
@@ -802,6 +895,481 @@ fn stopTimer(self: *Updates) void {
     if (self.due_ms == null) return;
     _ = c.KillTimer(self.app.wakeup_hwnd, timer_id);
     self.due_ms = null;
+}
+
+// ---------------------------------------------------------------- downloads (roadmap 7.6b)
+
+pub const Download = enum {
+    none,
+    downloading,
+    /// The installer is downloaded and matched its signed hash.
+    ready,
+    /// Install Now: the installer checked again on the job's thread before
+    /// it runs.
+    verifying,
+    /// The installer runs: it closes murrtty, and if it ends without doing
+    /// so (cancelled), the download is ready again.
+    installing,
+    /// A check failed: everything downloaded was deleted.
+    refused,
+    /// No answer, or a file that couldn't be written: what came stays, to
+    /// resume.
+    failed,
+};
+
+/// The wakeup window's timer while the installer runs (installerTick).
+pub const install_timer_id = 0x5D80;
+
+/// The release the download is (or was) for ("" when none).
+pub fn downloadVersion(self: *const Updates) []const u8 {
+    return self.download_version[0..self.download_version_len];
+}
+
+fn setDownloadVersion(self: *Updates, version: []const u8) void {
+    const n = @min(version.len, self.download_version.len);
+    @memcpy(self.download_version[0..n], version[0..n]);
+    self.download_version_len = n;
+}
+
+/// The installer's bytes so far and in all (0 while unknown): read from
+/// the download in flight, else as it last ended.
+pub fn downloadBytes(self: *const Updates) struct { received: u64, total: u64 } {
+    if (self.download_job) |job| if (self.download == .downloading) {
+        return .{ .received = job.received.load(.acquire), .total = job.total.load(.acquire) };
+    };
+    return .{ .received = self.download_received, .total = self.download_total };
+}
+
+/// How far the download is, 0 to 100, or null while its size isn't known.
+pub fn downloadPercent(self: *const Updates) ?u8 {
+    const b = self.downloadBytes();
+    if (b.total == 0) return null;
+    return @intCast(@min(100, b.received * 100 / b.total));
+}
+
+/// A release's files for this build: its installer, sums and signature.
+const Plan = struct { setup: update_list.File, sums: update_list.File, signature: update_list.File };
+
+fn plan(release: update_list.Release) ?Plan {
+    const files = switch (update_verify.native_arch) {
+        .x86_64 => release.files.x86_64,
+        .aarch64 => release.files.aarch64,
+    } orelse return null;
+    return .{
+        .setup = files.setup orelse return null,
+        .sums = release.sums orelse return null,
+        .signature = release.signature orelse return null,
+    };
+}
+
+/// Whether Download downloads here (else it opens the release's page): an
+/// installer copy of a release build with a state folder, and a found
+/// release whose list names its installer, sums and signature (releases
+/// from 0.6.0 on).
+pub fn canDownload(self: *const Updates) bool {
+    if (!self.release_build or self.dir == null or self.install != .installer) return false;
+    const f = self.found orelse return false;
+    return plan(f) != null;
+}
+
+/// Download the found release's installer (the window's Download and Try
+/// Again). Nothing runs until it has passed every check.
+pub fn startDownload(self: *Updates) void {
+    if (self.download_job != null or self.installer != null or !self.canDownload()) return;
+    const f = self.found.?;
+    const p = plan(f).?;
+    self.resetDownload();
+    self.setDownloadVersion(f.version);
+    self.install_error = 0;
+    self.downloads += 1;
+    defer self.notify();
+    var name_buf: [128]u8 = undefined;
+    const name = update_verify.setupName(&name_buf, f.version, update_verify.native_arch) orelse return self.refuseNow(.bad_address);
+    // Only from murrtty's own GitHub releases (the tests' server stands in).
+    var url_buf: [512]u8 = undefined;
+    const origin = if (testUrl(&url_buf)) |u| update_verify.originOf(u) else null;
+    if (!update_verify.downloadUrlOk(p.setup.url, name, origin) or
+        !update_verify.downloadUrlOk(p.sums.url, "SHA256SUMS.txt", origin) or
+        !update_verify.downloadUrlOk(p.signature.url, "SHA256SUMS.txt.sig", origin)) return self.refuseNow(.bad_address);
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const folder = self.releaseFolder(a, f.version) orelse return self.failNow();
+    Session.makeDirs(a, folder) catch |err| {
+        log.warn("no folder for the download err={}", .{err});
+        return self.failNow();
+    };
+    // One release's download is kept at a time.
+    self.cleanDownloads(.{ .all_but = f.version });
+    const job = update_download.Job.start(.{
+        .signature_url = p.signature.url,
+        .sums_url = p.sums.url,
+        .file_url = p.setup.url,
+        .name = name,
+        .dir = folder,
+        .keys = self.keys[0..self.keys_len],
+        .after = self.prev_job,
+        .hwnd = self.app.wakeup_hwnd,
+        .done_msg = download_message,
+        .progress_msg = progress_message,
+    }) catch |err| {
+        log.warn("the download couldn't start err={}", .{err});
+        return self.failNow();
+    };
+    self.dropPrevJob();
+    self.download_job = job;
+    self.download = .downloading;
+    log.info("downloading {s}", .{name});
+}
+
+fn refuseNow(self: *Updates, why: update_verify.Refusal) void {
+    self.download = .refused;
+    self.download_refusal = why;
+    self.download_noted = true;
+}
+
+fn failNow(self: *Updates) void {
+    self.download = .failed;
+    self.download_stage = .write;
+    self.download_noted = true;
+}
+
+fn resetDownload(self: *Updates) void {
+    self.download = .none;
+    self.download_version_len = 0;
+    self.download_outcome = null;
+    self.download_refusal = null;
+    self.download_stage = null;
+    self.download_error = 0;
+    self.download_status = 0;
+    self.download_received = 0;
+    self.download_total = 0;
+    self.download_resumed_from = 0;
+    self.download_noted = false;
+}
+
+/// Stop the job in flight, keeping it (`prev_job`) until the next job has
+/// waited for its thread to let go of the folder.
+fn stopJob(self: *Updates) void {
+    const job = self.download_job orelse return;
+    self.download_job = null;
+    job.cancel();
+    self.dropPrevJob();
+    self.prev_job = job;
+}
+
+fn dropPrevJob(self: *Updates) void {
+    if (self.prev_job) |p| p.release();
+    self.prev_job = null;
+}
+
+/// Cancel the download in flight (the window's Cancel): what came stays,
+/// and the next Download resumes it.
+pub fn cancelDownload(self: *Updates) void {
+    if (self.download_job == null or self.download != .downloading) return;
+    self.stopJob();
+    self.download = .none;
+    self.download_outcome = .cancelled;
+    self.notify();
+}
+
+/// The job's thread is done (`download_message`): a download, or Install
+/// Now's check.
+pub fn downloadFinished(self: *Updates) void {
+    const job = self.download_job orelse return;
+    // A late message from a job let go of earlier.
+    if (!job.isDone()) return;
+    self.download_job = null;
+    defer job.release();
+    if (self.download == .verifying) return self.verified(job);
+    self.download_outcome = job.outcome;
+    self.download_stage = job.stage;
+    self.download_error = job.error_code;
+    self.download_status = job.status;
+    self.download_resumed_from = job.resumed_from;
+    self.download_received = job.received.load(.acquire);
+    self.download_total = job.total.load(.acquire);
+    self.download = switch (job.outcome) {
+        .ready => .ready,
+        .refused => .refused,
+        .failed, .busy, .gone => .failed,
+        .cancelled => .none,
+    };
+    self.download_refusal = if (job.outcome == .refused) job.refusal else null;
+    // The pill warns until the window shows why.
+    self.download_noted = self.download == .refused or self.download == .failed;
+    log.info("update download: {t} refusal={?t} stage={t} status={} err={} from={} {}/{}", .{
+        job.outcome, self.download_refusal, job.stage, job.status, job.error_code, job.resumed_from, self.download_received, self.download_total,
+    });
+    // The release found may have changed meanwhile.
+    self.refresh();
+    self.notify();
+}
+
+/// The download got further (`progress_message`): the pill and the window
+/// show it.
+pub fn downloadProgress(self: *Updates) void {
+    const job = self.download_job orelse return;
+    self.download_received = job.received.load(.acquire);
+    self.download_total = job.total.load(.acquire);
+    job.progressSeen();
+    self.app.updatesProgress();
+}
+
+/// Install Now: the installer checked again on the job's thread (its
+/// release's kept sums and their signature, then its hash, read while it
+/// is held without write or delete sharing), then run from that hold
+/// (`verified`). It closes murrtty (Restart Manager, murrtty.iss's
+/// CloseApplications), which keeps its session for its next start.
+pub fn installNow(self: *Updates) void {
+    if (self.download != .ready or self.download_job != null or self.installer != null) return;
+    defer self.notify();
+    var name_buf: [128]u8 = undefined;
+    const version = self.downloadVersion();
+    const name = update_verify.setupName(&name_buf, version, update_verify.native_arch) orelse return self.resetDownload();
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const folder = self.releaseFolder(arena.allocator(), version) orelse return;
+    self.install_error = 0;
+    const job = update_download.Job.start(.{
+        .mode = .verify,
+        .name = name,
+        .dir = folder,
+        .keys = self.keys[0..self.keys_len],
+        .after = self.prev_job,
+        .hwnd = self.app.wakeup_hwnd,
+        .done_msg = download_message,
+        .progress_msg = progress_message,
+    }) catch |err| {
+        log.warn("the installer's check couldn't start err={}", .{err});
+        self.install_error = 1;
+        return;
+    };
+    self.dropPrevJob();
+    self.download_job = job;
+    self.download = .verifying;
+}
+
+/// Install Now's check is done: run the installer it holds, or say why not.
+fn verified(self: *Updates, job: *update_download.Job) void {
+    defer self.notify();
+    switch (job.outcome) {
+        .ready => {},
+        .refused => {
+            // The job deleted the release's download.
+            self.refuseNow(job.refusal);
+            log.warn("the downloaded installer failed its check before running: {t}", .{job.refusal});
+            return;
+        },
+        .gone => return self.resetDownload(),
+        else => {
+            self.download = .ready;
+            self.install_error = if (job.error_code != 0) job.error_code else 1;
+            return;
+        },
+    }
+    const held = job.takeHeld() orelse {
+        self.download = .ready;
+        return;
+    };
+    // Held until the installer has started from it.
+    defer _ = c.CloseHandle(held);
+    const alloc = self.app.core_app.alloc;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var name_buf: [128]u8 = undefined;
+    const version = self.downloadVersion();
+    const name = update_verify.setupName(&name_buf, version, update_verify.native_arch) orelse return self.resetDownload();
+    const folder = self.releaseFolder(a, version) orelse return;
+    const file = std.fmt.allocPrint(a, "{s}\\{s}", .{ folder, name }) catch return;
+    self.installs += 1;
+    log.info("installing {s}", .{name});
+    if (test_hooks.recordLaunch(&self.app.test_state, alloc, "install", file)) {
+        self.download = .ready;
+        return;
+    }
+    const file_w = text_util.utf16Lossy(a, file) catch return;
+    const folder_w = text_util.utf16Lossy(a, folder) catch return;
+    switch (runInstaller(a, file_w, folder_w)) {
+        .started => |process| {
+            self.installer = process;
+            self.download = .installing;
+            _ = c.SetTimer(self.app.wakeup_hwnd, install_timer_id, 1000, null);
+        },
+        .failed => |err| {
+            self.download = .ready;
+            self.install_error = err;
+        },
+    }
+}
+
+/// The installer's timer: once it has ended with murrtty still running (it
+/// was cancelled, or failed), the download is ready again.
+pub fn installerTick(self: *Updates) void {
+    const process = self.installer orelse {
+        _ = c.KillTimer(self.app.wakeup_hwnd, install_timer_id);
+        return;
+    };
+    if (c.WaitForSingleObject(process, 0) == c.WAIT_TIMEOUT) return;
+    _ = c.KillTimer(self.app.wakeup_hwnd, install_timer_id);
+    _ = c.CloseHandle(process);
+    self.installer = null;
+    if (self.download == .installing) self.download = .ready;
+    self.refresh();
+    self.notify();
+}
+
+const Started = union(enum) { started: c.HANDLE, failed: u32 };
+
+/// Run the installer, in the user's own environment (as Explorer starts a
+/// program: nothing of murrtty's reaches it, or the murrtty it starts);
+/// outside murrtty's job where that is allowed.
+fn runInstaller(a: Allocator, file: [:0]const u16, dir: [:0]const u16) Started {
+    var cmd: std.ArrayList(u16) = .empty;
+    cmd.append(a, '"') catch return .{ .failed = 8 };
+    cmd.appendSlice(a, file) catch return .{ .failed = 8 };
+    cmd.appendSlice(a, &.{ '"', 0 }) catch return .{ .failed = 8 };
+    var env: ?*anyopaque = null;
+    var token: c.HANDLE = undefined;
+    if (c.OpenProcessToken(c.GetCurrentProcess(), c.TOKEN_QUERY | c.TOKEN_DUPLICATE | c.TOKEN_IMPERSONATE, &token) != 0) {
+        defer _ = c.CloseHandle(token);
+        if (c.CreateEnvironmentBlock(&env, token, c.FALSE) == 0) env = null;
+    }
+    defer if (env) |e| {
+        _ = c.DestroyEnvironmentBlock(e);
+    };
+    const CREATE_DEFAULT_ERROR_MODE: c.DWORD = 0x04000000;
+    const flags: c.DWORD = CREATE_DEFAULT_ERROR_MODE | (if (env != null) @as(c.DWORD, c.CREATE_UNICODE_ENVIRONMENT) else 0);
+    var si: c.STARTUPINFOW = .{};
+    var pi: c.PROCESS_INFORMATION = .{};
+    const cmd_z: [*:0]u16 = @ptrCast(cmd.items.ptr);
+    var ok = c.CreateProcessW(file.ptr, cmd_z, null, null, c.FALSE, flags | c.CREATE_BREAKAWAY_FROM_JOB, env, dir.ptr, &si, &pi);
+    if (ok == 0 and c.GetLastError() == c.ERROR_ACCESS_DENIED) {
+        ok = c.CreateProcessW(file.ptr, cmd_z, null, null, c.FALSE, flags, env, dir.ptr, &si, &pi);
+    }
+    if (ok == 0) {
+        const err = c.GetLastError();
+        log.warn("the installer didn't start err={}", .{err});
+        return .{ .failed = if (err == 0) 1 else err };
+    }
+    if (pi.hThread) |h| _ = c.CloseHandle(h);
+    return if (pi.hProcess) |h| .{ .started = h } else .{ .failed = 1 };
+}
+
+/// The download follows the release found: one for another release (one
+/// skipped, a newer one listed, another channel's) stops or is set aside,
+/// and a verified installer kept from an earlier run (by any murrtty)
+/// shows as ready.
+fn syncDownload(self: *Updates) void {
+    if (self.download == .verifying or self.download == .installing) return;
+    if (self.download_job != null) {
+        const still = if (self.found) |f| std.mem.eql(u8, self.downloadVersion(), f.version) else false;
+        if (!still) {
+            self.stopJob();
+            self.resetDownload();
+        }
+        return;
+    }
+    const f = self.found orelse {
+        if (self.download != .none) self.resetDownload();
+        return;
+    };
+    if (self.download_version_len > 0 and !std.mem.eql(u8, self.downloadVersion(), f.version)) self.resetDownload();
+    if (self.download == .none and self.canDownload() and self.readyOnDisk(f.version)) {
+        self.setDownloadVersion(f.version);
+        self.download = .ready;
+    }
+}
+
+/// Whether `version`'s installer, sums and signature are in its folder.
+fn readyOnDisk(self: *const Updates, version: []const u8) bool {
+    var name_buf: [128]u8 = undefined;
+    const name = update_verify.setupName(&name_buf, version, update_verify.native_arch) orelse return false;
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const folder = self.releaseFolder(a, version) orelse return false;
+    for ([_][]const u8{ name, "SHA256SUMS.txt", "SHA256SUMS.txt.sig" }) |n| {
+        const file = std.fmt.allocPrint(a, "{s}\\{s}", .{ folder, n }) catch return false;
+        const w = text_util.utf16Lossy(a, file) catch return false;
+        const attrs = c.GetFileAttributesW(w.ptr);
+        if (attrs == c.INVALID_FILE_ATTRIBUTES or attrs & c.FILE_ATTRIBUTE_DIRECTORY != 0) return false;
+    }
+    return true;
+}
+
+/// `<state>\updates\download\<version>`.
+fn releaseFolder(self: *const Updates, a: Allocator, version: []const u8) ?[]u8 {
+    if (!update_verify.versionOk(version)) return null;
+    const root = self.path(a, "updates\\download") orelse return null;
+    return std.fmt.allocPrint(a, "{s}\\{s}", .{ root, version }) catch null;
+}
+
+const Clean = union(enum) {
+    /// Releases not newer than this murrtty (installed, or older).
+    stale,
+    all_but: []const u8,
+    all,
+};
+
+/// Delete downloaded releases' folders (only folders named as versions,
+/// never through a link).
+fn cleanDownloads(self: *Updates, what: Clean) void {
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = self.path(a, "updates\\download") orelse return;
+    var names: std.ArrayList([]const u8) = .empty;
+    {
+        const pattern = text_util.utf16Lossy(a, std.fmt.allocPrint(a, "{s}\\*", .{root}) catch return) catch return;
+        var data: c.WIN32_FIND_DATAW = undefined;
+        const find = c.FindFirstFileExW(pattern.ptr, c.FindExInfoBasic, &data, c.FindExSearchNameMatch, null, 0);
+        if (find == c.INVALID_HANDLE_VALUE) return;
+        defer _ = c.FindClose(find);
+        while (true) {
+            const attrs = data.dwFileAttributes;
+            if (attrs & c.FILE_ATTRIBUTE_DIRECTORY != 0 and attrs & c.FILE_ATTRIBUTE_REPARSE_POINT == 0) {
+                const name = std.unicode.wtf16LeToWtf8Alloc(a, std.mem.sliceTo(&data.cFileName, 0)) catch "";
+                if (update_verify.versionOk(name)) {
+                    const drop = switch (what) {
+                        .stale => !update_list.isNewer(name, self.running),
+                        .all_but => |keep| !std.mem.eql(u8, name, keep),
+                        .all => true,
+                    };
+                    if (drop) names.append(a, name) catch {};
+                }
+            }
+            if (c.FindNextFileW(find, &data) == 0) break;
+        }
+    }
+    for (names.items) |name| removeRelease(a, root, name);
+}
+
+/// A release's download folder and the files in it (a folder that is a
+/// link is left alone: never what it points to).
+fn removeRelease(a: Allocator, root: []const u8, version: []const u8) void {
+    if (!update_verify.versionOk(version)) return;
+    const folder = std.fmt.allocPrint(a, "{s}\\{s}", .{ root, version }) catch return;
+    const folder_w = text_util.utf16Lossy(a, folder) catch return;
+    const attrs = c.GetFileAttributesW(folder_w.ptr);
+    if (attrs == c.INVALID_FILE_ATTRIBUTES or attrs & c.FILE_ATTRIBUTE_DIRECTORY == 0 or attrs & c.FILE_ATTRIBUTE_REPARSE_POINT != 0) return;
+    const pattern = std.mem.concatWithSentinel(a, u16, &.{ folder_w, &[_]u16{ '\\', '*' } }, 0) catch return;
+    var data: c.WIN32_FIND_DATAW = undefined;
+    const find = c.FindFirstFileExW(pattern.ptr, c.FindExInfoBasic, &data, c.FindExSearchNameMatch, null, 0);
+    if (find != c.INVALID_HANDLE_VALUE) {
+        defer _ = c.FindClose(find);
+        while (true) {
+            if (data.dwFileAttributes & (c.FILE_ATTRIBUTE_DIRECTORY | c.FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+                const name = std.mem.sliceTo(&data.cFileName, 0);
+                if (std.mem.concatWithSentinel(a, u16, &.{ folder_w, &[_]u16{'\\'}, name }, 0)) |w| {
+                    _ = c.DeleteFileW(w.ptr);
+                } else |_| {}
+            }
+            if (c.FindNextFileW(find, &data) == 0) break;
+        }
+    }
+    _ = c.RemoveDirectoryW(folder_w.ptr);
 }
 
 // ---------------------------------------------------------------- files

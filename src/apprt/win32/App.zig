@@ -1666,6 +1666,14 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
             self.updates.finished();
             return 0;
         },
+        // A download's thread is done, or got further (roadmap 7.6b).
+        Updates.download_message, Updates.progress_message => {
+            const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
+            if (ptr == 0) return 0;
+            const self: *App = @ptrFromInt(@as(usize, @bitCast(ptr)));
+            if (msg == Updates.download_message) self.updates.downloadFinished() else self.updates.downloadProgress();
+            return 0;
+        },
         // A global binding's hot key (roadmap 5.5).
         c.WM_HOTKEY => {
             const ptr = c.GetWindowLongPtrW(hwnd, c.GWLP_USERDATA);
@@ -1696,6 +1704,7 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 Session.timer_id => self.session.tick(),
                 Updates.timer_id => self.updates.tick(),
                 Updates.note_timer_id => self.updates.noteTimer(),
+                Updates.install_timer_id => self.updates.installerTick(),
                 software_gl.timer_id => software_gl.tick(self),
                 else => {},
             }
@@ -1828,6 +1837,16 @@ pub fn updatesChanged(self: *App) void {
         // One being destroyed.
         if (c.GetWindowLongPtrW(w.hwnd, c.GWLP_USERDATA) == 0) continue;
         w.updatesChanged();
+    }
+}
+
+/// A download got further: the Updates window's progress and every window's
+/// pill, without the rest of a refresh (five times a second).
+pub fn updatesProgress(self: *App) void {
+    if (self.updates_window) |w| w.progress();
+    for (self.windows.items) |w| {
+        if (c.GetWindowLongPtrW(w.hwnd, c.GWLP_USERDATA) == 0) continue;
+        w.updatesProgress();
     }
 }
 

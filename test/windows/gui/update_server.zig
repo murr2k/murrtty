@@ -4,7 +4,10 @@
 //! (a 304 when murrtty sends that ETag back), a 503 with Retry-After, or
 //! nothing at all (a connection held open: murrtty must not hang), and
 //! records every request's head, so a scenario can check exactly what a
-//! check sends.
+//! check sends. For downloads (7.6b) it serves release files at GitHub's
+//! paths (`/releases/download/<tag>/<name>`): ranges as 206, slowly if
+//! asked (to watch progress and cancel), or stopping part way with the
+//! connection held (murrtty quitting mid-download).
 
 const std = @import("std");
 
@@ -39,6 +42,7 @@ extern "ws2_32" fn setsockopt(SOCKET, i32, i32, [*]const u8, i32) callconv(.wina
 const SRWLOCK = extern struct { ptr: ?*anyopaque = null };
 extern "kernel32" fn AcquireSRWLockExclusive(*SRWLOCK) callconv(.winapi) void;
 extern "kernel32" fn ReleaseSRWLockExclusive(*SRWLOCK) callconv(.winapi) void;
+extern "kernel32" fn Sleep(u32) callconv(.winapi) void;
 
 pub const Mode = enum {
     /// 200 with the list, or 304 when its ETag comes back.
@@ -76,8 +80,22 @@ pub const Server = struct {
     /// The last request's head (request line and headers).
     last: [4096]u8 = undefined,
     last_len: usize = 0,
-    /// Connections held open by `hang`, closed at `stop`.
+    /// Connections held open by `hang` (and a file's `hold_after`), closed
+    /// at `stop`.
     held: [16]SOCKET = @splat(INVALID_SOCKET),
+    /// Release files by path, the requests each got, and the last file
+    /// request's Range header ("" for none).
+    files: [8]File = undefined,
+    files_len: usize = 0,
+    file_hits: [8]std.atomic.Value(u32) = @splat(.init(0)),
+    last_range: [64]u8 = undefined,
+    last_range_len: usize = 0,
+    /// A file's bytes per 50 ms (0: all at once), and where it stops with
+    /// the connection held (null: never).
+    throttle: usize = 0,
+    hold_after: ?usize = null,
+
+    pub const File = struct { path: []const u8, body: []const u8 };
 
     pub fn start(alloc: std.mem.Allocator) !*Server {
         var wsa: [512]u8 align(8) = undefined;
@@ -129,6 +147,46 @@ pub const Server = struct {
         self.etag = etag;
     }
 
+    /// Serve `body` at `path` (the caller keeps both alive), replacing a
+    /// file at the same path.
+    pub fn setFile(self: *Server, path: []const u8, body: []const u8) void {
+        AcquireSRWLockExclusive(&self.lock);
+        defer ReleaseSRWLockExclusive(&self.lock);
+        for (self.files[0..self.files_len]) |*f| if (std.mem.eql(u8, f.path, path)) {
+            f.body = body;
+            return;
+        };
+        if (self.files_len == self.files.len) return;
+        self.files[self.files_len] = .{ .path = path, .body = body };
+        self.files_len += 1;
+    }
+
+    /// How files are sent: `throttle` bytes per 50 ms (0: at once), and
+    /// held open after `hold_after` bytes (null: never).
+    pub fn setPace(self: *Server, throttle: usize, hold_after: ?usize) void {
+        AcquireSRWLockExclusive(&self.lock);
+        defer ReleaseSRWLockExclusive(&self.lock);
+        self.throttle = throttle;
+        self.hold_after = hold_after;
+    }
+
+    /// Requests the file at `path` got.
+    pub fn hits(self: *Server, path: []const u8) u32 {
+        AcquireSRWLockExclusive(&self.lock);
+        defer ReleaseSRWLockExclusive(&self.lock);
+        for (self.files[0..self.files_len], 0..) |f, i| if (std.mem.eql(u8, f.path, path)) return self.file_hits[i].load(.acquire);
+        return 0;
+    }
+
+    /// The last file request's Range header, copied into `buf`.
+    pub fn lastRange(self: *Server, buf: []u8) []const u8 {
+        AcquireSRWLockExclusive(&self.lock);
+        defer ReleaseSRWLockExclusive(&self.lock);
+        const n = @min(buf.len, self.last_range_len);
+        @memcpy(buf[0..n], self.last_range[0..n]);
+        return buf[0..n];
+    }
+
     /// The last request's head, copied into `buf`.
     pub fn lastRequest(self: *Server, buf: []u8) []const u8 {
         AcquireSRWLockExclusive(&self.lock);
@@ -163,6 +221,9 @@ pub const Server = struct {
         }
         const head_end = if (std.mem.indexOf(u8, buf[0..got], "\r\n\r\n")) |i| i else got;
         const head = buf[0..head_end];
+
+        // A release file?
+        if (self.serveFile(client, head)) return;
 
         AcquireSRWLockExclusive(&self.lock);
         @memcpy(self.last[0..head.len], head);
@@ -202,18 +263,95 @@ pub const Server = struct {
         finish(client);
     }
 
+    /// Serve a release file if `head` asks for one: whole (200) or from a
+    /// range's start (206; 416 past its end), at the pace set. False when
+    /// the path is no file's.
+    fn serveFile(self: *Server, client: SOCKET, head: []const u8) bool {
+        const line_end = std.mem.indexOf(u8, head, "\r\n") orelse head.len;
+        var parts = std.mem.tokenizeScalar(u8, head[0..line_end], ' ');
+        _ = parts.next();
+        const path = parts.next() orelse return false;
+        AcquireSRWLockExclusive(&self.lock);
+        var body: ?[]const u8 = null;
+        for (self.files[0..self.files_len], 0..) |f, i| if (std.mem.eql(u8, f.path, path)) {
+            body = f.body;
+            _ = self.file_hits[i].fetchAdd(1, .acq_rel);
+        };
+        if (body == null) {
+            ReleaseSRWLockExclusive(&self.lock);
+            return false;
+        }
+        @memcpy(self.last[0..head.len], head);
+        self.last_len = head.len;
+        const range = header(head, "range") orelse "";
+        const n = @min(range.len, self.last_range.len);
+        @memcpy(self.last_range[0..n], range[0..n]);
+        self.last_range_len = n;
+        const throttle = self.throttle;
+        const hold_after = self.hold_after;
+        ReleaseSRWLockExclusive(&self.lock);
+        _ = self.requests.fetchAdd(1, .acq_rel);
+
+        const data = body.?;
+        var from: usize = 0;
+        if (std.mem.startsWith(u8, range, "bytes=") and std.mem.endsWith(u8, range, "-")) {
+            from = std.fmt.parseInt(usize, range["bytes=".len .. range.len - 1], 10) catch 0;
+        }
+        var out: [256]u8 = undefined;
+        if (from >= data.len and from > 0) {
+            const msg = std.fmt.bufPrint(&out, "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{d}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", .{data.len}) catch unreachable;
+            sendAll(client, msg);
+            finish(client);
+            return true;
+        }
+        const msg = if (from > 0)
+            std.fmt.bufPrint(&out, "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nContent-Range: bytes {d}-{d}/{d}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ from, data.len - 1, data.len, data.len - from }) catch unreachable
+        else
+            std.fmt.bufPrint(&out, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{data.len}) catch unreachable;
+        sendAll(client, msg);
+        var off = from;
+        var sent: usize = 0;
+        while (off < data.len) {
+            if (self.stopping.load(.acquire)) break;
+            if (hold_after) |limit| if (sent >= limit) {
+                // Part way: held open, as a connection gone quiet.
+                AcquireSRWLockExclusive(&self.lock);
+                defer ReleaseSRWLockExclusive(&self.lock);
+                for (&self.held) |*s| if (s.* == INVALID_SOCKET) {
+                    s.* = client;
+                    return true;
+                };
+                break;
+            };
+            var piece = if (throttle > 0) @min(throttle, data.len - off) else data.len - off;
+            if (hold_after) |limit| piece = @min(piece, limit - sent);
+            if (!sendSome(client, data[off .. off + piece])) break;
+            off += piece;
+            sent += piece;
+            if (throttle > 0) Sleep(50);
+        }
+        finish(client);
+        return true;
+    }
+
     fn finish(client: SOCKET) void {
         _ = shutdown(client, SD_BOTH);
         _ = closesocket(client);
     }
 
     fn sendAll(client: SOCKET, data: []const u8) void {
+        _ = sendSome(client, data);
+    }
+
+    /// All of `data`; false once the other end is gone.
+    fn sendSome(client: SOCKET, data: []const u8) bool {
         var off: usize = 0;
         while (off < data.len) {
-            const n = send(client, data[off..].ptr, @intCast(data.len - off), 0);
-            if (n <= 0) return;
+            const n = send(client, data[off..].ptr, @intCast(@min(data.len - off, 1 << 20)), 0);
+            if (n <= 0) return false;
             off += @intCast(n);
         }
+        return true;
     }
 };
 

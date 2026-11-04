@@ -103,7 +103,7 @@ const ODS_NOFOCUSRECT = c.ODS_NOFOCUSRECT;
 const Trailing = enum { none, @"switch", value, check, chevron };
 
 /// What a state button does.
-const Action = enum { none, check_now, cancel, skip, download, turn_on };
+const Action = enum { none, check_now, cancel, skip, download, cancel_download, install, retry, open_page, turn_on };
 
 const Control = struct {
     id: u16,
@@ -157,6 +157,8 @@ secondary: Action = .none,
 /// Painted parts' places, from `layout`.
 heading_rect: c.RECT = .{},
 subtitle_rect: c.RECT = .{},
+/// A download's bar, under the subtitle while it runs (empty otherwise).
+progress_rect: c.RECT = .{},
 card_rect: c.RECT = .{},
 history_label_rect: c.RECT = .{},
 placeholder_rect: c.RECT = .{},
@@ -265,7 +267,7 @@ fn initControls(self: *UpdatesWindow) void {
         .{ .id = id_auto, .page = .settings, .kind = .row, .label = "Check for updates &automatically", .subtitle = "Saved in your configuration as auto-update", .trailing = .@"switch" },
         .{ .id = id_interval, .page = .settings, .kind = .row, .label = "How &often", .trailing = .value },
         .{ .id = id_on_found, .page = .settings, .kind = .row, .label = "&When an update is found", .trailing = .value },
-        .{ .id = id_download, .page = .settings, .kind = .row, .label = "&Download updates automatically", .subtitle = "Downloads and installs come in a later murrtty", .trailing = .@"switch", .enabled = false },
+        .{ .id = id_download, .page = .settings, .kind = .row, .label = "&Download updates automatically", .subtitle = "Automatic downloads come in a later murrtty", .trailing = .@"switch", .enabled = false },
         .{ .id = id_stable, .page = .settings, .kind = .row, .label = "&Stable releases", .trailing = .check },
         .{ .id = id_tip, .page = .settings, .kind = .row, .label = "&Pre-releases", .subtitle = "None are published yet", .trailing = .check },
         .{ .id = id_privacy, .page = .settings, .kind = .row, .label = "What a check s&ends", .trailing = .chevron },
@@ -308,7 +310,25 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
             var ps: c.PAINTSTRUCT = undefined;
             const dc = c.BeginPaint(hwnd, &ps) orelse return 0;
             defer _ = c.EndPaint(hwnd, &ps);
-            if (fromHwnd(hwnd)) |self| self.paint(dc);
+            const self = fromHwnd(hwnd) orelse return 0;
+            var client: c.RECT = .{};
+            _ = c.GetClientRect(hwnd, &client);
+            // Drawn off screen, then copied: a download's progress (five
+            // times a second) doesn't flicker.
+            const mem = c.CreateCompatibleDC(dc) orelse {
+                self.paint(dc);
+                return 0;
+            };
+            defer _ = c.DeleteDC(mem);
+            const bmp = c.CreateCompatibleBitmap(dc, @max(1, client.right), @max(1, client.bottom)) orelse {
+                self.paint(dc);
+                return 0;
+            };
+            defer _ = c.DeleteObject(bmp);
+            const old = c.SelectObject(mem, bmp);
+            defer _ = c.SelectObject(mem, old);
+            self.paint(mem);
+            _ = c.BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right - ps.rcPaint.left, ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left, ps.rcPaint.top, c.SRCCOPY);
             return 0;
         },
         c.WM_SIZE => {
@@ -549,6 +569,16 @@ pub fn refresh(self: *UpdatesWindow) void {
     _ = c.RedrawWindow(self.hwnd, null, null, c.RDW_INVALIDATE | c.RDW_ERASE | c.RDW_ALLCHILDREN);
 }
 
+/// A download got further: the heading, the text and the bar again (five
+/// times a second; the rest of the window as it is).
+pub fn progress(self: *UpdatesWindow) void {
+    self.describe();
+    self.layout();
+    for ([_]c.RECT{ self.heading_rect, self.subtitle_rect, self.progress_rect }) |r| {
+        if (r.bottom > r.top) _ = c.InvalidateRect(self.hwnd, &r, c.FALSE);
+    }
+}
+
 fn setText(buf: []u8, len: *usize, comptime fmt: []const u8, args: anytype) void {
     const s = std.fmt.bufPrint(buf, fmt, args) catch buf[0..0];
     len.* = s.len;
@@ -580,6 +610,8 @@ fn describe(self: *UpdatesWindow) void {
     if (!u.release_build) {
         setText(&self.heading, &self.heading_len, "This is a development build", .{});
         setText(&self.subtitle, &self.subtitle_len, "murrtty {s}. A development build's updates come from building the source, so it never checks.", .{build_config.version_string});
+    } else if (u.download != .none and u.download_version_len > 0) {
+        self.describeDownload(u);
     } else switch (u.status) {
         .checking => {
             setText(&self.heading, &self.heading_len, "Checking for updates...", .{});
@@ -630,21 +662,126 @@ fn describe(self: *UpdatesWindow) void {
     for ([_]struct { u16, Action }{ .{ id_primary, self.primary }, .{ id_secondary, self.secondary } }) |entry| {
         const ctl = self.find(entry[0]).?;
         ctl.shown = entry[1] != .none;
-        ctl.kind = if (entry[1] == .check_now or entry[1] == .download) .accent else .pill;
+        ctl.kind = switch (entry[1]) {
+            .check_now, .download, .install, .retry => .accent,
+            else => .pill,
+        };
         // Access keys apart from each other's and Close's (C) on the page.
-        ctl.label = switch (entry[1]) {
+        const label: []const u8 = switch (entry[1]) {
             .none => "",
             .check_now => if (u.status == .failed) "Try &Again" else "Check &Now",
             .cancel => "Ca&ncel",
             .skip => "S&kip This Version",
             .download => "&Download",
+            .cancel_download => "Ca&ncel",
+            .install => "&Install Now",
+            .retry => "Try &Again",
+            .open_page => "Open Release &Page",
             .turn_on => "&Turn On Automatic Checks...",
         };
-        self.setLabel(ctl);
+        // Set only when it changes: a download's progress describes five
+        // times a second, and each new text is a name change a screen
+        // reader announces.
+        if (!std.mem.eql(u8, label, ctl.label)) {
+            ctl.label = label;
+            self.setLabel(ctl);
+        }
     }
     const selected = self.selectedVersion();
     self.find(id_read).?.enabled = selected != null;
     self.find(id_more).?.enabled = selected != null;
+}
+
+/// A download's progress in words: "12.3 of 31.0 MB (40%)." or, while its
+/// size isn't known, "12.3 MB so far."
+fn progressText(buf: []u8, u: *const Updates) []const u8 {
+    const mb = 1024.0 * 1024.0;
+    const bytes = u.downloadBytes();
+    const got: f64 = @as(f64, @floatFromInt(bytes.received)) / mb;
+    if (u.downloadPercent()) |pct| {
+        const all: f64 = @as(f64, @floatFromInt(bytes.total)) / mb;
+        return std.fmt.bufPrint(buf, "{d:.1} of {d:.1} MB ({d}%).", .{ got, all, pct }) catch "";
+    }
+    return std.fmt.bufPrint(buf, "{d:.1} MB so far.", .{got}) catch "";
+}
+
+/// Why a download was refused, in words.
+fn refusalText(buf: []u8, u: *const Updates, version: []const u8) []const u8 {
+    return switch (u.download_refusal orelse .bad_signature) {
+        .bad_signature => "Its checksums aren't signed with murrtty's key.",
+        .wrong_release => std.fmt.bufPrint(buf, "Its signed checksums don't name murrtty {s}'s installer for this computer, so they may be another release's.", .{version}) catch "Its signed checksums are another release's.",
+        .wrong_hash => "The installer doesn't match its signed checksum.",
+        .bad_address => "The release list named a download outside murrtty's GitHub releases.",
+        .too_big => "The download is larger than any murrtty installer.",
+    };
+}
+
+/// Why a download stopped, in words.
+fn downloadFailureText(buf: []u8, u: *const Updates) []const u8 {
+    if (u.download_outcome == .busy) return "Another murrtty is downloading it.";
+    const stage = u.download_stage orelse .write;
+    const code = u.download_error;
+    return switch (stage) {
+        .http => std.fmt.bufPrint(buf, "GitHub answered {d}.", .{u.download_status}) catch "",
+        .answer => "What came back wasn't the release's file (a proxy in the way, perhaps).",
+        .incomplete => "The download was cut short.",
+        .write => std.fmt.bufPrint(buf, "The download couldn't be saved (Windows reported error {d}).", .{code}) catch "",
+        else => if (code == update_fetch.ERROR_WINHTTP_NAME_NOT_RESOLVED)
+            "The name github.com couldn't be found: no network, or a DNS problem."
+        else if (code == update_fetch.ERROR_WINHTTP_CANNOT_CONNECT)
+            "murrtty couldn't connect to GitHub (a firewall or proxy may block it)."
+        else if (code == update_fetch.ERROR_WINHTTP_TIMEOUT)
+            "GitHub stopped answering."
+        else if (code == update_fetch.ERROR_WINHTTP_SECURE_FAILURE)
+            "The secure connection to GitHub failed (its certificate, or a proxy in the way)."
+        else
+            std.fmt.bufPrint(buf, "Windows reported error {d}.", .{code}) catch "",
+    };
+}
+
+/// The main page while there is a download (any status: a check failing or
+/// running meanwhile doesn't hide a ready installer): the release it is
+/// for, by its own version.
+fn describeDownload(self: *UpdatesWindow, u: *const Updates) void {
+    const v = u.downloadVersion();
+    var why_buf: [240]u8 = undefined;
+    switch (u.download) {
+        .none => {},
+        .downloading => {
+            setText(&self.heading, &self.heading_len, "Downloading murrtty {s}", .{v});
+            setText(&self.subtitle, &self.subtitle_len, "{s} Your terminals stay usable meanwhile.", .{progressText(&why_buf, u)});
+            self.primary = .cancel_download;
+        },
+        .ready => {
+            setText(&self.heading, &self.heading_len, "murrtty {s} is ready to install", .{v});
+            if (u.install_error != 0)
+                setText(&self.subtitle, &self.subtitle_len, "The installer didn't start (Windows reported error {d}).", .{u.install_error})
+            else
+                setText(&self.subtitle, &self.subtitle_len, "Downloaded and checked: its release's checksums carry murrtty's signature, and the installer matches them. Installing closes murrtty, which keeps your session for its next start.", .{});
+            self.primary = .install;
+            self.secondary = .skip;
+        },
+        .verifying => {
+            setText(&self.heading, &self.heading_len, "Installing murrtty {s}", .{v});
+            setText(&self.subtitle, &self.subtitle_len, "Checking the installer once more before it runs.", .{});
+        },
+        .installing => {
+            setText(&self.heading, &self.heading_len, "Installing murrtty {s}", .{v});
+            setText(&self.subtitle, &self.subtitle_len, "The installer is running. It closes murrtty, which keeps your session for its next start.", .{});
+        },
+        .refused => {
+            setText(&self.heading, &self.heading_len, "murrtty {s} failed its check", .{v});
+            setText(&self.subtitle, &self.subtitle_len, "{s} Nothing was installed, and what was downloaded is deleted.", .{refusalText(&why_buf, u, v)});
+            self.primary = .retry;
+            self.secondary = .open_page;
+        },
+        .failed => {
+            setText(&self.heading, &self.heading_len, "murrtty {s} couldn't be downloaded", .{v});
+            setText(&self.subtitle, &self.subtitle_len, "{s} Try Again goes on where it stopped.", .{downloadFailureText(&why_buf, u)});
+            self.primary = .retry;
+            self.secondary = .open_page;
+        },
+    }
 }
 
 fn failureText(buf: []u8, u: *const Updates) []const u8 {
@@ -1025,8 +1162,15 @@ fn act(self: *UpdatesWindow, action: Action) void {
         .check_now => u.checkNow(),
         .cancel => u.cancel(),
         .skip => if (u.found) |f| u.skip(f.version),
-        // 7.6a: the release's page (7.6b downloads and verifies the file).
-        .download => if (u.found) |f| self.openPage(f.version),
+        // An installer copy downloads and checks the installer (roadmap
+        // 7.6b); any other, or a release before signatures, opens its page.
+        .download => if (u.found) |f| {
+            if (u.canDownload()) u.startDownload() else self.openPage(f.version);
+        },
+        .cancel_download => u.cancelDownload(),
+        .install => u.installNow(),
+        .retry => u.startDownload(),
+        .open_page => if (u.found) |f| self.openPage(f.version),
         .turn_on => self.turnOn(),
     }
 }
@@ -1170,6 +1314,11 @@ fn layout(self: *UpdatesWindow) void {
             const sh = textHeight(dc, self.body_font, self.subtitle[0..self.subtitle_len], tw);
             self.subtitle_rect = .{ .left = p, .top = y, .right = w - p, .bottom = y + sh };
             y += sh + self.scale(14);
+            // A download's bar (libadwaita's progress bar: 6 DIP).
+            if (self.app.updates.download == .downloading) {
+                self.progress_rect = .{ .left = p, .top = y, .right = w - p, .bottom = y + self.scale(6) };
+                y += self.scale(6) + self.scale(14);
+            } else self.progress_rect = .{};
             var x = p;
             for ([_]u16{ id_primary, id_secondary }) |id| {
                 const ctl = self.find(id).?;
@@ -1278,6 +1427,15 @@ fn paint(self: *UpdatesWindow, dc: c.HDC) void {
             _ = c.SetTextColor(dc, self.pal.subtitle);
             drawText(dc, self.body_font, self.subtitle[0..self.subtitle_len], self.subtitle_rect, c.DT_LEFT | c.DT_WORDBREAK | c.DT_NOPREFIX);
             _ = c.SetTextColor(dc, self.pal.text);
+            if (self.progress_rect.bottom > self.progress_rect.top) {
+                const r = self.progress_rect;
+                const radius = r.bottom - r.top;
+                draw.roundRect(dc, r, radius, self.pal.switch_off, null, 0);
+                if (self.app.updates.downloadPercent()) |pct| if (pct > 0) {
+                    const fill_w = @divTrunc((r.right - r.left) * @as(c_int, pct), 100);
+                    draw.roundRect(dc, .{ .left = r.left, .top = r.top, .right = r.left + @max(fill_w, radius), .bottom = r.bottom }, radius, self.pal.switch_on, null, 0);
+                };
+            }
             if (self.card_rect.bottom > self.card_rect.top) self.paintPrivacy(dc, self.card_rect, true);
             drawText(dc, self.bold_font, "Release history", self.history_label_rect, c.DT_LEFT | c.DT_VCENTER | c.DT_SINGLELINE | c.DT_NOPREFIX);
             if (self.app.updates.list == null) {

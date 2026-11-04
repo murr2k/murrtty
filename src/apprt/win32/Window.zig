@@ -758,6 +758,13 @@ pub fn bellsChanged(self: *Window) void {
     self.invalidateTabBar();
 }
 
+/// A download got further (roadmap 7.6b): the pill's percentage only. The
+/// tooltip stays (updatesChanged pops it, five times a second here).
+pub fn updatesProgress(self: *Window) void {
+    self.syncBars();
+    self.invalidateTabBar();
+}
+
 /// What update checks know changed (roadmap 7.6a): the header bar's pill
 /// again, and with the tab row as the title bar the tabs before it. A
 /// hovered pill that is gone is no longer hovered.
@@ -1362,16 +1369,17 @@ fn syncBars(self: *Window) void {
     self.header.tabs_style = tabs_style;
     self.header.controls = self.csd();
     self.header.bells = self.app.waiting.count();
-    // The update pill (roadmap 7.6a), in macOS Ghostty's colors.
+    // The update pill (roadmap 7.6a, 7.6b), in macOS Ghostty's colors.
     var pill_buf: [64]u8 = undefined;
-    self.header.setPill(switch (self.app.updates.pill()) {
+    const pill = self.app.updates.pill();
+    self.header.setPill(switch (pill) {
         .hidden => .hidden,
-        .checking => .plain,
-        .available => .accent,
+        .checking, .downloading, .installing => .plain,
+        .available, .ready => .accent,
         .permission => .accent_dim,
         .not_found => .accent_dark,
-        .failed => .warning,
-    }, self.app.updates.pillText(&pill_buf));
+        .failed, .download_failed => .warning,
+    }, self.app.updates.pillText(&pill_buf), if (pill == .downloading) "Downloading: 100%" else "");
     self.tab_bar.top_bar = self.headerHeight() == 0;
     self.tab_bar.inset = if (tabs_style) self.header.tabsInsetAt(self.clientWidth()) else null;
     self.tab_bar.inverted = self.app.config.@"gtk-tabs-inverted";

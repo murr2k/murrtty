@@ -1542,8 +1542,22 @@ fn dumpUpdates(alloc: Allocator, out: *std.ArrayList(u8), u: *const Updates) !vo
         if (i > 0) try out.append(alloc, ',');
         try writeString(alloc, out, r.version);
     };
+    // Downloads (roadmap 7.6b): how this copy was installed, this build's
+    // architecture, and the download's state.
+    try out.print(alloc, "],\"install\":\"{t}\",\"arch\":\"{t}\",\"can_download\":{},\"downloads\":{d},\"installs\":{d},\"install_error\":{d}", .{
+        u.install, @import("update_verify.zig").native_arch, u.canDownload(), u.downloads, u.installs, u.install_error,
+    });
+    try out.print(alloc, ",\"download\":{{\"state\":\"{t}\",\"active\":{},\"noted\":{},\"version\":", .{ u.download, u.download_job != null, u.download_noted });
+    try writeString(alloc, out, u.downloadVersion());
+    if (u.download_outcome) |o| try out.print(alloc, ",\"outcome\":\"{t}\"", .{o}) else try out.appendSlice(alloc, ",\"outcome\":null");
+    if (u.download_refusal) |r| try out.print(alloc, ",\"refusal\":\"{t}\"", .{r}) else try out.appendSlice(alloc, ",\"refusal\":null");
+    if (u.download_stage) |st| try out.print(alloc, ",\"stage\":\"{t}\"", .{st}) else try out.appendSlice(alloc, ",\"stage\":null");
+    const bytes = u.downloadBytes();
+    try out.print(alloc, ",\"error\":{d},\"http\":{d},\"received\":{d},\"total\":{d},\"resumed_from\":{d}}}", .{
+        u.download_error, u.download_status, bytes.received, bytes.total, u.download_resumed_from,
+    });
     const s = u.state;
-    try out.print(alloc, "],\"state\":{{\"consent\":{},\"declined\":{},\"noticed\":{},\"interval\":\"{t}\",\"on_found\":\"{t}\",\"last_check\":{d},\"next_check\":{d},\"lease_until\":{d},\"failures\":{d},\"etag\":", .{
+    try out.print(alloc, ",\"state\":{{\"consent\":{},\"declined\":{},\"noticed\":{},\"interval\":\"{t}\",\"on_found\":\"{t}\",\"last_check\":{d},\"next_check\":{d},\"lease_until\":{d},\"failures\":{d},\"etag\":", .{
         s.consent, s.declined, s.noticed, s.interval, s.on_found, s.last_check, s.next_check, s.lease_until, s.failures,
     });
     if (s.etag) |e| try writeString(alloc, out, e) else try out.appendSlice(alloc, "null");

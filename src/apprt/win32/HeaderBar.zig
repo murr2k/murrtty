@@ -73,10 +73,14 @@ bells: usize = 0,
 /// stop where it is centered.
 title_px: c_int = 0,
 /// The update pill: its look, its text (UTF-16) and that text's width in
-/// pixels, measured as it is set (setPill), so placing it needs no DC.
+/// pixels, measured as it is set (setPill), so placing it needs no DC; at
+/// least the width of `pill_widest` (a progress's "Downloading: 100%", as
+/// macOS Ghostty's, so the pill keeps its size as the number grows).
 pill: PillLook = .hidden,
 pill_text: [pill_max]u16 = undefined,
 pill_len: usize = 0,
+pill_widest: [pill_max]u16 = undefined,
+pill_widest_len: usize = 0,
 pill_px: c_int = 0,
 pill_font: ?c.HFONT = null,
 
@@ -98,14 +102,20 @@ pub fn setDpi(self: *HeaderBar, dpi: c.UINT, family: ?[]const u8) void {
     self.measurePill();
 }
 
-/// Show the update pill as `look` with `text` (UTF-8), or hide it.
-pub fn setPill(self: *HeaderBar, look: PillLook, text: []const u8) void {
+/// Show the update pill as `look` with `text` (UTF-8), at least as wide as
+/// `widest` would be ("" for no minimum), or hide it.
+pub fn setPill(self: *HeaderBar, look: PillLook, text: []const u8, widest: []const u8) void {
     var wide: [pill_max]u16 = undefined;
     const w = text_util.utf16Into(&wide, if (look == .hidden) "" else text);
-    if (look == self.pill and std.mem.eql(u16, w, self.pill_text[0..self.pill_len])) return;
+    var wide_widest: [pill_max]u16 = undefined;
+    const ww = text_util.utf16Into(&wide_widest, if (look == .hidden) "" else widest);
+    if (look == self.pill and std.mem.eql(u16, w, self.pill_text[0..self.pill_len]) and
+        std.mem.eql(u16, ww, self.pill_widest[0..self.pill_widest_len])) return;
     self.pill = look;
     @memcpy(self.pill_text[0..w.len], w);
     self.pill_len = w.len;
+    @memcpy(self.pill_widest[0..ww.len], ww);
+    self.pill_widest_len = ww.len;
     self.measurePill();
 }
 
@@ -121,6 +131,11 @@ fn measurePill(self: *HeaderBar) void {
     var r: c.RECT = .{};
     _ = c.DrawTextW(dc, &self.pill_text, @intCast(self.pill_len), &r, c.DT_CALCRECT | c.DT_SINGLELINE | c.DT_NOPREFIX);
     self.pill_px = @max(0, r.right - r.left);
+    if (self.pill_widest_len > 0) {
+        var rw: c.RECT = .{};
+        _ = c.DrawTextW(dc, &self.pill_widest, @intCast(self.pill_widest_len), &rw, c.DT_CALCRECT | c.DT_SINGLELINE | c.DT_NOPREFIX);
+        self.pill_px = @max(self.pill_px, rw.right - rw.left);
+    }
 }
 
 /// Where the update pill goes in a bar `width` pixels wide: before the tab

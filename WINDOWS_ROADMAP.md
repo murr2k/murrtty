@@ -558,6 +558,10 @@ roadmap item behind it.
   and line, Keep On or Turn Off, the second kept for this computer only);
   macOS Ghostty asks on its second start. A release an automatic check
   finds is told once, by a toast or the window (murrtty's Update Settings).
+  An installer copy's Download downloads the installer and checks it (its
+  release's checksums signed with murrtty's Ed25519 key, as Sparkle checks
+  its EdDSA signature, and the file matching them) before Install Now runs
+  it (7.6b); other copies open the release's page.
   GTK's app has no updater (Linux builds come from package managers).
 
 *For now:*
@@ -4449,6 +4453,47 @@ files unsigned and warns), keeps the secret in its signing step alone and
 checks the release is still a draft before uploading. The list isn't
 signed: 7.6b-2 believes a listed version only through the file's name in
 the signed sums (`murrtty-<version>-windows-<arch>`).
+*7.6b-2, 2026-11-03:* downloading and checking. How murrtty was installed
+is decided at start (`update_install.zig`: the installer's
+`InstallLocation` under its uninstall key, Scoop's `apps\murrtty`,
+winget's `WinGet\Packages\MurrayKopit.murrtty_`, else a zip); only an
+installer copy downloads, and the others, or a release from before
+signatures, keep Download opening the release's page (7.6b-3 shows Scoop's
+and winget's commands). `update_download.zig` works on a thread of its own
+at background priority, shared and abandoned as a check's job: the
+signature, then the sums, checked (`update_verify.zig`: a built-in key
+signed them, and they name `murrtty-<version>-windows-<arch>-setup.exe` for
+the listed version, so another release's signed sums never pass) before
+the installer is fetched; the installer resumes with a range into
+`<name>.partial`, is hashed as it is written and gets its name only if it
+matches; a refusal deletes everything; every address must be one of
+murrtty's GitHub release downloads. Its files are in
+`<state>\updates\download\<version>` (one release kept; releases not newer
+than the running murrtty go at start), and a kept installer shows as ready
+at the next start. The window: Downloading (size, percent and a
+libadwaita progress bar; Cancel keeps what came), ready to install
+(Install Now), failed its check (the reason; Try Again, Open Release
+Page), couldn't be downloaded (Try Again resumes). The pill: macOS's
+"Downloading: 62%" (as wide as "Downloading: 100%"), "Ready to Install:
+0.6.0", "Update Failed" until the window opens. Install Now checks the kept
+sums, signature and installer again on the job's thread (its `verify`
+mode), and the installer starts from the file that check holds (without
+write or delete sharing), in the user's own environment, with its pages:
+Inno Setup's Restart Manager closes murrtty, which keeps its session; while
+it runs the window says so and Install Now waits (an installer cancelled
+leaves the download ready). 7.6b-3 replaces that with macOS's Restart to
+Complete Update (silent, starting murrtty again). After review: a download
+or check started after a cancelled one waits for that one's thread to let
+go of the folder (a slow network holds it for the time limits); Clear
+Cached Update Information has a job still running delete its files as it
+ends; a download for a release no longer the one found stops; the window
+shows a download whatever a check does meanwhile; a 206 must start where
+the kept part ends (Content-Range), and a resumed file that doesn't match
+is fetched once more from the start before it is refused; and an answer
+that isn't a 64-byte signature (a proxy's page) fails rather than refuses,
+which would delete a good kept installer. `updates-download` checks it all
+against the harness's server, Install Now's real start included (the
+harness's recorder serves as the installer).
 *7.6a step 3, 2026-11-03:* macOS Ghostty's update pill in the header bar
 (before the tab list's button, the title and bells making way; in the tab
 row with `gtk-titlebar-style = tabs`): hidden when there is nothing to say;

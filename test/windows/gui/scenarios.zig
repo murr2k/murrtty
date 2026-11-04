@@ -133,6 +133,7 @@ pub const all = [_]Scenario{
     .{ .name = "updates-pill", .about = "the header bar's update pill (macOS Ghostty's): hidden with nothing to say; checking, an update (a click opens the Updates window), No Updates Available (gone after 5 s or at a click), a failure (until the window opens), for checks asked for (a local server)", .run = updatesPill },
     .{ .name = "updates-notice", .about = "auto-update = check in a file nobody agreed to here: no check, the pill asks; a one-time notice naming the file and line when the first check would come; Keep On agrees, Turn Off turns them off here, neither writes the file; never twice (a local server)", .run = updatesNotice },
     .{ .name = "updates-found", .about = "a release an automatic check finds is told once, by a notification whose click opens the Updates window, or with When an Update Is Found set to the window, by the window (a local server)", .run = updatesFound },
+    .{ .name = "updates-download", .about = "an installer copy downloads an update only after checking it: a forged signature, another release's signed sums and a wrong hash are each refused, said why, and leave nothing; the progress shows in the pill and the window; Cancel keeps what came and Download resumes it; Install Now checks it again and runs it; the next start finds it ready; quitting mid-download is at once and the next start resumes; an unsigned release and a zip copy open the page (a local server)", .run = updatesDownload },
     .{ .name = "updates-window-look", .about = "pictures of the Updates window's pages, dark and light, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = updatesWindowLook, .tool = true },
     .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook, .tool = true },
     .{ .name = "stress-panes", .about = "16 panes flooding output keep rendering (GHOSTTY_GUI_STRESS=1)", .run = stressPanes },
@@ -15700,6 +15701,493 @@ fn updatesFound(h: *Harness) anyerror!void {
         // Opened quietly: no button of it took the keyboard (an Enter typed
         // in the terminal would press Download).
         try h.expect(!d2.value.updates_window.?.has_focus, "the window opened without the keyboard", .{});
+        try quitPane(h, &g);
+    }
+}
+
+// ---------------------------------------------------------------- update downloads (roadmap 7.6b)
+
+/// The tests' signing key (a seed of sevens): murrtty takes its public half
+/// as GHOSTTY_WIN32_TEST_UPDATES_KEY. murrtty's own keys sign nothing here.
+fn dlKey(seed: u8) std.crypto.sign.Ed25519.KeyPair {
+    return std.crypto.sign.Ed25519.KeyPair.generateDeterministic(@splat(seed)) catch unreachable;
+}
+
+/// A made-up 0.6.0 for the download scenarios: its installer (1.5 MB of
+/// noise), SHA256SUMS.txt naming it, that signed with the tests' key, and a
+/// release list naming all three at the server's GitHub paths.
+const DlRelease = struct {
+    name: []const u8,
+    setup: []const u8,
+    sums: []const u8,
+    sig: []const u8,
+    list: []const u8,
+    setup_path: []const u8,
+    sums_path: []const u8,
+    sig_path: []const u8,
+};
+
+const dl_base = "/releases/download/murrtty-v0.6.0/";
+
+/// SHA256SUMS.txt as sha256sum writes it: `name`'s line for `body`, and
+/// another file's.
+fn dlSums(a: std.mem.Allocator, name: []const u8, body: []const u8) ![]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(body, &digest, .{});
+    const hex = std.fmt.bytesToHex(digest, .lower);
+    const zeros: [64]u8 = @splat('0');
+    return std.fmt.allocPrint(a, "{s}  murrtty-0.6.0-deps.zip\n{s}  {s}\n", .{ &zeros, &hex, name });
+}
+
+fn dlSign(a: std.mem.Allocator, kp: std.crypto.sign.Ed25519.KeyPair, sums: []const u8) ![]u8 {
+    const sig = try kp.sign(sums, null);
+    return a.dupe(u8, &sig.toBytes());
+}
+
+fn dlRelease(a: std.mem.Allocator, srv: *update_server.Server, arch: []const u8, kp: std.crypto.sign.Ed25519.KeyPair) !DlRelease {
+    const name = try std.fmt.allocPrint(a, "murrtty-0.6.0-windows-{s}-setup.exe", .{arch});
+    const setup = try a.alloc(u8, 1536 * 1024);
+    var prng = std.Random.DefaultPrng.init(0x7E57_0600);
+    prng.random().bytes(setup);
+    const sums = try dlSums(a, name, setup);
+    const origin = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{srv.port});
+    const setup_path = try std.fmt.allocPrint(a, dl_base ++ "{s}", .{name});
+    const list = try std.fmt.allocPrint(a,
+        \\{{"schema":1,"releases":[
+        \\{{"version":"0.6.0","tag":"murrtty-v0.6.0","channel":"stable","date":"2026-11-20","title":"murrtty 0.6.0","url":"https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.6.0","notes":"A test release.","files":{{"{s}":{{"setup":{{"name":"{s}","url":"{s}{s}","size":{d}}}}}}},"sums":{{"name":"SHA256SUMS.txt","url":"{s}{s}SHA256SUMS.txt","size":{d}}},"signature":{{"name":"SHA256SUMS.txt.sig","url":"{s}{s}SHA256SUMS.txt.sig","size":64}}}},
+        \\{{"version":"0.5.0","tag":"murrtty-v0.5.0","channel":"stable","date":"2026-11-06","title":"murrtty 0.5.0","url":"https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.5.0","notes":"","files":{{}}}}]}}
+    , .{ arch, name, origin, setup_path, setup.len, origin, dl_base, sums.len, origin, dl_base });
+    return .{
+        .name = name,
+        .setup = setup,
+        .sums = sums,
+        .sig = try dlSign(a, kp, sums),
+        .list = list,
+        .setup_path = setup_path,
+        .sums_path = dl_base ++ "SHA256SUMS.txt",
+        .sig_path = dl_base ++ "SHA256SUMS.txt.sig",
+    };
+}
+
+/// 0.6.0's download folder in a scenario's state.
+fn dlFolder(a: std.mem.Allocator, h: *Harness, name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(a, "{s}\\{s}\\state\\murrtty\\updates\\download\\0.6.0", .{ h.temp_dir, name });
+}
+
+fn fileLen(h: *Harness, path: []const u8) ?usize {
+    const data = h.readFileOrNull(path) orelse return null;
+    defer h.alloc.free(data);
+    return data.len;
+}
+
+/// Nothing of a refused download is left: no installer, partial, sums or
+/// signature.
+fn dlNothingKept(h: *Harness, a: std.mem.Allocator, folder: []const u8, name: []const u8, what: []const u8) !void {
+    for ([_][]const u8{ name, try std.fmt.allocPrint(a, "{s}.partial", .{name}), "SHA256SUMS.txt", "SHA256SUMS.txt.sig" }) |f| {
+        const path = try std.fmt.allocPrint(a, "{s}\\{s}", .{ folder, f });
+        try h.expect(fileLen(h, path) == null, "{s}: {s} is deleted", .{ what, f });
+    }
+}
+
+/// The dump once `runs` downloads have started this run and the last has
+/// come to `state`, its job done. (A posted click runs after a dump's sent
+/// request: the count tells this download's end from the last one's.)
+fn dlWait(h: *Harness, g: *const Harness.Ghostty, runs: u32, state: []const u8, what: []const u8) !std.json.Parsed(Harness.Dump) {
+    var waited: u32 = 0;
+    while (waited <= 30000) : (waited += 100) {
+        var d = try h.dump(g);
+        if (d.value.updates) |u| if (u.downloads >= runs and !u.download.active and std.mem.eql(u8, u.download.state, state)) return d;
+        d.deinit();
+        w.Sleep(100);
+    }
+    var d = try h.dump(g);
+    defer d.deinit();
+    const u = try updatesOf(h, &d);
+    return h.fail("{s}: the download never came to {s} (it is {s}, outcome {?s}, refusal {?s}, stage {?s}, error {d}, http {d})", .{ what, state, u.download.state, u.download.outcome, u.download.refusal, u.download.stage, u.download.@"error", u.download.http });
+}
+
+/// Wait until the `runs`th download this run, in flight, has `at_least`
+/// bytes.
+fn dlReceived(h: *Harness, g: *const Harness.Ghostty, runs: u32, at_least: u64, what: []const u8) !void {
+    var waited: u32 = 0;
+    while (waited <= 30000) : (waited += 50) {
+        var d = try h.dump(g);
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        if (u.downloads < runs) {
+            w.Sleep(50);
+            continue;
+        }
+        if (u.download.active and u.download.received >= at_least) return;
+        if (!u.download.active and !std.mem.eql(u8, u.download.state, "downloading"))
+            return h.fail("{s}: the download ended ({s}, {?s}, {?s}) before {d} bytes", .{ what, u.download.state, u.download.outcome, u.download.refusal, at_least });
+        w.Sleep(50);
+    }
+    return h.fail("{s}: the download never got {d} bytes", .{ what, at_least });
+}
+
+/// The Updates window opened and showing `heading`; its window handle.
+fn dlWindow(h: *Harness, g: *const Harness.Ghostty, heading: []const u8, what: []const u8) !u64 {
+    try h.openUpdatesWindow(g, false);
+    var d = try uwWait(h, g, "main", heading, what);
+    defer d.deinit();
+    return d.value.updates_window.?.hwnd;
+}
+
+/// With GHOSTTY_GUI_SNAPSHOT (a folder), the Updates window as it looks
+/// now, as `updates-download-<label>.bmp` there, for looking at by eye.
+fn dlSnap(h: *Harness, g: *const Harness.Ghostty, n: u32, label: []const u8) !void {
+    var out_buf: [512]u16 = undefined;
+    const len = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_SNAPSHOT"), &out_buf, out_buf.len);
+    if (len == 0 or len >= out_buf.len) return;
+    const out_dir = try std.unicode.utf16LeToUtf8Alloc(h.alloc, out_buf[0..len]);
+    defer h.alloc.free(out_dir);
+    w.Sleep(300);
+    try h.snapshotUpdatesWindow(g, n);
+    const src = try std.fmt.allocPrint(h.alloc, "{s}\\updates-window-{d}.bmp", .{ g.dir, n });
+    defer h.alloc.free(src);
+    const data = h.readFileOrNull(src) orelse return h.fail("no {s}", .{src});
+    defer h.alloc.free(data);
+    const dst = try std.fmt.allocPrint(h.alloc, "{s}\\updates-download-{s}.bmp", .{ out_dir, label });
+    defer h.alloc.free(dst);
+    try h.writeFileAt(dst, data);
+}
+
+fn dlLabel(d: *const std.json.Parsed(Harness.Dump), id: u32) []const u8 {
+    const uw = d.value.updates_window orelse return "";
+    return if (uwControl(uw, id)) |ctl| ctl.label else "";
+}
+
+/// Update downloads (roadmap 7.6b) against the local stand-in for GitHub,
+/// as an installer copy: a signature by a key murrtty doesn't carry, signed
+/// sums of another release (0.4.0's) and signed sums whose hash isn't the
+/// installer's are each refused, said in words, and leave nothing; the
+/// installer is fetched only after its sums are checked. The release done
+/// slowly shows its progress in the pill and the window; Cancel keeps what
+/// came and Download resumes it with a range; the installer is the
+/// release's byte for byte, ready to install; Install Now runs it after
+/// checking it again (recorded under the hooks). The next start finds it
+/// ready, sending nothing. Quitting mid-download is at once, and the next
+/// start resumes. A release without a signature, and a zip copy, open the
+/// release's page instead.
+fn updatesDownload(h: *Harness) anyerror!void {
+    var arena_state: std.heap.ArenaAllocator = .init(h.alloc);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    const kp = dlKey(7);
+    const key_hex = std.fmt.bytesToHex(kp.public_key.toBytes(), .lower);
+    const env = [_][2][]const u8{ .{ "GHOSTTY_WIN32_TEST_UPDATES_KEY", &key_hex }, .{ "GHOSTTY_WIN32_TEST_UPDATES_INSTALL", "installer" } };
+    const config = "auto-update-channel = stable\n";
+    const name = "updates-download";
+    const folder = try dlFolder(a, h, name);
+    var rel: DlRelease = undefined;
+    var final: []const u8 = "";
+    {
+        var g = try startUpdates(h, srv, name, config, "300", &env, true);
+        defer g.deinit();
+        const arch = arch: {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(std.mem.eql(u8, u.install, "installer") and !u.can_download, "an installer copy, nothing to download yet ({s}, {})", .{ u.install, u.can_download });
+            break :arch try a.dupe(u8, u.arch);
+        };
+        rel = try dlRelease(a, srv, arch, kp);
+        final = try std.fmt.allocPrint(a, "{s}\\{s}", .{ folder, rel.name });
+        const partial = try std.fmt.allocPrint(a, "{s}.partial", .{final});
+        srv.setList(rel.list, "\"dl-1\"");
+        srv.setFile(rel.setup_path, rel.setup);
+        srv.setFile(rel.sums_path, rel.sums);
+        // First, a signature by a key murrtty doesn't carry.
+        srv.setFile(rel.sig_path, try dlSign(a, dlKey(9), rel.sums));
+        const before = srv.requests.load(.acquire);
+        try h.checkUpdates(&g);
+        {
+            var d = try waitUpdateCheck(h, &g, srv, before + 1, "the check");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(eql(u.found, "0.6.0") and u.can_download, "0.6.0 found, downloadable here ({?s}, {})", .{ u.found, u.can_download });
+        }
+        const hwnd = try dlWindow(h, &g, "murrtty 0.6.0 is available", "the window");
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(std.mem.eql(u8, dlLabel(&d, uw_primary), "Download"), "Download offered ('{s}')", .{dlLabel(&d, uw_primary)});
+        }
+
+        // A forged signature: refused, the installer never fetched.
+        uwClick(hwnd, uw_primary);
+        {
+            var d = try dlWait(h, &g, 1, "refused", "a forged signature");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(eql(u.download.refusal, "bad_signature"), "refused for its signature ({?s})", .{u.download.refusal});
+            try h.expect(srv.hits(rel.sig_path) == 1 and srv.hits(rel.sums_path) == 1 and srv.hits(rel.setup_path) == 0, "the signature and the sums fetched, the installer never ({d}, {d}, {d})", .{ srv.hits(rel.sig_path), srv.hits(rel.sums_path), srv.hits(rel.setup_path) });
+            try h.expect(std.mem.eql(u8, u.pill, "download_failed") and std.mem.eql(u8, u.pill_text, "Update Failed"), "the pill warns ({s}: {s})", .{ u.pill, u.pill_text });
+            const uw = d.value.updates_window.?;
+            try h.expect(std.mem.startsWith(u8, uw.heading, "murrtty 0.6.0 failed its check") and std.mem.indexOf(u8, uw.subtitle, "aren't signed with murrtty's key") != null, "the window says why ('{s}', '{s}')", .{ uw.heading, uw.subtitle });
+            try h.expect(std.mem.eql(u8, dlLabel(&d, uw_primary), "Try Again") and std.mem.eql(u8, dlLabel(&d, uw_secondary), "Open Release Page"), "Try Again and Open Release Page offered ('{s}', '{s}')", .{ dlLabel(&d, uw_primary), dlLabel(&d, uw_secondary) });
+        }
+        try dlSnap(h, &g, 10, "refused");
+        try dlNothingKept(h, a, folder, rel.name, "a forged signature");
+
+        // Signed sums of another release: 0.4.0's installer named, refused
+        // for 0.6.0 (the list isn't signed; the sums say which release).
+        const old_sums = try dlSums(a, try std.fmt.allocPrint(a, "murrtty-0.4.0-windows-{s}-setup.exe", .{arch}), rel.setup);
+        srv.setFile(rel.sums_path, old_sums);
+        srv.setFile(rel.sig_path, try dlSign(a, kp, old_sums));
+        uwClick(hwnd, uw_primary);
+        {
+            var d = try dlWait(h, &g, 2, "refused", "another release's sums");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(eql(u.download.refusal, "wrong_release") and srv.hits(rel.setup_path) == 0, "refused as another release's, the installer never fetched ({?s}, {d})", .{ u.download.refusal, srv.hits(rel.setup_path) });
+            try h.expect(std.mem.indexOf(u8, d.value.updates_window.?.subtitle, "don't name murrtty 0.6.0's installer") != null, "the window says why ('{s}')", .{d.value.updates_window.?.subtitle});
+        }
+        try dlNothingKept(h, a, folder, rel.name, "another release's sums");
+
+        // Signed sums whose hash isn't the installer's: downloaded, refused,
+        // deleted.
+        const noise = try a.alloc(u8, 4096);
+        @memset(noise, 0x5A);
+        const bad_sums = try dlSums(a, rel.name, noise);
+        srv.setFile(rel.sums_path, bad_sums);
+        srv.setFile(rel.sig_path, try dlSign(a, kp, bad_sums));
+        uwClick(hwnd, uw_primary);
+        {
+            var d = try dlWait(h, &g, 3, "refused", "a wrong hash");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(eql(u.download.refusal, "wrong_hash") and srv.hits(rel.setup_path) == 1, "refused for its hash after downloading it ({?s}, {d})", .{ u.download.refusal, srv.hits(rel.setup_path) });
+        }
+        try dlNothingKept(h, a, folder, rel.name, "a wrong hash");
+
+        // The release itself, slowly: the progress, then Cancel keeps what
+        // came.
+        srv.setFile(rel.sums_path, rel.sums);
+        srv.setFile(rel.sig_path, rel.sig);
+        srv.setPace(16 * 1024, null);
+        uwClick(hwnd, uw_primary);
+        try dlReceived(h, &g, 4, 256 * 1024, "a slow download");
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(std.mem.eql(u8, u.pill, "downloading") and std.mem.startsWith(u8, u.pill_text, "Downloading: ") and std.mem.endsWith(u8, u.pill_text, "%"), "the pill counts ('{s}')", .{u.pill_text});
+            try h.expect(d.value.windows.len > 0 and std.mem.eql(u8, d.value.windows[0].header.update.look, "plain"), "the header bar shows it", .{});
+            const uw = d.value.updates_window.?;
+            try h.expect(std.mem.startsWith(u8, uw.heading, "Downloading murrtty 0.6.0") and std.mem.indexOf(u8, uw.subtitle, " MB (") != null, "the window counts ('{s}', '{s}')", .{ uw.heading, uw.subtitle });
+            try h.expect(std.mem.eql(u8, dlLabel(&d, uw_primary), "Cancel"), "Cancel offered ('{s}')", .{dlLabel(&d, uw_primary)});
+        }
+        try dlSnap(h, &g, 11, "downloading");
+        // Cancel, and Download at once: the new download waits for the
+        // cancelled one's thread to let go of the file, then goes on (never
+        // "another murrtty is downloading it").
+        uwClick(hwnd, uw_primary);
+        uwClick(hwnd, uw_primary);
+        try dlReceived(h, &g, 5, 384 * 1024, "a download right after Cancel");
+        uwClick(hwnd, uw_primary);
+        {
+            var d = try dlWait(h, &g, 5, "none", "Cancel");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(eql(u.download.outcome, "cancelled") and std.mem.eql(u8, dlLabel(&d, uw_primary), "Download"), "cancelled, Download offered again ({?s}, '{s}')", .{ u.download.outcome, dlLabel(&d, uw_primary) });
+        }
+        const kept = fileLen(h, partial) orelse 0;
+        try h.expect(kept >= 256 * 1024 and kept < rel.setup.len, "what came stays ({d} bytes)", .{kept});
+
+        // Download again: from where it stopped.
+        srv.setPace(0, null);
+        uwClick(hwnd, uw_primary);
+        {
+            var d = try dlWait(h, &g, 6, "ready", "the download resumed");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            var range_buf: [64]u8 = undefined;
+            const range = srv.lastRange(&range_buf);
+            const want = try std.fmt.allocPrint(a, "bytes={d}-", .{u.download.resumed_from});
+            try h.expect(u.download.resumed_from >= kept and std.mem.eql(u8, range, want), "resumed from {d}, asking '{s}'", .{ u.download.resumed_from, range });
+            try h.expect(std.mem.eql(u8, u.pill, "ready") and std.mem.eql(u8, u.pill_text, "Ready to Install: 0.6.0"), "the pill says it is ready ('{s}')", .{u.pill_text});
+            const uw = d.value.updates_window.?;
+            try h.expect(std.mem.startsWith(u8, uw.heading, "murrtty 0.6.0 is ready to install") and std.mem.eql(u8, dlLabel(&d, uw_primary), "Install Now"), "the window offers Install Now ('{s}', '{s}')", .{ uw.heading, dlLabel(&d, uw_primary) });
+        }
+        {
+            const got = h.readFileOrNull(final) orelse return h.fail("no installer at {s}", .{final});
+            defer h.alloc.free(got);
+            try h.expect(std.mem.eql(u8, got, rel.setup), "the installer is the release's, byte for byte ({d} of {d} bytes)", .{ got.len, rel.setup.len });
+            try h.expect(fileLen(h, partial) == null, "no partial file left", .{});
+        }
+        try dlSnap(h, &g, 12, "ready");
+
+        // Install Now: checked again, then run (recorded under the hooks).
+        uwClick(hwnd, uw_primary);
+        {
+            var waited: u32 = 0;
+            var ran = false;
+            while (waited <= 5000) : (waited += 100) {
+                var d = try h.dump(&g);
+                defer d.deinit();
+                const u = try updatesOf(h, &d);
+                if (u.installs == 1) {
+                    const want = try std.fmt.allocPrint(a, "install {s}", .{final});
+                    var found_launch = false;
+                    for (d.value.launches) |l| if (std.ascii.eqlIgnoreCase(l, want)) {
+                        found_launch = true;
+                    };
+                    try h.expect(found_launch, "the installer it checked is the one run ({d} launches)", .{d.value.launches.len});
+                    ran = true;
+                    break;
+                }
+                w.Sleep(100);
+            }
+            try h.expect(ran, "Install Now ran the installer", .{});
+        }
+        try quitPane(h, &g);
+        try expectNoLeaks(h, &g, "a download leaks nothing");
+    }
+
+    // The next start: ready at once, nothing sent.
+    {
+        var g = try startUpdates(h, srv, name, config, "300", &env, true);
+        defer g.deinit();
+        const before = srv.requests.load(.acquire);
+        w.Sleep(500);
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(std.mem.eql(u8, u.download.state, "ready") and std.mem.eql(u8, u.pill_text, "Ready to Install: 0.6.0"), "the installer kept is ready at the next start ({s}, '{s}')", .{ u.download.state, u.pill_text });
+        try h.expect(srv.requests.load(.acquire) == before, "nothing sent", .{});
+        try quitPane(h, &g);
+    }
+
+    // Install Now for real (GHOSTTY_WIN32_TEST_LAUNCH=1): the harness's
+    // recorder stands in for the installer, signed as one; started from
+    // the file Install Now's check holds, it writes a mark beside itself,
+    // and once it has ended with murrtty still running the download is
+    // ready again.
+    {
+        const rname = "updates-download-run";
+        const recorder_path = try h.helperPath("ghostty-gui-record.exe");
+        defer h.alloc.free(recorder_path);
+        const recorder = h.readFileOrNull(recorder_path) orelse return h.fail("no recorder at {s}", .{recorder_path});
+        defer h.alloc.free(recorder);
+        const body = try a.dupe(u8, recorder);
+        const run_sums = try dlSums(a, rel.name, body);
+        srv.setList(rel.list, "\"dl-1\"");
+        srv.setFile(rel.setup_path, body);
+        srv.setFile(rel.sums_path, run_sums);
+        srv.setFile(rel.sig_path, try dlSign(a, kp, run_sums));
+        const run_env = [_][2][]const u8{ env[0], env[1], .{ "GHOSTTY_WIN32_TEST_LAUNCH", "1" } };
+        var g = try startUpdates(h, srv, rname, config, "300", &run_env, true);
+        defer g.deinit();
+        const before = srv.requests.load(.acquire);
+        try h.checkUpdates(&g);
+        (try waitUpdateCheck(h, &g, srv, before + 1, "the check")).deinit();
+        const hwnd = try dlWindow(h, &g, "murrtty 0.6.0 is available", "the window");
+        uwClick(hwnd, uw_primary);
+        (try dlWait(h, &g, 1, "ready", "the stand-in installer downloaded")).deinit();
+        uwClick(hwnd, uw_primary);
+        const run_final = try std.fmt.allocPrint(a, "{s}\\{s}", .{ try dlFolder(a, h, rname), rel.name });
+        const mark = try std.fmt.allocPrint(a, "{s}.ran", .{run_final});
+        var ran: ?[]u8 = null;
+        var waited: u32 = 0;
+        while (waited <= 15000) : (waited += 100) {
+            ran = h.readFileOrNull(mark);
+            if (ran != null) break;
+            w.Sleep(100);
+        }
+        const said = ran orelse return h.fail("Install Now never ran the installer (no {s})", .{mark});
+        defer h.alloc.free(said);
+        try h.expect(std.ascii.eqlIgnoreCase(said, run_final), "the installer run is the one checked ('{s}')", .{said});
+        // Ended with murrtty running (a cancelled installer): ready again.
+        var again = false;
+        waited = 0;
+        while (waited <= 10000) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            if (u.installs == 1 and std.mem.eql(u8, u.download.state, "ready") and u.install_error == 0) {
+                again = true;
+                break;
+            }
+            w.Sleep(100);
+        }
+        try h.expect(again, "ready again after the installer ended", .{});
+        try quitPane(h, &g);
+    }
+
+    // Quitting mid-download: at once; the next start resumes.
+    const qname = "updates-download-quit";
+    {
+        var g = try startUpdates(h, srv, qname, config, "300", &env, true);
+        defer g.deinit();
+        const before = srv.requests.load(.acquire);
+        try h.checkUpdates(&g);
+        (try waitUpdateCheck(h, &g, srv, before + 1, "the check")).deinit();
+        srv.setPace(16 * 1024, 640 * 1024);
+        const hwnd = try dlWindow(h, &g, "murrtty 0.6.0 is available", "the window");
+        uwClick(hwnd, uw_primary);
+        try dlReceived(h, &g, 1, 256 * 1024, "a download held part way");
+        const pane = try h.surface(&g, try h.mainWindow(&g));
+        h.key(pane, .{ .ctrl = true, .shift = true }, 'Q');
+        const dlg = try h.waitDialog(&g, 5000);
+        h.answer(&g, dlg, w.IDYES);
+        const t0 = w.GetTickCount64();
+        const code = g.waitExit(10000);
+        const took = w.GetTickCount64() - t0;
+        try h.expect(code != null and code.? == 0, "quits mid-download with code 0 (got {?d})", .{code});
+        try h.expect(took < 2500, "quitting doesn't wait for the download ({d} ms)", .{took});
+        try expectNoLeaks(h, &g, "a download cut short leaks nothing");
+    }
+    srv.setPace(0, null);
+    {
+        var g = try startUpdates(h, srv, qname, config, "300", &env, true);
+        defer g.deinit();
+        const hwnd = try dlWindow(h, &g, "murrtty 0.6.0 is available", "the window after a quit");
+        uwClick(hwnd, uw_primary);
+        var d = try dlWait(h, &g, 1, "ready", "the download after a quit");
+        defer d.deinit();
+        const u = try updatesOf(h, &d);
+        try h.expect(u.download.resumed_from > 0, "resumed where the quit left it ({d})", .{u.download.resumed_from});
+        try quitPane(h, &g);
+    }
+
+    // A release without a signature, and a zip copy: Download opens the
+    // release's page, fetching nothing.
+    const cases = [_]struct { name: []const u8, install: []const u8, signed: bool }{
+        .{ .name = "updates-download-unsigned", .install = "installer", .signed = false },
+        .{ .name = "updates-download-zip", .install = "zip", .signed = true },
+    };
+    for (cases) |case| {
+        srv.setList(if (case.signed) rel.list else update_server.sample_list, if (case.signed) "\"dl-1\"" else "\"dl-unsigned\"");
+        const case_env = [_][2][]const u8{ .{ "GHOSTTY_WIN32_TEST_UPDATES_KEY", &key_hex }, .{ "GHOSTTY_WIN32_TEST_UPDATES_INSTALL", case.install } };
+        var g = try startUpdates(h, srv, case.name, config, "300", &case_env, true);
+        defer g.deinit();
+        const before = srv.requests.load(.acquire);
+        try h.checkUpdates(&g);
+        {
+            var d = try waitUpdateCheck(h, &g, srv, before + 1, case.name);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(eql(u.found, "0.6.0") and !u.can_download, "{s}: 0.6.0 found, not to download here", .{case.name});
+        }
+        const hits_before = srv.hits(rel.setup_path) + srv.hits(rel.sums_path) + srv.hits(rel.sig_path);
+        const hwnd = try dlWindow(h, &g, "murrtty 0.6.0 is available", case.name);
+        uwClick(hwnd, uw_primary);
+        var opened = false;
+        var waited: u32 = 0;
+        while (waited <= 5000 and !opened) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            for (d.value.launches) |l| if (std.mem.indexOf(u8, l, "https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.6.0") != null) {
+                opened = true;
+            };
+            if (!opened) w.Sleep(100);
+        }
+        try h.expect(opened, "{s}: Download opened the release's page", .{case.name});
+        try h.expect(srv.hits(rel.setup_path) + srv.hits(rel.sums_path) + srv.hits(rel.sig_path) == hits_before, "{s}: nothing fetched", .{case.name});
         try quitPane(h, &g);
     }
 }

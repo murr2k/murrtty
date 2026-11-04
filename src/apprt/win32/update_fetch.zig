@@ -43,19 +43,19 @@ const timeout_send = 10_000;
 const timeout_receive = 30_000;
 const timeout_total_ms = 30_000;
 
-const HINTERNET = *anyopaque;
+pub const HINTERNET = *anyopaque;
 
-const WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY: u32 = 4;
-const WINHTTP_FLAG_SECURE: u32 = 0x00800000;
+pub const WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY: u32 = 4;
+pub const WINHTTP_FLAG_SECURE: u32 = 0x00800000;
 const WINHTTP_OPTION_DECOMPRESSION: u32 = 118;
 const WINHTTP_DECOMPRESSION_FLAG_ALL: u32 = 3;
-const WINHTTP_OPTION_DISABLE_FEATURE: u32 = 63;
-const WINHTTP_DISABLE_COOKIES: u32 = 1;
-const WINHTTP_QUERY_STATUS_CODE: u32 = 19;
+pub const WINHTTP_OPTION_DISABLE_FEATURE: u32 = 63;
+pub const WINHTTP_DISABLE_COOKIES: u32 = 1;
+pub const WINHTTP_QUERY_STATUS_CODE: u32 = 19;
 const WINHTTP_QUERY_RETRY_AFTER: u32 = 36;
 const WINHTTP_QUERY_ETAG: u32 = 54;
-const WINHTTP_QUERY_FLAG_NUMBER: u32 = 0x20000000;
-const WINHTTP_ADDREQ_FLAG_ADD: u32 = 0x20000000;
+pub const WINHTTP_QUERY_FLAG_NUMBER: u32 = 0x20000000;
+pub const WINHTTP_ADDREQ_FLAG_ADD: u32 = 0x20000000;
 
 /// WinHTTP's errors a person is told about in words (Updates.zig).
 pub const ERROR_WINHTTP_TIMEOUT: u32 = 12002;
@@ -86,8 +86,9 @@ const INetworkCostManager = extern struct {
     },
 };
 
-/// The functions taken from System32's winhttp.dll.
-const Api = struct {
+/// The functions taken from System32's winhttp.dll (update_download.zig
+/// uses them too).
+pub const Api = struct {
     Open: *const fn (?c.LPCWSTR, u32, ?c.LPCWSTR, ?c.LPCWSTR, u32) callconv(.winapi) ?HINTERNET,
     Connect: *const fn (HINTERNET, c.LPCWSTR, u16, u32) callconv(.winapi) ?HINTERNET,
     OpenRequest: *const fn (HINTERNET, ?c.LPCWSTR, c.LPCWSTR, ?c.LPCWSTR, ?c.LPCWSTR, ?*const ?c.LPCWSTR, u32) callconv(.winapi) ?HINTERNET,
@@ -101,7 +102,7 @@ const Api = struct {
     ReadData: *const fn (HINTERNET, [*]u8, u32, *u32) callconv(.winapi) c.BOOL,
     CloseHandle: *const fn (HINTERNET) callconv(.winapi) c.BOOL,
 
-    fn load() ?Api {
+    pub fn load() ?Api {
         const dll = c.LoadLibraryExW(c.L("winhttp.dll"), null, c.LOAD_LIBRARY_SEARCH_SYSTEM32) orelse return null;
         var api: Api = undefined;
         inline for (@typeInfo(Api).@"struct".field_names) |name| {
@@ -356,7 +357,7 @@ pub const Job = struct {
     }
 };
 
-fn queryNumber(api: Api, request: HINTERNET, level: u32) ?u32 {
+pub fn queryNumber(api: Api, request: HINTERNET, level: u32) ?u32 {
     var n: u32 = 0;
     var len: u32 = @sizeOf(u32);
     if (api.QueryHeaders(request, level | WINHTTP_QUERY_FLAG_NUMBER, null, &n, &len, null) == 0) return null;
@@ -366,7 +367,7 @@ fn queryNumber(api: Api, request: HINTERNET, level: u32) ?u32 {
 /// Whether Windows says the connection is metered (a data plan, roaming,
 /// over its limit, or the user's "metered connection" switch): automatic
 /// checks wait for another. Unknown counts as not.
-fn isMetered() bool {
+pub fn isMetered() bool {
     const hr = c.CoInitializeEx(null, COINIT_MULTITHREADED);
     defer if (hr >= 0) c.CoUninitialize();
     var obj: ?*anyopaque = null;

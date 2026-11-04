@@ -1777,6 +1777,37 @@ pub const Updates = struct {
     http: u32,
     found: ?[]const u8,
     versions: []const []const u8,
+    /// Downloads (roadmap 7.6b): how this copy was installed ("installer",
+    /// "zip", "scoop", "winget", "package"), this build's architecture
+    /// ("x86_64", "aarch64"), whether Download downloads (else it opens the
+    /// release's page), installers started this run and the last start's
+    /// error.
+    install: []const u8 = "zip",
+    arch: []const u8 = "x86_64",
+    can_download: bool = false,
+    downloads: u32 = 0,
+    installs: u32 = 0,
+    install_error: u32 = 0,
+    /// The download: "none", "downloading", "ready", "refused", "failed";
+    /// its job running; the pill's warning; the release; how the job ended
+    /// ("ready", "refused", "failed", "cancelled", "busy"), why it was
+    /// refused ("unsigned", "bad_signature", "wrong_release", "wrong_hash",
+    /// "bad_address", "too_big"), where it failed; the installer's bytes
+    /// so far and in all, and where it resumed.
+    download: struct {
+        state: []const u8 = "none",
+        active: bool = false,
+        noted: bool = false,
+        version: []const u8 = "",
+        outcome: ?[]const u8 = null,
+        refusal: ?[]const u8 = null,
+        stage: ?[]const u8 = null,
+        @"error": u32 = 0,
+        http: u32 = 0,
+        received: u64 = 0,
+        total: u64 = 0,
+        resumed_from: u64 = 0,
+    } = .{},
     state: struct {
         consent: bool,
         /// Turned off here though the configuration says check (the

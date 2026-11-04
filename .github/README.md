@@ -711,8 +711,11 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   another computer asks once, naming its line), and come once a day, week
   or month, a few minutes after murrtty starts, never on a metered
   connection. A release found shows in the header bar's update pill and, as
-  Update Settings say, in a notification or the Updates window. Development
-  builds never check.
+  Update Settings say, in a notification or the Updates window. In a copy
+  the installer installed, Download fetches the new installer from GitHub,
+  and murrtty runs it only once its release's checksums carry murrtty's
+  signature and the installer matches them (anything else is deleted);
+  other copies open the release's page. Development builds never check.
 
 ## How it works
 

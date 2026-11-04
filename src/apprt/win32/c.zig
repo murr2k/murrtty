@@ -1614,6 +1614,19 @@ pub extern "kernel32" fn FlushFileBuffers(HANDLE) callconv(.winapi) BOOL;
 pub const TRUNCATE_EXISTING = 5;
 pub const ERROR_PATH_NOT_FOUND = 3;
 pub const ERROR_SHARING_VIOLATION = 32;
+
+// Update downloads (roadmap 7.6b, update_download.zig, update_install.zig):
+// a resumable file at background priority, and whether murrtty runs from
+// an MSIX package.
+pub const FILE_BEGIN = 0;
+pub const FILE_END = 2;
+pub extern "kernel32" fn SetFilePointerEx(HANDLE, i64, ?*i64, DWORD) callconv(.winapi) BOOL;
+pub extern "kernel32" fn SetEndOfFile(HANDLE) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetFileSizeEx(HANDLE, *i64) callconv(.winapi) BOOL;
+pub const THREAD_MODE_BACKGROUND_BEGIN = 0x00010000;
+pub extern "kernel32" fn GetCurrentThread() callconv(.winapi) HANDLE;
+pub extern "kernel32" fn SetThreadPriority(HANDLE, c_int) callconv(.winapi) BOOL;
+pub extern "kernel32" fn GetCurrentPackageFullName(*u32, ?[*]u16) callconv(.winapi) c_long;
 pub const BY_HANDLE_FILE_INFORMATION = extern struct {
     dwFileAttributes: DWORD,
     ftCreationTime: FILETIME,
