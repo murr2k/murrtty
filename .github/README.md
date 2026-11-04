@@ -494,8 +494,8 @@ release for the maintainer to publish.
   murrtty will apply again once it has users; a Microsoft Store package,
   which the Store signs, is the other route (see the
   [code signing policy](https://murrtty.org/code-signing)). 0.5.0 brought
-  the installer and update checks; updates that download and install
-  themselves come later.
+  the installer and update checks; 0.6.0, updates that download, check
+  and install themselves.
 
 [WINDOWS_ROADMAP.md](../WINDOWS_ROADMAP.md) records how each part was
 built and why, and plans what is left: the items above, and testing on AMD

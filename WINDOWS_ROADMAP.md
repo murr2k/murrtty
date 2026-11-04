@@ -4218,6 +4218,24 @@ go-ahead).
   and says what a check sends; the comparison page's murrtty entries
   follow 0.5.0 (148 commits behind Ghostty's main). `version` then went
   to 0.6.0, and the Scoop and winget manifests to 0.5.0.
+  *0.6.0 released 2026-11-04* (the owner's go-ahead): murrtty updates
+  itself (7.6b: signed checksums, verified downloads, Restart to Update,
+  install on quit with `auto-update = download`, the package managers'
+  commands). Before the tag the on-screen run passed (over Remote Desktop,
+  the owner's choice, recording the first goldens and then matching all
+  15 in a second run). `murrtty-v0.6.0` on `1e115360b` (run 41865287419):
+  the installer test ran Restart to Update's silent install with
+  `/restart=1` on both architectures (murrtty closed and started again);
+  the sign job waited for the owner's approval of the `release`
+  environment, then signed `SHA256SUMS.txt` (`SHA256SUMS.txt.sig`,
+  attested). Here the files matched their sums, the signature verified
+  with `murrtty-update.pub`, the attestations (a zip, an installer, the
+  signature) verified, Defender found nothing, the x64 build said
+  `murrtty 0.6.0, based on Ghostty 1.4.0`, channel stable, and the
+  hosted GUI suite and unit tests passed on x64 and ARM64 (run
+  41865353515). `version` then went to 0.7.0, the Scoop and winget
+  manifests to 0.6.0; the comparison page's automatic updates read
+  "yes, opt-in".
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored

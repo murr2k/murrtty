@@ -29,14 +29,21 @@
 
   <h2>What is signed</h2>
   <p>
-    Release builds of murrtty: <code>murrtty.exe</code> in the release zip (and
-    the installer, once there is one). Only builds made by GitHub Actions on
+    Release builds of murrtty: <code>murrtty.exe</code> in the release zips,
+    and the installers. Only builds made by GitHub Actions on
     GitHub's own runners, from a tagged commit of the public repository
     <a href="https://github.com/murr2k/murrtty">github.com/murr2k/murrtty</a>,
     are submitted for signing, and each one is approved by hand. Every signed
     file carries murrtty's product name and the release's version. Nothing
     built on a developer's machine is signed, and no third-party binary is
     signed as murrtty's.
+  </p>
+  <p>
+    Apart from code signing, since 0.6.0 each release's
+    <code>SHA256SUMS.txt</code> carries an Ed25519 signature, made by the
+    release workflow once the maintainer approves it, which murrtty's
+    updates check before installing anything. Anyone can check it too:
+    see <a href="/quality#verify">checking a download yourself</a>.
   </p>
 
   <h2>Team roles</h2>
@@ -57,10 +64,13 @@
     installing or operating it.
   </p>
   <p>
-    murrtty makes no network connections of its own. Crash reports are
-    written to <code>%LOCALAPPDATA%\murrtty\crash</code> and stay there:
-    nothing is sent anywhere. A future check for updates will be off unless
-    turned on.
+    murrtty makes no network connections of its own unless you check for
+    updates or turn automatic checks on, which asks first. A check sends
+    one request to murrtty.org, with no version, ID or cookie; downloads
+    come from GitHub, only when you choose one or turn automatic downloads
+    on. Crash reports are written to
+    <code>%LOCALAPPDATA%\murrtty\crash</code> and stay there: nothing is
+    sent anywhere.
   </p>
 
   <h2>Reporting</h2>

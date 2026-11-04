@@ -39,7 +39,7 @@
     <li>Notifications, taskbar progress, global key bindings, the tray, a quick terminal, drag and drop, undo of closes, the terminal inspector.</li>
     <li>A configuration editor that edits your Ghostty-format file in place, with undo and a review of each change before it saves.</li>
     <li>Screen readers read its terminals through UI Automation.</li>
-    <li>Update checks, off until you turn them on: what a check sends is <a href="#privacy">below</a>.</li>
+    <li>Updates, off until you turn them on: checks, and for copies the installer installed, downloads checked against murrtty's signature that install themselves. What a check sends is <a href="#privacy">below</a>.</li>
   </ul>
 
   <h2 id="get-it">Get it</h2>
@@ -63,8 +63,8 @@ cd murrtty
     </p>
     <p>
       <strong>Or install</strong> murrtty @RELEASE@, a preview tested on one
-      machine so far; its <a href="@RELEASE_URL@">release notes</a> list the
-      known risks. The installer
+      machine so far (<a href="/quality">how it is tested</a>); its
+      <a href="@RELEASE_URL@">release notes</a> list the known risks. The installer
       (<a href="https://github.com/murr2k/murrtty/releases/download/murrtty-v@RELEASE@/murrtty-@RELEASE@-windows-x86_64-setup.exe">x64</a>,
       <a href="https://github.com/murr2k/murrtty/releases/download/murrtty-v@RELEASE@/murrtty-@RELEASE@-windows-aarch64-setup.exe">ARM64</a>)
       installs it for you alone, no administrator needed, with a Start menu
@@ -95,7 +95,9 @@ scoop install murrtty/murrtty</code></pre>
     request to murrtty.org, with no version, ID or cookie. Cloudflare, which
     serves murrtty.org, sees your IP address, as for any website.
     murrtty.org neither logs nor counts checks. Downloads come from GitHub,
-    only when you choose one. Crash reports stay on your computer.
+    only when you choose one or turn on automatic downloads, and run only
+    once they match murrtty's signature. Crash reports stay on your
+    computer.
   </p>
 
   <h2>Links</h2>
@@ -103,6 +105,7 @@ scoop install murrtty/murrtty</code></pre>
     <a href="https://github.com/murr2k/murrtty">Source on GitHub</a>
     <a href="https://github.com/murr2k/murrtty/discussions">Questions and reports</a>
     <a href="https://github.com/murr2k/murrtty/security/policy">Security policy</a>
+    <a href="/quality">How murrtty is tested</a>
     <a href="/code-signing">Code signing policy</a>
     <a href="/compare">Other Ghostty ports for Windows</a>
   </div>

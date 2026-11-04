@@ -91,6 +91,33 @@ pre code { padding: 0; background: none; }
 
 .links { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 10px 0; }
 
+/* The quality page's stages, numbered cards that wrap on a phone. */
+ol.steps {
+  list-style: none;
+  counter-reset: step;
+  padding: 0;
+  margin: 18px 0;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+ol.steps li {
+  counter-increment: step;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 0.92rem;
+}
+ol.steps li::before {
+  content: counter(step);
+  display: block;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+ol.steps strong { display: block; }
+
 /* The comparison page's tables: they scroll sideways on a phone, the
    feature column stays put, and murrtty's own column is tinted. */
 .table-scroll {

@@ -29,7 +29,7 @@ Workers Builds run it from wrangler.jsonc's build command on each push to
 main that touches site/ or images/murrtty/, then `wrangler deploy`; the
 metadata file is for deploying by hand through the API.
 
-Routes: /, /code-signing and /compare (no .html), /style.css, /icon.png,
+Routes: /, /code-signing, /compare and /quality (no .html), /style.css, /icon.png,
 /screenshot.png, /download; www.murrtty.org redirects to murrtty.org;
 anything else is 404. Every page carries a strict Content-Security-Policy.
 
@@ -63,6 +63,7 @@ PAGES = {
     '/': ('index.html', 'text/html; charset=utf-8'),
     '/code-signing': ('code-signing.html', 'text/html; charset=utf-8'),
     '/compare': ('compare.html', 'text/html; charset=utf-8'),
+    '/quality': ('quality.html', 'text/html; charset=utf-8'),
     '/style.css': ('style.css', 'text/css; charset=utf-8'),
     # RFC 9116; renew its Expires line before it lapses (within a year).
     '/.well-known/security.txt': ('security.txt', 'text/plain; charset=utf-8'),
