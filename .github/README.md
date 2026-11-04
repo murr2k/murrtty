@@ -68,10 +68,11 @@ it. It last merged Ghostty 1.4.0 (the release tag `v1.4.0`, October 2026).
 murrtty numbers its own releases, apart from Ghostty's: semantic versions
 starting at 0.1.0, each release tagged `murrtty-vX.Y.Z`. While it is 0.x, a
 minor version brings new features or an upstream merge and a patch version
-brings fixes. `murrtty +version` names both versions, as in `murrtty 0.5.0,
+brings fixes. `murrtty +version` names both versions, as in `murrtty 0.6.0,
 based on Ghostty 1.4.0`; a build of any other commit is a development build
-of the next release, such as `0.6.0-main+1a2b3c4`. The latest release,
-[0.5.0](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.5.0) (x64
+of the next release, such as `0.7.0-main+1a2b3c4` ([Build](#build) says
+what that means). The latest release,
+[0.6.0](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.6.0) (x64
 and ARM64), is a preview. Besides building from source (see [Build](#build)),
 the release zips and the installers, it installs with [Scoop](https://scoop.sh):
 
@@ -484,8 +485,8 @@ release for the maintainer to publish.
 
 - Restoring the session's command history in plain cmd (without Clink):
   Windows has no way to give cmd a history.
-- Signed releases. 0.5.0 is out as a
-  [preview](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.5.0):
+- Signed releases. 0.6.0 is out as a
+  [preview](https://github.com/murr2k/murrtty/releases/tag/murrtty-v0.6.0):
   zips and installers without a code signature, so Windows SmartScreen warns before
   running it the first time; building from source is recommended.
   Code signing comes later: the SignPath Foundation's free signing for
@@ -550,6 +551,25 @@ cd murrtty
 
 Clone into a short path, such as `C:\src\murrtty`: some files in the
 repository and in the Zig toolchain have long names.
+
+**Which version this builds.** A clone builds the newest commit on `main`,
+not the latest release. Right after a release tag, `main`'s version moves
+to the next release, so `main` names itself after the release it is working
+toward, with the branch and commit: after 0.6.0, `murrtty +version` reports
+`murrtty 0.7.0-main+1a2b3c4`, channel tip, while the release zip reports
+`murrtty 0.6.0`, channel stable. The suffix means "on the way to 0.7.0", and
+such a version sorts below 0.7.0 itself. Until more work lands, the code
+can be the release's with only the number changed; after that, `main` is
+ahead of the release. A tip build never checks for updates (Check for
+Updates says why): update it by pulling and building again (`git pull`,
+then `.\build-windows.cmd`). To build a release exactly, check out its tag
+first; that build reports the release's version, channel stable, as its zip
+does:
+
+```powershell
+git checkout murrtty-v0.6.0
+.\build-windows.cmd
+```
 
 `build-windows.cmd` runs `build-windows.ps1` with the Windows PowerShell 5.1
 that ships with Windows, from `cmd`, PowerShell or a double-click. It:
