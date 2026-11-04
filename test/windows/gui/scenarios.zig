@@ -133,6 +133,7 @@ pub const all = [_]Scenario{
     .{ .name = "updates-pill", .about = "the header bar's update pill (macOS Ghostty's): hidden with nothing to say; checking, an update (a click opens the Updates window), No Updates Available (gone after 5 s or at a click), a failure (until the window opens), for checks asked for (a local server)", .run = updatesPill },
     .{ .name = "updates-notice", .about = "auto-update = check in a file nobody agreed to here: no check, the pill asks; a one-time notice naming the file and line when the first check would come; Keep On agrees, Turn Off turns them off here, neither writes the file; never twice (a local server)", .run = updatesNotice },
     .{ .name = "updates-found", .about = "a release an automatic check finds is told once, by a notification whose click opens the Updates window, or with When an Update Is Found set to the window, by the window (a local server)", .run = updatesFound },
+    .{ .name = "updates-install", .about = "installing updates, with the harness's recorder as the installer: Restart to Update asks as quitting asks, then starts it silently with /restart=1 and quits (declined, nothing runs); with auto-update = download a release downloads by itself, is told once ready, and installs silently as murrtty quits; on a metered connection that download waits; the Download updates automatically switch asks first, then writes download and check; Scoop and winget copies show their command and copy it (a local server)", .run = updatesInstall },
     .{ .name = "updates-download", .about = "an installer copy downloads an update only after checking it: a forged signature, another release's signed sums and a wrong hash are each refused, said why, and leave nothing; the progress shows in the pill and the window; Cancel keeps what came and Download resumes it; Install Now checks it again and runs it; the next start finds it ready; quitting mid-download is at once and the next start resumes; an unsigned release and a zip copy open the page (a local server)", .run = updatesDownload },
     .{ .name = "updates-window-look", .about = "pictures of the Updates window's pages, dark and light, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = updatesWindowLook, .tool = true },
     .{ .name = "config-editor-look",.about = "pictures of the configuration editor, dark and light, a row opened, for looking at by eye (GHOSTTY_GUI_SNAPSHOT=folder)", .run = configEditorLook, .tool = true },
@@ -15745,10 +15746,15 @@ fn dlSign(a: std.mem.Allocator, kp: std.crypto.sign.Ed25519.KeyPair, sums: []con
 }
 
 fn dlRelease(a: std.mem.Allocator, srv: *update_server.Server, arch: []const u8, kp: std.crypto.sign.Ed25519.KeyPair) !DlRelease {
-    const name = try std.fmt.allocPrint(a, "murrtty-0.6.0-windows-{s}-setup.exe", .{arch});
     const setup = try a.alloc(u8, 1536 * 1024);
     var prng = std.Random.DefaultPrng.init(0x7E57_0600);
     prng.random().bytes(setup);
+    return dlReleaseWith(a, srv, arch, kp, setup);
+}
+
+/// dlRelease with `setup` as the installer.
+fn dlReleaseWith(a: std.mem.Allocator, srv: *update_server.Server, arch: []const u8, kp: std.crypto.sign.Ed25519.KeyPair, setup: []const u8) !DlRelease {
+    const name = try std.fmt.allocPrint(a, "murrtty-0.6.0-windows-{s}-setup.exe", .{arch});
     const sums = try dlSums(a, name, setup);
     const origin = try std.fmt.allocPrint(a, "http://127.0.0.1:{d}", .{srv.port});
     const setup_path = try std.fmt.allocPrint(a, dl_base ++ "{s}", .{name});
@@ -15865,9 +15871,8 @@ fn dlLabel(d: *const std.json.Parsed(Harness.Dump), id: u32) []const u8 {
 /// installer is fetched only after its sums are checked. The release done
 /// slowly shows its progress in the pill and the window; Cancel keeps what
 /// came and Download resumes it with a range; the installer is the
-/// release's byte for byte, ready to install; Install Now runs it after
-/// checking it again (recorded under the hooks). The next start finds it
-/// ready, sending nothing. Quitting mid-download is at once, and the next
+/// release's byte for byte, ready to install (updates-install restarts to
+/// install it). The next start finds it ready, sending nothing. Quitting mid-download is at once, and the next
 /// start resumes. A release without a signature, and a zip copy, open the
 /// release's page instead.
 fn updatesDownload(h: *Harness) anyerror!void {
@@ -16009,9 +16014,9 @@ fn updatesDownload(h: *Harness) anyerror!void {
             const range = srv.lastRange(&range_buf);
             const want = try std.fmt.allocPrint(a, "bytes={d}-", .{u.download.resumed_from});
             try h.expect(u.download.resumed_from >= kept and std.mem.eql(u8, range, want), "resumed from {d}, asking '{s}'", .{ u.download.resumed_from, range });
-            try h.expect(std.mem.eql(u8, u.pill, "ready") and std.mem.eql(u8, u.pill_text, "Ready to Install: 0.6.0"), "the pill says it is ready ('{s}')", .{u.pill_text});
+            try h.expect(std.mem.eql(u8, u.pill, "ready") and std.mem.eql(u8, u.pill_text, "Restart to Complete Update"), "the pill says it is ready ('{s}')", .{u.pill_text});
             const uw = d.value.updates_window.?;
-            try h.expect(std.mem.startsWith(u8, uw.heading, "murrtty 0.6.0 is ready to install") and std.mem.eql(u8, dlLabel(&d, uw_primary), "Install Now"), "the window offers Install Now ('{s}', '{s}')", .{ uw.heading, dlLabel(&d, uw_primary) });
+            try h.expect(std.mem.startsWith(u8, uw.heading, "murrtty 0.6.0 is ready to install") and std.mem.eql(u8, dlLabel(&d, uw_primary), "Restart to Update"), "the window offers Restart to Update ('{s}', '{s}')", .{ uw.heading, dlLabel(&d, uw_primary) });
         }
         {
             const got = h.readFileOrNull(final) orelse return h.fail("no installer at {s}", .{final});
@@ -16020,30 +16025,6 @@ fn updatesDownload(h: *Harness) anyerror!void {
             try h.expect(fileLen(h, partial) == null, "no partial file left", .{});
         }
         try dlSnap(h, &g, 12, "ready");
-
-        // Install Now: checked again, then run (recorded under the hooks).
-        uwClick(hwnd, uw_primary);
-        {
-            var waited: u32 = 0;
-            var ran = false;
-            while (waited <= 5000) : (waited += 100) {
-                var d = try h.dump(&g);
-                defer d.deinit();
-                const u = try updatesOf(h, &d);
-                if (u.installs == 1) {
-                    const want = try std.fmt.allocPrint(a, "install {s}", .{final});
-                    var found_launch = false;
-                    for (d.value.launches) |l| if (std.ascii.eqlIgnoreCase(l, want)) {
-                        found_launch = true;
-                    };
-                    try h.expect(found_launch, "the installer it checked is the one run ({d} launches)", .{d.value.launches.len});
-                    ran = true;
-                    break;
-                }
-                w.Sleep(100);
-            }
-            try h.expect(ran, "Install Now ran the installer", .{});
-        }
         try quitPane(h, &g);
         try expectNoLeaks(h, &g, "a download leaks nothing");
     }
@@ -16057,64 +16038,8 @@ fn updatesDownload(h: *Harness) anyerror!void {
         var d = try h.dump(&g);
         defer d.deinit();
         const u = try updatesOf(h, &d);
-        try h.expect(std.mem.eql(u8, u.download.state, "ready") and std.mem.eql(u8, u.pill_text, "Ready to Install: 0.6.0"), "the installer kept is ready at the next start ({s}, '{s}')", .{ u.download.state, u.pill_text });
+        try h.expect(std.mem.eql(u8, u.download.state, "ready") and std.mem.eql(u8, u.pill_text, "Restart to Complete Update"), "the installer kept is ready at the next start ({s}, '{s}')", .{ u.download.state, u.pill_text });
         try h.expect(srv.requests.load(.acquire) == before, "nothing sent", .{});
-        try quitPane(h, &g);
-    }
-
-    // Install Now for real (GHOSTTY_WIN32_TEST_LAUNCH=1): the harness's
-    // recorder stands in for the installer, signed as one; started from
-    // the file Install Now's check holds, it writes a mark beside itself,
-    // and once it has ended with murrtty still running the download is
-    // ready again.
-    {
-        const rname = "updates-download-run";
-        const recorder_path = try h.helperPath("ghostty-gui-record.exe");
-        defer h.alloc.free(recorder_path);
-        const recorder = h.readFileOrNull(recorder_path) orelse return h.fail("no recorder at {s}", .{recorder_path});
-        defer h.alloc.free(recorder);
-        const body = try a.dupe(u8, recorder);
-        const run_sums = try dlSums(a, rel.name, body);
-        srv.setList(rel.list, "\"dl-1\"");
-        srv.setFile(rel.setup_path, body);
-        srv.setFile(rel.sums_path, run_sums);
-        srv.setFile(rel.sig_path, try dlSign(a, kp, run_sums));
-        const run_env = [_][2][]const u8{ env[0], env[1], .{ "GHOSTTY_WIN32_TEST_LAUNCH", "1" } };
-        var g = try startUpdates(h, srv, rname, config, "300", &run_env, true);
-        defer g.deinit();
-        const before = srv.requests.load(.acquire);
-        try h.checkUpdates(&g);
-        (try waitUpdateCheck(h, &g, srv, before + 1, "the check")).deinit();
-        const hwnd = try dlWindow(h, &g, "murrtty 0.6.0 is available", "the window");
-        uwClick(hwnd, uw_primary);
-        (try dlWait(h, &g, 1, "ready", "the stand-in installer downloaded")).deinit();
-        uwClick(hwnd, uw_primary);
-        const run_final = try std.fmt.allocPrint(a, "{s}\\{s}", .{ try dlFolder(a, h, rname), rel.name });
-        const mark = try std.fmt.allocPrint(a, "{s}.ran", .{run_final});
-        var ran: ?[]u8 = null;
-        var waited: u32 = 0;
-        while (waited <= 15000) : (waited += 100) {
-            ran = h.readFileOrNull(mark);
-            if (ran != null) break;
-            w.Sleep(100);
-        }
-        const said = ran orelse return h.fail("Install Now never ran the installer (no {s})", .{mark});
-        defer h.alloc.free(said);
-        try h.expect(std.ascii.eqlIgnoreCase(said, run_final), "the installer run is the one checked ('{s}')", .{said});
-        // Ended with murrtty running (a cancelled installer): ready again.
-        var again = false;
-        waited = 0;
-        while (waited <= 10000) : (waited += 100) {
-            var d = try h.dump(&g);
-            defer d.deinit();
-            const u = try updatesOf(h, &d);
-            if (u.installs == 1 and std.mem.eql(u8, u.download.state, "ready") and u.install_error == 0) {
-                again = true;
-                break;
-            }
-            w.Sleep(100);
-        }
-        try h.expect(again, "ready again after the installer ended", .{});
         try quitPane(h, &g);
     }
 
@@ -16192,6 +16117,281 @@ fn updatesDownload(h: *Harness) anyerror!void {
     }
 }
 
+/// Wait up to `ms` for the file at `path`; its contents (the caller's to
+/// free), or null.
+fn waitFile(h: *Harness, path: []const u8, ms: u32) ?[]u8 {
+    var waited: u32 = 0;
+    while (waited <= ms) : (waited += 100) {
+        if (h.readFileOrNull(path)) |data| return data;
+        w.Sleep(100);
+    }
+    return null;
+}
+
+/// Installing updates (roadmap 7.6b step 3), with the harness's recorder as
+/// the installer (signed as one) and GHOSTTY_WIN32_TEST_LAUNCH=1, so it
+/// really runs and writes its command line beside itself. Restart to Update
+/// refuses while another murrtty of the same folder runs, asks as quitting
+/// asks (declined, nothing runs and the update stays ready), then starts
+/// the installer silently with /restart=1 and quits.
+/// With auto-update = download, a check's release downloads by itself,
+/// quietly, is told once ready, and installs silently as murrtty quits,
+/// without /restart; on a metered connection that download waits, sending
+/// nothing. The Download updates automatically switch asks first, then
+/// writes download, and check when turned off. A Scoop or a winget copy
+/// shows its command and copies it.
+fn updatesInstall(h: *Harness) anyerror!void {
+    var arena_state: std.heap.ArenaAllocator = .init(h.alloc);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const srv = try update_server.Server.start(h.alloc);
+    defer srv.stop();
+    const kp = dlKey(7);
+    const key_hex = std.fmt.bytesToHex(kp.public_key.toBytes(), .lower);
+    const recorder = recorder: {
+        const path = try h.helperPath("ghostty-gui-record.exe");
+        defer h.alloc.free(path);
+        const data = h.readFileOrNull(path) orelse return h.fail("no recorder at {s}", .{path});
+        defer h.alloc.free(data);
+        break :recorder try a.dupe(u8, data);
+    };
+    const config = "auto-update-channel = stable\n";
+    const download_config = "auto-update = download\nauto-update-channel = stable\n";
+    // First: a clipboard holding a picture skips the scenario before any
+    // part of it has run.
+    var saved = try h.saveClipboard();
+    defer saved.restore();
+    const env = [_][2][]const u8{ .{ "GHOSTTY_WIN32_TEST_UPDATES_KEY", &key_hex }, .{ "GHOSTTY_WIN32_TEST_UPDATES_INSTALL", "installer" }, .{ "GHOSTTY_WIN32_TEST_LAUNCH", "1" } };
+    var rel: DlRelease = undefined;
+
+    // Restart to Update.
+    {
+        const name = "updates-install-restart";
+        var g = try startUpdates(h, srv, name, config, "300", &env, true);
+        defer g.deinit();
+        const arch = arch: {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            break :arch try a.dupe(u8, (try updatesOf(h, &d)).arch);
+        };
+        rel = try dlReleaseWith(a, srv, arch, kp, recorder);
+        srv.setList(rel.list, "\"in-1\"");
+        srv.setFile(rel.setup_path, rel.setup);
+        srv.setFile(rel.sums_path, rel.sums);
+        srv.setFile(rel.sig_path, rel.sig);
+        const mark = try std.fmt.allocPrint(a, "{s}\\{s}.ran", .{ try dlFolder(a, h, name), rel.name });
+        const before = srv.requests.load(.acquire);
+        try h.checkUpdates(&g);
+        (try waitUpdateCheck(h, &g, srv, before + 1, "the check")).deinit();
+        const hwnd = try dlWindow(h, &g, "murrtty 0.6.0 is available", "the window");
+        uwClick(hwnd, uw_primary);
+        {
+            var d = try dlWait(h, &g, 1, "ready", "the download");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(std.mem.eql(u8, u.pill_text, "Restart to Complete Update"), "the pill says macOS's words ('{s}')", .{u.pill_text});
+            try h.expect(std.mem.eql(u8, dlLabel(&d, uw_primary), "Restart to Update"), "Restart to Update offered ('{s}')", .{dlLabel(&d, uw_primary)});
+            const sub = d.value.updates_window.?.subtitle;
+            try h.expect(std.mem.indexOf(u8, sub, "Restart to Update installs it") != null and std.mem.indexOf(u8, sub, "when you quit") == null, "checks only: it installs at the restart, not on quitting ('{s}')", .{sub});
+        }
+        // Another murrtty running from the same folder: refused (it would be
+        // closed, its programs with it), said why, nothing asked or run.
+        {
+            var other = try h.launchWith("updates-install-other", base_config, .{});
+            defer other.deinit();
+            try h.waitText(&other, ">", 1, 20000);
+            uwClick(hwnd, uw_primary);
+            var waited: u32 = 0;
+            var refused = false;
+            while (waited <= 5000 and !refused) : (waited += 100) {
+                var d = try h.dump(&g);
+                defer d.deinit();
+                refused = std.mem.indexOf(u8, d.value.updates_window.?.subtitle, "Another murrtty is running from the same folder") != null;
+                if (!refused) w.Sleep(100);
+            }
+            try h.expect(refused, "refused while another murrtty runs", .{});
+            {
+                var d = try h.dump(&g);
+                defer d.deinit();
+                const u = try updatesOf(h, &d);
+                try h.expect(std.mem.eql(u8, u.download.state, "ready") and u.installs == 0 and d.value.modal_depth == 0, "still ready, nothing asked or started", .{});
+            }
+            try quitPane(h, &other);
+        }
+        // Declined: nothing runs, and the update stays ready.
+        uwClick(hwnd, uw_primary);
+        h.answer(&g, try h.waitDialog(&g, 10000), w.IDCANCEL);
+        {
+            var waited: u32 = 0;
+            var ready = false;
+            while (waited <= 10000 and !ready) : (waited += 100) {
+                var d = try h.dump(&g);
+                defer d.deinit();
+                const u = try updatesOf(h, &d);
+                ready = std.mem.eql(u8, u.download.state, "ready") and u.installs == 0;
+                if (!ready) w.Sleep(100);
+            }
+            try h.expect(ready, "declined: ready again, nothing started", .{});
+            w.Sleep(500);
+            try h.expect(fileLen(h, mark) == null, "declined: the installer never ran", .{});
+        }
+        // Agreed: the installer starts silently, to restart murrtty, and
+        // murrtty quits.
+        uwClick(hwnd, uw_primary);
+        h.answer(&g, try h.waitDialog(&g, 10000), w.IDYES);
+        const code = g.waitExit(15000);
+        try h.expect(code != null and code.? == 0, "murrtty quits for the update with code 0 (got {?d})", .{code});
+        const said = waitFile(h, mark, 10000) orelse return h.fail("Restart to Update never ran the installer (no {s})", .{mark});
+        defer h.alloc.free(said);
+        for ([_][]const u8{ "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/restart=1" }) |arg| {
+            try h.expect(std.mem.indexOf(u8, said, arg) != null, "the installer ran with {s} ('{s}')", .{ arg, said });
+        }
+        try h.expect(std.ascii.findIgnoreCase(said, rel.name) != null, "the installer run is the one checked ('{s}')", .{said});
+        try expectNoLeaks(h, &g, "Restart to Update leaks nothing");
+    }
+
+    // Downloads on: the release downloads by itself and installs as murrtty
+    // quits, without starting it again.
+    {
+        const name = "updates-install-quit";
+        try writeUpdateState(h, name, "{\"consent\":true}");
+        const mark = try std.fmt.allocPrint(a, "{s}\\{s}.ran", .{ try dlFolder(a, h, name), rel.name });
+        var g = try startUpdates(h, srv, name, download_config, "300", &env, true);
+        defer g.deinit();
+        {
+            var d = try dlWait(h, &g, 1, "ready", "the automatic download");
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            try h.expect(u.downloads_on and u.download.automatic, "downloaded by itself (on {}, automatic {})", .{ u.downloads_on, u.download.automatic });
+            try h.expect(std.mem.eql(u8, u.pill_text, "Restart to Complete Update"), "the pill says it is ready ('{s}')", .{u.pill_text});
+            var told = false;
+            for (d.value.notifications) |n| if (std.mem.indexOf(u8, n.title, "murrtty 0.6.0 is ready to install") != null) {
+                told = true;
+            };
+            try h.expect(told, "a notification says it is ready ({d} notifications)", .{d.value.notifications.len});
+        }
+        const pane = try h.surface(&g, try h.mainWindow(&g));
+        h.key(pane, .{ .ctrl = true, .shift = true }, 'Q');
+        h.answer(&g, try h.waitDialog(&g, 5000), w.IDYES);
+        const code = g.waitExit(15000);
+        try h.expect(code != null and code.? == 0, "murrtty quits with code 0 (got {?d})", .{code});
+        const said = waitFile(h, mark, 10000) orelse return h.fail("the update never installed as murrtty quit (no {s})", .{mark});
+        defer h.alloc.free(said);
+        try h.expect(std.mem.indexOf(u8, said, "/VERYSILENT") != null and std.mem.indexOf(u8, said, "/restart") == null, "installed silently, murrtty not started again ('{s}')", .{said});
+        try expectNoLeaks(h, &g, "installing on quit leaks nothing");
+    }
+
+    // On a metered connection, murrtty's own download waits.
+    {
+        const name = "updates-install-metered";
+        try writeUpdateState(h, name, "{\"consent\":true}");
+        const metered_env = [_][2][]const u8{ env[0], env[1], .{ "GHOSTTY_WIN32_TEST_UPDATES_METERED", "1" } };
+        var g = try startUpdates(h, srv, name, download_config, "300", &metered_env, true);
+        defer g.deinit();
+        const hits = srv.hits(rel.setup_path) + srv.hits(rel.sums_path) + srv.hits(rel.sig_path);
+        const before = srv.requests.load(.acquire);
+        try h.checkUpdates(&g);
+        (try waitUpdateCheck(h, &g, srv, before + 1, "a check asked for")).deinit();
+        var waited: u32 = 0;
+        var waits = false;
+        while (waited <= 10000 and !waits) : (waited += 100) {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const u = try updatesOf(h, &d);
+            waits = u.downloads >= 1 and eql(u.download.outcome, "metered") and std.mem.eql(u8, u.download.state, "none");
+            if (!waits) w.Sleep(100);
+        }
+        try h.expect(waits, "the automatic download waits on a metered connection", .{});
+        try h.expect(srv.hits(rel.setup_path) + srv.hits(rel.sums_path) + srv.hits(rel.sig_path) == hits, "nothing of it fetched", .{});
+        try quitPane(h, &g);
+    }
+
+    // The settings switch: asks first, writes download; off, check.
+    {
+        const name = "updates-install-switch";
+        const switch_env = [_][2][]const u8{ env[0], env[1] };
+        var g = try startUpdates(h, srv, name, config, "300", &switch_env, true);
+        defer g.deinit();
+        try h.openUpdatesWindow(&g, false);
+        const hwnd = hwnd: {
+            var d = try uwWait(h, &g, "main", "", "the window");
+            defer d.deinit();
+            break :hwnd d.value.updates_window.?.hwnd;
+        };
+        uwClick(hwnd, uw_settings);
+        {
+            var d = try uwWait(h, &g, "settings", "", "Update Settings");
+            defer d.deinit();
+            const sw = uwControl(d.value.updates_window.?, uw_download).?;
+            try h.expect(sw.enabled and !sw.on, "the switch is there, off (enabled {}, on {})", .{ sw.enabled, sw.on });
+        }
+        uwClick(hwnd, uw_download);
+        h.answer(&g, try h.waitDialog(&g, 10000), w.IDOK);
+        {
+            var waited: u32 = 0;
+            var on = false;
+            while (waited <= 10000 and !on) : (waited += 100) {
+                const text = try configText(h, name);
+                defer h.alloc.free(text);
+                on = std.mem.indexOf(u8, text, "auto-update = download") != null;
+                if (!on) w.Sleep(100);
+            }
+            try h.expect(on, "Turn On wrote auto-update = download", .{});
+            var d = try h.dump(&g);
+            defer d.deinit();
+            try h.expect(d.value.updates.?.state.consent and std.mem.eql(u8, d.value.updates.?.mode, "download"), "agreed to, downloads on", .{});
+        }
+        uwClick(hwnd, uw_download);
+        {
+            var waited: u32 = 0;
+            var off = false;
+            while (waited <= 10000 and !off) : (waited += 100) {
+                const text = try configText(h, name);
+                defer h.alloc.free(text);
+                off = std.mem.indexOf(u8, text, "auto-update = check") != null;
+                if (!off) w.Sleep(100);
+            }
+            try h.expect(off, "off again: auto-update = check", .{});
+        }
+        try quitPane(h, &g);
+    }
+
+    // A package manager's copy: its command, copied.
+    for ([_]struct { install: []const u8, cmd: []const u8 }{
+        .{ .install = "scoop", .cmd = "scoop update murrtty" },
+        .{ .install = "winget", .cmd = "winget upgrade murrtty" },
+    }) |case| {
+        const name = try std.fmt.allocPrint(a, "updates-install-{s}", .{case.install});
+        const case_env = [_][2][]const u8{ env[0], .{ "GHOSTTY_WIN32_TEST_UPDATES_INSTALL", case.install } };
+        var g = try startUpdates(h, srv, name, config, "300", &case_env, true);
+        defer g.deinit();
+        const before = srv.requests.load(.acquire);
+        try h.checkUpdates(&g);
+        (try waitUpdateCheck(h, &g, srv, before + 1, name)).deinit();
+        const hwnd = try dlWindow(h, &g, "murrtty 0.6.0 is available", name);
+        {
+            var d = try h.dump(&g);
+            defer d.deinit();
+            const sub = d.value.updates_window.?.subtitle;
+            try h.expect(std.mem.indexOf(u8, sub, case.cmd) != null and std.mem.eql(u8, dlLabel(&d, uw_primary), "Copy Command"), "{s}: its command shown, Copy Command offered ('{s}')", .{ case.install, sub });
+            try h.expect(!d.value.updates.?.can_download, "{s}: murrtty downloads nothing itself", .{case.install});
+        }
+        try h.clearClipboard();
+        uwClick(hwnd, uw_primary);
+        var copied = false;
+        var waited: u32 = 0;
+        while (waited <= 5000 and !copied) : (waited += 100) {
+            if (try h.getClipboard()) |text| {
+                defer h.alloc.free(text);
+                copied = std.mem.eql(u8, text, case.cmd);
+            }
+            if (!copied) w.Sleep(100);
+        }
+        try h.expect(copied, "{s}: Copy Command put '{s}' on the clipboard", .{ case.install, case.cmd });
+        try quitPane(h, &g);
+    }
+}
+
 // The Updates window's control ids (UpdatesWindow.zig).
 const uw_primary = 210;
 const uw_secondary = 211;
@@ -16203,6 +16403,7 @@ const uw_back = 200;
 const uw_notes = 240;
 const uw_auto = 250;
 const uw_interval = 251;
+const uw_download = 253;
 const uw_tip = 255;
 const uw_privacy = 256;
 const uw_clear = 257;

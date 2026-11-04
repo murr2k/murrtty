@@ -104,6 +104,9 @@ pub const Request = union(enum) {
     export_io: struct { surface: u64, contents: []u8 },
     /// Open the Updates window (roadmap 7.6a), checking if `true`.
     updates: bool,
+    /// Restart to Update (roadmap 7.6b): its installer is checked and
+    /// held; ask as quitting asks, then install and quit.
+    update_restart,
 
     fn deinit(self: Request, alloc: Allocator) void {
         switch (self) {
@@ -220,6 +223,14 @@ mouse_screen: ?c.POINT = null,
 
 /// Set once we've begun quitting so we don't quit twice.
 quitting: bool = false,
+/// The quit is the user's (a quit, the last window closing), not a
+/// session's end or an internal one: a downloaded update may install as
+/// murrtty goes (roadmap 7.6b, Updates.installAtQuit).
+user_quit: bool = false,
+/// Windows asked the session to end (shutdown, log-off, or an installer's
+/// Restart Manager closing murrtty), until it says the end is cancelled:
+/// windows closing then are never the user's quit.
+session_ending: bool = false,
 
 /// Whether OleInitialize succeeded, so terminate balances it.
 ole_initialized: bool = false,
@@ -579,6 +590,9 @@ pub fn run(self: *App) !void {
         _ = c.TranslateMessage(&msg);
         _ = c.DispatchMessageW(&msg);
     }
+    // The user's quit, with downloads on: a ready update installs as
+    // murrtty goes (its windows are closed already).
+    if (self.user_quit) self.updates.installAtQuit();
 }
 
 pub fn terminate(self: *App) void {
@@ -1021,6 +1035,7 @@ fn runRequests(self: *App) void {
             .close_all_but => |id| if (self.findSurface(id)) |s| self.closeAllBut(s),
             .quit => self.quit(),
             .updates => |check| self.openUpdates(check),
+            .update_restart => self.updates.restartNow(),
             .open_config => {
                 // The shell can show dialogs of its own.
                 var modal = self.beginModal(null, .{});
@@ -1704,7 +1719,6 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 Session.timer_id => self.session.tick(),
                 Updates.timer_id => self.updates.tick(),
                 Updates.note_timer_id => self.updates.noteTimer(),
-                Updates.install_timer_id => self.updates.installerTick(),
                 software_gl.timer_id => software_gl.tick(self),
                 else => {},
             }
@@ -1762,10 +1776,17 @@ fn checkQuit(self: *App) void {
     if (self.ipc_launch and !self.requested_window) return;
     const config = &self.config;
     if (config.@"quit-after-last-window-closed") {
-        if (self.quit_timer == .expired) return self.quitNow();
-        if (config.@"quit-after-last-window-closed-delay" == null and self.requested_window) return self.quitNow();
+        if (self.quit_timer == .expired) return self.quitAfterLast();
+        if (config.@"quit-after-last-window-closed-delay" == null and self.requested_window) return self.quitAfterLast();
     }
-    if (!self.notifications.tray and self.quit_timer != .active) self.quitNow();
+    if (!self.notifications.tray and self.quit_timer != .active) self.quitAfterLast();
+}
+
+/// The last window closed: murrtty quits, as the user's quit unless the
+/// session is ending (its shells ended with it).
+fn quitAfterLast(self: *App) void {
+    self.user_quit = !self.session_ending;
+    self.quitNow();
 }
 
 /// Direct3D 11 (roadmap 7.8): the notice that murrtty draws on the CPU
@@ -2059,11 +2080,23 @@ fn confirmCloseAll(self: *App, target: CloseTarget) bool {
 }
 
 fn quit(self: *App) void {
-    // The configuration editor's changes first: Save, Discard or Cancel.
-    if (self.config_editor) |editor| if (!editor.allowQuit()) return;
-    if (!self.confirmCloseAll(.app)) return;
-    // The session as it is: the windows closing now don't empty it.
+    if (!self.quitAsked()) return;
+    self.quitConfirmed();
+}
+
+/// Whether quitting may go ahead: the configuration editor's changes
+/// first (Save, Discard or Cancel), then the close confirmation. Restart
+/// to Update asks the same (roadmap 7.6b).
+pub fn quitAsked(self: *App) bool {
+    if (self.config_editor) |editor| if (!editor.allowQuit()) return false;
+    return self.confirmCloseAll(.app);
+}
+
+/// Quit, once asked: the session as it is (the windows closing now don't
+/// empty it), every window closed.
+pub fn quitConfirmed(self: *App) void {
     self.session.freeze();
+    self.user_quit = !self.session_ending;
     self.closeAllWindows(false);
     self.quitNow();
 }

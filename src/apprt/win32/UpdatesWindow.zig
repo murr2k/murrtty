@@ -65,10 +65,11 @@ pub const Page = enum { main, notes, settings, privacy };
 pub const privacy_lines = [_][]const u8{
     "One request to murrtty.org, with no version, ID or cookie.",
     "Cloudflare, which serves murrtty.org, sees your IP address, as for any website. murrtty.org logs nothing.",
-    "Downloads come from GitHub, only when you choose one.",
+    "Downloads come from GitHub, only when you choose one or turn on automatic downloads.",
 };
 
 pub const consent_heading = "Check for Updates Automatically?";
+pub const download_consent_heading = "Download Updates Automatically?";
 
 /// Unscaled metrics, in DIP: libadwaita's (its preferences rows, cards and
 /// buttons, as the configuration editor and About dialog use them). Both
@@ -103,7 +104,7 @@ const ODS_NOFOCUSRECT = c.ODS_NOFOCUSRECT;
 const Trailing = enum { none, @"switch", value, check, chevron };
 
 /// What a state button does.
-const Action = enum { none, check_now, cancel, skip, download, cancel_download, install, retry, open_page, turn_on };
+const Action = enum { none, check_now, cancel, skip, download, cancel_download, install, retry, open_page, copy_command, turn_on };
 
 const Control = struct {
     id: u16,
@@ -166,6 +167,8 @@ meta_rect: c.RECT = .{},
 settings_cards: [3]c.RECT = @splat(.{}),
 settings_titles: [3]c.RECT = @splat(.{}),
 privacy_rect: c.RECT = .{},
+/// Copy Command was clicked: the subtitle says it is on the clipboard.
+copied: bool = false,
 /// The release whose notes show (owned), and its notes as shown.
 notes_version: ?[]u8 = null,
 notes_meta: [160]u8 = undefined,
@@ -267,7 +270,7 @@ fn initControls(self: *UpdatesWindow) void {
         .{ .id = id_auto, .page = .settings, .kind = .row, .label = "Check for updates &automatically", .subtitle = "Saved in your configuration as auto-update", .trailing = .@"switch" },
         .{ .id = id_interval, .page = .settings, .kind = .row, .label = "How &often", .trailing = .value },
         .{ .id = id_on_found, .page = .settings, .kind = .row, .label = "&When an update is found", .trailing = .value },
-        .{ .id = id_download, .page = .settings, .kind = .row, .label = "&Download updates automatically", .subtitle = "Automatic downloads come in a later murrtty", .trailing = .@"switch", .enabled = false },
+        .{ .id = id_download, .page = .settings, .kind = .row, .label = "&Download updates automatically", .subtitle = "", .trailing = .@"switch", .enabled = false },
         .{ .id = id_stable, .page = .settings, .kind = .row, .label = "&Stable releases", .trailing = .check },
         .{ .id = id_tip, .page = .settings, .kind = .row, .label = "&Pre-releases", .subtitle = "None are published yet", .trailing = .check },
         .{ .id = id_privacy, .page = .settings, .kind = .row, .label = "What a check s&ends", .trailing = .chevron },
@@ -607,6 +610,8 @@ fn describe(self: *UpdatesWindow) void {
         "";
     self.primary = .none;
     self.secondary = .none;
+    // A new check: "Copied to the clipboard" was the last one's.
+    if (u.status == .checking) self.copied = false;
     if (!u.release_build) {
         setText(&self.heading, &self.heading_len, "This is a development build", .{});
         setText(&self.subtitle, &self.subtitle_len, "murrtty {s}. A development build's updates come from building the source, so it never checks.", .{build_config.version_string});
@@ -621,8 +626,15 @@ fn describe(self: *UpdatesWindow) void {
         .available => {
             const found = u.found.?;
             setText(&self.heading, &self.heading_len, "murrtty {s} is available", .{found.version});
-            setText(&self.subtitle, &self.subtitle_len, "You have {s}. {s}.{s}", .{ running, checked, off_note });
-            self.primary = .download;
+            if (updateCommand(u.install)) |cmd| {
+                // Its package manager updates it (roadmap 7.6b).
+                const who: []const u8 = if (u.install == .scoop) "Scoop" else "winget";
+                setText(&self.subtitle, &self.subtitle_len, "You have {s}. {s} installed this copy: update it with {s}.{s}", .{ running, who, cmd, if (self.copied) " Copied to the clipboard." else "" });
+                self.primary = .copy_command;
+            } else {
+                setText(&self.subtitle, &self.subtitle_len, "You have {s}. {s}.{s}", .{ running, checked, off_note });
+                self.primary = .download;
+            }
             self.secondary = .skip;
         },
         .up_to_date => {
@@ -663,7 +675,7 @@ fn describe(self: *UpdatesWindow) void {
         const ctl = self.find(entry[0]).?;
         ctl.shown = entry[1] != .none;
         ctl.kind = switch (entry[1]) {
-            .check_now, .download, .install, .retry => .accent,
+            .check_now, .download, .install, .retry, .copy_command => .accent,
             else => .pill,
         };
         // Access keys apart from each other's and Close's (C) on the page.
@@ -674,7 +686,8 @@ fn describe(self: *UpdatesWindow) void {
             .skip => "S&kip This Version",
             .download => "&Download",
             .cancel_download => "Ca&ncel",
-            .install => "&Install Now",
+            .install => "&Restart to Update",
+            .copy_command => "Cop&y Command",
             .retry => "Try &Again",
             .open_page => "Open Release &Page",
             .turn_on => "&Turn On Automatic Checks...",
@@ -754,20 +767,23 @@ fn describeDownload(self: *UpdatesWindow, u: *const Updates) void {
         },
         .ready => {
             setText(&self.heading, &self.heading_len, "murrtty {s} is ready to install", .{v});
-            if (u.install_error != 0)
+            const session: []const u8 = if (self.app.config.@"window-save-state" == .never) "" else ", with your session";
+            if (u.install_blocked)
+                setText(&self.subtitle, &self.subtitle_len, "Another murrtty is running from the same folder, and installing would close it with its programs: quit it first.", .{})
+            else if (u.install_error == c.ERROR_ACCESS_DENIED)
+                setText(&self.subtitle, &self.subtitle_len, "The program that started murrtty ends what it starts as murrtty closes, which would stop the installer: start murrtty from the Start menu to update it.", .{})
+            else if (u.install_error != 0)
                 setText(&self.subtitle, &self.subtitle_len, "The installer didn't start (Windows reported error {d}).", .{u.install_error})
+            else if (u.downloadsOn())
+                setText(&self.subtitle, &self.subtitle_len, "Downloaded and checked against murrtty's signature. It installs when you quit murrtty, or now: Restart to Update installs it and starts murrtty again{s}.", .{session})
             else
-                setText(&self.subtitle, &self.subtitle_len, "Downloaded and checked: its release's checksums carry murrtty's signature, and the installer matches them. Installing closes murrtty, which keeps your session for its next start.", .{});
+                setText(&self.subtitle, &self.subtitle_len, "Downloaded and checked against murrtty's signature. Restart to Update installs it and starts murrtty again{s}.", .{session});
             self.primary = .install;
             self.secondary = .skip;
         },
         .verifying => {
-            setText(&self.heading, &self.heading_len, "Installing murrtty {s}", .{v});
+            setText(&self.heading, &self.heading_len, "Restarting to update to murrtty {s}", .{v});
             setText(&self.subtitle, &self.subtitle_len, "Checking the installer once more before it runs.", .{});
-        },
-        .installing => {
-            setText(&self.heading, &self.heading_len, "Installing murrtty {s}", .{v});
-            setText(&self.subtitle, &self.subtitle_len, "The installer is running. It closes murrtty, which keeps your session for its next start.", .{});
         },
         .refused => {
             setText(&self.heading, &self.heading_len, "murrtty {s} failed its check", .{v});
@@ -782,6 +798,27 @@ fn describeDownload(self: *UpdatesWindow, u: *const Updates) void {
             self.secondary = .open_page;
         },
     }
+}
+
+/// What updates a package manager's copy (null: murrtty itself, or its
+/// page).
+fn updateCommand(install: @import("update_install.zig").Kind) ?[]const u8 {
+    return switch (install) {
+        .scoop => "scoop update murrtty",
+        .winget => "winget upgrade murrtty",
+        else => null,
+    };
+}
+
+/// Copy Command: the package manager's update command to the clipboard.
+fn copyCommand(self: *UpdatesWindow) void {
+    const cmd = updateCommand(self.app.updates.install) orelse return;
+    @import("Surface.zig").writeClipboardText(self.app.core_app.alloc, self.hwnd, cmd) catch |err| {
+        log.warn("the update command wasn't copied err={}", .{err});
+        return;
+    };
+    self.copied = true;
+    self.refresh();
 }
 
 fn failureText(buf: []u8, u: *const Updates) []const u8 {
@@ -861,6 +898,17 @@ fn settingsValues(self: *UpdatesWindow) void {
     self.find(id_on_found).?.value = switch (u.state.on_found) {
         .notify => "Show a notification",
         .window => "Open this window",
+    };
+    // Downloads (roadmap 7.6b): the installer's copies download and install
+    // their updates; a package manager's update theirs.
+    const dl = self.find(id_download).?;
+    dl.on = u.mode() == .download and u.state.consent;
+    dl.enabled = u.release_build and u.install == .installer;
+    dl.subtitle = switch (u.install) {
+        .installer => "In the background; it installs when murrtty quits",
+        .scoop => "Scoop updates this copy: scoop update murrtty",
+        .winget => "winget updates this copy: winget upgrade murrtty",
+        .zip, .package => "For copies the installer installed",
     };
     const ch = u.channel();
     self.find(id_stable).?.on = ch == .stable;
@@ -1134,7 +1182,8 @@ fn click(self: *UpdatesWindow, id: u16) void {
         id_read => self.openNotes(),
         id_more => if (self.selectedVersion()) |v| self.openPage(v),
         id_page_link => if (self.notes_version) |v| self.openPage(v),
-        id_auto => if (u.mode() != .off and u.state.consent) self.setConfig("auto-update", "off") else self.turnOn(),
+        id_auto => if (u.mode() != .off and u.state.consent) self.setConfig("auto-update", "off") else self.turnOn(false),
+        id_download => if (u.mode() == .download and u.state.consent) self.setConfig("auto-update", "check") else self.turnOn(true),
         id_interval => {
             const labels = [_][]const u8{ "Daily", "Weekly", "Monthly" };
             const now = @intFromEnum(u.state.interval);
@@ -1165,13 +1214,14 @@ fn act(self: *UpdatesWindow, action: Action) void {
         // An installer copy downloads and checks the installer (roadmap
         // 7.6b); any other, or a release before signatures, opens its page.
         .download => if (u.found) |f| {
-            if (u.canDownload()) u.startDownload() else self.openPage(f.version);
+            if (u.canDownload()) u.startDownload(.manual) else self.openPage(f.version);
         },
         .cancel_download => u.cancelDownload(),
-        .install => u.installNow(),
-        .retry => u.startDownload(),
+        .install => u.restartToUpdate(),
+        .retry => u.startDownload(.manual),
         .open_page => if (u.found) |f| self.openPage(f.version),
-        .turn_on => self.turnOn(),
+        .copy_command => self.copyCommand(),
+        .turn_on => self.turnOn(false),
     }
 }
 
@@ -1214,10 +1264,11 @@ fn pickAt(self: *UpdatesWindow, id: u16, labels: []const []const u8, checked: []
     return ContextMenu.pick(self.app, self.hwnd, .{ .x = r.right - self.scale(row_pad + 160), .y = r.bottom }, labels, checked);
 }
 
-/// Turning automatic checks on: the consent dialog first, every time.
-/// Turn On records the consent (this machine's) and writes auto-update =
-/// check to the configuration file murrtty loaded, if it says off.
-fn turnOn(self: *UpdatesWindow) void {
+/// Turning automatic checks on (or, `downloads`, automatic downloads): the
+/// consent dialog first, every time. Turn On records the consent (this
+/// machine's) and writes auto-update = check to the configuration file
+/// murrtty loaded if it says off (`download` for downloads).
+fn turnOn(self: *UpdatesWindow, downloads: bool) void {
     const u = &self.app.updates;
     const alloc = self.app.core_app.alloc;
     const how_often: []const u8 = switch (u.state.interval) {
@@ -1225,7 +1276,13 @@ fn turnOn(self: *UpdatesWindow) void {
         .weekly => "once a week",
         .monthly => "once a month",
     };
-    const body = std.fmt.allocPrint(alloc,
+    const body = if (downloads) std.fmt.allocPrint(alloc,
+        \\murrtty will ask murrtty.org for its list of releases {s}, download a new one from GitHub in the background, and install it when you quit murrtty (or at once, with Restart to Update).
+        \\
+        \\The request carries no version, ID or cookie. Cloudflare, which serves murrtty.org, sees your IP address, as for any website; murrtty.org logs nothing. Every download is checked against murrtty's signature before it runs.
+        \\
+        \\You can turn this off in Update Settings at any time.
+    , .{how_often}) catch return else std.fmt.allocPrint(alloc,
         \\murrtty will ask murrtty.org for its list of releases {s}, and tell you when there is a new one.
         \\
         \\The request carries no version, ID or cookie. Cloudflare, which serves murrtty.org, sees your IP address, as for any website; murrtty.org logs nothing.
@@ -1238,7 +1295,7 @@ fn turnOn(self: *UpdatesWindow) void {
         defer modal.end();
         break :r AlertDialog.run(alloc, .{
             .owner = self.hwnd,
-            .heading = consent_heading,
+            .heading = if (downloads) download_consent_heading else consent_heading,
             .body = body,
             .responses = &.{
                 .{ .id = c.IDCANCEL, .label = "Cancel" },
@@ -1253,7 +1310,7 @@ fn turnOn(self: *UpdatesWindow) void {
     if (answer.text) |t| alloc.free(t);
     if (answer.id != c.IDOK) return;
     u.setConsent(true);
-    if (u.mode() == .off) self.setConfig("auto-update", "check");
+    if (downloads) self.setConfig("auto-update", "download") else if (u.mode() == .off) self.setConfig("auto-update", "check");
 }
 
 /// Write one option to the configuration file murrtty loaded (the

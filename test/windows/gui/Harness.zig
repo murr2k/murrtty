@@ -1794,9 +1794,13 @@ pub const Updates = struct {
     /// refused ("unsigned", "bad_signature", "wrong_release", "wrong_hash",
     /// "bad_address", "too_big"), where it failed; the installer's bytes
     /// so far and in all, and where it resumed.
+    /// `auto-update = download`, agreed to, in an installer copy (7.6b-3).
+    downloads_on: bool = false,
     download: struct {
         state: []const u8 = "none",
         active: bool = false,
+        /// murrtty's own download (downloads on), quiet until ready.
+        automatic: bool = false,
         noted: bool = false,
         version: []const u8 = "",
         outcome: ?[]const u8 = null,

@@ -66,6 +66,9 @@ VersionInfoDescription=murrtty setup
 ; still gets the session end first, and its quitting ends them.
 CloseApplications=force
 RestartApplications=no
+; One setup at a time: an update murrtty starts as it quits and one the user
+; runs, say, never install over each other.
+SetupMutex=murrttySetup
 ChangesAssociations=yes
 SetupLogging=yes
 
@@ -116,3 +119,26 @@ Root: HKCU; Subkey: "Software\Classes\AppUserModelId\murrtty.murrtty"; Flags: un
 
 [Run]
 Filename: "{app}\bin\murrtty.exe"; Parameters: "--gtk-single-instance=true"; WorkingDir: "{%USERPROFILE}"; Description: "{cm:LaunchProgram,murrtty}"; Flags: nowait postinstall skipifsilent
+; Restart to Update (WINDOWS_ROADMAP.md 7.6b): murrtty runs this installer
+; silently with /restart=1 and quits; murrtty starts again once it has
+; installed, and restores its session. Install on quit leaves /restart out,
+; so murrtty never starts on its own.
+Filename: "{app}\bin\murrtty.exe"; Parameters: "{code:RestartParams}"; WorkingDir: "{%USERPROFILE}"; Flags: nowait; Check: RestartAfterUpdate
+
+[Code]
+function RestartAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:restart|0}') = '1');
+end;
+
+{ The murrtty restarted keeps the class of the one updating (/class=), so
+  its session comes back. murrtty passes only letters, digits, . - _. }
+function RestartParams(Param: String): String;
+var
+  Cls: String;
+begin
+  Result := '--gtk-single-instance=true';
+  Cls := ExpandConstant('{param:class|}');
+  if Cls <> '' then
+    Result := Result + ' "--class=' + Cls + '"';
+end;

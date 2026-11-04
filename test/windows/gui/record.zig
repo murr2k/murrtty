@@ -4,9 +4,9 @@
 //!   ghostty-gui-record <marker file> <target>
 //!
 //! writes the target the shell passed (a URL or a path) to the marker file
-//! as UTF-8, and exits. Run with no argument (updates-download's stand-in
-//! installer, started by murrtty's Install Now), it writes its own path to
-//! `<its path>.ran`. It is a Windows-subsystem program, so it opens no
+//! as UTF-8, and exits. Run any other way (the update scenarios' stand-in
+//! installer, started by murrtty's Restart to Update or as it quits), it
+//! writes its whole command line to `<its path>.ran`. It is a Windows-subsystem program, so it opens no
 //! console (which Windows could hand to Windows Terminal on the user's
 //! desktop) and no window, and it never interprets its argument the way a
 //! shell would.
@@ -17,17 +17,16 @@ pub fn main() void {
     var argc: c_int = 0;
     const argv = w.CommandLineToArgvW(w.GetCommandLineW(), &argc) orelse return;
     defer _ = w.LocalFree(@ptrCast(argv));
-    if (argc == 1) {
+    if (argc != 3) {
         const self_path = std.mem.span(argv[0]);
         var marker: [4096]u16 = undefined;
         const suffix = [_]u16{ '.', 'r', 'a', 'n', 0 };
         if (self_path.len + suffix.len > marker.len) return;
         @memcpy(marker[0..self_path.len], self_path);
         @memcpy(marker[self_path.len..][0..suffix.len], &suffix);
-        record(@ptrCast(&marker), self_path);
+        record(@ptrCast(&marker), std.mem.span(w.GetCommandLineW()));
         return;
     }
-    if (argc != 3) return;
     record(argv[1], std.mem.span(argv[2]));
 }
 

@@ -2515,12 +2515,16 @@ fn wndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) callco
         // the shells end and their panes close (roadmap 5.10b). The answer
         // stays DefWindowProc's yes (5.10a).
         c.WM_QUERYENDSESSION => {
+            self.app.session_ending = true;
             self.app.session.queryEnd();
             return c.DefWindowProcW(hwnd, msg, wparam, lparam);
         },
         // It ends (kept as it is), or goes on (saving goes on too).
         c.WM_ENDSESSION => {
-            if (wparam != 0) self.app.session.freeze() else self.app.session.endCancelled();
+            if (wparam != 0) self.app.session.freeze() else {
+                self.app.session_ending = false;
+                self.app.session.endCancelled();
+            }
             return 0;
         },
 

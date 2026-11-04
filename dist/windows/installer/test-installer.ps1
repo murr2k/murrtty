@@ -18,7 +18,9 @@ Checks, each printed as it passes:
   arguments murrtty expects;
 - the uninstall entry names the version;
 - installing again while murrtty runs closes it (Restart Manager) and
-  succeeds;
+  succeeds, and starts no murrtty;
+- installing again as Restart to Update does (silently, /restart=1) closes
+  the running murrtty and starts it again;
 - uninstalling removes the program, the shortcut, the verbs, the toasts'
   AppUserModelID registration and the uninstall entry, and keeps the
   user's %LOCALAPPDATA%\murrtty.
@@ -54,12 +56,33 @@ $verbs = @('Directory', 'Directory\Background', 'Drive')
 $work = Join-Path ([IO.Path]::GetTempPath()) ('murrtty-setup-test-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work | Out-Null
 
-function Install([string]$Log) {
-    $p = Start-Process -FilePath $Setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$Log`"") -Wait -PassThru
+function Install([string]$Log, [string[]]$Extra = @()) {
+    # Waits for setup itself, not what it starts: -Wait would wait for the
+    # murrtty /restart=1 starts. Its Handle is read at once, or Windows
+    # PowerShell 5.1 loses the exit code.
+    $p = Start-Process -FilePath $Setup -ArgumentList (@('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$Log`"") + $Extra) -PassThru
+    $null = $p.Handle
+    $p.WaitForExit()
     if ($p.ExitCode -ne 0) {
         if (Test-Path -LiteralPath $Log) { Get-Content -LiteralPath $Log -Tail 40 | Out-Host }
         throw "FAILED: setup exited $($p.ExitCode)"
     }
+}
+
+# The murrtty processes running from the installed copy.
+function Murrtty-Processes {
+    Get-Process -Name murrtty -ErrorAction SilentlyContinue | Where-Object { $_.Path -and ($_.Path -ieq $exe) }
+}
+
+# Wait for a started murrtty's window (60 s).
+function Wait-Window($Process) {
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline) {
+        $Process.Refresh()
+        if ($Process.HasExited -or $Process.MainWindowHandle -ne [IntPtr]::Zero) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    return (-not $Process.HasExited -and $Process.MainWindowHandle -ne [IntPtr]::Zero)
 }
 
 # murrtty is a GUI program: its standard output only reaches a redirect.
@@ -140,8 +163,33 @@ while ((Get-Date) -lt $deadline) {
 Check (-not $running.HasExited -and $running.MainWindowHandle -ne [IntPtr]::Zero) 'murrtty runs, with a window'
 Install (Join-Path $work 'reinstall.log')
 Check ($running.WaitForExit(30000)) 'the running murrtty was closed by setup'
+Start-Sleep -Seconds 3
+Check (@(Murrtty-Processes).Count -eq 0) 'a silent install starts no murrtty (install on quit)'
 $v = Run-Murrtty @('+version')
 Check ($v.Code -eq 0 -and $v.Text -match [regex]::Escape("murrtty $Version")) 'murrtty runs after the reinstall'
+
+Write-Host '==> Installing again as Restart to Update does'
+$running = Start-Process -FilePath $exe -ArgumentList @('--gtk-single-instance=false') -PassThru
+Check (Wait-Window $running) 'murrtty runs, with a window'
+Install (Join-Path $work 'restart.log') @('/SP-', '/restart=1')
+Check ($running.WaitForExit(30000)) 'the running murrtty was closed by setup'
+$deadline = (Get-Date).AddSeconds(60)
+$again = @()
+while ((Get-Date) -lt $deadline) {
+    $again = @(Murrtty-Processes | Where-Object { $_.Id -ne $running.Id })
+    if ($again.Count -gt 0) { break }
+    Start-Sleep -Milliseconds 250
+}
+Check ($again.Count -gt 0) 'setup started murrtty again (/restart=1)'
+$again | Stop-Process -Force
+# Its pseudoconsole hosts too, before the uninstall removes their folder.
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $deadline) {
+    $left = @(Get-Process -Name murrtty, OpenConsole -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith($app, [StringComparison]::OrdinalIgnoreCase) })
+    if ($left.Count -eq 0) { break }
+    $left | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 250
+}
 
 Write-Host '==> Uninstalling'
 $p = Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru

@@ -560,8 +560,11 @@ roadmap item behind it.
   finds is told once, by a toast or the window (murrtty's Update Settings).
   An installer copy's Download downloads the installer and checks it (its
   release's checksums signed with murrtty's Ed25519 key, as Sparkle checks
-  its EdDSA signature, and the file matching them) before Install Now runs
-  it (7.6b); other copies open the release's page.
+  its EdDSA signature, and the file matching them); Restart to Update then
+  installs it silently and starts murrtty again, and with `auto-update =
+  download` it downloads by itself and installs when murrtty quits
+  (Sparkle's two ways, 7.6b). Scoop and winget copies are shown their
+  command; zip copies open the release's page.
   GTK's app has no updater (Linux builds come from package managers).
 
 *For now:*
@@ -4494,6 +4497,50 @@ that isn't a 64-byte signature (a proxy's page) fails rather than refuses,
 which would delete a good kept installer. `updates-download` checks it all
 against the harness's server, Install Now's real start included (the
 harness's recorder serves as the installer).
+*7.6b-3, 2026-11-03:* installing. A ready update's button is macOS's
+Restart to Update and the pill says "Restart to Complete Update": the
+installer is checked again on the job's thread, then, from the message
+loop (`App.Request.update_restart`), murrtty asks as quitting asks
+(`App.quitAsked`: the configuration editor's changes, the close
+confirmation), starts the installer from the held file with `/VERYSILENT
+/SUPPRESSMSGBOXES /NORESTART /SP- /restart=1` in the user's own
+environment, and quits (`quitConfirmed`, its session kept); murrtty.iss's
+new `[Run]` entry (`RestartAfterUpdate`: silent, and `/restart=1`) starts
+murrtty again, which restores the session. With `auto-update = download`,
+agreed to here, in an installer copy (`downloadsOn`), a check's release
+downloads by itself: on a metered connection it waits, sending nothing;
+it is quiet (no progress in the pill; a failure waits for the next check;
+a refusal is said); a notification tells once it is ready; and the user's
+quit (Quit, or the last window closing: `App.user_quit`, never a session's
+end) runs it after the message loop, checked again, silently and without
+`/restart` (macOS's install on quit: murrtty never starts on its own).
+Scoop and winget copies show their command (`scoop update murrtty`,
+`winget upgrade murrtty`) with Copy Command. Update Settings' Download
+updates automatically works in installer copies: Turn On (its own consent
+dialog, which says downloads come by themselves and install on quit)
+writes `auto-update = download`, and off writes `check`. The release job's
+installer test checks that a silent install starts no murrtty and that
+one with `/restart=1` closes the running murrtty and starts it again (its
+first run is 0.6.0's, as Inno Setup runs only on the runners);
+`updates-install` checks the rest with the harness's recorder as the
+installer. An update installed through murrtty end to end, the previous
+release updating itself to the run's build, needs a previous release that
+can: from 0.7.0's run (from 0.6.0) on. After review: nothing installs while
+the session ends (`App.session_ending`, from WM_QUERYENDSESSION until an
+end is cancelled: a shutdown, a log-off, or another installer's Restart
+Manager ends the shells, and the last window closing then isn't the
+user's quit), nor while Windows shuts down (`SM_SHUTTINGDOWN`); nothing
+installs while another murrtty runs from the same folder (its programs
+would be closed with it: install on quit waits, Restart to Update refuses
+and says why); a quit already on its way stops Restart to Update; the
+restarted murrtty keeps the class (`/class=`, murrtty.iss's
+`RestartParams`), so its session comes back; a job that ends its processes
+when it closes (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) refuses the installer
+rather than cut it short; `SetupMutex` keeps two setups from running at
+once; and a release whose automatic download couldn't go on is told of as
+available, once (`available_told`). The installer is held only until it
+has started (setup.exe re-opens itself by path): same user, no boundary
+crossed, left as it is.
 *7.6a step 3, 2026-11-03:* macOS Ghostty's update pill in the header bar
 (before the tab list's button, the title and bells making way; in the tab
 row with `gtk-titlebar-style = tabs`): hidden when there is nothing to say;

@@ -94,6 +94,9 @@ pub const State = struct {
     notified: ?[]const u8 = null,
     /// Releases whose notes were read: the window shows the others bold.
     read: []const []const u8 = &.{},
+    /// With downloads on, the release told of as available because its
+    /// download couldn't go on by itself (metered, failed): once.
+    available_told: ?[]const u8 = null,
 };
 
 pub const Status = enum {
@@ -199,8 +202,15 @@ download_noted: bool = false,
 downloads: u32 = 0,
 installs: u32 = 0,
 install_error: u32 = 0,
-/// The installer's process while it runs (installerTick).
-installer: ?c.HANDLE = null,
+/// The download in flight is murrtty's own (`auto-update = download`).
+download_automatic: bool = false,
+/// Restart to Update: the installer as its check holds it, until the quit
+/// is asked (`restartNow`); and whether murrtty is quitting for it.
+restart_held: ?c.HANDLE = null,
+restarting: bool = false,
+/// Restart to Update refused: another murrtty runs from this folder, and
+/// the installer would close it, its programs with it.
+install_blocked: bool = false,
 
 pub fn init(app: *App) Updates {
     const alloc = app.core_app.alloc;
@@ -249,9 +259,8 @@ pub fn deinit(self: *Updates) void {
     if (self.download_job) |job| job.abandon();
     self.download_job = null;
     self.dropPrevJob();
-    _ = c.KillTimer(self.app.wakeup_hwnd, install_timer_id);
-    if (self.installer) |h| _ = c.CloseHandle(h);
-    self.installer = null;
+    if (self.restart_held) |h| _ = c.CloseHandle(h);
+    self.restart_held = null;
     const alloc = self.app.core_app.alloc;
     if (self.dir) |d| alloc.free(d);
     self.dir = null;
@@ -288,6 +297,8 @@ pub fn start(self: *Updates, owner: bool) void {
 /// The config changed: `auto-update` or its channel may have.
 pub fn configChanged(self: *Updates) void {
     self.refresh();
+    // Downloads just turned on, with a release found: it downloads now.
+    self.autoDownload();
     self.schedule();
     self.notify();
 }
@@ -433,7 +444,11 @@ pub fn finished(self: *Updates) void {
     // metered: theirs runs anyway.
     if (asked and job.outcome == .metered) _ = self.startJob(.manual);
     self.schedule();
-    if (tell) self.announce();
+    // With downloads on (roadmap 7.6b), the release found downloads by
+    // itself and is told once it is ready (announceReady).
+    const downloads = self.downloadsOn();
+    if (downloads) self.autoDownload();
+    if (tell and !downloads) self.announce();
     self.notify();
 }
 
@@ -527,8 +542,9 @@ pub fn declinedHere(self: *const Updates) bool {
 pub fn pill(self: *const Updates) Pill {
     if (!self.release_build or !self.loaded) return .hidden;
     if (self.job != null and (self.job_kind == .manual or self.asked)) return .checking;
-    if (self.download_job != null and self.download == .downloading) return .downloading;
-    if (self.download == .verifying or self.download == .installing) return .installing;
+    // An automatic download is quiet until it is ready (macOS Ghostty's).
+    if (self.download_job != null and self.download == .downloading and !self.download_automatic) return .downloading;
+    if (self.download == .verifying) return .installing;
     if (self.download == .ready and self.found != null) return .ready;
     if ((self.download == .refused or self.download == .failed) and self.download_noted) return .download_failed;
     if (self.note == .failed) return .failed;
@@ -549,7 +565,7 @@ pub fn pillText(self: *const Updates, buf: []u8) []const u8 {
             std.fmt.bufPrint(buf, "Downloading: {d}%", .{pct}) catch "Downloading\u{2026}"
         else
             "Downloading\u{2026}",
-        .ready => std.fmt.bufPrint(buf, "Ready to Install: {s}", .{self.downloadVersion()}) catch "Ready to Install",
+        .ready => "Restart to Complete Update",
         .installing => "Installing\u{2026}",
         .download_failed => "Update Failed",
         .not_found => "No Updates Available",
@@ -904,12 +920,9 @@ pub const Download = enum {
     downloading,
     /// The installer is downloaded and matched its signed hash.
     ready,
-    /// Install Now: the installer checked again on the job's thread before
-    /// it runs.
+    /// Restart to Update: the installer checked again on the job's thread,
+    /// then the quit asked for (`restartNow`).
     verifying,
-    /// The installer runs: it closes murrtty, and if it ends without doing
-    /// so (cancelled), the download is ready again.
-    installing,
     /// A check failed: everything downloaded was deleted.
     refused,
     /// No answer, or a file that couldn't be written: what came stays, to
@@ -917,8 +930,13 @@ pub const Download = enum {
     failed,
 };
 
-/// The wakeup window's timer while the installer runs (installerTick).
-pub const install_timer_id = 0x5D80;
+/// What the installer (Inno Setup) is run with: silent, its messages
+/// answered, no reboot, no "this will install" question. `/restart=1`
+/// has it start murrtty again once it has installed (murrtty.iss's
+/// RestartAfterUpdate); install on quit leaves it out, so murrtty never
+/// restarts on its own.
+pub const silent_args = " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-";
+pub const restart_arg = " /restart=1";
 
 /// The release the download is (or was) for ("" when none).
 pub fn downloadVersion(self: *const Updates) []const u8 {
@@ -972,10 +990,13 @@ pub fn canDownload(self: *const Updates) bool {
     return plan(f) != null;
 }
 
-/// Download the found release's installer (the window's Download and Try
-/// Again). Nothing runs until it has passed every check.
-pub fn startDownload(self: *Updates) void {
-    if (self.download_job != null or self.installer != null or !self.canDownload()) return;
+/// Download the found release's installer: the window's Download and Try
+/// Again (`manual`), or murrtty itself after a check with `auto-update =
+/// download` (`automatic`: it waits on a metered connection, and says
+/// nothing until it is ready or refused). Nothing runs until it has passed
+/// every check.
+pub fn startDownload(self: *Updates, kind: Kind) void {
+    if (self.download_job != null or self.restart_held != null or !self.canDownload()) return;
     const f = self.found.?;
     const p = plan(f).?;
     self.resetDownload();
@@ -1008,6 +1029,8 @@ pub fn startDownload(self: *Updates) void {
         .name = name,
         .dir = folder,
         .keys = self.keys[0..self.keys_len],
+        .automatic = kind == .automatic,
+        .metered = testMetered(),
         .after = self.prev_job,
         .hwnd = self.app.wakeup_hwnd,
         .done_msg = download_message,
@@ -1019,7 +1042,21 @@ pub fn startDownload(self: *Updates) void {
     self.dropPrevJob();
     self.download_job = job;
     self.download = .downloading;
-    log.info("downloading {s}", .{name});
+    self.download_automatic = kind == .automatic;
+    log.info("downloading {s} ({t})", .{ name, kind });
+}
+
+/// Whether murrtty downloads a release a check finds by itself:
+/// `auto-update = download`, agreed to on this machine, in an installer
+/// copy.
+pub fn downloadsOn(self: *const Updates) bool {
+    return self.mode() == .download and self.state.consent and self.canDownload();
+}
+
+/// After a check: with downloads on, the release found downloads by itself.
+fn autoDownload(self: *Updates) void {
+    if (self.download != .none or self.download_job != null or !self.downloadsOn()) return;
+    self.startDownload(.automatic);
 }
 
 fn refuseNow(self: *Updates, why: update_verify.Refusal) void {
@@ -1046,6 +1083,7 @@ fn resetDownload(self: *Updates) void {
     self.download_total = 0;
     self.download_resumed_from = 0;
     self.download_noted = false;
+    self.download_automatic = false;
 }
 
 /// Stop the job in flight, keeping it (`prev_job`) until the next job has
@@ -1073,8 +1111,8 @@ pub fn cancelDownload(self: *Updates) void {
     self.notify();
 }
 
-/// The job's thread is done (`download_message`): a download, or Install
-/// Now's check.
+/// The job's thread is done (`download_message`): a download, or Restart to
+/// Update's check.
 pub fn downloadFinished(self: *Updates) void {
     const job = self.download_job orelse return;
     // A late message from a job let go of earlier.
@@ -1089,15 +1127,24 @@ pub fn downloadFinished(self: *Updates) void {
     self.download_resumed_from = job.resumed_from;
     self.download_received = job.received.load(.acquire);
     self.download_total = job.total.load(.acquire);
+    const automatic = self.download_automatic;
     self.download = switch (job.outcome) {
         .ready => .ready,
         .refused => .refused,
         .failed, .busy, .gone => .failed,
-        .cancelled => .none,
+        .cancelled, .metered => .none,
     };
     self.download_refusal = if (job.outcome == .refused) job.refusal else null;
-    // The pill warns until the window shows why.
-    self.download_noted = self.download == .refused or self.download == .failed;
+    // The pill warns until the window shows why. One murrtty started on
+    // its own fails quietly (the next check tries again); a refusal is
+    // always said.
+    self.download_noted = self.download == .refused or (self.download == .failed and !automatic);
+    if (automatic and self.download == .failed) self.download = .none;
+    if (automatic and self.download == .ready) self.announceReady();
+    // Downloads on, but this one couldn't go on by itself: the release is
+    // told of as available instead, once (the found notice was held for
+    // the download).
+    if (automatic and (job.outcome == .metered or job.outcome == .failed or job.outcome == .busy)) self.announceAvailable();
     log.info("update download: {t} refusal={?t} stage={t} status={} err={} from={} {}/{}", .{
         job.outcome, self.download_refusal, job.stage, job.status, job.error_code, job.resumed_from, self.download_received, self.download_total,
     });
@@ -1116,13 +1163,41 @@ pub fn downloadProgress(self: *Updates) void {
     self.app.updatesProgress();
 }
 
-/// Install Now: the installer checked again on the job's thread (its
+/// An automatic download is ready: told once, as Update Settings say (a
+/// notification whose click opens the Updates window, or the window
+/// itself), as the header bar's pill says it too.
+fn announceReady(self: *Updates) void {
+    if (self.state.on_found == .window and self.app.modal_depth == 0) return self.app.openUpdatesQuietly();
+    var title_buf: [96]u8 = undefined;
+    const title = std.fmt.bufPrint(&title_buf, "murrtty {s} is ready to install", .{self.downloadVersion()}) catch "A murrtty update is ready to install";
+    self.app.notifications.sendUpdate(.found, title, "It installs when you quit murrtty. Click to see it in the Updates window.");
+}
+
+/// A release whose automatic download couldn't go on: told of as available
+/// (announce), once per release.
+fn announceAvailable(self: *Updates) void {
+    const f = self.found orelse return;
+    if (self.state.available_told) |t| if (std.mem.eql(u8, t, f.version)) return;
+    self.change(f.version, struct {
+        fn set(u: *Updates, v: []const u8) void {
+            u.setString(&u.state.available_told, v);
+        }
+    }.set);
+    self.announce();
+}
+
+/// Restart to Update: the installer checked again on the job's thread (its
 /// release's kept sums and their signature, then its hash, read while it
-/// is held without write or delete sharing), then run from that hold
-/// (`verified`). It closes murrtty (Restart Manager, murrtty.iss's
-/// CloseApplications), which keeps its session for its next start.
-pub fn installNow(self: *Updates) void {
-    if (self.download != .ready or self.download_job != null or self.installer != null) return;
+/// is held without write or delete sharing); then, from the message loop
+/// (`restartNow`), murrtty asks as quitting asks, starts the installer
+/// from that hold to install silently and start murrtty again, and quits
+/// with its session kept.
+pub fn restartToUpdate(self: *Updates) void {
+    if (self.download != .ready or self.download_job != null or self.restart_held != null) return;
+    // The installer would close another murrtty of this folder, killing
+    // its programs: refused, and the window says why.
+    self.install_blocked = otherInstances();
+    if (self.install_blocked) return self.notify();
     defer self.notify();
     var name_buf: [128]u8 = undefined;
     const version = self.downloadVersion();
@@ -1150,7 +1225,8 @@ pub fn installNow(self: *Updates) void {
     self.download = .verifying;
 }
 
-/// Install Now's check is done: run the installer it holds, or say why not.
+/// Restart to Update's check is done: on to the quit, holding the
+/// installer, or say why not.
 fn verified(self: *Updates, job: *update_download.Job) void {
     defer self.notify();
     switch (job.outcome) {
@@ -1172,30 +1248,43 @@ fn verified(self: *Updates, job: *update_download.Job) void {
         self.download = .ready;
         return;
     };
-    // Held until the installer has started from it.
+    // Held until the installer has started from it (or the quit is
+    // declined): the quit's question comes from the message loop.
+    if (self.restart_held) |h| _ = c.CloseHandle(h);
+    self.restart_held = held;
+    self.app.request(.update_restart);
+}
+
+/// Restart to Update, from the message loop (App's requests): ask as
+/// quitting asks (the close confirmation, the configuration editor's
+/// changes); if the user goes on, start the installer from the file held
+/// since its check, silently and starting murrtty again, then quit with
+/// the session kept. Declined, the download is ready again.
+pub fn restartNow(self: *Updates) void {
+    const held = self.restart_held orelse return;
+    self.restart_held = null;
     defer _ = c.CloseHandle(held);
-    const alloc = self.app.core_app.alloc;
-    var arena: std.heap.ArenaAllocator = .init(alloc);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var name_buf: [128]u8 = undefined;
-    const version = self.downloadVersion();
-    const name = update_verify.setupName(&name_buf, version, update_verify.native_arch) orelse return self.resetDownload();
-    const folder = self.releaseFolder(a, version) orelse return;
-    const file = std.fmt.allocPrint(a, "{s}\\{s}", .{ folder, name }) catch return;
-    self.installs += 1;
-    log.info("installing {s}", .{name});
-    if (test_hooks.recordLaunch(&self.app.test_state, alloc, "install", file)) {
+    defer self.notify();
+    if (self.download != .verifying) return;
+    // A quit already on its way (queued before this): the update waits
+    // for the quit's install, if downloads are on.
+    if (self.app.quitting) {
         self.download = .ready;
         return;
     }
-    const file_w = text_util.utf16Lossy(a, file) catch return;
-    const folder_w = text_util.utf16Lossy(a, folder) catch return;
-    switch (runInstaller(a, file_w, folder_w)) {
-        .started => |process| {
-            self.installer = process;
-            self.download = .installing;
-            _ = c.SetTimer(self.app.wakeup_hwnd, install_timer_id, 1000, null);
+    self.install_blocked = otherInstances();
+    if (self.install_blocked) {
+        self.download = .ready;
+        return;
+    }
+    if (!self.app.quitAsked()) {
+        self.download = .ready;
+        return;
+    }
+    switch (self.runDownloaded(restart_arg)) {
+        .started => {
+            self.restarting = true;
+            self.app.quitConfirmed();
         },
         .failed => |err| {
             self.download = .ready;
@@ -1204,32 +1293,85 @@ fn verified(self: *Updates, job: *update_download.Job) void {
     }
 }
 
-/// The installer's timer: once it has ended with murrtty still running (it
-/// was cancelled, or failed), the download is ready again.
-pub fn installerTick(self: *Updates) void {
-    const process = self.installer orelse {
-        _ = c.KillTimer(self.app.wakeup_hwnd, install_timer_id);
+/// murrtty quits (the user's quit, or its last window closing), with
+/// downloads on: a ready installer runs silently and doesn't start murrtty
+/// again (macOS Ghostty's install on quit). Checked again here, holding
+/// it, on the UI thread: murrtty is leaving, nothing waits on it. Never
+/// at a session's end, nor after Restart to Update.
+pub fn installAtQuit(self: *Updates) void {
+    if (self.restarting or self.download != .ready or self.download_job != null) return;
+    if (self.mode() != .download or !self.state.consent) return;
+    // Never as Windows shuts down or logs off (the install could be cut
+    // short), nor while another murrtty of this folder runs (it would be
+    // closed, its programs with it).
+    if (self.app.session_ending or c.GetSystemMetrics(c.SM_SHUTTINGDOWN) != 0) return;
+    if (otherInstances()) {
+        log.info("not installing as murrtty quits: another murrtty runs from its folder", .{});
         return;
+    }
+    var arena: std.heap.ArenaAllocator = .init(self.app.core_app.alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var name_buf: [128]u8 = undefined;
+    const version = self.downloadVersion();
+    const name = update_verify.setupName(&name_buf, version, update_verify.native_arch) orelse return;
+    const folder = self.releaseFolder(a, version) orelse return;
+    const sums = Session.readFile(a, std.fmt.allocPrint(a, "{s}\\SHA256SUMS.txt", .{folder}) catch return) orelse return;
+    const signature = Session.readFile(a, std.fmt.allocPrint(a, "{s}\\SHA256SUMS.txt.sig", .{folder}) catch return) orelse return;
+    const root = self.path(a, "updates\\download") orelse return;
+    const expected = switch (update_verify.checkSums(self.keys[0..self.keys_len], sums, signature, name)) {
+        .ok => |digest| digest,
+        .refused => return removeRelease(a, root, version),
     };
-    if (c.WaitForSingleObject(process, 0) == c.WAIT_TIMEOUT) return;
-    _ = c.KillTimer(self.app.wakeup_hwnd, install_timer_id);
-    _ = c.CloseHandle(process);
-    self.installer = null;
-    if (self.download == .installing) self.download = .ready;
-    self.refresh();
-    self.notify();
+    const file_w = text_util.utf16Lossy(a, std.fmt.allocPrint(a, "{s}\\{s}", .{ folder, name }) catch return) catch return;
+    const held = update_download.hashHeld(file_w) orelse return;
+    if (!std.mem.eql(u8, &held.digest, &expected)) {
+        _ = c.CloseHandle(held.held);
+        return removeRelease(a, root, version);
+    }
+    defer _ = c.CloseHandle(held.held);
+    log.info("installing {s} as murrtty quits", .{name});
+    _ = self.runDownloaded("");
 }
 
-const Started = union(enum) { started: c.HANDLE, failed: u32 };
+const Started = union(enum) { started, failed: u32 };
+
+/// Run the downloaded installer with `silent_args` and `extra`, or record
+/// it under the test hooks. Its caller holds the file.
+fn runDownloaded(self: *Updates, extra: []const u8) Started {
+    const alloc = self.app.core_app.alloc;
+    var arena: std.heap.ArenaAllocator = .init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var name_buf: [128]u8 = undefined;
+    const version = self.downloadVersion();
+    const name = update_verify.setupName(&name_buf, version, update_verify.native_arch) orelse return .{ .failed = 2 };
+    const folder = self.releaseFolder(a, version) orelse return .{ .failed = 2 };
+    const file = std.fmt.allocPrint(a, "{s}\\{s}", .{ folder, name }) catch return .{ .failed = 8 };
+    // The restarted murrtty keeps this one's class (murrtty.iss passes it
+    // on), so its session comes back.
+    const class_arg: []const u8 = if (extra.len > 0) if (self.app.config.class) |cls| (if (classOk(cls)) std.fmt.allocPrint(a, " \"/class={s}\"", .{cls}) catch "" else "") else "" else "";
+    const args = std.fmt.allocPrint(a, "{s}{s}{s}", .{ silent_args, extra, class_arg }) catch return .{ .failed = 8 };
+    self.installs += 1;
+    log.info("starting {s}{s}", .{ name, args });
+    const recorded = std.fmt.allocPrint(a, "{s}{s}", .{ file, args }) catch return .{ .failed = 8 };
+    if (test_hooks.recordLaunch(&self.app.test_state, alloc, "install", recorded)) return .started;
+    const file_w = text_util.utf16Lossy(a, file) catch return .{ .failed = 8 };
+    const folder_w = text_util.utf16Lossy(a, folder) catch return .{ .failed = 8 };
+    const args_w = text_util.utf16Lossy(a, args) catch return .{ .failed = 8 };
+    return runInstaller(a, file_w, folder_w, args_w);
+}
 
 /// Run the installer, in the user's own environment (as Explorer starts a
 /// program: nothing of murrtty's reaches it, or the murrtty it starts);
 /// outside murrtty's job where that is allowed.
-fn runInstaller(a: Allocator, file: [:0]const u16, dir: [:0]const u16) Started {
+fn runInstaller(a: Allocator, file: [:0]const u16, dir: [:0]const u16, args: []const u16) Started {
     var cmd: std.ArrayList(u16) = .empty;
     cmd.append(a, '"') catch return .{ .failed = 8 };
     cmd.appendSlice(a, file) catch return .{ .failed = 8 };
-    cmd.appendSlice(a, &.{ '"', 0 }) catch return .{ .failed = 8 };
+    cmd.append(a, '"') catch return .{ .failed = 8 };
+    cmd.appendSlice(a, args) catch return .{ .failed = 8 };
+    cmd.append(a, 0) catch return .{ .failed = 8 };
     var env: ?*anyopaque = null;
     var token: c.HANDLE = undefined;
     if (c.OpenProcessToken(c.GetCurrentProcess(), c.TOKEN_QUERY | c.TOKEN_DUPLICATE | c.TOKEN_IMPERSONATE, &token) != 0) {
@@ -1246,6 +1388,13 @@ fn runInstaller(a: Allocator, file: [:0]const u16, dir: [:0]const u16) Started {
     const cmd_z: [*:0]u16 = @ptrCast(cmd.items.ptr);
     var ok = c.CreateProcessW(file.ptr, cmd_z, null, null, c.FALSE, flags | c.CREATE_BREAKAWAY_FROM_JOB, env, dir.ptr, &si, &pi);
     if (ok == 0 and c.GetLastError() == c.ERROR_ACCESS_DENIED) {
+        // murrtty's job refuses to let it go. One that ends its processes
+        // when it closes could stop the installer part way once murrtty
+        // quits: not then.
+        if (jobKillsOnClose()) {
+            log.warn("the installer not started: murrtty's job would end it", .{});
+            return .{ .failed = c.ERROR_ACCESS_DENIED };
+        }
         ok = c.CreateProcessW(file.ptr, cmd_z, null, null, c.FALSE, flags, env, dir.ptr, &si, &pi);
     }
     if (ok == 0) {
@@ -1254,7 +1403,50 @@ fn runInstaller(a: Allocator, file: [:0]const u16, dir: [:0]const u16) Started {
         return .{ .failed = if (err == 0) 1 else err };
     }
     if (pi.hThread) |h| _ = c.CloseHandle(h);
-    return if (pi.hProcess) |h| .{ .started = h } else .{ .failed = 1 };
+    if (pi.hProcess) |h| _ = c.CloseHandle(h);
+    return .started;
+}
+
+/// Whether murrtty runs in a job that ends its processes when it closes.
+fn jobKillsOnClose() bool {
+    var info: c.JOBOBJECT_BASIC_LIMIT_INFORMATION = .{};
+    if (c.QueryInformationJobObject(null, c.JobObjectBasicLimitInformation, &info, @sizeOf(c.JOBOBJECT_BASIC_LIMIT_INFORMATION), null) == 0) return false;
+    return info.LimitFlags & c.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0;
+}
+
+/// A class name the restarted murrtty can be given on a command line.
+fn classOk(cls: []const u8) bool {
+    if (cls.len == 0 or cls.len > 128) return false;
+    for (cls) |ch| if (!(std.ascii.isAlphanumeric(ch) or ch == '.' or ch == '-' or ch == '_')) return false;
+    return true;
+}
+
+/// Whether another murrtty runs from this one's executable (another
+/// instance, another class): an installer would close it, and its programs
+/// with it.
+fn otherInstances() bool {
+    var own: [4096]u16 = undefined;
+    const own_len = c.GetModuleFileNameW(null, &own, own.len);
+    if (own_len == 0 or own_len >= own.len) return false;
+    const snap = c.CreateToolhelp32Snapshot(c.TH32CS_SNAPPROCESS, 0);
+    if (snap == c.INVALID_HANDLE_VALUE) return false;
+    defer _ = c.CloseHandle(snap);
+    const me = c.GetCurrentProcessId();
+    const exe_name = std.unicode.utf8ToUtf16LeStringLiteral("murrtty.exe");
+    var entry: c.PROCESSENTRY32W = .{};
+    var more = c.Process32FirstW(snap, &entry) != 0;
+    while (more) : (more = c.Process32NextW(snap, &entry) != 0) {
+        if (entry.th32ProcessID == me) continue;
+        const name = std.mem.sliceTo(&entry.szExeFile, 0);
+        if (c.CompareStringOrdinal(name.ptr, @intCast(name.len), exe_name.ptr, exe_name.len, c.TRUE) != 2) continue;
+        const process = c.OpenProcess(c.PROCESS_QUERY_LIMITED_INFORMATION, c.FALSE, entry.th32ProcessID) orelse continue;
+        defer _ = c.CloseHandle(process);
+        var image: [4096]u16 = undefined;
+        var len: c.DWORD = image.len;
+        if (c.QueryFullProcessImageNameW(process, 0, &image, &len) == 0) continue;
+        if (c.CompareStringOrdinal(&image, @intCast(len), &own, @intCast(own_len), c.TRUE) == 2) return true;
+    }
+    return false;
 }
 
 /// The download follows the release found: one for another release (one
@@ -1262,7 +1454,7 @@ fn runInstaller(a: Allocator, file: [:0]const u16, dir: [:0]const u16) Started {
 /// and a verified installer kept from an earlier run (by any murrtty)
 /// shows as ready.
 fn syncDownload(self: *Updates) void {
-    if (self.download == .verifying or self.download == .installing) return;
+    if (self.download == .verifying) return;
     if (self.download_job != null) {
         const still = if (self.found) |f| std.mem.eql(u8, self.downloadVersion(), f.version) else false;
         if (!still) {

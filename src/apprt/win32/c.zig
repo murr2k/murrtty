@@ -1627,6 +1627,40 @@ pub const THREAD_MODE_BACKGROUND_BEGIN = 0x00010000;
 pub extern "kernel32" fn GetCurrentThread() callconv(.winapi) HANDLE;
 pub extern "kernel32" fn SetThreadPriority(HANDLE, c_int) callconv(.winapi) BOOL;
 pub extern "kernel32" fn GetCurrentPackageFullName(*u32, ?[*]u16) callconv(.winapi) c_long;
+// Installing an update (roadmap 7.6b): other murrttys running from the same
+// folder, murrtty's job, and Windows shutting down.
+pub const TH32CS_SNAPPROCESS = 0x00000002;
+pub const PROCESSENTRY32W = extern struct {
+    dwSize: DWORD = @sizeOf(PROCESSENTRY32W),
+    cntUsage: DWORD = 0,
+    th32ProcessID: DWORD = 0,
+    th32DefaultHeapID: usize = 0,
+    th32ModuleID: DWORD = 0,
+    cntThreads: DWORD = 0,
+    th32ParentProcessID: DWORD = 0,
+    pcPriClassBase: c_long = 0,
+    dwFlags: DWORD = 0,
+    szExeFile: [260]u16 = @splat(0),
+};
+pub extern "kernel32" fn CreateToolhelp32Snapshot(DWORD, DWORD) callconv(.winapi) HANDLE;
+pub extern "kernel32" fn Process32FirstW(HANDLE, *PROCESSENTRY32W) callconv(.winapi) BOOL;
+pub extern "kernel32" fn Process32NextW(HANDLE, *PROCESSENTRY32W) callconv(.winapi) BOOL;
+pub extern "kernel32" fn QueryFullProcessImageNameW(HANDLE, DWORD, [*]u16, *DWORD) callconv(.winapi) BOOL;
+pub const JOBOBJECT_BASIC_LIMIT_INFORMATION = extern struct {
+    PerProcessUserTimeLimit: i64 = 0,
+    PerJobUserTimeLimit: i64 = 0,
+    LimitFlags: DWORD = 0,
+    MinimumWorkingSetSize: usize = 0,
+    MaximumWorkingSetSize: usize = 0,
+    ActiveProcessLimit: DWORD = 0,
+    Affinity: usize = 0,
+    PriorityClass: DWORD = 0,
+    SchedulingClass: DWORD = 0,
+};
+pub const JobObjectBasicLimitInformation = 2;
+pub const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+pub extern "kernel32" fn QueryInformationJobObject(?HANDLE, c_int, *anyopaque, DWORD, ?*DWORD) callconv(.winapi) BOOL;
+pub const SM_SHUTTINGDOWN = 0x2000;
 pub const BY_HANDLE_FILE_INFORMATION = extern struct {
     dwFileAttributes: DWORD,
     ftCreationTime: FILETIME,

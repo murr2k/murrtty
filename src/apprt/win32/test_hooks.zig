@@ -1547,7 +1547,7 @@ fn dumpUpdates(alloc: Allocator, out: *std.ArrayList(u8), u: *const Updates) !vo
     try out.print(alloc, "],\"install\":\"{t}\",\"arch\":\"{t}\",\"can_download\":{},\"downloads\":{d},\"installs\":{d},\"install_error\":{d}", .{
         u.install, @import("update_verify.zig").native_arch, u.canDownload(), u.downloads, u.installs, u.install_error,
     });
-    try out.print(alloc, ",\"download\":{{\"state\":\"{t}\",\"active\":{},\"noted\":{},\"version\":", .{ u.download, u.download_job != null, u.download_noted });
+    try out.print(alloc, ",\"downloads_on\":{},\"download\":{{\"state\":\"{t}\",\"active\":{},\"automatic\":{},\"noted\":{},\"version\":", .{ u.downloadsOn(), u.download, u.download_job != null, u.download_automatic, u.download_noted });
     try writeString(alloc, out, u.downloadVersion());
     if (u.download_outcome) |o| try out.print(alloc, ",\"outcome\":\"{t}\"", .{o}) else try out.appendSlice(alloc, ",\"outcome\":null");
     if (u.download_refusal) |r| try out.print(alloc, ",\"refusal\":\"{t}\"", .{r}) else try out.appendSlice(alloc, ",\"refusal\":null");

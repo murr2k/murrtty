@@ -714,8 +714,13 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
   Update Settings say, in a notification or the Updates window. In a copy
   the installer installed, Download fetches the new installer from GitHub,
   and murrtty runs it only once its release's checksums carry murrtty's
-  signature and the installer matches them (anything else is deleted);
-  other copies open the release's page. Development builds never check.
+  signature and the installer matches them (anything else is deleted):
+  Restart to Update installs it and starts murrtty again, with your
+  session. With Ghostty's `auto-update = download` (Update Settings'
+  Download updates automatically, which asks first), such a copy downloads
+  a release by itself and installs it when you quit murrtty. Scoop and
+  winget copies show their update command; others open the release's page.
+  Development builds never check.
 
 ## How it works
 

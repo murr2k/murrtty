@@ -82,6 +82,8 @@ pub const Outcome = enum {
     busy,
     /// `verify`: the kept files aren't there any more.
     gone,
+    /// An automatic download on a metered connection: nothing was sent.
+    metered,
 };
 
 /// Where a failed download stopped. `answer`: what came wasn't the file
@@ -99,6 +101,11 @@ pub const Options = struct {
     /// The release's folder, made by the caller.
     dir: []const u8,
     keys: []const [32]u8,
+    /// A download murrtty started on its own (`auto-update = download`):
+    /// it waits on a metered connection; `metered` stands in for the
+    /// connection's cost (the GUI tests').
+    automatic: bool = false,
+    metered: ?bool = null,
     /// A cancelled job whose thread may still hold the folder's files: this
     /// one waits for it to end first. The caller may let go of it after
     /// `start` returns.
@@ -124,6 +131,8 @@ pub const Job = struct {
 
     // What to do, fixed at the start.
     mode: Mode,
+    automatic: bool,
+    metered_override: ?bool,
     signature_url: []const u8,
     sums_url: []const u8,
     file_url: []const u8,
@@ -188,6 +197,8 @@ pub const Job = struct {
             .done_msg = opts.done_msg,
             .progress_msg = opts.progress_msg,
             .mode = opts.mode,
+            .automatic = opts.automatic,
+            .metered_override = opts.metered,
             .signature_url = try a.dupe(u8, opts.signature_url),
             .sums_url = try a.dupe(u8, opts.sums_url),
             .file_url = try a.dupe(u8, opts.file_url),
@@ -291,6 +302,10 @@ pub const Job = struct {
         }
         switch (self.mode) {
             .download => {
+                if (self.automatic and (self.metered_override orelse update_fetch.isMetered())) {
+                    self.outcome = .metered;
+                    return;
+                }
                 const api = Api.load() orelse return self.fail(.load, c.GetLastError());
                 const session = api.Open(c.L(update_fetch.user_agent), update_fetch.WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, null, null, 0) orelse
                     return self.fail(.open, c.GetLastError());
@@ -804,8 +819,9 @@ fn readSmall(a: std.mem.Allocator, path: [:0]const u16, max: usize) ?[]u8 {
 
 /// The SHA-256 of the file at `path`, read while `held`: opened without
 /// write or delete sharing, so nothing can change it until `held` is
-/// closed (the UI runs the installer, then closes it).
-fn hashHeld(path: [:0]const u16) ?struct { digest: [32]u8, held: c.HANDLE } {
+/// closed (the installer is started, then it is closed). Updates' install
+/// on quit uses it directly: murrtty is leaving, nothing waits.
+pub fn hashHeld(path: [:0]const u16) ?struct { digest: [32]u8, held: c.HANDLE } {
     const file = c.CreateFileW(path.ptr, c.GENERIC_READ, c.FILE_SHARE_READ, null, c.OPEN_EXISTING, c.FILE_ATTRIBUTE_NORMAL, null);
     if (file == c.INVALID_HANDLE_VALUE) return null;
     var size: i64 = 0;
