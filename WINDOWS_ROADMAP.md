@@ -4408,6 +4408,29 @@ dialog's Turn On then writes nothing to the file); Download opens the
 release's page (only `releases/tag/<tag>` pages of murrtty's own
 repository). Entry points: Check for Updates in the main menu, system menu and
 tray, About's Updates row, `check_for_updates` (now offered by the palette).
+*7.6b planned 2026-11-03, the owner's picks* (the steps and plan:
+https://claude.ai/artifact/9PL9DKRR1DTT1xEP5Rof3c). Two Ed25519 key pairs
+the owner makes with Git for Windows' OpenSSL (`murrtty-update`, whose
+private half is the `UPDATE_SIGNING_KEY` secret of a `release`
+environment that only `murrtty-v*` tags reach, and `murrtty-update-spare`,
+kept offline to replace it); both public halves built into murrtty. The
+release job signs `SHA256SUMS.txt` once, a plain Ed25519 signature
+(`openssl pkeyutl -sign -rawin`, 64 bytes, `SHA256SUMS.txt.sig`, checked
+against the repository's public key before upload and attested), rather
+than minisign's format, which would need a tool or a converted key for
+the same protection; the list names each release's sums and signature.
+murrtty downloads on the update thread (resumable, background priority,
+waiting on a metered connection, only from murrtty's own releases) and
+uses a file only if the signature verifies with a built-in key (Zig's
+Ed25519), its SHA-256 matches the signed sums and its version is newer.
+Installer copies first: Restart to Update runs the new installer
+silently, which starts murrtty again, and `auto-update = download`
+installs when murrtty quits (Sparkle's way); zip copies keep the release
+page, Scoop and winget copies are shown their command. Rollout
+percentages, zip copies updating in place and Authenticode checks
+(7.6c) come later. Steps: 7.6b-1 the signing and the list's fields (once
+the public keys are in), 7.6b-2 downloading and checking, 7.6b-3
+installing. 0.6.0 is the first release that can update itself.
 *7.6a step 3, 2026-11-03:* macOS Ghostty's update pill in the header bar
 (before the tab list's button, the title and bells making way; in the tab
 row with `gtk-titlebar-style = tabs`): hidden when there is nothing to say;
