@@ -34,6 +34,7 @@ pub const all = [_]Scenario{
     .{ .name = "close-all", .about = "close-all asks and disables the other windows meanwhile", .run = closeAll },
     .{ .name = "window-size", .about = "window-width/height give the exact grid", .run = windowSize },
     .{ .name = "links", .about = "Ctrl+click links: programs and UNC paths blocked, web opens, other schemes ask", .run = links },
+    .{ .name = "mixed-width", .about = "150 PowerShell lines, each a color, a wide character, an emoji, an OSC 8 link and bold+underline (the print fast path merged from Ghostty's main): every row reads back as written, and a link Ctrl+clicked opens its own address, on the last line, scrolled back and after a resize", .run = mixedWidth },
     .{ .name = "links-open", .about = "links really open: a test protocol and file type registered in HKCU", .run = linksOpen },
     .{ .name = "present", .about = "background-opacity doesn't darken an opaque (toggled) window; exact background pixels; translucent, premultiplied", .run = present },
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
@@ -1172,6 +1173,106 @@ const links_command =
     "Write-Host ('LNK-'+'NUL ./nul');" ++
     "Write-Host ('LNK-'+'LONG ./'+('a'*300)+'.txt');" ++
     "Write-Host ('LNK-'+'END')";
+
+/// mixed-width's lines: PowerShell prints 150, each in one of seven
+/// colors, with a wide character (U+884C), an emoji (U+1F642), an OSC 8
+/// link labelled MW-<n> to https://example.com/mw/<n>, bold+underline
+/// text and a reset, then MW-DONE. The non-ASCII characters are made at
+/// run time, so the typed command is ASCII.
+const mixed_width_command =
+    "cls;$e=[char]27;$t=\"$e\\\";$w=[char]0x884C;$m=[char]::ConvertFromUtf32(0x1F642);" ++
+    "1..150|%{Write-Host \"$e[3$($_%7+1)m$w $_ $m $e]8;;https://example.com/mw/$_${t}MW-$_$e]8;;$t $e[1;4mBU$e[0m end\"};" ++
+    "Write-Host ('MW-'+'DONE')";
+
+const mixed_wide = "\u{884C}";
+const mixed_emoji = "\u{1F642}";
+
+/// The rows of the screen that are mixed-width's lines: each must read
+/// back exactly as written (so every cell after the wide character and
+/// the emoji is where it belongs); returns the lowest and highest line
+/// numbers shown.
+fn mixedRows(h: *Harness, g: *Harness.Ghostty, what: []const u8) ![2]u32 {
+    var d = try h.dump(g);
+    defer d.deinit();
+    const t = d.value.windows[0].tabs[d.value.windows[0].active];
+    var lo: u32 = std.math.maxInt(u32);
+    var hi: u32 = 0;
+    var count: usize = 0;
+    var lines = std.mem.splitScalar(u8, t.text orelse "", '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, " \r");
+        if (!std.mem.startsWith(u8, line, mixed_wide ++ " ")) continue;
+        const rest = line[mixed_wide.len + 1 ..];
+        const sp = std.mem.indexOfScalar(u8, rest, ' ') orelse return h.fail("{s}: a row without its number: '{s}'", .{ what, line });
+        const n = std.fmt.parseInt(u32, rest[0..sp], 10) catch return h.fail("{s}: a row with a bad number: '{s}'", .{ what, line });
+        const want = try std.fmt.allocPrint(h.alloc, mixed_wide ++ " {d} " ++ mixed_emoji ++ " MW-{d} BU end", .{ n, n });
+        defer h.alloc.free(want);
+        try h.expect(std.mem.eql(u8, line, want), "{s}: line {d} reads '{s}' (expected '{s}')", .{ what, n, line, want });
+        lo = @min(lo, n);
+        hi = @max(hi, n);
+        count += 1;
+    }
+    try h.expect(count >= 10, "{s}: {d} of the lines on screen (expected a screenful)", .{ what, count });
+    return .{ lo, hi };
+}
+
+/// Ctrl+click line `n`'s link (its label starts after the wide character,
+/// the number and the emoji: 2 + 1 + digits + 1 + 2 + 1 cells) and expect
+/// the `count`th recorded launch to be its own address.
+fn clickMixedLink(h: *Harness, g: *Harness.Ghostty, surf: w.HWND, n: u32, count: usize) !void {
+    const label = try std.fmt.allocPrint(h.alloc, mixed_wide ++ " {d} ", .{n});
+    defer h.alloc.free(label);
+    const digits: u32 = @intCast(std.fmt.count("{d}", .{n}));
+    try ctrlClickRow(h, g, surf, label, 2 + 1 + digits + 1 + 2 + 1 + 1);
+    const want = try std.fmt.allocPrint(h.alloc, "default https://example.com/mw/{d}", .{n});
+    defer h.alloc.free(want);
+    try expectLaunch(h, g, count, want);
+}
+
+/// Text Ghostty's main prints through its reworked fast path (merged
+/// 2026-11-05: styles packed in 128 bits, mixed narrow and wide cells and
+/// open hyperlinks in the batched print, blank rows skipped): mixed-width
+/// lines read back cell for cell, and the hyperlink map follows them
+/// through scrolling back and a resize. Links are recorded, not opened.
+fn mixedWidth(h: *Harness) anyerror!void {
+    var g = try start(h, "mixed-width", "command = powershell.exe -NoLogo -NoProfile\n", "PS ");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    try h.typeText(surf, mixed_width_command);
+    h.enter(surf);
+    try h.waitText(&g, "MW-DONE", 1, 30000);
+
+    const printed = try mixedRows(h, &g, "printed");
+    try h.expect(printed[1] == 150, "the last line shows (up to {d})", .{printed[1]});
+    try clickMixedLink(h, &g, surf, 150, 1);
+
+    // Scrolled back: earlier lines, each link still its own.
+    h.wheel(surf, 100, 100, 10);
+    var back = printed;
+    var waited: u32 = 0;
+    while (waited <= 5000) : (waited += 200) {
+        w.Sleep(200);
+        back = try mixedRows(h, &g, "scrolled back");
+        if (back[0] < printed[0]) break;
+    }
+    try h.expect(back[0] < printed[0], "scrolling back shows earlier lines (from {d}, was {d})", .{ back[0], printed[0] });
+    try clickMixedLink(h, &g, surf, back[0] + 1, 2);
+
+    // Back at the bottom, then a narrower window: the rows reflow (a
+    // pane just laid out takes a moment before a click).
+    h.wheel(surf, 100, 100, -60);
+    waited = 0;
+    while (waited <= 5000) : (waited += 200) {
+        w.Sleep(200);
+        if ((try mixedRows(h, &g, "scrolled down"))[1] == 150) break;
+    }
+    try h.dragResize(&g, -200, 0);
+    w.Sleep(800);
+    const resized = try mixedRows(h, &g, "resized");
+    try h.expect(resized[1] == 150, "after the resize the last line shows (up to {d})", .{resized[1]});
+    try clickMixedLink(h, &g, surf, 149, 3);
+    try quit(h, &g, surf);
+}
 
 /// Ctrl+click the cell `col` of the row that starts with `label`.
 fn ctrlClickRow(h: *Harness, g: *Harness.Ghostty, surf: w.HWND, label: []const u8, col: u32) !void {

@@ -3864,6 +3864,12 @@ on the push and was disabled on both repositories. GTK's changes need
 nothing here (its split-ratio fix is GtkPaned's own). The unit tests
 (4,388 passed), the GUI suite, the ARM64 compile and `-Package` passed,
 and desktop CI's render-parity checked the merge before OpenGL retired.
+The reworked print path (styles packed in 128 bits, mixed narrow and
+wide cells and open hyperlinks in the batched print) got a scenario of
+its own the next day, `mixed-width`: 150 PowerShell lines of color, a
+wide character, an emoji, a link and bold+underline read back cell for
+cell, and their links open their own addresses scrolled back and after a
+resize.
 
 **7.2 Full CI, M.** Extend 0.11: run on pushes and pull requests (once
 decisions 6 and 8 allow the minutes), upload
