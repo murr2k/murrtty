@@ -4271,6 +4271,22 @@ go-ahead).
   41865353515). `version` then went to 0.7.0, the Scoop and winget
   manifests to 0.6.0; the comparison page's automatic updates read
   "yes, opt-in".
+  *0.7.0 released 2026-11-05* (the owner's go-ahead): Ghostty's main of
+  2026-11-04 (7.1), OpenGL retired (7.8 step 7: the x64 zip 19.8 MB, was
+  40.6; the deps zip 64.8 MB, was 146.7), a selection that always shows
+  (F3), `mixed-width` and the bug report form. The on-screen run was
+  skipped (the owner's choice, at the office); desktop CI (119 of 129)
+  and the hosted GUI suite and unit tests on x64 and ARM64 (124 and 122
+  of 130, run 42116934966) passed on `a6764c922`. `murrtty-v0.7.0` on
+  `a6764c922` (run 42126439759): packages, installers and their tests on
+  both architectures, the owner approved the sign job. Here the files
+  matched their sums, Defender found nothing, the attestations (a zip,
+  both installers, the signature) verified, the signature verified with
+  `murrtty-update.pub`, and the x64 build said `murrtty 0.7.0, based on
+  Ghostty 1.4.1-dev`, channel stable, with no `bin\mesa`. It is the
+  first release a 0.6.0 installer copy can update to itself. 38 commits
+  behind Ghostty's main then. `version` went to 0.8.0, the Scoop and
+  winget manifests to 0.7.0.
 
 **7.5 Crash reporting, M.** Sentry's in-process (`inproc`) backend on Windows:
 - `src/build/SharedDeps.zig` hardcodes the `breakpad` backend, and the vendored
