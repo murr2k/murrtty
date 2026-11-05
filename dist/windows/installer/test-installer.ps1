@@ -6,8 +6,8 @@ runner: it changes this user's profile (Start menu, HKCU, LOCALAPPDATA).
 
 .DESCRIPTION
 Checks, each printed as it passes:
-- a silent install exits 0 and puts murrtty, ConPTY, Mesa, share\ and the
-  license files in %LOCALAPPDATA%\Programs\murrtty, and the installed
+- a silent install exits 0 and puts murrtty, ConPTY, share\ and the
+  license files in %LOCALAPPDATA%\Programs\murrtty (no bin\mesa), and the installed
   murrtty reports -Version;
 - the Start menu shortcut starts it with --gtk-single-instance=true and
   carries the AppUserModelID murrtty.murrtty; no desktop shortcut (an
@@ -118,10 +118,12 @@ Set-Content -LiteralPath $marker -Value 'kept'
 
 Write-Host "==> Installing $Setup"
 Install (Join-Path $work 'install.log')
-foreach ($rel in @('bin\murrtty.exe', 'bin\conpty.dll', 'bin\OpenConsole.exe', 'bin\mesa\opengl32.dll',
+foreach ($rel in @('bin\murrtty.exe', 'bin\conpty.dll', 'bin\OpenConsole.exe',
         'share\ghostty\themes', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.txt', 'unins000.exe')) {
     Check (Test-Path -LiteralPath (Join-Path $app $rel)) "installed $rel"
 }
+# murrtty's software OpenGL (Mesa) retired with OpenGL (roadmap 7.8, step 7).
+Check (-not (Test-Path -LiteralPath (Join-Path $app 'bin\mesa'))) 'no bin\mesa (OpenGL retired)'
 $v = Run-Murrtty @('+version')
 Check ($v.Code -eq 0 -and $v.Text -match [regex]::Escape("murrtty $Version")) "the installed murrtty reports $Version"
 

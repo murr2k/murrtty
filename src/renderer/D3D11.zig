@@ -5,7 +5,8 @@
 //! composition and shown by a DirectComposition visual on the pane's
 //! window, under the window's own children (the layered overlays) and with
 //! per-pixel alpha. The frames are OpenGL's pixel for pixel: murrtty looks
-//! like GTK's app, which draws with OpenGL (render-parity checks it).
+//! like GTK's app, which draws with OpenGL (render-parity checked it
+//! against murrtty's own OpenGL renderer until that retired).
 pub const D3D11 = @This();
 
 const std = @import("std");
@@ -275,8 +276,9 @@ pub fn passDefaults(self: *const D3D11) RenderPass.Defaults {
     return .{ .raster = self.common.raster, .sampler = self.common.linear };
 }
 
-/// Put the frame into the pane's swap chain and present it (OpenGL.zig's
-/// presentWgl is the spec): the frame (premultiplied) over the opaque
+/// Put the frame into the pane's swap chain and present it (the WGL
+/// present pass murrtty's OpenGL renderer had until roadmap 7.8's step 7
+/// was its spec): the frame (premultiplied) over the opaque
 /// terminal background, or with its own alpha when the window is
 /// translucent, at the top left, the background where it doesn't reach
 /// (a resize under way); then the shapes; then the tests' read-back.

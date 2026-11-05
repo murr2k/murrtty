@@ -527,16 +527,13 @@ fn load(self: *Session) void {
     const a = arena.allocator();
     const path = self.fileName(a, ".json") catch return;
     const marker = self.fileName(a, ".restoring") catch return;
-    // Started again on murrtty's software OpenGL by a murrtty that found
-    // the marker and put the session aside itself (software_gl.zig).
-    const carried = if (self.app.software_start) |s| s.session_skipped else false;
-    if (carried or exists(a, marker)) {
+    if (exists(a, marker)) {
         self.skipped = true;
         self.skip_notice = true;
         // The session put aside may come back by hand: its histories stay.
         self.gc_hold = true;
         const aside = self.fileName(a, "-skipped.json") catch return;
-        if (!carried) _ = moveFile(a, path, aside);
+        _ = moveFile(a, path, aside);
         deleteFile(a, marker);
         log.warn("the last start crashed while restoring: its session is kept as {s}", .{aside});
         return;
@@ -613,8 +610,8 @@ pub fn restorePending(self: *Session) usize {
     for (parsed.value.windows[0..@min(parsed.value.windows.len, max_windows)], 0..) |sw, i| {
         if (sw.quick) continue;
         const w = self.restoreWindow(a, sw) catch |err| {
-            // Kept in what is saved, for the next start (no OpenGL now,
-            // say).
+            // Kept in what is saved, for the next start (no Direct3D 11
+            // device now, say).
             log.warn("a saved window wasn't restored err={}", .{err});
             self.unrestored.append(alloc, @intCast(i)) catch {};
             continue;
@@ -736,7 +733,7 @@ fn restoreTab(self: *Session, a: Allocator, window: *Window, st: SavedTab, gone:
     const first = leftmost(nodes, 0);
     made[first] = try self.makePane(a, nodes[first].pane.?, gone, window, null);
     const tab = window.activeTab() orelse return error.NoTab;
-    // A split that fails (a pane's OpenGL, say) leaves the tab with the
+    // A split that fails (a pane's renderer, say) leaves the tab with the
     // panes made so far, finished like a whole one.
     self.build(a, tab, nodes, 0, made, gone, 0) catch |err| {
         log.warn("a saved tab came back in part err={}", .{err});
@@ -1030,9 +1027,6 @@ fn notices(self: *Session) void {
     const window = for (self.app.windows.items) |w| {
         if (w.quick == null and w.tabs.items.len > 0) break w;
     } else return;
-    // On murrtty's software OpenGL, its notice takes this one along once
-    // the first frame is drawn (software_gl.tick): one toast, not two.
-    if (self.app.software_start) |s| if (!s.told) return;
     var buf: [400]u8 = undefined;
     const skip = self.takeSkipNotice(&buf);
     // Drawing in software (Direct3D 11's WARP, roadmap 7.8): with the
@@ -1107,8 +1101,8 @@ fn dragging(self: *const Session) bool {
 const Read = enum { fresh, cached };
 
 /// The snapshot, written if it differs from what was last. Nothing before
-/// murrtty has started: a start that fails (no OpenGL, its dialog's loop
-/// running the timer) leaves the file as it was.
+/// murrtty has started: a start that fails (no Direct3D 11 device, its
+/// dialog's loop running the timer) leaves the file as it was.
 fn save(self: *Session, read: Read) void {
     if (!self.app.started) return;
     const alloc = self.app.core_app.alloc;

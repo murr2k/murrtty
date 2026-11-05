@@ -247,6 +247,14 @@ pub fn init(b: *std.Build, versions: Versions) !Config {
         "The app runtime to use. Not all values supported on all platforms.",
     ) orelse RendererBackend.default(target.result, wasm_target);
 
+    // murrtty draws only with Direct3D 11 on Windows (roadmap 7.8, step 7
+    // retired its OpenGL there): Ghostty's OpenGL backend has no Windows
+    // context of its own.
+    if (target.result.os.tag == .windows and config.renderer != .d3d11) {
+        std.log.err("-Drenderer={t}: murrtty on Windows draws with Direct3D 11 only", .{config.renderer});
+        return error.UnsupportedRenderer;
+    }
+
     //---------------------------------------------------------------
     // Feature Flags
 

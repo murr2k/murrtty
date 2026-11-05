@@ -51,8 +51,7 @@ pub const State = if (enabled) struct {
     /// can't be read from outside (a DirectUIHWND draws them).
     dialog_heading: [128]u8 = undefined,
     dialog_heading_len: usize = 0,
-    /// Room for the longest (the OpenGL diagnosis' for Remote Desktop with
-    /// its note on murrtty's Mesa).
+    /// Room for a long one.
     dialog_body: [1024]u8 = undefined,
     dialog_body_len: usize = 0,
     /// Panes ignore WM_MOUSELEAVE (dump wparam 7): on the hidden desktop
@@ -439,7 +438,7 @@ pub fn dump(app: *App, wparam: c.WPARAM, lparam: c.LPARAM) c.LRESULT {
                 const state = &s.core_surface.renderer.api.present_state;
                 state.probe.store(0, .monotonic);
                 // Release: the present taking it sees what this thread set
-                // before (OpenGL.presentWgl).
+                // before (D3D11's present pass).
                 state.probe_point.store(point, .release);
                 redraw(s);
             }
@@ -915,13 +914,13 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
     } else try out.appendSlice(alloc, ",\"updates_window\":null");
     // Which ConPTY new panes get: the bundled one or Windows' own (2.6).
     try out.print(alloc, ",\"conpty\":\"{t}\"", .{@import("../../os/main.zig").conpty.get().source});
-    // The renderer this build draws with (roadmap 7.8): "opengl" or
-    // "d3d11"; with Direct3D 11, the first pane's adapter and whether it
-    // draws on the CPU (WARP, Microsoft's Basic Render Driver).
+    // The renderer this build draws with (roadmap 7.8): "d3d11", the first
+    // pane's adapter and whether it draws on the CPU (WARP, Microsoft's
+    // Basic Render Driver).
     {
         const build_config = @import("../../build_config.zig");
         try out.print(alloc, ",\"renderer\":\"{t}\"", .{build_config.renderer});
-        if (comptime build_config.renderer == .d3d11) {
+        {
             const D3D11 = @import("../../renderer.zig").D3D11;
             var name_buf: [256]u8 = undefined;
             var adapter: []const u8 = "";
@@ -944,15 +943,6 @@ fn write(app: *App, alloc: Allocator, out: *std.ArrayList(u8)) !void {
             try writeString(alloc, out, adapter);
             try out.print(alloc, ",\"software\":{}", .{software});
         }
-    }
-    // Which opengl32 is loaded ("" before any), what its first context
-    // reported, and why this murrtty runs on its software OpenGL ("" if it
-    // doesn't; roadmap 6.3b).
-    {
-        const wgl = @import("opengl").wgl;
-        try out.print(alloc, ",\"opengl\":\"{s}\",\"gl_renderer\":", .{if (wgl.loadedSource()) |s| @tagName(s) else ""});
-        try writeString(alloc, out, wgl.rendererText() orelse "");
-        try out.print(alloc, ",\"software_gl\":\"{s}\",\"startup_flags\":{d}", .{ if (app.software_start) |s| @tagName(s.kind) else "", app.startup_flags });
     }
     try out.print(alloc, ",\"osk\":{{\"asks\":{d},\"hr\":{d},\"done\":{}}},\"click_interval\":{d}", .{
         app.test_state.osk_asks,
@@ -1165,9 +1155,10 @@ fn writePanes(alloc: Allocator, out: *std.ArrayList(u8), tab: *Tab) !void {
             const grid = s.core_surface.size.grid();
             const present = &s.core_surface.renderer.api.present_state;
             // Whether text is selected (hasSelection takes the terminal's lock).
-            // The OpenGL contexts its renderer made (a new one after a
-            // driver reset, roadmap 6.3) and whether its context reports
-            // resets (robust).
+            // The Direct3D 11 devices its renderer made (a new one after a
+            // device loss, roadmap 6.3's recovery) and whether a loss is
+            // reported (robust; Direct3D always does). The names are from
+            // the OpenGL renderer it had before 7.8's step 7.
             try out.print(alloc, ",\"gl_contexts\":{d},\"gl_robust\":{}", .{
                 present.contexts.load(.monotonic),
                 present.robust.load(.monotonic),
@@ -1351,7 +1342,7 @@ fn redraw(s: *Surface) void {
     core.renderer_thread.wakeup.notify() catch {};
 }
 
-/// Spike S1 (roadmap): does a window drawn over a WGL surface stay clean
+/// Spike S1 (roadmap): does a window drawn over a rendered surface stay clean
 /// while output floods and the window resizes? One solid magenta overlay
 /// per pane, 200 x 40 pixels at 20 from the pane's top-right corner (where
 /// a search box goes), kept there as the pane moves and resizes.

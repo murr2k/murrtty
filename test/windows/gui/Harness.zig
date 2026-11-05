@@ -25,8 +25,6 @@ desktop: ?w.HDESK = null,
 desktop_name: ?[:0]u16 = null,
 dump_msg: w.UINT,
 verbose: bool = false,
-/// The renderer murrtty was built with (renderer()), once asked.
-renderer_cache: ?Renderer = null,
 /// Each launch's folder, for cleanup.
 launched: std.ArrayList([]u8) = .empty,
 /// This machine's setup as a golden samples folder (machineKey), once
@@ -275,9 +273,6 @@ pub const LaunchOptions = struct {
     wait_window: bool = true,
     /// Arguments after the program's name (quoted where they hold spaces).
     args: []const []const u8 = &.{},
-    /// Another murrtty.exe to start instead of the one under test (a full
-    /// path): `render-parity`'s other renderer.
-    exe: ?[]const u8 = null,
 };
 
 pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: LaunchOptions) !Ghostty {
@@ -307,8 +302,7 @@ pub fn launchWith(self: *Harness, name: []const u8, config: []const u8, opts: La
     const env = try self.environment(dir, dump_path, opts.env, opts.unset);
     defer alloc.free(env);
 
-    const exe: [:0]const u16 = if (opts.exe) |e| try std.unicode.utf8ToUtf16LeAllocZ(alloc, e) else self.exe;
-    defer if (opts.exe != null) alloc.free(exe);
+    const exe = self.exe;
 
     var cmdline: std.ArrayList(u16) = .empty;
     defer cmdline.deinit(alloc);
@@ -508,24 +502,6 @@ pub const CliResult = struct {
     }
 };
 
-/// Run murrtty with `args` (a CLI action, such as `+version`) in the run
-/// folder `name`, on the hidden desktop, with its stdout on a pipe, as
-/// PowerShell captures it, and its stderr (a Debug build's log) in
-/// murrtty.log there. Only those two handles are inherited. It gets 30 s
-/// to finish.
-/// The renderer murrtty was built with (roadmap 7.8), from +version's
-/// "renderer" line, asked once.
-pub const Renderer = enum { opengl, d3d11 };
-
-pub fn renderer(self: *Harness) Renderer {
-    if (self.renderer_cache) |r| return r;
-    var r = self.runCli("renderer", &.{"+version"}) catch return .opengl;
-    defer r.deinit();
-    const which: Renderer = if (std.mem.indexOf(u8, r.out, "D3D11") != null) .d3d11 else .opengl;
-    self.renderer_cache = which;
-    return which;
-}
-
 /// A MessageBox's text (its static control, id 0xFFFF), UTF-8.
 pub fn messageBoxText(self: *Harness, dlg: w.HWND) ![]u8 {
     const static = w.GetDlgItem(dlg, 0xFFFF) orelse return self.alloc.dupe(u8, "");
@@ -534,6 +510,11 @@ pub fn messageBoxText(self: *Harness, dlg: w.HWND) ![]u8 {
     return std.unicode.utf16LeToUtf8Alloc(self.alloc, buf[0..@intCast(@max(n, 0))]);
 }
 
+/// Run murrtty with `args` (a CLI action, such as `+version`) in the run
+/// folder `name`, on the hidden desktop, with its stdout on a pipe, as
+/// PowerShell captures it, and its stderr (a Debug build's log) in
+/// murrtty.log there. Only those two handles are inherited. It gets 30 s
+/// to finish.
 pub fn runCli(self: *Harness, name: []const u8, args: []const []const u8) !CliResult {
     return self.runCliWith(name, args, &.{});
 }
@@ -994,7 +975,8 @@ pub fn expect(self: *const Harness, ok: bool, comptime fmt: []const u8, args: an
 pub const SkipKind = enum {
     /// An opt-in whose switch is off (optIn), or a value it needs unset.
     opt_in,
-    /// Not for this build: the other renderer's.
+    /// Not for this build's configuration (none since the OpenGL
+    /// renderer retired, roadmap 7.8's step 7).
     build,
     /// This machine or session can't run it now: no display, a picture on
     /// the clipboard, a hot key taken, no room for two windows.
@@ -1936,24 +1918,13 @@ pub const Dump = struct {
     /// sent this run, the last answer, the release found and the list's
     /// versions, and the state file as murrtty last read or wrote it.
     updates: ?Updates = null,
-    /// The renderer the build draws with ("opengl", "d3d11"; 7.8), and
-    /// with Direct3D 11 the first pane's adapter and whether it draws on
-    /// the CPU.
+    /// The renderer the build draws with ("d3d11"; 7.8), the first pane's
+    /// adapter and whether it draws on the CPU.
     renderer: []const u8 = "",
     adapter: []const u8 = "",
     software: bool = false,
     /// The ConPTY new panes get: "bundled" or "system" (roadmap 2.6).
     conpty: []const u8 = "",
-    /// The opengl32 loaded ("system", "variable" for MURRTTY_OPENGL's,
-    /// "bundled" for murrtty's Mesa; "" before any), what its first context
-    /// reported (renderer, version), and why murrtty runs on its software
-    /// OpenGL ("" if it doesn't; a gl_diagnosis kind; roadmap 6.3b).
-    opengl: []const u8 = "",
-    gl_renderer: []const u8 = "",
-    software_gl: []const u8 = "",
-    /// STARTUPINFO's flags as murrtty was started (before its own
-    /// AppUserModelID changed them).
-    startup_flags: u32 = 0,
     /// show_on_screen_keyboard's requests and the last one's result
     /// (roadmap 6.5), and click-repeat-interval as murrtty has it.
     osk: struct { asks: u32 = 0, hr: i32 = 0, done: bool = false } = .{},
@@ -2301,9 +2272,9 @@ pub const Dump = struct {
         ime: ?struct { answered: bool, char: [2]i32, line: i32, doc: [4]i32, cand: [3]i32 } = null,
         /// Whether it takes drops (roadmap 5.8).
         drop_target: bool = false,
-        /// The OpenGL contexts its renderer made (one more after each
-        /// driver reset, roadmap 6.3), and whether its context reports
-        /// resets.
+        /// The Direct3D 11 devices its renderer made (one more after each
+        /// device loss, roadmap 6.3's recovery), and whether a loss is
+        /// reported (the names are from the OpenGL renderer it had).
         gl_contexts: u32 = 0,
         gl_robust: bool = false,
         /// Its font size in points, whether a binding set it (not
@@ -2411,8 +2382,8 @@ pub fn dump(self: *Harness, g: *const Ghostty) !std.json.Parsed(Dump) {
 /// captures don't.
 ///
 /// Asked twice: the first answer comes from the next present, whose frame
-/// may have read the terminal before the ask (a slow renderer, llvmpipe's,
-/// is often mid-frame); frames run one after another, so the second comes
+/// may have read the terminal before the ask (a slow renderer, WARP's, is
+/// often mid-frame); frames run one after another, so the second comes
 /// from a frame begun after the first answer.
 pub fn probe(self: *Harness, g: *const Ghostty, x: u32, y: u32) !u32 {
     _ = try self.probeOnce(g, null, x, y);
@@ -2845,11 +2816,12 @@ fn machineKey(self: *Harness, g: *const Ghostty) ![]const u8 {
     if (self.golden_key) |k| return k;
     var d = try self.dump(g);
     defer d.deinit();
-    const gpu = if (d.value.adapter.len > 0) d.value.adapter else d.value.gl_renderer;
+    const gpu = d.value.adapter;
     const dpi = w.GetDpiForWindow(try self.mainWindow(g));
     var name: std.ArrayList(u8) = .empty;
     errdefer name.deinit(self.alloc);
-    try name.print(self.alloc, "{d}-{t}-", .{ windowsBuild(), self.renderer() });
+    // "d3d11": the renderer, as in the keys recorded before OpenGL retired.
+    try name.print(self.alloc, "{d}-d3d11-", .{windowsBuild()});
     for (gpu[0..@min(gpu.len, 40)]) |c| try name.append(self.alloc, if (std.ascii.isAlphanumeric(c)) c else '_');
     try name.print(self.alloc, "-{d}dpi-{s}", .{ dpi, if (systemDark()) "dark" else "light" });
     if (w.IsUserAnAdmin() != 0) try name.appendSlice(self.alloc, "-admin");
@@ -2895,7 +2867,8 @@ pub fn capturePrint(self: *Harness, hwnd: w.HWND) !Image {
 
 /// A window's client area as it last painted it with GDI, read from its
 /// device context: current even where DWM hasn't composed it again (an
-/// off-screen window on a still screen), but without what OpenGL drew.
+/// off-screen window on a still screen), but without what the renderer
+/// drew.
 pub fn captureClient(self: *Harness, hwnd: w.HWND) !Image {
     var r: w.RECT = .{};
     _ = w.GetClientRect(hwnd, &r);

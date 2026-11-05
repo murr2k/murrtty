@@ -2,20 +2,16 @@
 pub const OpenGL = @This();
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const gl = @import("opengl");
 const egl = gl.egl;
-const wgl = gl.wgl;
 const shadertoy = @import("shadertoy.zig");
 const apprt = @import("../apprt.zig");
 const font = @import("../font/main.zig");
-const global = @import("../global.zig");
 const configpkg = @import("../config.zig");
 const rendererpkg = @import("../renderer.zig");
 const Renderer = rendererpkg.GenericRenderer(OpenGL);
 const Dmabuf = @import("Dmabuf.zig");
-const win32_present = @import("win32_present.zig");
 pub const Device = @import("opengl/Device.zig");
 
 pub const GraphicsAPI = OpenGL;
@@ -39,10 +35,6 @@ pub const swap_chain_count = 3;
 
 const log = std.log.scoped(.opengl);
 
-/// On Windows we render with WGL directly into the surface's window
-/// and present with SwapBuffers instead of exporting frames.
-const is_windows = builtin.target.os.tag == .windows;
-
 /// We require at least OpenGL 4.3
 pub const MIN_VERSION_MAJOR = 4;
 pub const MIN_VERSION_MINOR = 3;
@@ -55,59 +47,13 @@ blending: configpkg.Config.AlphaBlending,
 /// The shared render device.
 device: *const Device,
 
-egl_context: if (is_windows) void else *gl.egl.Context,
-
-/// The WGL state for the surface's window (Windows only).
-wgl_state: if (is_windows) Wgl else void,
-
-/// What the Windows runtime shares with the present, whichever API draws
-/// (win32_present.zig).
-present_state: if (is_windows) win32_present.State else void,
-
-const Wgl = struct {
-    hwnd: wgl.HWND,
-    hdc: wgl.HDC,
-    context: wgl.HGLRC,
-
-    /// A GPU driver reset (murrtty's roadmap 6.3). A robust context loses
-    /// itself on one, which `reset_status` (glGetGraphicsResetStatusARB,
-    /// loaded on the render thread) reports; the renderer then builds
-    /// itself again in a new context (`contextLost`, `replaceContext`,
-    /// `dropLostContext`). `lost` holds until a new one is made (`tries`
-    /// so far, the last at `last_try`, in milliseconds since boot);
-    /// `lost_context` is the old one until the renderer has released what
-    /// it made there. There is always a context current: the lost one
-    /// until another is made. The tests' faked reset, the contexts made
-    /// and whether this one is robust are in `present_state`.
-    reset_status: ?*const fn () callconv(.winapi) u32 = null,
-    lost: bool = false,
-    tries: u32 = 0,
-    last_try: u64 = 0,
-    lost_context: ?wgl.HGLRC = null,
-
-    /// The present pass's program and (empty) vertex array, made on the
-    /// render thread at the first present.
-    present: ?struct { program: gl.Program, vao: gl.VertexArray } = null,
-    /// Whether the window's back buffer stores sRGB (GL_FRAMEBUFFER_SRGB
-    /// then encodes on write), asked at the first present. A GPU driver's
-    /// is; Mesa's llvmpipe (murrtty's software OpenGL, 6.3b) gives a
-    /// linear one, which the present pass encodes for itself.
-    backbuffer_srgb: ?bool = null,
-
-    /// The shapes' program, made at the first present with shapes.
-    overlay_program: ?struct { program: gl.Program, vao: gl.VertexArray } = null,
-};
-
-pub const Overlay = win32_present.Overlay;
-pub const Background = win32_present.Background;
+egl_context: *gl.egl.Context,
 
 pub fn init(
     alloc: Allocator,
     device: *const Device,
     opts: rendererpkg.Options,
 ) !OpenGL {
-    if (comptime is_windows) return initWgl(alloc, device, opts);
-
     const display = device.display;
 
     // Bind to OpenGL API explicitly before we create the context,
@@ -140,72 +86,10 @@ pub fn init(
         .blending = opts.config.blending,
         .device = device,
         .egl_context = context,
-        .wgl_state = {},
-        .present_state = {},
-    };
-}
-
-/// Create a WGL context for the apprt surface's window. The window's
-/// pixel format is set here, on the main thread, before the render
-/// thread ever makes the context current.
-fn initWgl(
-    alloc: Allocator,
-    device: *const Device,
-    opts: rendererpkg.Options,
-) !OpenGL {
-    if (comptime !@hasDecl(apprt.Surface, "nativeWindow")) {
-        @compileError("the apprt must provide nativeWindow() for WGL rendering");
-    }
-
-    const hwnd: wgl.HWND = @ptrCast(opts.rt_surface.nativeWindow());
-    const hdc = wgl.GetDC(hwnd) orelse return error.WglGetDCFailed;
-    errdefer _ = wgl.ReleaseDC(hwnd, hdc);
-
-    try device.wgl_ext.setPixelFormat(hdc);
-    const created = try device.wgl_ext.createContext(
-        hdc,
-        MIN_VERSION_MAJOR,
-        MIN_VERSION_MINOR,
-        builtin.mode == .debug,
-    );
-    const context = created.handle;
-    errdefer _ = wgl.wglDeleteContext(context);
-
-    // Verify the context works, then release it so the render
-    // thread can make it current.
-    if (wgl.wglMakeCurrent(hdc, context) == 0) return error.WglMakeCurrentFailed;
-    wgl.noteRenderer();
-    _ = wgl.wglMakeCurrent(null, null);
-
-    return .{
-        .alloc = alloc,
-        .blending = opts.config.blending,
-        .device = device,
-        .egl_context = {},
-        .wgl_state = .{
-            .hwnd = hwnd,
-            .hdc = hdc,
-            .context = context,
-        },
-        // A pane opening in a translucent window presents so from its
-        // first frame (the win32 runtime's; an embedding host has none).
-        .present_state = .init(
-            if (@hasDecl(apprt.Surface, "translucent")) opts.rt_surface.translucent() else false,
-            created.robust,
-        ),
     };
 }
 
 pub fn deinit(self: *OpenGL) void {
-    if (comptime is_windows) {
-        _ = wgl.wglMakeCurrent(null, null);
-        if (self.wgl_state.lost_context) |old| _ = wgl.wglDeleteContext(old);
-        _ = wgl.wglDeleteContext(self.wgl_state.context);
-        _ = wgl.ReleaseDC(self.wgl_state.hwnd, self.wgl_state.hdc);
-        self.* = undefined;
-        return;
-    }
-
     self.device.display.releaseCurrent();
     self.egl_context.destroy(self.device.display) catch {};
     self.* = undefined;
@@ -316,133 +200,15 @@ fn prepareContext(getProcAddress: anytype) !void {
 /// function pointers so all subsequent GL work on this thread is valid.
 pub fn threadEnter(self: *OpenGL, surface: *apprt.Surface) !void {
     _ = surface;
-    if (comptime is_windows) {
-        const state = &self.wgl_state;
-        if (wgl.wglMakeCurrent(state.hdc, state.context) == 0) {
-            return error.WglMakeCurrentFailed;
-        }
-        try prepareContext(&wgl.getProcAddress);
-        state.reset_status = resetStatusFn(self.present_state.robust.load(.monotonic));
-
-        // DWM composites windowed GL output so there is no tearing
-        // without vsync, and blocking in SwapBuffers would only add
-        // input latency to the render thread.
-        if (self.device.wgl_ext.swapInterval) |swapInterval| _ = swapInterval(0);
-        return;
-    }
-
     try self.device.display.makeCurrent(null, null, self.egl_context);
     // Load our function pointers for this thread's threadlocal.
     try prepareContext(&gl.egl.getProcAddress);
-}
-
-/// glGetGraphicsResetStatusARB for a robust context (glad's GL 4.3 has no
-/// robustness), loaded with it current; null without.
-fn resetStatusFn(robust: bool) ?*const fn () callconv(.winapi) u32 {
-    if (!robust) return null;
-    const p = wgl.getProcAddress("glGetGraphicsResetStatusARB") orelse
-        wgl.getProcAddress("glGetGraphicsResetStatus") orelse return null;
-    return @ptrCast(p);
-}
-
-/// murrtty: whether the context was lost to a GPU driver reset (a robust
-/// one reports it), or a test faked one, and no new one was made yet. At
-/// each frame's start, on the render thread, with the context current.
-pub fn contextLost(self: *OpenGL) bool {
-    if (comptime !is_windows) return false;
-    const state = &self.wgl_state;
-    if (state.lost) return true;
-    const reset = if (self.present_state.fake_reset.swap(false, .acq_rel))
-        true
-    else if (state.reset_status) |status|
-        status() != 0
-    else
-        false;
-    if (!reset) return false;
-    log.warn("the OpenGL context was lost (a graphics driver reset); making a new one", .{});
-    state.lost = true;
-    return true;
-}
-
-/// murrtty: make a new context on the same window (its pixel format
-/// stays), current from now on, with GL loaded again from it. The lost one
-/// is kept for `dropLostContext`: the renderer releases what it made there
-/// first, here, where none of those names exist yet, so releasing deletes
-/// nothing. False if no new one could be made, or the last try was under
-/// a second ago: the lost one stays current (its calls do nothing), and
-/// the renderer draws nothing until a later try.
-pub fn replaceContext(self: *OpenGL) bool {
-    if (comptime !is_windows) return true;
-    const state = &self.wgl_state;
-    const now = wgl.GetTickCount64();
-    if (state.tries > 0 and now -% state.last_try < 1000) return false;
-    state.last_try = now;
-    state.tries +|= 1;
-    const created = self.device.wgl_ext.createContext(
-        state.hdc,
-        MIN_VERSION_MAJOR,
-        MIN_VERSION_MINOR,
-        builtin.mode == .debug,
-    ) catch |err| {
-        if (state.tries == 1) log.err("no new OpenGL context after the reset err={}; trying again each second", .{err});
-        return false;
-    };
-    if (wgl.wglMakeCurrent(state.hdc, created.handle) == 0) {
-        _ = wgl.wglMakeCurrent(state.hdc, state.context);
-        _ = wgl.wglDeleteContext(created.handle);
-        return false;
-    }
-    prepareContext(&wgl.getProcAddress) catch |err| {
-        log.err("could not load OpenGL in the new context err={}", .{err});
-        _ = wgl.wglMakeCurrent(state.hdc, state.context);
-        _ = wgl.wglDeleteContext(created.handle);
-        prepareContext(&wgl.getProcAddress) catch {};
-        return false;
-    };
-    // The present pass's programs go with the lost context.
-    state.present = null;
-    state.overlay_program = null;
-    state.lost_context = state.context;
-    state.context = created.handle;
-    self.present_state.robust.store(created.robust, .monotonic);
-    state.reset_status = resetStatusFn(created.robust);
-    state.lost = false;
-    state.tries = 0;
-    if (self.device.wgl_ext.swapInterval) |swapInterval| _ = swapInterval(0);
-    _ = self.present_state.contexts.fetchAdd(1, .monotonic);
-    log.info("made a new OpenGL context after the reset", .{});
-    return true;
-}
-
-/// murrtty: delete the context `replaceContext` replaced, and with it
-/// everything made in it.
-pub fn dropLostContext(self: *OpenGL) void {
-    if (comptime !is_windows) return;
-    const state = &self.wgl_state;
-    if (state.lost_context) |old| _ = wgl.wglDeleteContext(old);
-    state.lost_context = null;
 }
 
 /// Callback called by renderer.Thread when it exits. Called on the render
 /// thread; unbinds the context from this thread so it can be destroyed on
 /// the main thread.
 pub fn threadExit(self: *OpenGL) void {
-    if (comptime is_windows) {
-        if (self.wgl_state.present) |p| {
-            p.program.destroy();
-            p.vao.destroy();
-            self.wgl_state.present = null;
-        }
-        if (self.wgl_state.overlay_program) |o| {
-            o.program.destroy();
-            o.vao.destroy();
-            self.wgl_state.overlay_program = null;
-        }
-        _ = wgl.wglMakeCurrent(null, null);
-        gl.glad.unload();
-        return;
-    }
-
     self.device.display.releaseCurrent();
     gl.glad.unload();
 }
@@ -512,13 +278,7 @@ pub fn present(
     self: *OpenGL,
     target: Target,
     presentation_health: rendererpkg.Health,
-    background: Background,
 ) !ExportedFrame {
-    if (comptime is_windows) {
-        try self.presentWgl(target, background);
-        return .presented;
-    }
-
     // We only export DMABUFs when the apprt can present them.
     // Otherwise, use CPU buffers.
     if (presentation_health == .healthy) {
@@ -537,260 +297,10 @@ pub fn present(
     } };
 }
 
-/// Draw the render target into the window's back buffer and swap.
-///
-/// The target holds premultiplied color with the background's alpha set
-/// by `background-opacity`. An opaque window gets the frame composited over
-/// the opaque terminal background (rather than copied onto black, which
-/// darkened any opacity below 1), and whatever part of the window the
-/// target doesn't cover yet during a resize gets the background too. A
-/// translucent one (`transparent`) gets the frame's own alpha, and the
-/// background at its opacity where the frame doesn't reach. The shader
-/// works in the frame's own color space:
-/// linear (the target is sRGB, so sampling decodes, and the window's back
-/// buffer is sRGB with GL_FRAMEBUFFER_SRGB on, so storing encodes), or with
-/// native alpha blending the sRGB values the shaders wrote.
-fn presentWgl(self: *OpenGL, target: Target, background: Background) !void {
-    const ctx = &gl.glad.context;
-    const state = &self.wgl_state;
-    const ps = &self.present_state;
-    const probe_point = ps.takeProbe();
-    const p = state.present orelse made: {
-        const program = try gl.Program.createVF(present_vertex, present_fragment);
-        errdefer program.destroy();
-        const vao = try gl.VertexArray.create();
-        state.present = .{ .program = program, .vao = vao };
-        break :made state.present.?;
-    };
-
-    const frame_w: f32 = @floatFromInt(target.width);
-    const frame_h: f32 = @floatFromInt(target.height);
-    var client: wgl.RECT = .{};
-    _ = wgl.GetClientRect(state.hwnd, &client);
-    const win_w: gl.c.GLint = if (client.right > 0) client.right else @intCast(target.width);
-    const win_h: gl.c.GLint = if (client.bottom > 0) client.bottom else @intCast(target.height);
-
-    // The renderer reads the viewport back as the surface size.
-    var viewport: [4]gl.c.GLint = undefined;
-    ctx.GetIntegerv.?(gl.c.GL_VIEWPORT, &viewport);
-    defer ctx.Viewport.?(viewport[0], viewport[1], viewport[2], viewport[3]);
-
-    ctx.BindFramebuffer.?(gl.c.GL_FRAMEBUFFER, 0);
-    ctx.Viewport.?(0, 0, win_w, win_h);
-    ctx.Disable.?(gl.c.GL_BLEND);
-    const srgb_target = state.backbuffer_srgb orelse srgb: {
-        var encoding: gl.c.GLint = 0;
-        ctx.GetFramebufferAttachmentParameteriv.?(gl.c.GL_FRAMEBUFFER, gl.c.GL_BACK_LEFT, gl.c.GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
-        // A driver refusing the question leaves an error for the next call
-        // to find: take it here, and encode (exact either way when opaque).
-        const refused = ctx.GetError.?() != gl.c.GL_NO_ERROR;
-        const srgb = !refused and encoding == gl.c.GL_SRGB;
-        if (!srgb) log.info("the window's back buffer is linear: the present pass encodes sRGB itself", .{});
-        state.backbuffer_srgb = srgb;
-        break :srgb srgb;
-    };
-    const pbind = try p.program.use();
-    defer pbind.unbind();
-    const vbind = try p.vao.bind();
-    defer vbind.unbind();
-
-    var bg: [4]f32 = .{ 0, 0, 0, 1 };
-    for (background.rgb, bg[0..3]) |v, *out| {
-        const f = @as(f32, @floatFromInt(v)) / 255.0;
-        out.* = if (background.linear) srgbToLinear(f) else f;
-    }
-    try p.program.setUniform("background", @as(@Vector(4, f32), bg));
-    // DWM takes premultiplied sRGB, which the shader works out itself.
-    const transparent = ps.transparent.load(.monotonic);
-    try p.program.setUniform("transparent", transparent);
-    try p.program.setUniform("background_alpha", @as(f32, @floatFromInt(background.alpha)) / 255.0);
-    try p.program.setUniform("frame_linear", background.linear);
-    // A linear frame into a linear back buffer: encode here what an sRGB
-    // one would on write.
-    const encode_out = background.linear and !srgb_target and !transparent;
-    try p.program.setUniform("encode_out", encode_out);
-    try p.program.setUniform("frame_size", @Vector(2, f32){ frame_w, frame_h });
-    // The frame sits at the window's top-left corner.
-    try p.program.setUniform("frame_offset_y", @as(f32, @floatFromInt(win_h)) - frame_h);
-
-    try gl.Texture.active(0);
-    ctx.BindSampler.?(0, 0);
-    const tbind = try target.texture.bind(.@"2d");
-    defer tbind.unbind();
-    // With native blending the frame already holds sRGB values (the
-    // shaders don't linearize), so they are stored as they are; encoding
-    // them again showed every color too light.
-    const srgb_off = !background.linear or transparent or encode_out;
-    if (srgb_off) ctx.Disable.?(gl.c.GL_FRAMEBUFFER_SRGB);
-    defer if (srgb_off) ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
-    ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 3);
-
-    const overlay = ps.overlayNow();
-    if (overlay.len > 0) try drawOverlay(state, &overlay, win_w, win_h);
-
-    ps.readBack(probe_point, @intCast(win_w), @intCast(win_h), BackBuffer{ .height = win_h }, BackBuffer.pixel, BackBuffer.whole);
-
-    if (wgl.SwapBuffers(state.hdc) == 0) return error.WglSwapBuffersFailed;
-    // Counted once on the window: murrtty's software OpenGL takes the
-    // first as "it draws" (6.3b), UI Automation's poll as new text.
-    _ = ps.presented.fetchAdd(1, .monotonic);
-}
-
-/// Draw the overlay's rectangles onto the back buffer, blending in its
-/// stored sRGB values (sRGB writes off), as GTK's CSS does.
-fn drawOverlay(state: *Wgl, overlay: *const Overlay, win_w: gl.c.GLint, win_h: gl.c.GLint) !void {
-    const ctx = &gl.glad.context;
-    const o = state.overlay_program orelse made: {
-        const program = try gl.Program.createVF(overlay_vertex, overlay_fragment);
-        errdefer program.destroy();
-        const vao = try gl.VertexArray.create();
-        state.overlay_program = .{ .program = program, .vao = vao };
-        break :made state.overlay_program.?;
-    };
-    const pbind = try o.program.use();
-    defer pbind.unbind();
-    const vbind = try o.vao.bind();
-    defer vbind.unbind();
-
-    ctx.Disable.?(gl.c.GL_FRAMEBUFFER_SRGB);
-    defer ctx.Enable.?(gl.c.GL_FRAMEBUFFER_SRGB);
-    // Premultiplied, as the render passes blend (they set this per pass).
-    ctx.Enable.?(gl.c.GL_BLEND);
-    defer ctx.Disable.?(gl.c.GL_BLEND);
-    ctx.BlendFunc.?(gl.c.GL_ONE, gl.c.GL_ONE_MINUS_SRC_ALPHA);
-
-    try o.program.setUniform("window_size", @Vector(2, f32){ @floatFromInt(win_w), @floatFromInt(win_h) });
-    for (overlay.rects[0..overlay.len]) |r| {
-        try o.program.setUniform("rect", @Vector(4, f32){
-            @floatFromInt(r.x),
-            @floatFromInt(r.y),
-            @floatFromInt(r.width),
-            @floatFromInt(r.height),
-        });
-        const a = r.color[3];
-        try o.program.setUniform("color", @Vector(4, f32){ r.color[0] * a, r.color[1] * a, r.color[2] * a, a });
-        ctx.DrawArrays.?(gl.c.GL_TRIANGLES, 0, 6);
-    }
-}
-
-/// Two triangles covering `rect` (window pixels from the top left).
-const overlay_vertex =
-    \\#version 430 core
-    \\uniform vec4 rect;
-    \\uniform vec2 window_size;
-    \\void main() {
-    \\    int v = gl_VertexID;
-    \\    vec2 corner = vec2((v == 1 || v == 2 || v == 4) ? 1.0 : 0.0,
-    \\                       (v == 2 || v == 4 || v == 5) ? 1.0 : 0.0);
-    \\    vec2 px = rect.xy + corner * rect.zw;
-    \\    gl_Position = vec4(px.x / window_size.x * 2.0 - 1.0, 1.0 - px.y / window_size.y * 2.0, 0.0, 1.0);
-    \\}
-;
-
-const overlay_fragment =
-    \\#version 430 core
-    \\uniform vec4 color;
-    \\layout(location = 0) out vec4 out_color;
-    \\void main() {
-    \\    out_color = color;
-    \\}
-;
-
-/// The window's back buffer, read for the GUI tests (win32_present's
-/// readBack) in top-left coordinates.
-const BackBuffer = struct {
-    height: gl.c.GLint,
-
-    /// A pixel as 0x00RRGGBB, as stored.
-    fn pixel(self: BackBuffer, x: u32, y: u32) u32 {
-        var px: [4]u8 = undefined;
-        // GL's rows run bottom up.
-        gl.glad.context.ReadPixels.?(@intCast(x), self.height - 1 - @as(gl.c.GLint, @intCast(y)), 1, 1, gl.c.GL_RGBA, gl.c.GL_UNSIGNED_BYTE, &px);
-        return @as(u32, px[0]) << 16 | @as(u32, px[1]) << 8 | px[2];
-    }
-
-    /// The whole of it, BGRA rows top first (page_allocator).
-    fn whole(_: BackBuffer, w: u32, h: u32) ?[]u8 {
-        if (w == 0 or h == 0) return null;
-        const width: usize = w;
-        const height: usize = h;
-        const pixels = std.heap.page_allocator.alloc(u8, width * height * 4) catch return null;
-        gl.glad.context.ReadPixels.?(0, 0, @intCast(w), @intCast(h), gl.c.GL_BGRA, gl.c.GL_UNSIGNED_BYTE, pixels.ptr);
-        // GL's rows run bottom up.
-        const stride = width * 4;
-        var top: usize = 0;
-        var bottom: usize = height - 1;
-        while (top < bottom) : ({
-            top += 1;
-            bottom -= 1;
-        }) {
-            const a = pixels[top * stride ..][0..stride];
-            const b = pixels[bottom * stride ..][0..stride];
-            for (a, b) |*x, *y| std.mem.swap(u8, x, y);
-        }
-        return pixels;
-    }
-};
-
-fn srgbToLinear(v: f32) f32 {
-    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
-}
-
-/// A triangle that covers the viewport.
-const present_vertex =
-    \\#version 430 core
-    \\void main() {
-    \\    vec2 pos = vec2(gl_VertexID == 2 ? 3.0 : -1.0, gl_VertexID == 1 ? 3.0 : -1.0);
-    \\    gl_Position = vec4(pos, 0.0, 1.0);
-    \\}
-;
-
-/// The frame (premultiplied) over the opaque background, or with its own
-/// alpha.
-const present_fragment =
-    \\#version 430 core
-    \\layout(binding = 0) uniform sampler2D frame;
-    \\uniform vec4 background;
-    \\uniform bool transparent;
-    \\uniform float background_alpha;
-    \\uniform bool frame_linear;
-    \\uniform bool encode_out;
-    \\uniform vec2 frame_size;
-    \\uniform float frame_offset_y;
-    \\layout(location = 0) out vec4 out_color;
-    \\vec3 encode(vec3 c) {
-    \\    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
-    \\}
-    \\void main() {
-    \\    ivec2 p = ivec2(gl_FragCoord.xy) - ivec2(0, int(frame_offset_y));
-    \\    ivec2 size = ivec2(frame_size);
-    \\    // Beyond the frame (a resize), translucent, the background at its
-    \\    // opacity.
-    \\    vec4 color = transparent ? vec4(background.rgb, 1.0) * background_alpha : vec4(0.0);
-    \\    if (p.x >= 0 && p.y >= 0 && p.x < size.x && p.y < size.y) {
-    \\        color = texelFetch(frame, p, 0);
-    \\    }
-    \\    if (transparent) {
-    \\        // Premultiplied sRGB, written as is (sRGB writes off).
-    \\        vec3 straight = color.a > 0.0 ? color.rgb / color.a : vec3(0.0);
-    \\        if (frame_linear) straight = encode(straight);
-    \\        out_color = vec4(straight * color.a, color.a);
-    \\    } else {
-    \\        out_color = color + background * (1.0 - color.a);
-    \\        // A linear back buffer (llvmpipe's): sRGB writes would do this.
-    \\        if (encode_out) out_color.rgb = encode(clamp(out_color.rgb, 0.0, 1.0));
-    \\    }
-    \\}
-;
-
 /// A finished frame exported for presentation by the apprt.
 pub const ExportedFrame = union(enum) {
-    dmabuf: if (is_windows) void else Dmabuf,
+    dmabuf: Dmabuf,
     memory: Memory,
-
-    /// The frame was already presented directly to the apprt's
-    /// window (WGL) and there is nothing left to composite.
-    presented,
 
     /// RGBA8 pixel data with premultiplied alpha, tightly packed
     /// (`width * 4` bytes per row), in CPU memory.
@@ -807,9 +317,8 @@ pub const ExportedFrame = union(enum) {
 
     pub fn deinit(self: ExportedFrame) void {
         switch (self) {
-            .dmabuf => |v| if (comptime !is_windows) v.deinit(),
+            .dmabuf => |v| v.deinit(),
             .memory => |v| v.deinit(),
-            .presented => {},
         }
     }
 };

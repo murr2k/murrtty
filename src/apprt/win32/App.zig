@@ -34,9 +34,6 @@ const Updates = @import("Updates.zig");
 const UpdatesWindow = @import("UpdatesWindow.zig");
 const Inspector = @import("Inspector.zig");
 const ConfigEditor = @import("ConfigEditor.zig");
-const wgl = @import("opengl").wgl;
-const gl_diagnosis = @import("gl_diagnosis.zig");
-const software_gl = @import("software_gl.zig");
 const taskbar = @import("taskbar.zig");
 const SearchBox = @import("SearchBox.zig");
 const Surface = @import("Surface.zig");
@@ -278,9 +275,6 @@ bell_audio: ?BellAudio = null,
 /// The id of the pane a restore is making (its history's), which
 /// Surface.init takes; else the pane gets a new one.
 restore_id: ?Session.Id = null,
-/// WGL's extensions, for the inspector's windows (roadmap 5.12), loaded at
-/// the first.
-wgl_ext: ?wgl.Extensions = null,
 /// toggle_visibility hid the windows: the ids of those it hid, and of the
 /// one in front then, to show them as they were.
 windows_hidden: bool = false,
@@ -305,9 +299,6 @@ pane_drag: ?PaneDrag = null,
 /// selection, so copy-on-select, middle-click paste and
 /// paste_from_selection share this, between murrtty's panes only.
 selection: ?[]u8 = null,
-/// This murrtty was started again on its software OpenGL (Mesa) by one
-/// whose graphics have no OpenGL 4.3 (software_gl.zig).
-software_start: ?software_gl.Started = null,
 /// Direct3D 11 (roadmap 7.8): whether the first pane to present was told
 /// about drawing on the CPU (takeSoftwareNotice).
 software_told: bool = false,
@@ -331,11 +322,6 @@ config_editor: ?*ConfigEditor = null,
 /// again, which may have changed since) runs the whole change, only
 /// without the toast.
 config_preview: enum { off, preview, revert } = .off,
-
-/// STARTUPINFO's flags as this process was started, before its
-/// AppUserModelID changed them (software_gl's second start must not get
-/// STARTF_TITLEISAPPID from the first).
-startup_flags: u32 = 0,
 
 /// The GUI test harness's state dump (Debug builds only; see test_hooks).
 test_state: test_hooks.State = .{},
@@ -369,11 +355,6 @@ pub fn init(
     // shells and programs in our terminals would never receive Ctrl+C.
     // Restore normal processing so children always inherit it.
     _ = c.SetConsoleCtrlHandler(null, c.FALSE);
-
-    // How this process was started, before setting the ID changes what
-    // GetStartupInfo says (software_gl passes it on; the GUI tests' check).
-    var startup: c.STARTUPINFOW = .{};
-    c.GetStartupInfoW(&startup);
 
     // Before any window exists, so all of them take it.
     const aumid = c.SetCurrentProcessExplicitAppUserModelID(app_user_model_id);
@@ -436,9 +417,6 @@ pub fn init(
         .windows_build = windowsBuild(),
         .fonts = draw.registerFonts(),
         .ipc_launch = takeLaunchEnv(),
-        // Before anything loads OpenGL (the first window).
-        .software_start = software_gl.take(),
-        .startup_flags = startup.dwFlags,
         .test_state = test_hooks.init(alloc),
     };
     if (self.fonts == null) log.warn("the chrome's font (Adwaita Sans) could not be registered", .{});
@@ -518,34 +496,11 @@ pub fn run(self: *App) !void {
         if (launch_cmd.command != null) self.ipc_overrides = &launch_cmd;
         defer self.ipc_overrides = null;
         _ = Window.create(self, null) catch |err| {
-            // A GUI program has no console, so say why it can't start: for
-            // OpenGL, what is missing and what to do (roadmap 6.3). Direct3D
-            // 11 (7.8) falls back to WARP itself: failing here, it has
-            // neither, and the dialog below says so.
-            if (comptime build_config.renderer == .opengl) if (gl_diagnosis.isGlError(err)) {
-                // No hand-offs to an instance that can't open a window: a
-                // murrtty started meanwhile opens its own.
-                if (self.ipc_server) |s| s.stop();
-                self.ipc_server = null;
-                // Started on Mesa, which can't draw either: the murrtty
-                // that started this one says why, or this one if that one
-                // no longer waits (roadmap 6.3b).
-                if (self.software_start) |*started| {
-                    log.err("murrtty's software OpenGL can't draw either err={}", .{err});
-                    if (!software_gl.failed(started)) software_gl.tellFailed(self, started.kind, err);
-                    return err;
-                }
-                // murrtty again on its software OpenGL, if it has one.
-                switch (software_gl.relaunch(self, err)) {
-                    .took_over => return,
-                    .failed => gl_diagnosis.show(self, err, .failed),
-                    .unavailable, .not_started => gl_diagnosis.show(self, err, .none),
-                    .ended => {},
-                }
-                return err;
-            };
-            // As above: nothing hands off to an instance that can't open a
-            // window while its dialog shows.
+            // A GUI program has no console, so say why it can't start.
+            // Direct3D 11 (7.8) falls back to WARP itself: failing here, it
+            // has neither, and the dialog says so. No hand-offs to an
+            // instance that can't open a window while its dialog shows: a
+            // murrtty started meanwhile opens its own.
             if (self.ipc_server) |s| s.stop();
             self.ipc_server = null;
             const msg = std.fmt.allocPrint(
@@ -555,7 +510,7 @@ pub fn run(self: *App) !void {
                 .{
                     // Direct3D 11 (7.8): not even WARP, Windows' own
                     // software renderer, gave a device.
-                    if (build_config.renderer == .d3d11 and @as(anyerror, err) == error.DeviceFailed)
+                    if (@as(anyerror, err) == error.DeviceFailed)
                         "Windows offers no Direct3D 11 device here, not even its software renderer (WARP), so murrtty can't draw.\n\n"
                     else
                         "",
@@ -575,10 +530,6 @@ pub fn run(self: *App) !void {
     // Update checks (roadmap 7.6a): only now, and a due one waits 2 to 10
     // minutes more; the murrtty keeping the session checks on its own.
     self.updates.start(self.session.owner);
-    // On murrtty's software OpenGL: once a pane has drawn, the murrtty that
-    // started this one can end and the window says why it draws in
-    // software (6.3b); the shaders are only built for the first frame.
-    if (self.software_start != null) software_gl.startWatch(self);
 
     var msg: c.MSG = undefined;
     while (true) {
@@ -596,8 +547,6 @@ pub fn run(self: *App) !void {
 }
 
 pub fn terminate(self: *App) void {
-    // No first-frame watch (6.3b) through the teardown's messages.
-    software_gl.stopWatch(self);
     // The session stays as last written while the windows go.
     self.session.freeze();
     // With the requests it queued that the loop never took.
@@ -1719,7 +1668,6 @@ fn wakeupWndProc(hwnd: c.HWND, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM) 
                 Session.timer_id => self.session.tick(),
                 Updates.timer_id => self.updates.tick(),
                 Updates.note_timer_id => self.updates.noteTimer(),
-                software_gl.timer_id => software_gl.tick(self),
                 else => {},
             }
             return 0;
@@ -1792,9 +1740,8 @@ fn quitAfterLast(self: *App) void {
 /// Direct3D 11 (roadmap 7.8): the notice that murrtty draws on the CPU
 /// (WARP, or Microsoft's Basic Render Driver: no graphics card's driver
 /// here), once, when the first pane to present draws so; none where
-/// MURRTTY_D3D asked for WARP. As the software OpenGL's (software_gl).
+/// MURRTTY_D3D asked for WARP.
 pub fn takeSoftwareNotice(self: *App) ?[]const u8 {
-    if (comptime build_config.renderer != .d3d11) return null;
     if (self.software_told) return null;
     for (self.core_app.surfaces.items) |s| {
         if (!s.core_initialized) continue;
@@ -2055,8 +2002,7 @@ pub fn canShowHidden(self: *const App) bool {
     return self.global_keys.canShow() or self.notifications.tray;
 }
 
-/// Quit without asking (software_gl's failure too, which has no windows to
-/// close otherwise).
+/// Quit without asking.
 pub fn quitNow(self: *App) void {
     if (self.quitting) return;
     self.quitting = true;
@@ -2099,12 +2045,6 @@ pub fn quitConfirmed(self: *App) void {
     self.user_quit = !self.session_ending;
     self.closeAllWindows(false);
     self.quitNow();
-}
-
-/// WGL's extensions (the inspector's windows, roadmap 5.12), loaded once.
-pub fn wglExtensions(self: *App) !*const wgl.Extensions {
-    if (self.wgl_ext == null) self.wgl_ext = try wgl.Extensions.load();
-    return &self.wgl_ext.?;
 }
 
 /// Save the inspector's Terminal IO events where the user says, as GTK's:

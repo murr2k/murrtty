@@ -679,16 +679,6 @@ pub fn add(
         }
     }
 
-    // libghostty on Windows renders with OpenGL (WGL) so it needs glad
-    // too. Exes get glad below.
-    if (step.kind == .lib and target.result.os.tag == .windows) {
-        step.root_module.addIncludePath(b.path("vendor/glad/include/"));
-        step.root_module.addCSourceFile(.{
-            .file = b.path("vendor/glad/src/gl.c"),
-            .flags = &.{},
-        });
-    }
-
     // If we're building an exe then we have additional dependencies.
     if (step.kind != .lib) {
         // We always statically compile glad

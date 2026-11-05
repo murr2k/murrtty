@@ -64,15 +64,9 @@ pub fn complete(self: *const Self, sync: bool) void {
     // Then sync before exporting and pushing to the present queue.
     // The apprt pulls from this queue in its snapshot handler.
     const presented_frame: ?OpenGL.ExportedFrame = if (health == .healthy) frame: {
-        const uniforms = &self.renderer.uniforms;
         const frame = self.renderer.api.present(
             self.target.*,
             self.renderer.presentationHealth(),
-            .{
-                .rgb = uniforms.bg_color[0..3].*,
-                .alpha = uniforms.bg_color[3],
-                .linear = uniforms.bools.use_linear_blending,
-            },
         ) catch |err| {
             log.warn("failed to present render target: err={}", .{err});
             break :frame null;
@@ -80,23 +74,15 @@ pub fn complete(self: *const Self, sync: bool) void {
         break :frame frame;
     } else null;
 
-    // Sync after frame draw AND frame present GL calls, so an exported
-    // frame is complete before another thread uses it. A frame already
-    // presented to the window (WGL's SwapBuffers on Windows) is shared with
-    // no one, and the context orders the next frame's GL calls after it;
-    // finishing there only blocked this thread until the GPU and the
-    // compositor caught up (about 2 ms a frame, and stalls of 200 ms).
-    if (presented_frame == null or presented_frame.? != .presented) gl.finish();
+    // Sync after frame draw AND frame present GL calls.
+    gl.finish();
 
-    // At this point the ExportedFrame is finished and can be shared.
-    // A frame already presented to the window needs nothing more.
+    // At this point the ExportedFrame is finished and can be shared
     if (presented_frame) |frame| {
-        if (frame != .presented) {
-            self.renderer.pushFrame(frame);
+        self.renderer.pushFrame(frame);
 
-            // Notify the surface that it should redraw
-            _ = self.renderer.surface_mailbox.push(.redraw, .{ .forever = {} });
-        }
+        // Notify the surface that it should redraw
+        _ = self.renderer.surface_mailbox.push(.redraw, .{ .forever = {} });
     }
 
     // Report the health to the renderer.

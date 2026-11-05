@@ -15,8 +15,8 @@
 //!
 //! With no scenario names, every scenario runs; tools (picture makers that
 //! check nothing) run only when named. A scenario skips because it is an
-//! opt-in whose switch is off, because it isn't for this build (the other
-//! renderer's), or because this machine can't run it now (no display, a
+//! opt-in whose switch is off, because it isn't for this build (none
+//! since OpenGL retired), or because this machine can't run it now (no display, a
 //! picture on the clipboard, a hot key taken). The summary counts each
 //! kind and lists the machine's skips --expect-skip didn't name; under
 //! GitHub Actions each becomes a warning, so a run that left scenarios out

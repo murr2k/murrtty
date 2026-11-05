@@ -61,11 +61,10 @@ pub const all = [_]Scenario{
     .{ .name = "cli", .about = "CLI actions with output on a pipe: +version; +validate-config exits 0 for a valid file, 1 naming the problem for an invalid one", .run = cli },
     .{ .name = "fonts", .about = "a font-family's bold and italic faces are found (Consolas)", .run = fonts },
     .{ .name = "uia", .about = "a screen reader reads a pane through UI Automation's Text pattern: text, caret, words, lines, finding and selecting", .run = uiaScenario },
-    .{ .name = "gl-reset", .about = "after a GPU driver reset (faked), the renderer builds itself in a new OpenGL context (Direct3D 11: device) and draws the same frame", .run = glReset },
-    .{ .name = "gl-missing", .about = "without OpenGL 4.3, murrtty says why at start: Remote Desktop, the basic display adapter, no driver, an old one; Direct3D 11 (7.8): with no device, not even WARP, it says so", .run = glMissing },
-    .{ .name = "gl-library", .about = "MURRTTY_OPENGL names the opengl32.dll to use; one that can't load is said so (OpenGL builds)", .run = glLibrary },
-    .{ .name = "gl-fallback", .about = "without OpenGL 4.3 from the driver, murrtty starts again on its Mesa (bin\\mesa), which draws, and says so; Direct3D 11 (7.8): without the GPU, WARP in the same process draws the background exactly, and says so, unless MURRTTY_D3D asked", .run = glFallback },
-    .{ .name = "custom-shader", .about = "custom-shader: a shader writing one color covers the frame, one reading iChannel0 sees the terminal (OpenGL's GLSL; Direct3D 11's HLSL from spirv-cross, 7.8)", .run = customShader },
+    .{ .name = "device-reset", .about = "after a lost Direct3D 11 device (faked, as a GPU driver reset), the renderer builds itself on a new device and draws the same frame", .run = deviceReset },
+    .{ .name = "no-device", .about = "with no Direct3D 11 device, not even WARP, murrtty says so at start and exits", .run = noDevice },
+    .{ .name = "warp-fallback", .about = "without the GPU, WARP in the same process draws the background exactly, and says so, unless MURRTTY_D3D asked", .run = warpFallback },
+    .{ .name = "custom-shader", .about = "custom-shader: a shader writing one color covers the frame, one reading iChannel0 sees the terminal (GLSL to HLSL through spirv-cross, 7.8)", .run = customShader },
     .{ .name = "conpty", .about = "panes run in the bundled ConPTY (conpty.dll, OpenConsole.exe), which lets kitty graphics through; MURRTTY_CONPTY=system picks Windows' own", .run = conptyBundled },
     .{ .name = "ime-place", .about = "an IME asking where text is (WM_IME_REQUEST) is told the cursor's cell, and follows typing", .run = imePlace },
     .{ .name = "intl-keys", .about = "AltGr and Ctrl+Alt characters, and Alt+Numpad codes, reach a console program as Windows types them", .run = intlKeys },
@@ -141,7 +140,6 @@ pub const all = [_]Scenario{
     .{ .name = "pwsh-typeahead", .about = "task 42: PowerShell 7 and 5.1 with integration, commands typed ahead (during a slowed prompt; in pairs after a Ctrl+C) all run (GHOSTTY_GUI_STRESS=1; GHOSTTY_PTY_LOG for a trace)", .run = pwshTypeahead },
     .{ .name = "quit-after-reload", .about ="20 launches, each quitting right after two config reloads (the system's light/dark switch), all exit 0: the stopping renderer still releases a font grid swap it hadn't taken (GHOSTTY_GUI_STRESS=1)", .run = quitAfterReload },
     .{ .name = "overlay-host", .about = "spike S1: a layered child window over each pane stays clean while output floods and the window resizes (GHOSTTY_GUI_SPIKE=1)", .run = overlayHost },
-    .{ .name = "render-parity", .about = "7.8: the same scenes drawn by this build and another (GHOSTTY_GUI_PARITY, the other renderer's murrtty.exe) read back within 1 per channel: 16, 256 and true colors, attributes, box drawing, fallback fonts and a kitty graphics image in each alpha-blending mode, a custom shader, a background image, a translucent window (alpha too), a split's dimming", .run = renderParity },
     .{ .name = "snapshot", .about = "pictures of the window (one tab, a split) for comparing with GTK's by eye, off-screen (GHOSTTY_GUI_SNAPSHOT=folder)", .run = snapshot, .tool = true },
     .{ .name = "readme-screenshot", .about = "the README's picture: two tabs, a split running PowerShell 7, the second tab's waiting bell; the parts read back on the hidden desktop for test/windows/look/readme_shot.py (GHOSTTY_GUI_SNAPSHOT=folder)", .run = readmeScreenshot, .tool = true },
     .{ .name = "transparency", .about = "background-opacity through DWM blur-behind, header and divider opaque, toggle_background_opacity, over a green backdrop ON SCREEN (GHOSTTY_GUI_ONSCREEN=1)", .run = transparency },
@@ -5391,39 +5389,40 @@ fn fontRegistered(h: *Harness) anyerror!void {
     try h.expect(std.mem.startsWith(u8, got, "Kawkab Mono"), "font regular: {s} (expected Kawkab Mono, from {s})", .{ got, path });
 }
 
-/// A GPU driver reset (roadmap 6.3): a robust context loses itself, and
-/// the renderer releases what it made there and builds everything again
-/// (shaders, the frames' targets and atlases) in a new context. Faked here
-/// (dump wparam 19), since a real reset would reset the owner's GPU for
-/// every program: the frame drawn after it must be the frame drawn before.
-fn glReset(h: *Harness) anyerror!void {
-    try glResetCase(h, "gl-reset", "cursor-style-blink = false\n");
+/// A GPU driver reset (roadmap 6.3, on Direct3D 11 since 7.8): the device
+/// is lost, and the renderer releases what it made there and builds
+/// everything again (shaders, the frames' targets and atlases) on a new
+/// one. Faked here (dump wparam 19), since a real reset would reset the
+/// owner's GPU for every program: the frame drawn after it must be the
+/// frame drawn before.
+fn deviceReset(h: *Harness) anyerror!void {
+    try deviceResetCase(h, "device-reset", "cursor-style-blink = false\n");
     // With a background image, whose texture went with the lost context
     // and is read from its file again (an 8x8 PNG, all #C81E3C).
     const png = "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x08\x00\x00\x00\x08\x08\x06\x00\x00\x00\xc4\x0f\xbe\x8b\x00\x00\x00\x12\x49\x44\x41\x54\x78\xda\x63\x38\x21\x67\xf3\x1f\x1f\x66\x18\x19\x0a\x00\x2d\xc2\x88\x41\xd8\xdb\xb3\x05\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
-    const path = try std.fmt.allocPrint(h.alloc, "{s}\\gl-reset-bg.png", .{h.temp_dir});
+    const path = try std.fmt.allocPrint(h.alloc, "{s}\\device-reset-bg.png", .{h.temp_dir});
     defer h.alloc.free(path);
     try h.writeFileAt(path, png);
     defer h.deleteFile(path);
     const config = try std.fmt.allocPrint(h.alloc, "cursor-style-blink = false\nbackground-image = {s}\nbackground-image-fit = stretch\n", .{path});
     defer h.alloc.free(config);
-    try glResetCase(h, "gl-reset-image", config);
+    try deviceResetCase(h, "device-reset-image", config);
 }
 
-fn glResetCase(h: *Harness, name: []const u8, extra: []const u8) !void {
+fn deviceResetCase(h: *Harness, name: []const u8, extra: []const u8) !void {
     const image = std.mem.indexOf(u8, extra, "background-image") != null;
     var g = try start(h, name, extra, ">");
     defer g.deinit();
     const surf = try h.surface(&g, try h.mainWindow(&g));
-    try h.typeText(surf, "echo murrtty-gl-reset");
-    try h.waitText(&g, "murrtty-gl-reset", 1, 5000);
+    try h.typeText(surf, "echo murrtty-device-reset");
+    try h.waitText(&g, "murrtty-device-reset", 1, 5000);
     w.Sleep(300);
 
     const before = blk: {
         var d = try h.dump(&g);
         defer d.deinit();
         const pane = (d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{}))[0];
-        try h.expect(pane.gl_robust, "{s}: the context reports driver resets (robust)", .{name});
+        try h.expect(pane.gl_robust, "{s}: the device reports its loss (robust)", .{name});
         break :blk .{ pane.gl_contexts, pane.frames orelse 0 };
     };
     try h.saveFrames(&g);
@@ -5447,11 +5446,11 @@ fn glResetCase(h: *Harness, name: []const u8, extra: []const u8) !void {
         }
         w.Sleep(100);
     }
-    try h.expect(made, "{s}: a new context was made and drawn with ({d} frames)", .{ name, frames });
+    try h.expect(made, "{s}: a new device was made and drawn with ({d} frames)", .{ name, frames });
 
-    // The new context's first frames can come before what it draws is
-    // whole again (the background image uploaded anew; slow on llvmpipe):
-    // read frames until one is the one before, for a while.
+    // The new device's first frames can come before what it draws is
+    // whole again (the background image uploaded anew): read frames until
+    // one is the one before, for a while.
     var differ: usize = std.math.maxInt(usize);
     for (0..20) |_| {
         try h.saveFrames(&g);
@@ -5470,136 +5469,13 @@ fn glResetCase(h: *Harness, name: []const u8, extra: []const u8) !void {
 
     // And it goes on drawing what comes.
     try h.typeText(surf, " again");
-    try h.waitText(&g, "murrtty-gl-reset again", 1, 5000);
+    try h.waitText(&g, "murrtty-device-reset again", 1, 5000);
 }
 
-/// Without OpenGL 4.3, murrtty's start says why and what to do (roadmap
-/// 6.3), from what Windows says of the session, the display adapter and
-/// its OpenGL. The failure is asked for (GHOSTTY_WIN32_TEST_WGL, which
-/// fails murrtty's Mesa too: it starts again on it, which can't draw
-/// either, and the dialog says so, 6.3b) and the machines it isn't run on
-/// stood in for (GHOSTTY_WIN32_TEST_GL_DIAG). Without Mesa beside it
-/// (GHOSTTY_WIN32_TEST_NO_MESA), the dialog is as before. The dialog comes
-/// after two murrttys' starts, hence the long waits.
-fn glMissing(h: *Harness) anyerror!void {
-    if (h.renderer() == .d3d11) return d3dMissing(h);
-    const software_note = "murrtty's software renderer (Mesa, in the mesa folder beside murrtty.exe) couldn't draw either.";
-    const cases = [_]struct { name: []const u8, fail: []const u8, diag: []const u8, body: []const u8 }{
-        .{ .name = "gl-missing-remote", .fail = "extensions", .diag = "remote", .body = "This Remote Desktop session's display offers no OpenGL 4.3 (GDI Generic 1.1.0)." },
-        .{ .name = "gl-missing-basic", .fail = "extensions", .diag = "basic", .body = "Windows is using its Microsoft Basic Display Adapter" },
-        .{ .name = "gl-missing-generic", .fail = "extensions", .diag = "generic", .body = "The graphics driver offers no OpenGL; only Windows' fallback (GDI Generic 1.1.0) is there." },
-        .{ .name = "gl-missing-old", .fail = "context", .diag = "old", .body = "The graphics driver offers OpenGL 3.3.0 Example 1.0 (Example GPU), and murrtty needs 4.3." },
-        // This machine's own OpenGL is fine: no diagnosis, the error.
-        .{ .name = "gl-missing-unknown", .fail = "context", .diag = "", .body = "murrtty couldn't set up OpenGL (ContextCreateFailed)." },
-    };
-    for (cases) |case| {
-        var env: [2][2][]const u8 = .{ .{ "GHOSTTY_WIN32_TEST_WGL", case.fail }, .{ "GHOSTTY_WIN32_TEST_GL_DIAG", case.diag } };
-        var g = try h.launchWith(case.name, base_config, .{ .env = if (case.diag.len > 0) &env else env[0..1], .wait_window = false });
-        defer g.deinit();
-        try h.waitAnswering(&g, 10000);
-        const dlg = try h.waitDialog(&g, 30000);
-        {
-            var d = try h.dump(&g);
-            defer d.deinit();
-            const dl = d.value.dialog;
-            try h.expect(std.mem.eql(u8, dl.heading, "murrtty can't draw: it needs OpenGL 4.3") and std.mem.startsWith(u8, dl.body, case.body), "{s}: the dialog says '{s}' / '{s}'", .{ case.name, dl.heading, dl.body });
-            try h.expect(std.mem.endsWith(u8, dl.body, software_note), "{s}: and that murrtty's Mesa couldn't draw either ('{s}')", .{ case.name, dl.body });
-        }
-        h.answer(&g, dlg, w.IDCLOSE);
-        const code = g.waitExit(10000);
-        try h.expect(code != null and code.? != 0, "{s}: murrtty then exits with an error (exit {?d})", .{ case.name, code });
-    }
-
-    // No Mesa beside murrtty.exe (an install without it): nothing to start
-    // again on, and the dialog says nothing of it.
-    var g = try h.launchWith("gl-missing-no-mesa", base_config, .{
-        .env = &.{ .{ "GHOSTTY_WIN32_TEST_WGL", "system-context" }, .{ "GHOSTTY_WIN32_TEST_NO_MESA", "1" } },
-        .wait_window = false,
-    });
-    defer g.deinit();
-    try h.waitAnswering(&g, 10000);
-    const dlg = try h.waitDialog(&g, 10000);
-    {
-        var d = try h.dump(&g);
-        defer d.deinit();
-        const body = d.value.dialog.body;
-        try h.expect(std.mem.startsWith(u8, body, "murrtty couldn't set up OpenGL (ContextCreateFailed).") and std.mem.indexOf(u8, body, "Mesa") == null, "gl-missing-no-mesa: the dialog says '{s}'", .{body});
-    }
-    h.answer(&g, dlg, w.IDCLOSE);
-    const code = g.waitExit(10000);
-    try h.expect(code != null and code.? != 0, "gl-missing-no-mesa: murrtty then exits with an error (exit {?d})", .{code});
-}
-
-/// No OpenGL 4.3 from the graphics driver (Windows' own opengl32 fails,
-/// GHOSTTY_WIN32_TEST_WGL=system-*): murrtty starts again on its Mesa
-/// (bin\mesa, roadmap 6.3b), which draws the background exactly; the
-/// first murrtty ends well once the second has its window, the second
-/// says why it draws in software, nothing it starts sees the variable, and
-/// both quit without leaks (their log is one file). MURRTTY_OPENGL naming
-/// that Mesa uses it directly.
-fn glFallback(h: *Harness) anyerror!void {
-    if (h.renderer() == .d3d11) return d3dFallback(h);
-    const config = base_config ++ "title = murrtty-gl-fallback\n";
-    {
-        const dir_end = (std.mem.lastIndexOfScalar(u16, h.exe, '\\') orelse return h.fail("murrtty.exe's path has no folder", .{})) + 1;
-        const folder = try std.unicode.utf16LeToUtf8Alloc(h.alloc, h.exe[0..dir_end]);
-        defer h.alloc.free(folder);
-        const path = try std.fmt.allocPrint(h.alloc, "{s}mesa\\opengl32.dll", .{folder});
-        defer h.alloc.free(path);
-        var g = try h.launchWith("gl-fallback-variable", config, .{ .env = &.{.{ "MURRTTY_OPENGL", path }} });
-        defer g.deinit();
-        try h.waitText(&g, ">", 1, 30000);
-        {
-            var d = try h.dump(&g);
-            defer d.deinit();
-            try h.expect(std.mem.eql(u8, d.value.opengl, "variable") and std.mem.indexOf(u8, d.value.gl_renderer, "llvmpipe") != null and d.value.software_gl.len == 0, "MURRTTY_OPENGL naming murrtty's Mesa: drawn with it, started once (opengl '{s}', '{s}', software_gl '{s}')", .{ d.value.opengl, d.value.gl_renderer, d.value.software_gl });
-        }
-        try expectBackground(h, &g, "gl-fallback-variable");
-        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
-    }
-    {
-        var g = try h.launchWith("gl-fallback", config, .{
-            .env = &.{ .{ "GHOSTTY_WIN32_TEST_WGL", "system-extensions" }, .{ "GHOSTTY_WIN32_TEST_GL_DIAG", "remote" } },
-            .wait_window = false,
-        });
-        defer g.deinit();
-        const code = g.waitExit(60000);
-        try h.expect(code != null and code.? == 0, "the first murrtty ends well once murrtty on Mesa has its window (exit {?d})", .{code});
-        var m = try h.adopt("gl-fallback", "murrtty-gl-fallback", 10000);
-        defer m.deinit();
-        // At once: the notice shows from the first frame, before the first
-        // murrtty ended, for Session.notice_ms.
-        {
-            var d = try h.dump(&m);
-            defer d.deinit();
-            try h.expect(std.mem.eql(u8, d.value.opengl, "bundled") and std.mem.indexOf(u8, d.value.gl_renderer, "llvmpipe") != null, "murrtty draws with its Mesa (opengl '{s}', '{s}')", .{ d.value.opengl, d.value.gl_renderer });
-            try h.expect(std.mem.eql(u8, d.value.software_gl, "remote"), "and knows why: '{s}'", .{d.value.software_gl});
-            // Not started with the first's AppUserModelID as its title
-            // (STARTF_TITLEISAPPID, 0x4000): its shell32 freed that title,
-            // corrupting the heap where the install path's length put it.
-            try h.expect(d.value.startup_flags & 0x5000 == 0, "it isn't started with the first's AppUserModelID as its title (flags 0x{x})", .{d.value.startup_flags});
-            const toast = d.value.windows[0].toast;
-            try h.expect(std.mem.startsWith(u8, toast, "This Remote Desktop session offers no OpenGL 4.3: murrtty draws with its software renderer (Mesa)."), "its window says so: '{s}'", .{toast});
-        }
-        try h.waitText(&m, ">", 1, 30000);
-        try expectBackground(h, &m, "gl-fallback");
-        const pane = try h.surface(&m, try h.mainWindow(&m));
-        // cmd leaves an unset variable's name as it is.
-        try h.typeText(pane, "echo [%MURRTTY_SOFTWARE_GL%]");
-        h.enter(pane);
-        try h.waitText(&m, "[%MURRTTY_SOFTWARE_GL%]", 2, 20000);
-        try quit(h, &m, pane);
-        try expectNoLeaks(h, &m, "neither murrtty leaked");
-    }
-}
-
-/// The background murrtty last presented near its window's bottom-right
-/// corner is the default theme's exactly (#282c34): the sRGB framebuffer
-/// and present pass work with this OpenGL too.
 /// Direct3D 11 (roadmap 7.8) with no device at all, not even WARP
 /// (GHOSTTY_WIN32_TEST_D3D=all): the start says so, and murrtty exits
 /// with an error.
-fn d3dMissing(h: *Harness) anyerror!void {
+fn noDevice(h: *Harness) anyerror!void {
     var g = try h.launchWith("d3d-missing", base_config, .{ .env = &.{.{ "GHOSTTY_WIN32_TEST_D3D", "all" }}, .wait_window = false });
     defer g.deinit();
     try h.waitAnswering(&g, 10000);
@@ -5618,7 +5494,7 @@ fn d3dMissing(h: *Harness) anyerror!void {
 /// hardware): WARP draws in the same process, the background exactly, and
 /// a toast says murrtty draws in software; MURRTTY_D3D=warp draws with it
 /// and says nothing (it was asked for).
-fn d3dFallback(h: *Harness) anyerror!void {
+fn warpFallback(h: *Harness) anyerror!void {
     const notice = "No graphics card's driver draws here: murrtty draws in software, which is slower.";
     {
         // Not asked for (the hosted run sets MURRTTY_D3D=warp), or no
@@ -5656,8 +5532,8 @@ fn d3dFallback(h: *Harness) anyerror!void {
     }
 }
 
-/// custom-shader (both renderers; Direct3D 11's HLSL comes from
-/// spirv-cross, roadmap 7.8): one writing a color covers the frame, the
+/// custom-shader (Direct3D 11's HLSL comes from spirv-cross, roadmap
+/// 7.8): one writing a color covers the frame, the
 /// whole window (the probe) green; one reading iChannel0 (the terminal's
 /// frame) and writing it back shows the terminal's background exactly.
 fn customShader(h: *Harness) anyerror!void {
@@ -5668,8 +5544,8 @@ fn customShader(h: *Harness) anyerror!void {
     const cases = [_]Case{
         .{ .name = "green", .glsl = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(0.0, 1.0, 0.0, 1.0); }\n", .want = 0x00ff00 },
         .{ .name = "pass", .glsl = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = texture(iChannel0, fragCoord / iResolution.xy); }\n", .want = 0x282c34 },
-        // OpenGL's coordinates on either renderer: y counts up from the
-        // bottom, so the probe's upper half is green (7.8).
+        // OpenGL's coordinates, as custom shaders expect them: y counts up
+        // from the bottom, so the probe's upper half is green (7.8).
         .{ .name = "up", .glsl = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(0.0, fragCoord.y > iResolution.y * 0.5 ? 1.0 : 0.0, 0.0, 1.0); }\n", .want = 0x00ff00 },
     };
     for (cases) |case| {
@@ -5699,11 +5575,10 @@ fn customShader(h: *Harness) anyerror!void {
 /// Custom shaders the backend can't build (Direct3D 11's compiler refusing
 /// them, faked: GHOSTTY_WIN32_TEST_D3D=post): the terminal still draws.
 /// Generic's renderer drew into the custom shaders' texture with no pass to
-/// copy it to the target, so nothing showed (roadmap 7.8; the code is
-/// OpenGL's too). `color 1F` gives every cell a blue background, which an
-/// empty frame over the background wouldn't show.
+/// copy it to the target, so nothing showed (roadmap 7.8). `color 1F`
+/// gives every cell a blue background, which an empty frame over the
+/// background wouldn't show.
 fn customShaderBroken(h: *Harness, dir: []const u8) !void {
-    if (h.renderer() != .d3d11) return;
     const path = try std.fmt.allocPrint(h.alloc, "{s}\\pass.glsl", .{dir});
     defer h.alloc.free(path);
     const config = try std.fmt.allocPrint(h.alloc, "{s}custom-shader = {s}\n", .{ base_config, path });
@@ -5729,318 +5604,9 @@ fn customShaderBroken(h: *Harness, dir: []const u8) !void {
     try h.expect(std.mem.indexOf(u8, log_text, "error initializing postprocess shaders") != null, "broken: the custom shaders weren't built", .{});
 }
 
-/// render-parity (roadmap 7.8, opt-in): the same scenes drawn by this
-/// build and another (GHOSTTY_GUI_PARITY: the other renderer's Debug
-/// murrtty.exe), each pane's presented frame read back (the present pass
-/// and its shapes included) and compared within 1 per channel, alpha too
-/// for a translucent window. A scene stays shorter than the hosted
-/// runners' rows: scrolling would show the scrollbar, whose fade is timed.
-fn renderParity(h: *Harness) anyerror!void {
-    var buf: [1024]u16 = undefined;
-    const n = w.GetEnvironmentVariableW(w.L("GHOSTTY_GUI_PARITY"), &buf, buf.len);
-    if (n == 0 or n >= buf.len) return h.skipOptIn("set GHOSTTY_GUI_PARITY to the other renderer's murrtty.exe to run it", .{});
-    const other = try std.unicode.utf16LeToUtf8Alloc(h.alloc, buf[0..n]);
-    defer h.alloc.free(other);
-
-    const dir = try std.fmt.allocPrint(h.alloc, "{s}\\render-parity", .{h.temp_dir});
-    defer h.alloc.free(dir);
-    try h.makeDirAt(dir);
-    const text_path = try std.fmt.allocPrint(h.alloc, "{s}\\scene.txt", .{dir});
-    defer h.alloc.free(text_path);
-    const text = try paritySceneText(h.alloc);
-    defer h.alloc.free(text);
-    try h.writeFileAt(text_path, text);
-    const shader_path = try std.fmt.allocPrint(h.alloc, "{s}\\shader.glsl", .{dir});
-    defer h.alloc.free(shader_path);
-    // The frame tinted by its coordinates: a flipped axis shows.
-    try h.writeFileAt(shader_path,
-        \\void mainImage(out vec4 fragColor, in vec2 fragCoord) {
-        \\    vec2 uv = fragCoord / iResolution.xy;
-        \\    vec4 c = texture(iChannel0, uv);
-        \\    fragColor = vec4(mix(c.rgb, vec3(uv, 0.5), 0.25), 1.0);
-        \\}
-        \\
-    );
-    const png_path = try std.fmt.allocPrint(h.alloc, "{s}\\gradient.png", .{dir});
-    defer h.alloc.free(png_path);
-    var rgba: [16 * 16 * 4]u8 = undefined;
-    for (0..16) |y| for (0..16) |x| {
-        const i = (y * 16 + x) * 4;
-        rgba[i..][0..4].* = .{ @intCast(x * 17), @intCast(y * 17), @intCast(255 - (x + y) * 8), 255 };
-    };
-    const png = try pngRgba(h.alloc, 16, 16, &rgba);
-    defer h.alloc.free(png);
-    try h.writeFileAt(png_path, png);
-
-    const shader_cfg = try std.fmt.allocPrint(h.alloc, "custom-shader = {s}\n", .{shader_path});
-    defer h.alloc.free(shader_cfg);
-    const bg_cfg = try std.fmt.allocPrint(h.alloc, "background-image = {s}\nbackground-image-fit = stretch\nbackground-image-opacity = 0.6\n", .{png_path});
-    defer h.alloc.free(bg_cfg);
-    const scenes = [_]ParityScene{
-        .{ .name = "native", .extra = "alpha-blending = native\n" },
-        .{ .name = "linear", .extra = "alpha-blending = linear\n" },
-        .{ .name = "linear-corrected", .extra = "alpha-blending = linear-corrected\n" },
-        .{ .name = "shader", .extra = shader_cfg },
-        .{ .name = "background", .extra = bg_cfg },
-        .{ .name = "translucent", .extra = "background-opacity = 0.8\n", .alpha = true },
-        .{ .name = "split", .extra = "", .split = true },
-    };
-    var failed: usize = 0;
-    for (scenes) |scene| parityScene(h, scene, text_path, other) catch |err| switch (err) {
-        error.TestFailed => failed += 1,
-        else => return err,
-    };
-    try h.expect(failed == 0, "{d} of {d} scenes drawn alike", .{ scenes.len - failed, scenes.len });
-}
-
-const ParityScene = struct {
-    name: []const u8,
-    extra: []const u8,
-    /// A split of a bare prompt (its dimming), not the scene's text.
-    split: bool = false,
-    /// Compare alpha too (a translucent window's frame keeps it).
-    alpha: bool = false,
-};
-
-fn parityScene(h: *Harness, scene: ParityScene, text_path: []const u8, other: []const u8) !void {
-    const config = try std.fmt.allocPrint(h.alloc, "{s}cursor-style-blink = false\n{s}", .{ base_config, scene.extra });
-    defer h.alloc.free(config);
-    var mine = try parityDraw(h, scene, "a", config, null, text_path);
-    defer parityFree(h, &mine);
-    var theirs = try parityDraw(h, scene, "b", config, other, text_path);
-    defer parityFree(h, &theirs);
-    try h.expect(!std.mem.eql(u8, mine.renderer, theirs.renderer), "{s}: drawn by {s} and {s}", .{ scene.name, mine.renderer, theirs.renderer });
-    try h.expect(mine.frames.len == theirs.frames.len, "{s}: {d} and {d} panes", .{ scene.name, mine.frames.len, theirs.frames.len });
-    for (mine.frames, theirs.frames, 0..) |*a, *b, i| try parityCompare(h, scene, i, a, b, mine.dir);
-}
-
-const ParityDrawn = struct {
-    renderer: []u8,
-    dir: []u8,
-    frames: []Harness.Image,
-};
-
-fn parityFree(h: *Harness, d: *ParityDrawn) void {
-    for (d.frames) |*f| f.deinit();
-    h.alloc.free(d.frames);
-    h.alloc.free(d.renderer);
-    h.alloc.free(d.dir);
-}
-
-/// One build's frames of `scene`, one picture per pane in `saveFrames`'
-/// order.
-fn parityDraw(h: *Harness, scene: ParityScene, which: []const u8, config: []const u8, exe: ?[]const u8, text_path: []const u8) !ParityDrawn {
-    const name = try std.fmt.allocPrint(h.alloc, "parity-{s}-{s}", .{ scene.name, which });
-    defer h.alloc.free(name);
-    var g = try h.launchWith(name, config, .{ .exe = exe });
-    defer g.deinit();
-    try h.waitText(&g, ">", 1, 20000);
-    const surf = try h.surface(&g, try h.mainWindow(&g));
-    if (scene.split) {
-        h.key(surf, .{ .ctrl = true, .shift = true }, 'O');
-        var waited: u32 = 0;
-        while (true) : (waited += 200) {
-            var d = try h.dump(&g);
-            defer d.deinit();
-            const panes = d.value.windows[0].tabs[0].panes orelse &.{};
-            var prompts: usize = 0;
-            for (panes) |p| if (p.text) |t| if (std.mem.indexOfScalar(u8, t, '>') != null) {
-                prompts += 1;
-            };
-            if (panes.len == 2 and prompts == 2) break;
-            if (waited >= 15000) return h.fail("{s}: the split's second shell didn't show its prompt", .{name});
-            w.Sleep(200);
-        }
-    } else {
-        const cmd = try std.fmt.allocPrint(h.alloc, "chcp 65001>nul&type \"{s}\"", .{text_path});
-        defer h.alloc.free(cmd);
-        try h.typeText(surf, cmd);
-        h.enter(surf);
-        try h.waitText(&g, "parity-end", 1, 20000);
-        var waited: u32 = 0;
-        while (true) : (waited += 200) {
-            var d = try h.dump(&g);
-            defer d.deinit();
-            const panes = d.value.windows[0].tabs[0].panes orelse &.{};
-            if (panes.len > 0 and panes[0].images >= 1) break;
-            if (waited >= 5000) return h.fail("{s}: the kitty graphics image never arrived", .{name});
-            w.Sleep(200);
-        }
-    }
-    // The last output drawn, the cursor still.
-    w.Sleep(500);
-    try h.saveFrames(&g);
-    var d = try h.dump(&g);
-    defer d.deinit();
-    const panes = d.value.windows[0].tabs[0].panes orelse return h.fail("{s}: no panes", .{name});
-    const frames = try h.alloc.alloc(Harness.Image, panes.len);
-    var loaded: usize = 0;
-    errdefer {
-        for (frames[0..loaded]) |*f| f.deinit();
-        h.alloc.free(frames);
-    }
-    while (loaded < panes.len) : (loaded += 1) {
-        const pic = try std.fmt.allocPrint(h.alloc, "frame-{d}.bmp", .{loaded});
-        defer h.alloc.free(pic);
-        frames[loaded] = try h.loadPicture(&g, pic);
-    }
-    const renderer = try h.alloc.dupe(u8, d.value.renderer);
-    errdefer h.alloc.free(renderer);
-    return .{
-        .renderer = renderer,
-        .dir = try h.alloc.dupe(u8, std.fs.path.dirname(g.dump_path).?),
-        .frames = frames,
-    };
-}
-
-fn parityCompare(h: *Harness, scene: ParityScene, pane: usize, a: *const Harness.Image, b: *const Harness.Image, dir: []const u8) !void {
-    if (a.width != b.width or a.height != b.height) {
-        return h.fail("{s} pane {d}: frames of {d}x{d} and {d}x{d}", .{ scene.name, pane, a.width, a.height, b.width, b.height });
-    }
-    const mask: u32 = if (scene.alpha) 0xFFFFFFFF else 0x00FFFFFF;
-    var differ: usize = 0;
-    var worst: u32 = 0;
-    var first: usize = 0;
-    for (a.pixels, b.pixels, 0..) |pa, pb, i| {
-        const diff = channelDiff(pa & mask, pb & mask);
-        worst = @max(worst, diff);
-        if (diff > 1) {
-            if (differ == 0) first = i;
-            differ += 1;
-        }
-    }
-    if (differ == 0) {
-        h.log("{s} pane {d}: {d}x{d} alike (at most {d} apart)", .{ scene.name, pane, a.width, a.height, worst });
-        return;
-    }
-    // Where they differ, red over this build's frame darkened.
-    var pic: Harness.Image = .{ .alloc = h.alloc, .width = a.width, .height = a.height, .pixels = try h.alloc.alloc(u32, a.pixels.len) };
-    defer pic.deinit();
-    for (a.pixels, b.pixels, pic.pixels) |pa, pb, *out| {
-        out.* = if (channelDiff(pa & mask, pb & mask) > 1) 0xFFFF0000 else 0xFF000000 | ((pa >> 2) & 0x3F3F3F);
-    }
-    const path = try std.fmt.allocPrint(h.alloc, "{s}\\parity-diff-{d}.bmp", .{ dir, pane });
-    defer h.alloc.free(path);
-    pic.save(path) catch {};
-    return h.fail("{s} pane {d}: {d} pixels differ by more than 1 (at most {d}), the first at ({d},{d}): #{x:0>8} here, #{x:0>8} there (picture: {s})", .{
-        scene.name, pane, differ, worst, first % a.width, first / a.width, a.pixels[first] & mask, b.pixels[first] & mask, path,
-    });
-}
-
-/// The largest difference between two pixels' channels.
-fn channelDiff(a: u32, b: u32) u32 {
-    var most: u32 = 0;
-    inline for (.{ 0, 8, 16, 24 }) |shift| {
-        const x: i32 = @intCast((a >> shift) & 0xff);
-        const y: i32 = @intCast((b >> shift) & 0xff);
-        most = @max(most, @abs(x - y));
-    }
-    return most;
-}
-
-/// render-parity's text (UTF-8, under 72 columns a line, 20 lines): the
-/// 16 colors as text and backgrounds, the 256-color cube and grays, true
-/// color backgrounds and text, attributes, box drawing and shades, text
-/// in fallback fonts, and a 4x4 kitty graphics image stretched over 8x4
-/// cells (its sampling).
-fn paritySceneText(alloc: std.mem.Allocator) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(alloc);
-    var line: [64]u8 = undefined;
-    for ([_]u32{ 30, 90 }) |base| for (base..base + 8) |c| {
-        try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[{d}mAa ", .{c}));
-    };
-    try out.appendSlice(alloc, "\x1b[0m\r\n");
-    for ([_]u32{ 40, 100 }) |base| for (base..base + 8) |c| {
-        try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[{d}m   ", .{c}));
-    };
-    try out.appendSlice(alloc, "\x1b[0m\r\n");
-    for (16..232) |c| {
-        try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[48;5;{d}m ", .{c}));
-        if ((c - 16) % 72 == 71) try out.appendSlice(alloc, "\x1b[0m\r\n");
-    }
-    for (232..256) |c| try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[48;5;{d}m  ", .{c}));
-    try out.appendSlice(alloc, "\x1b[0m\r\n");
-    for (0..2) |row| {
-        for (0..64) |i| {
-            const r = i * 4;
-            const g = if (row == 0) 255 - i * 4 else 128;
-            const b = if (row == 0) 96 else i * 4;
-            try out.appendSlice(alloc, try std.fmt.bufPrint(&line, "\x1b[48;2;{d};{d};{d}m ", .{ r, g, b }));
-        }
-        try out.appendSlice(alloc, "\x1b[0m\r\n");
-    }
-    try out.appendSlice(alloc, "\x1b[38;2;255;128;0mOrange \x1b[38;2;0;200;255mCyan \x1b[38;2;200;60;220mViolet \x1b[38;2;250;250;250;48;2;30;90;40mOn green\x1b[0m\r\n");
-    try out.appendSlice(alloc, "\x1b[1mBold\x1b[0m \x1b[3mItalic\x1b[0m \x1b[1;3mBoth\x1b[0m \x1b[4mUnder\x1b[0m \x1b[9mStrike\x1b[0m \x1b[7mInverse\x1b[0m \x1b[2mFaint\x1b[0m \x1b[4;31mRed under\x1b[0m\r\n");
-    try out.appendSlice(alloc, "\u{250c}\u{2500}\u{252c}\u{2500}\u{2510} \u{2588}\u{2593}\u{2592}\u{2591} \u{2580}\u{2584}\u{258c}\u{2590} \u{256d}\u{2500}\u{256e} \u{2550}\u{2551}\u{2554}\u{2557} \u{25cf}\u{25c6}\u{25b2}\r\n");
-    try out.appendSlice(alloc, "\u{2502} \u{2502} \u{2502} \u{2581}\u{2582}\u{2583}\u{2584}\u{2585}\u{2586}\u{2587}\u{2588} \u{2570}\u{2500}\u{256f} \u{255a}\u{2550}\u{255d} \u{e0b0}\u{e0b2}\r\n");
-    try out.appendSlice(alloc, "\u{2514}\u{2500}\u{2534}\u{2500}\u{2518} Caf\u{e9} na\u{ef}ve \u{6f22}\u{5b57}\u{30c6}\u{30b9}\u{30c8} \u{263a} -> => != \r\n");
-    // 4x4 RGBA: a row each of reds, greens, blues and grays.
-    var px: [64]u8 = undefined;
-    for (0..4) |y| for (0..4) |x| {
-        const v: u8 = @intCast(64 + x * 60);
-        px[(y * 4 + x) * 4 ..][0..4].* = switch (y) {
-            0 => .{ v, 0, 0, 255 },
-            1 => .{ 0, v, 0, 255 },
-            2 => .{ 0, 0, v, 255 },
-            else => .{ v, v, v, 255 },
-        };
-    };
-    var b64: [std.base64.standard.Encoder.calcSize(64)]u8 = undefined;
-    _ = std.base64.standard.Encoder.encode(&b64, &px);
-    try out.appendSlice(alloc, "\x1b_Ga=T,f=32,s=4,v=4,c=8,r=4;");
-    try out.appendSlice(alloc, &b64);
-    try out.appendSlice(alloc, "\x1b\\\r\nparity-end\r\n");
-    return out.toOwnedSlice(alloc);
-}
-
-/// An RGBA PNG, its pixels in one stored (uncompressed) deflate block.
-fn pngRgba(alloc: std.mem.Allocator, width: u32, height: u32, rgba: []const u8) ![]u8 {
-    var raw: std.ArrayList(u8) = .empty;
-    defer raw.deinit(alloc);
-    for (0..height) |y| {
-        try raw.append(alloc, 0);
-        try raw.appendSlice(alloc, rgba[y * width * 4 ..][0 .. width * 4]);
-    }
-    std.debug.assert(raw.items.len <= 0xffff);
-    var z: std.ArrayList(u8) = .empty;
-    defer z.deinit(alloc);
-    var word: [4]u8 = undefined;
-    try z.appendSlice(alloc, &.{ 0x78, 0x01, 0x01 });
-    const len: u16 = @intCast(raw.items.len);
-    std.mem.writeInt(u16, word[0..2], len, .little);
-    std.mem.writeInt(u16, word[2..4], ~len, .little);
-    try z.appendSlice(alloc, &word);
-    try z.appendSlice(alloc, raw.items);
-    std.mem.writeInt(u32, &word, std.hash.Adler32.hash(raw.items), .big);
-    try z.appendSlice(alloc, &word);
-
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(alloc);
-    try out.appendSlice(alloc, "\x89PNG\r\n\x1a\n");
-    var ihdr: [13]u8 = undefined;
-    std.mem.writeInt(u32, ihdr[0..4], width, .big);
-    std.mem.writeInt(u32, ihdr[4..8], height, .big);
-    ihdr[8..13].* = .{ 8, 6, 0, 0, 0 };
-    try pngChunk(alloc, &out, "IHDR", &ihdr);
-    try pngChunk(alloc, &out, "IDAT", z.items);
-    try pngChunk(alloc, &out, "IEND", "");
-    return out.toOwnedSlice(alloc);
-}
-
-fn pngChunk(alloc: std.mem.Allocator, out: *std.ArrayList(u8), kind: *const [4]u8, data: []const u8) !void {
-    var word: [4]u8 = undefined;
-    std.mem.writeInt(u32, &word, @intCast(data.len), .big);
-    try out.appendSlice(alloc, &word);
-    try out.appendSlice(alloc, kind);
-    try out.appendSlice(alloc, data);
-    var crc = std.hash.Crc32.init();
-    crc.update(kind);
-    crc.update(data);
-    std.mem.writeInt(u32, &word, crc.final(), .big);
-    try out.appendSlice(alloc, &word);
-}
-
+/// The background murrtty last presented near its window's bottom-right
+/// corner is the default theme's exactly (#282c34): the present pass works
+/// with this device too.
 fn expectBackground(h: *Harness, g: *Harness.Ghostty, name: []const u8) !void {
     var waited: u32 = 0;
     while (waited <= 10000) : (waited += 200) {
@@ -6161,54 +5727,6 @@ fn conptyBundled(h: *Harness) anyerror!void {
     const hosts = g.children("conhost.exe");
     try h.expect(hosts == 1 and g.children("OpenConsole.exe") == 0, "without OpenConsole.exe, the pane's console host is conhost.exe ({d})", .{hosts});
     try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
-}
-
-/// MURRTTY_OPENGL names the opengl32.dll to load by full path, for a
-/// software OpenGL (roadmap 6.3): Windows' own named so draws as without
-/// it; one that can't load, or a path that isn't a full one, is said so
-/// at start.
-fn glLibrary(h: *Harness) anyerror!void {
-    if (h.renderer() == .d3d11) return h.skipBuild("OpenGL builds only: the Direct3D 11 build loads no opengl32", .{});
-    {
-        var g = try h.launchWith("gl-library-system", base_config, .{ .env = &.{.{ "MURRTTY_OPENGL", "C:\\Windows\\System32\\opengl32.dll" }} });
-        defer g.deinit();
-        try h.waitText(&g, ">", 1, 20000);
-        var drew = false;
-        for (0..50) |_| {
-            var d = try h.dump(&g);
-            defer d.deinit();
-            const pane = (d.value.windows[0].tabs[0].panes orelse return h.fail("no panes", .{}))[0];
-            if ((pane.frames orelse 0) > 0) {
-                drew = true;
-                break;
-            }
-            w.Sleep(100);
-        }
-        try h.expect(drew, "with Windows' opengl32.dll named, murrtty draws", .{});
-        try quit(h, &g, try h.surface(&g, try h.mainWindow(&g)));
-    }
-    const missing = [_]struct { name: []const u8, value: []const u8 }{
-        .{ .name = "gl-library-missing", .value = "C:\\murrtty-no-such-folder\\opengl32.dll" },
-        .{ .name = "gl-library-relative", .value = "opengl32.dll" },
-        // A DLL that loads, but that gdi32 wouldn't find by opengl32's name.
-        .{ .name = "gl-library-name", .value = "C:\\Windows\\System32\\glu32.dll" },
-    };
-    for (missing) |case| {
-        var g = try h.launchWith(case.name, base_config, .{ .env = &.{.{ "MURRTTY_OPENGL", case.value }}, .wait_window = false });
-        defer g.deinit();
-        try h.waitAnswering(&g, 10000);
-        const dlg = try h.waitDialog(&g, 10000);
-        {
-            var d = try h.dump(&g);
-            defer d.deinit();
-            const want = try std.fmt.allocPrint(h.alloc, "The OpenGL that MURRTTY_OPENGL names couldn't be loaded: {s}", .{case.value});
-            defer h.alloc.free(want);
-            try h.expect(std.mem.startsWith(u8, d.value.dialog.body, want), "{s}: the dialog says '{s}'", .{ case.name, d.value.dialog.body });
-        }
-        h.answer(&g, dlg, w.IDCLOSE);
-        const code = g.waitExit(10000);
-        try h.expect(code != null and code.? != 0, "{s}: murrtty then exits with an error (exit {?d})", .{ case.name, code });
-    }
 }
 
 /// UI Automation (roadmap 6.4): a screen reader reads the pane through the
@@ -7814,7 +7332,7 @@ const ThreadStacks = struct {
 /// names its stack's top (NT_TIB.StackBase, 8 bytes in), and the
 /// allocation holding it is the stack, whose committed pages are what it
 /// has used (all of it, before 0.15). Other allocations of the stack's
-/// size (llvmpipe's on ARM64) are not stacks.
+/// size (a driver's, say) are not stacks.
 fn threadStacks(g: *Harness.Ghostty) ThreadStacks {
     var out: ThreadStacks = .{};
     const snap = w.CreateToolhelp32Snapshot(w.TH32CS_SNAPTHREAD, 0);
@@ -10152,7 +9670,7 @@ fn paneFrames(h: *Harness, g: *Harness.Ghostty, pane: w.HWND) !u32 {
 
 /// Whether `pane` presents a frame past its `since`th within `ms`: its text
 /// can be in the dump before its frame is presented, by a while on a slow
-/// renderer (llvmpipe's).
+/// renderer (WARP's).
 fn panePresents(h: *Harness, g: *Harness.Ghostty, pane: w.HWND, since: u32, ms: u32) !bool {
     var waited: u32 = 0;
     while (waited <= ms) : (waited += 100) {
@@ -14167,32 +13685,28 @@ fn sessionRestore(h: *Harness) anyerror!void {
         try h.expect(marker_waited < 10000, "the restore's crash marker goes a few seconds after it", .{});
     }
 
-    // A start that fails (no OpenGL) leaves the file as it was, and no
-    // crash marker behind.
+    // A start that fails (no Direct3D 11 device, not even WARP) leaves the
+    // file as it was, and no crash marker behind.
     {
         const before = h.readFileOrNull(path) orelse return h.fail("no session file", .{});
         defer h.alloc.free(before);
         const marker = try std.fmt.allocPrint(h.alloc, "{s}\\session-{s}.restoring", .{ folder, class });
         defer h.alloc.free(marker);
-        // Direct3D 11 (7.8): no device, not even WARP.
-        const gl_env: []const [2][]const u8 = if (h.renderer() == .d3d11)
-            &.{ .{ "XDG_STATE_HOME", state }, .{ "GHOSTTY_WIN32_TEST_D3D", "all" } }
-        else
-            &.{ .{ "XDG_STATE_HOME", state }, .{ "GHOSTTY_WIN32_TEST_WGL", "context" } };
-        var g = try h.launchWith("session-restore-gl", config, .{ .env = gl_env, .wait_window = false });
+        var g = try h.launchWith("session-restore-no-device", config, .{
+            .env = &.{ .{ "XDG_STATE_HOME", state }, .{ "GHOSTTY_WIN32_TEST_D3D", "all" } },
+            .wait_window = false,
+        });
         defer g.deinit();
         try h.waitAnswering(&g, 10000);
-        // After two starts: this murrtty's, and the one on its Mesa that
-        // can't draw either (roadmap 6.3b).
-        const dlg = try h.waitDialog(&g, 30000);
+        const dlg = try h.waitDialog(&g, 15000);
         w.Sleep(1500);
         {
             const during = h.readFileOrNull(path) orelse return h.fail("the session file is gone", .{});
             defer h.alloc.free(during);
             try h.expect(std.mem.eql(u8, before, during), "while murrtty says it can't draw, the session file is as it was", .{});
         }
-        // Direct3D 11's is a MessageBox: its OK button has IDCANCEL's id.
-        h.answer(&g, dlg, if (h.renderer() == .d3d11) w.IDCANCEL else w.IDCLOSE);
+        // A MessageBox: its OK button has IDCANCEL's id.
+        h.answer(&g, dlg, w.IDCANCEL);
         _ = g.waitExit(10000);
         const after = h.readFileOrNull(path) orelse return h.fail("the session file is gone", .{});
         defer h.alloc.free(after);

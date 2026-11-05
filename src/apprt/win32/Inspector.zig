@@ -1,11 +1,10 @@
 //! The terminal inspector (roadmap 5.12), GTK's: a window of its own for a
 //! pane, "murrtty: Terminal Inspector", 1000x600, showing Ghostty's
 //! inspector (Dear ImGui) for it. The core owns the inspector's data
-//! (activateInspector, deactivateInspector); this owns the window, a WGL
-//! 4.3 context of its own and the ImGui context, drawn by ImGui's OpenGL 3
-//! backend, as the embedded runtime's Inspector does with Metal; with the
-//! Direct3D 11 renderer (roadmap 7.8), a device and swap chain of its own
-//! and ImGui's DX11 backend, so it needs no OpenGL either. Input is
+//! (activateInspector, deactivateInspector); this owns the window, a
+//! Direct3D 11 device and swap chain of its own and the ImGui context,
+//! drawn by ImGui's DX11 backend, as the embedded runtime's Inspector does
+//! with Metal. Input is
 //! fed to ImGui by hand, as GTK's widget does (with the ImGuiMod_ keys it
 //! leaves out), and it draws 30 times a second while shown, as macOS's
 //! view, and at once after input.
@@ -14,8 +13,7 @@ const Inspector = @This();
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const cimgui = @import("dcimgui");
-const gl = @import("opengl");
-const wgl = gl.wgl;
+const d3d11 = @import("d3d11");
 
 const c = @import("c.zig");
 const key = @import("key.zig");
@@ -24,11 +22,6 @@ const Surface = @import("Surface.zig");
 const test_hooks = @import("test_hooks.zig");
 const CoreInspector = @import("../../inspector/main.zig").Inspector;
 const global = @import("../../global.zig");
-const build_config = @import("../../build_config.zig");
-
-/// The Direct3D 11 renderer's build: the inspector draws with it too.
-const is_d3d = build_config.renderer == .d3d11;
-const d3d11 = if (is_d3d) @import("d3d11") else struct {};
 const RendererDevice = @import("../../renderer.zig").Device;
 
 const log = std.log.scoped(.win32_inspector);
@@ -45,10 +38,8 @@ const timer_id = 1;
 app: *App,
 surface: *Surface,
 hwnd: c.HWND,
-hdc: ?c.HDC = null,
-glrc: ?wgl.HGLRC = null,
 ig: ?*cimgui.c.ImGuiContext = null,
-/// ImGui's OpenGL 3 backend is set up in `ig`.
+/// ImGui's DX11 backend is set up in `ig`.
 backend: bool = false,
 /// The core's inspector is on for the pane.
 active: bool = false,
@@ -65,17 +56,13 @@ buttons: u8 = 0,
 clipboard: ?[:0]u8 = null,
 /// Frames drawn (the GUI tests' dump).
 frames: u32 = 0,
-/// GL 1.1's own functions, from the opengl32 murrtty loaded (roadmap 6.3:
-/// linked, they would load Windows' at start, whichever MURRTTY_OPENGL
-/// names).
-gl11: ?Gl11 = null,
-/// With the Direct3D 11 renderer: its device and swap chain.
-dx: if (is_d3d) ?Dx else void = if (is_d3d) null else {},
+/// Its device and swap chain.
+dx: ?Dx = null,
 
 /// The inspector's own Direct3D 11 device (on the UI thread, which alone
 /// uses it), the panes' choice of GPU or WARP, and a flip swap chain on
 /// its window, opaque.
-const Dx = if (!is_d3d) void else struct {
+const Dx = struct {
     gpu: *d3d11.d3d.Device,
     ctx: *d3d11.d3d.DeviceContext,
     swap: *d3d11.dxgi.SwapChain1,
@@ -145,24 +132,8 @@ const Dx = if (!is_d3d) void else struct {
     }
 };
 
-const Gl11 = struct {
-    viewport: *const fn (c_int, c_int, c_int, c_int) callconv(.winapi) void,
-    clearColor: *const fn (f32, f32, f32, f32) callconv(.winapi) void,
-    clear: *const fn (u32) callconv(.winapi) void,
-
-    fn load() ?Gl11 {
-        return .{
-            .viewport = @ptrCast(wgl.libraryProc("glViewport") orelse return null),
-            .clearColor = @ptrCast(wgl.libraryProc("glClearColor") orelse return null),
-            .clear = @ptrCast(wgl.libraryProc("glClear") orelse return null),
-        };
-    }
-};
-
 pub fn registerClass(instance: c.HINSTANCE) !void {
     const wc: c.WNDCLASSEXW = .{
-        // Its own DC for its GL context.
-        .style = c.CS_OWNDC,
         .lpfnWndProc = &wndProc,
         .hInstance = instance,
         .hCursor = c.LoadCursorW(null, c.IDC_ARROW),
@@ -200,26 +171,8 @@ pub fn create(surface: *Surface) !*Inspector {
 
     self.dpi = c.GetDpiForWindow(self.hwnd);
     self.sizeForDpi();
-    if (comptime is_d3d) {
-        const device = app.core_app.device orelse return error.NoRenderDevice;
-        self.dx = try Dx.create(device, self.hwnd);
-    } else {
-        const ext = try app.wglExtensions();
-        const hdc = c.GetDC(self.hwnd) orelse return error.GetDCFailed;
-        self.hdc = hdc;
-        const whdc: wgl.HDC = @ptrCast(hdc);
-        try ext.setPixelFormat(whdc);
-        self.glrc = (try ext.createContext(whdc, 4, 3, false)).handle;
-        self.gl11 = Gl11.load();
-        if (wgl.wglMakeCurrent(whdc, self.glrc) == 0) return error.MakeCurrentFailed;
-        // No waiting on the display in SwapBuffers: it runs on the UI
-        // thread, and the timer paces it (the terminals' renderers do the
-        // same).
-        if (ext.swapInterval) |swapInterval| _ = swapInterval(0);
-    }
-    defer if (comptime !is_d3d) {
-        _ = wgl.wglMakeCurrent(null, null);
-    };
+    const device = app.core_app.device orelse return error.NoRenderDevice;
+    self.dx = try Dx.create(device, self.hwnd);
 
     const ig = cimgui.c.ImGui_CreateContext(null) orelse return error.OutOfMemory;
     self.ig = ig;
@@ -232,13 +185,8 @@ pub fn create(surface: *Surface) !*Inspector {
     pio.Platform_ClipboardUserData = self;
     pio.Platform_GetClipboardTextFn = &getClipboardText;
     pio.Platform_SetClipboardTextFn = &setClipboardText;
-    if (comptime is_d3d) {
-        const dx = &self.dx.?;
-        if (!cimgui.ImGui_ImplDX11_Init(dx.gpu, dx.ctx)) return error.ImGuiBackendFailed;
-    } else {
-        // A 4.3 core context: GLSL 4.10's shaders.
-        if (!cimgui.ImGui_ImplOpenGL3_Init("#version 410")) return error.ImGuiBackendFailed;
-    }
+    const dx = &self.dx.?;
+    if (!cimgui.ImGui_ImplDX11_Init(dx.gpu, dx.ctx)) return error.ImGuiBackendFailed;
     self.backend = true;
     CoreInspector.setup();
     self.applyStyle();
@@ -268,23 +216,12 @@ fn onDestroy(self: *Inspector) void {
     _ = c.KillTimer(self.hwnd, timer_id);
     if (self.ig) |ig| {
         const prev = cimgui.c.ImGui_GetCurrentContext();
-        if (self.glrc) |glrc| if (self.hdc) |hdc| {
-            _ = wgl.wglMakeCurrent(@ptrCast(hdc), glrc);
-        };
         cimgui.c.ImGui_SetCurrentContext(ig);
-        // Not ShutdownWithLoaderCleanup: its GL function table is the
-        // process's, and another inspector still drawing would call GL
-        // through it zeroed (opengl32 stays loaded, so it stays right).
-        if (self.backend) {
-            if (comptime is_d3d) cimgui.ImGui_ImplDX11_Shutdown() else cimgui.ImGui_ImplOpenGL3_Shutdown();
-        }
+        if (self.backend) cimgui.ImGui_ImplDX11_Shutdown();
         cimgui.c.ImGui_DestroyContext(ig);
         cimgui.c.ImGui_SetCurrentContext(if (prev == ig) null else prev);
-        if (self.glrc != null) _ = wgl.wglMakeCurrent(null, null);
     }
-    if (comptime is_d3d) if (self.dx) |*dx| dx.release();
-    if (self.glrc) |glrc| _ = wgl.wglDeleteContext(glrc);
-    if (self.hdc) |hdc| _ = c.ReleaseDC(self.hwnd, hdc);
+    if (self.dx) |*dx| dx.release();
     if (self.active) self.surface.core_surface.deactivateInspector();
     if (self.surface.inspector == self) self.surface.inspector = null;
     const alloc = self.app.core_app.alloc;
@@ -332,49 +269,10 @@ fn applyStyle(self: *Inspector) void {
     cimgui.c.ImGui_GetStyle().* = style;
 }
 
-/// Draw a frame: the core's inspector for the pane, through ImGui.
-fn render(self: *Inspector) void {
-    if (comptime is_d3d) return self.renderD3d();
-    const hdc = self.hdc orelse return;
-    if (!self.backend or c.IsIconic(self.hwnd) != 0) return;
-    if (wgl.wglMakeCurrent(@ptrCast(hdc), self.glrc) == 0) return;
-    defer _ = wgl.wglMakeCurrent(null, null);
-    const scope = self.enter() orelse return;
-    defer scope.leave();
-
-    var r: c.RECT = .{};
-    _ = c.GetClientRect(self.hwnd, &r);
-    const ig_io: *cimgui.c.ImGuiIO = cimgui.c.ImGui_GetIO();
-    ig_io.DisplaySize = .{ .x = @floatFromInt(r.right), .y = @floatFromInt(r.bottom) };
-    ig_io.DisplayFramebufferScale = .{ .x = 1, .y = 1 };
-
-    // Twice, as the other runtimes do: ImGui settles some state only on
-    // the frame after.
-    const core = &self.surface.core_surface;
-    for (0..2) |_| {
-        cimgui.ImGui_ImplOpenGL3_NewFrame();
-        self.newFrame(ig_io);
-        cimgui.c.ImGui_NewFrame();
-        if (core.inspector) |i| i.render(core);
-        self.cursor = cimgui.c.ImGui_GetMouseCursor();
-        cimgui.c.ImGui_Render();
-    }
-
-    if (self.gl11) |g| {
-        g.viewport(0, 0, r.right, r.bottom);
-        g.clearColor(0, 0, 0, 1);
-        g.clear(c.GL_COLOR_BUFFER_BIT);
-    }
-    cimgui.ImGui_ImplOpenGL3_RenderDrawData(cimgui.c.ImGui_GetDrawData());
-    _ = wgl.SwapBuffers(@ptrCast(hdc));
-    self.frames +%= 1;
-}
-
-/// render's Direct3D 11 frame: the same ImGui frames, then ImGui's DX11
-/// backend draws into the swap chain, presented without waiting (the
+/// Draw a frame: the core's inspector for the pane, through ImGui, whose
+/// DX11 backend draws into the swap chain, presented without waiting (the
 /// timer paces it).
-fn renderD3d(self: *Inspector) void {
-    if (comptime !is_d3d) return;
+fn render(self: *Inspector) void {
     const dx = if (self.dx) |*d| d else return;
     if (!self.backend or c.IsIconic(self.hwnd) != 0) return;
     const scope = self.enter() orelse return;
@@ -386,6 +284,8 @@ fn renderD3d(self: *Inspector) void {
     ig_io.DisplaySize = .{ .x = @floatFromInt(r.right), .y = @floatFromInt(r.bottom) };
     ig_io.DisplayFramebufferScale = .{ .x = 1, .y = 1 };
 
+    // Twice, as the other runtimes do: ImGui settles some state only on
+    // the frame after.
     const core = &self.surface.core_surface;
     for (0..2) |_| {
         cimgui.ImGui_ImplDX11_NewFrame();

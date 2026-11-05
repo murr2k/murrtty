@@ -398,8 +398,8 @@ pub const Platform = union(PlatformTag) {
 
     pub const Windows = if (builtin.target.os.tag == .windows) struct {
         /// The window (HWND) to render the surface into. The renderer
-        /// sets the window's pixel format and presents into it with
-        /// WGL, so it must be a window dedicated to this surface.
+        /// presents into it (Direct3D 11, through DirectComposition), so
+        /// it must be a window dedicated to this surface.
         hwnd: *anyopaque,
     } else void;
 
@@ -1275,7 +1275,7 @@ pub const Surface = struct {
         return .{};
     }
 
-    /// The native window to render into. Used by the WGL renderer.
+    /// The native window to render into. Used by the Direct3D 11 renderer.
     pub fn nativeWindow(self: *const Surface) *anyopaque {
         return switch (self.platform) {
             .windows => |v| if (comptime Platform.Windows != void) v.hwnd else unreachable,

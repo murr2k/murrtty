@@ -292,16 +292,17 @@ jobs:
           pattern: deps-*
           path: ${{ env.DEPS }}
 
-      # Each runner's zip holds the packages its build used: the same but
-      # for Mesa, whose x64 and ARM64 zips are lazy. One zip holds them
-      # all, stored, in name order with one timestamp, so it is the same
-      # for the same inputs.
+      # Each runner's zip holds the packages its build used (the same since
+      # Mesa's per-architecture zips went with OpenGL, roadmap 7.8 step 7;
+      # merged still, so an architecture's own package can't go missing).
+      # One zip holds them all, stored, in name order with one timestamp,
+      # so it is the same for the same inputs.
       - name: Merge the dependencies zips
         run: |
           set -euo pipefail
           ver="${TAG#murrtty-v}"
           python3 - "$ASSETS/murrtty-$ver-deps.zip" <<'EOF'
-          import glob, hashlib, os, re, sys, zipfile
+          import glob, hashlib, os, sys, zipfile
           out = sys.argv[1]
           entries, digests = {}, {}
           for path in sorted(glob.glob(os.path.join(os.environ["DEPS"], "*", "*.zip"))):
@@ -314,11 +315,6 @@ jobs:
                               sys.exit(f"{info.filename} differs between the runners' zips")
                           continue
                       entries[info.filename], digests[info.filename] = data, digest
-          zon = open("build.zig.zon", encoding="utf-8").read()
-          for name in ("murrtty_mesa_x64", "murrtty_mesa_arm64"):
-              m = re.search(r"\." + name + r"\s*=\s*\.\{[^}]*?\.hash\s*=\s*\"([^\"]+)\"", zon, re.S)
-              if not m or f"p/{m.group(1)}.tar.gz" not in entries:
-                  sys.exit(f"the merged zip lacks {name}")
           with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
               for name in sorted(entries):
                   info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))

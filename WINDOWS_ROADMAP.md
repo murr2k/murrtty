@@ -253,8 +253,8 @@ the file's vocabulary:
      happens when an update is found, consent, a skipped version; 7.6) and
      `session.json` (the windows kept for the next start; 5.10b);
    - environment variables, for Windows-only switches and diagnostics:
-     `MURRTTY_D3D=warp` (7.8), `MURRTTY_OPENGL` (6.3),
-     `MURRTTY_CONPTY=system` (2.6).
+     `MURRTTY_D3D=warp` (7.8), `MURRTTY_CONPTY=system` (2.6)
+     (`MURRTTY_OPENGL`, 6.3's, went with OpenGL in 7.8's step 7).
 
    A new murrtty-only setting goes in one of these, never into the
    configuration.
@@ -531,20 +531,14 @@ roadmap item behind it.
   header bar, or with `gtk-titlebar-style = tabs` in the tab row that
   holds them; a window with neither (`gtk-titlebar = false` or server
   decorations without the tab-row style, the quick terminal) shows none.
-- **Direct3D 11 instead of OpenGL** (7.8, the default since 2026-11-01):
-  murrtty draws with Direct3D 11, and without a Direct3D 11 driver with
-  Windows' WARP in the same process (saying in its window that it draws in
-  software), where GTK's app draws with OpenGL. It looks the same:
-  `render-parity` finds its frames identical to the OpenGL backend's, and
-  custom shaders see OpenGL's coordinates. `-Drenderer=opengl` builds the
-  OpenGL backend until 7.8's step 7 retires it.
-- **Software OpenGL** (6.3b, OpenGL builds): with no OpenGL 4.3 from the
-  graphics driver (Remote Desktop without the card, a virtual machine
-  without 3D, the basic display adapter, an old driver), murrtty starts
-  again on the Mesa llvmpipe it ships in `bin\mesa` and says in its window
-  that it draws in software, where GTK's app has no fallback of its own (on
-  Linux the system's Mesa already falls back to llvmpipe when there is no
-  driver).
+- **Direct3D 11 instead of OpenGL** (7.8, the default since 2026-11-01,
+  the only renderer since step 7 on 2026-11-05): murrtty draws with
+  Direct3D 11, and without a Direct3D 11 driver with Windows' WARP in the
+  same process (saying in its window that it draws in software), where
+  GTK's app draws with OpenGL. It looks the same: `render-parity` found its
+  frames identical to the OpenGL backend's before that retired, and custom
+  shaders see OpenGL's coordinates. The build refuses `-Drenderer=opengl`
+  for Windows.
 - **The prompt on a resize** (2.2, 2.3): a resize keeps the prompt's rows and
   reflows them like any text. GTK's clears them for the shell to redraw
   (OSC 133's `redraw` defaults to on there, and its shells redraw on
@@ -3851,7 +3845,25 @@ no new workflows; murrtty now reports "based on Ghostty 1.4.0". Its GTK
 app writes every representation of a clipboard write, HTML alone too
 (6.5's difference for it went), toasts "Cleared clipboard" only when
 the write held nothing, as murrtty now does, and gains the kitty
-clipboard protocol, which murrtty already had.
+clipboard protocol, which murrtty already had. *Merged 2026-11-05:*
+Ghostty's main of 2026-11-04 (`e95bed633`, 180 commits past 1.4.0, as
+1.4.1-dev in `murrtty_version.zon`), on the owner's go. Four conflicts,
+each an upstream refactor of code murrtty changed: the build's version
+reading (a `Versions` struct with a tarball's VERSION file; murrtty's
+version and tag rule read Ghostty's text from it), the print fast path
+(upstream's now takes an open hyperlink, so only murrtty's deferred
+prompt mark keeps it off), the stream's actions (upstream's DECBI,
+DECFI, DECIC and DECDC first, `win32_input_mode` after them) and OSC 7's
+host (upstream's `osc7Host` accepts names that aren't RFC 1123, which
+covers murrtty's Windows-only acceptance of names like DEV_BOX). No
+shader changed, Zig stays 0.17.0. `third-party.json` takes z2d 0.13.2
+(license files unchanged), the themes of 2026-10-26 and an exclusion for
+zigimg, which upstream declares and no build script loads. One new
+workflow, `release-lib-vt.yml` (libghostty-vt's `vt-` tags), registered
+on the push and was disabled on both repositories. GTK's changes need
+nothing here (its split-ratio fix is GtkPaned's own). The unit tests
+(4,388 passed), the GUI suite, the ARM64 compile and `-Package` passed,
+and desktop CI's render-parity checked the merge before OpenGL retired.
 
 **7.2 Full CI, M.** Extend 0.11: run on pushes and pull requests (once
 decisions 6 and 8 allow the minutes), upload
@@ -3905,10 +3917,10 @@ GUI suite and then the unit tests on GitHub's hosted runners, x64
 emulated), started by hand. It runs in the public repository, whose
 minutes are free and which gets the ARM64 runners; Actions there allow
 GitHub-owned actions only, every upstream workflow is disabled, and a
-guard job checks that. With no GPU, murrtty draws with its own Mesa
-(6.3b), named by `MURRTTY_OPENGL` so no launch starts itself again; the
-scenarios of the driver's OpenGL (`gl-missing`, `gl-library`,
-`gl-fallback`) are left out. The runners' screen is 1024x768 and stays so
+guard job checks that. With no GPU, murrtty draws with Windows' WARP
+(`MURRTTY_D3D=warp`; before 7.8 with its own Mesa, 6.3b, named by
+`MURRTTY_OPENGL`, the driver's OpenGL scenarios left out). The runners'
+screen is 1024x768 and stays so
 (their GUI session has no display mode to change, and DWM drives no
 display there): the scenarios fit it (`window-options`' window, `bell`'s
 typed line, `undo`'s second window kept on its monitor), and `tab-drag`
@@ -4830,12 +4842,40 @@ gain is on those with a card but no OpenGL driver.
      `gl_diagnosis.zig`, the Mesa packages and `bin\mesa` with their
      notices and licenses, `MURRTTY_OPENGL`, the OpenGL invariants in the
      project notes. Archiving `murr2k/murrtty-mesa` is the owner's call.
+     *Done 2026-11-05* (after 0.6.0, on the owner's go, right after the
+     upstream merge, which render-parity checked first): upstream's
+     `OpenGL.zig`, `opengl/Device.zig`, `opengl/Frame.zig` and
+     `pkg/opengl/main.zig` are back byte for byte, `wgl.zig`,
+     `software_gl.zig` and all of `gl_diagnosis.zig` (Direct3D 11's "no
+     device" message is its own) are gone, the build refuses
+     `-Drenderer=opengl` for Windows, the inspector draws only with DX11,
+     libghostty on Windows no longer compiles glad, and the Mesa
+     dependencies, their install, packaging, license texts and
+     `third-party.json` component went. Tests: `gl-library` and
+     `render-parity` (with its helpers) went, `gl-reset`, `gl-missing`
+     and `gl-fallback` became `device-reset`, `no-device` and
+     `warp-fallback` (their Direct3D 11 halves), the harness lost its
+     renderer switch (golden keys keep `d3d11`), and desktop CI its
+     OpenGL compile and scenarios; the hosted workflow lost its
+     `renderer` input; the installer test checks a new install has no
+     `bin\mesa` (an upgrade should clear an old one, as setup's
+     `[InstallDelete]` deletes `bin\` first: untested). A local
+     `-Package` from a checkout that built with Mesa puts its two
+     packages, still in `zig-pkg\`, into the deps zip (`-Repair`, or
+     deleting those folders, clears them); the release job's clean
+     runners don't. murrtty.org's quality page changed with it (it
+     describes the process: no Mesa, render parity in the past, the
+     "every push" row, 128 scenarios, 4,385 unit tests); the release
+     notes say it with 0.7.0.
 
   About 4 to 6 weeks of focused work in all.
 - **Upstream merges:** the backend is murrtty's own code beside
   upstream's, so merges stay cheap, at one new cost: a merge that changes
   a shader, a pipeline or the backend contract ports the HLSL side in the
-  same merge, and `render-parity` catches what slips.
+  same merge. `render-parity` caught what slipped while OpenGL lived;
+  since step 7 the GUI suite's pixel checks (`present`, `pixels`'
+  goldens, `custom-shader`, `device-reset`) are what is left, so a
+  shader port gets a look at its frames by eye too.
 
 **7.9 Upstreaming.** *Dropped 2026-10-26 (decision 7):* Ghostty won't take
 another runtime. A fix that matters to Ghostty itself can still be offered

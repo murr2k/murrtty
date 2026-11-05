@@ -1,7 +1,7 @@
 //! What the display shows, through DXGI desktop duplication: the frames
 //! DWM sends to the monitor. Unlike a GDI capture (BitBlt, PrintWindow) it
 //! includes content a driver presents outside a window's GDI surface (on
-//! screen, NVIDIA presents OpenGL through a DXGI swap chain). The primary
+//! screen, a GPU driver may present through a DXGI swap chain). The primary
 //! adapter's first output only.
 const std = @import("std");
 const w = @import("win.zig");

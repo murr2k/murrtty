@@ -1,8 +1,9 @@
 //! A terminal surface: a child window that hosts one core surface.
 //!
-//! The renderer draws straight into this window with WGL (see
-//! renderer/OpenGL.zig), so the window class is CS_OWNDC and the
-//! window is dedicated to the surface.
+//! The renderer draws into this window (Direct3D 11's swap chain, shown
+//! by a DirectComposition target on it: renderer/D3D11.zig), so the
+//! window is dedicated to the surface. Its class keeps CS_OWNDC from the
+//! OpenGL renderer it had until roadmap 7.8's step 7.
 const Surface = @This();
 
 const std = @import("std");
@@ -33,7 +34,6 @@ const DropTarget = @import("DropTarget.zig");
 const Overlay = @import("Overlay.zig");
 const PaneDrag = @import("PaneDrag.zig");
 const Session = @import("Session.zig");
-const software_gl = @import("software_gl.zig");
 const Inspector = @import("Inspector.zig");
 const input_pane = @import("input_pane.zig");
 const Uia = @import("Uia.zig");
@@ -292,8 +292,8 @@ pub fn init(
     };
     self.colors = .fromConfig(&config);
 
-    // Initializing the core surface creates the renderer, which sets
-    // the pixel format on our window and starts the render thread.
+    // Initializing the core surface creates the renderer, which makes
+    // its swap chain on our window and starts the render thread.
     try self.core_surface.init(
         app.core_app.alloc,
         &config,
@@ -654,9 +654,9 @@ fn dragRects(self: *const Surface, out: []Shapes.Rect) usize {
 /// Present the frame with its own alpha (the window is translucent,
 /// roadmap 4.1) or over the opaque background, from the next frame.
 pub fn setTranslucent(self: *Surface, on: bool) void {
-    // Direct3D 11: the pane's own paint changes with it (paintBackground),
-    // and a parent's invalidation doesn't reach a child window.
-    if (comptime build_config.renderer == .d3d11) _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
+    // The pane's own paint changes with it (paintBackground), and a
+    // parent's invalidation doesn't reach a child window.
+    _ = c.InvalidateRect(self.hwnd, null, c.FALSE);
     if (!self.core_initialized) return;
     self.core_surface.renderer.api.present_state.transparent.store(on, .monotonic);
     self.postFrame();
@@ -862,9 +862,8 @@ pub fn setReadonly(self: *Surface, on: bool) void {
 /// Direct3D 11 (roadmap 7.8): the pane's own content, under the swap
 /// chain's composition visual, is the terminal background, which then
 /// shows where the frame doesn't reach yet (the strip a resize uncovers,
-/// until the swap chain's buffers follow), as OpenGL's present pass
-/// fills it. A translucent window leaves it alone: GDI's alpha 0 lets
-/// the backdrop show there.
+/// until the swap chain's buffers follow). A translucent window leaves it
+/// alone: GDI's alpha 0 lets the backdrop show there.
 fn paintBackground(self: *Surface) void {
     var ps: c.PAINTSTRUCT = undefined;
     const dc = c.BeginPaint(self.hwnd, &ps) orelse return;
@@ -1295,8 +1294,6 @@ pub fn defaultTermioEnv(self: *Surface) !std.process.Environ.Map {
     // A murrtty started for a request doesn't pass that on: a murrtty
     // started from its shells would wait for one too.
     _ = env.orderedRemove(ipc.launch_env);
-    // Nor a start on murrtty's software OpenGL (taken at start already).
-    _ = env.orderedRemove(software_gl.variable);
     // The pane's own command history (roadmap 5.10b): the file PowerShell's
     // integration keeps, and Clink's label. Never a murrtty's own from the
     // environment it was started with (a pane of another murrtty's).
@@ -1616,7 +1613,7 @@ fn handleMessage(self: *Surface, msg: c.UINT, wparam: c.WPARAM, lparam: c.LPARAM
         c.WM_MENUCHAR => return ContextMenu.menuChar(wparam, lparam),
 
         c.WM_PAINT => {
-            if (comptime build_config.renderer == .d3d11) self.paintBackground() else _ = c.ValidateRect(self.hwnd, null);
+            self.paintBackground();
             if (self.core_initialized) self.core_surface.refreshCallback() catch {};
             return 0;
         },

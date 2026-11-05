@@ -1,5 +1,5 @@
 //! What murrtty's Windows runtime shares with the renderer's present step,
-//! whichever graphics API draws (OpenGL; Direct3D 11 with roadmap 7.8):
+//! (Direct3D 11, roadmap 7.8; OpenGL's WGL path shared it until it retired):
 //! the shapes drawn over the frame, the translucency flag, the frame
 //! counts and the GUI tests' read-back. Each Windows backend keeps one as
 //! `present_state`, so the runtime and its test hooks name no API.

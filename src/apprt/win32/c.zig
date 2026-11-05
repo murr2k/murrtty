@@ -633,9 +633,7 @@ pub extern "user32" fn GetWindowThreadProcessId(HWND, ?*DWORD) callconv(.winapi)
 pub extern "user32" fn SetParent(HWND, ?HWND) callconv(.winapi) ?HWND;
 pub extern "user32" fn GetSystemMetrics(c_int) callconv(.winapi) c_int;
 
-// The inspector's window (roadmap 5.12): GL 1.1's clears, from opengl32
-// itself, and the save dialog for its Terminal IO events.
-pub const GL_COLOR_BUFFER_BIT = 0x4000;
+// The inspector's save dialog for its Terminal IO events (roadmap 5.12).
 
 pub const OPENFILENAMEW = extern struct {
     lStructSize: DWORD = @sizeOf(OPENFILENAMEW),
@@ -1199,41 +1197,9 @@ pub extern "kernel32" fn SetEnvironmentVariableW(LPCWSTR, ?LPCWSTR) callconv(.wi
 pub const CREATE_BREAKAWAY_FROM_JOB = 0x01000000;
 pub extern "user32" fn AllowSetForegroundWindow(DWORD) callconv(.winapi) BOOL;
 
-// Starting murrtty again on its software OpenGL (software_gl.zig).
-pub const STARTUPINFOEXW = extern struct {
-    StartupInfo: STARTUPINFOW = .{ .cb = @sizeOf(STARTUPINFOEXW) },
-    lpAttributeList: ?*anyopaque = null,
-};
-pub const STARTF_USESTDHANDLES = 0x00000100;
-pub const STARTF_USEHOTKEY = 0x00000200;
-pub const STARTF_USEMONITOR = 0x00000400;
-pub const STARTF_TITLEISAPPID = 0x00001000;
-/// Undocumented: set beside STARTF_TITLEISAPPID by
-/// SetCurrentProcessExplicitAppUserModelID, the title then being shell32's
-/// own allocation, which it frees when the ID changes.
-pub const STARTF_TITLE_ALLOCATED = 0x00004000;
-pub const CREATE_SUSPENDED = 0x00000004;
-pub const EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
-pub const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x00020002;
+// Duplicating a handle.
 pub const DUPLICATE_SAME_ACCESS = 0x00000002;
-pub const STD_INPUT_HANDLE: DWORD = @bitCast(@as(i32, -10));
-pub const STD_OUTPUT_HANDLE: DWORD = @bitCast(@as(i32, -11));
-pub const STD_ERROR_HANDLE: DWORD = @bitCast(@as(i32, -12));
-pub const STILL_ACTIVE = 259;
-pub const SYNCHRONIZE = 0x00100000;
-pub const ERROR_ALREADY_EXISTS = 183;
-pub const QS_ALLINPUT = 0x04FF;
-pub extern "kernel32" fn GetStartupInfoW(*STARTUPINFOW) callconv(.winapi) void;
-pub extern "kernel32" fn GetCommandLineW() callconv(.winapi) LPWSTR;
-pub extern "kernel32" fn GetStdHandle(DWORD) callconv(.winapi) ?HANDLE;
 pub extern "kernel32" fn DuplicateHandle(HANDLE, HANDLE, HANDLE, *HANDLE, DWORD, BOOL, DWORD) callconv(.winapi) BOOL;
-pub extern "kernel32" fn InitializeProcThreadAttributeList(?*anyopaque, DWORD, DWORD, *usize) callconv(.winapi) BOOL;
-pub extern "kernel32" fn UpdateProcThreadAttribute(*anyopaque, DWORD, usize, *const anyopaque, usize, ?*anyopaque, ?*usize) callconv(.winapi) BOOL;
-pub extern "kernel32" fn DeleteProcThreadAttributeList(*anyopaque) callconv(.winapi) void;
-pub extern "kernel32" fn ResumeThread(HANDLE) callconv(.winapi) DWORD;
-pub extern "kernel32" fn TerminateProcess(HANDLE, c_uint) callconv(.winapi) BOOL;
-pub extern "kernel32" fn GetExitCodeProcess(HANDLE, *DWORD) callconv(.winapi) BOOL;
-pub extern "user32" fn MsgWaitForMultipleObjects(DWORD, [*]const HANDLE, BOOL, DWORD, DWORD) callconv(.winapi) DWORD;
 
 // COM, for the taskbar's Jump List (jump_list.zig).
 pub const GUID = std.os.windows.GUID;

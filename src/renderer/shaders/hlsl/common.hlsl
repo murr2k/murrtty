@@ -1,7 +1,8 @@
 // HLSL port of glsl/common.glsl for murrtty's Direct3D 11 renderer
 // (roadmap 7.8). Every program file is compiled with this text before it.
-// Keep the math as the GLSL has it: the frames are compared with the
-// OpenGL renderer's pixel by pixel (render-parity).
+// Keep the math as the GLSL has it: the frames were OpenGL's pixel by
+// pixel (render-parity, until murrtty's OpenGL renderer retired), as
+// GTK's app draws them.
 
 //----------------------------------------------------------------------------//
 // Global Uniforms (b1, as OpenGL's binding 1 and Metal's buffer 1)

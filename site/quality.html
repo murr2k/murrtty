@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>How murrtty is tested: murrtty</title>
-  <meta name="description" content="How murrtty is built, tested and released: pinned dependencies, about 4,300 unit tests, 130 GUI scenarios driving the real program, CI on a GPU desktop and on GitHub's x64 and ARM64 runners, and releases built by GitHub, tested, attested and signed.">
+  <meta name="description" content="How murrtty is built, tested and released: pinned dependencies, about 4,400 unit tests, 128 GUI scenarios driving the real program, CI on a GPU desktop and on GitHub's x64 and ARM64 runners, and releases built by GitHub, tested, attested and signed.">
   <link rel="icon" type="image/png" href="/icon.png">
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -17,12 +17,12 @@
     A terminal sits between you and every program you run, so murrtty is
     checked at every step from source to download. This page says what is
     checked, where and when, and what isn't covered yet. Numbers are as of
-    release 0.6.0 (4 November 2026).
+    5 November 2026, after release 0.6.0.
   </p>
 
   <ol class="steps">
     <li><strong>Every change</strong> builds from pinned sources and passes the unit tests, its GUI scenarios and an ARM64 compile before it is committed.</li>
-    <li><strong>Every push</strong> runs the GUI suite, the unit tests and both renderers on a desktop with a real GPU.</li>
+    <li><strong>Every push</strong> runs the GUI suite and the unit tests on a desktop with a real GPU, and compiles for ARM64.</li>
     <li><strong>Before a release</strong> the whole suite runs on GitHub's clean x64 and ARM64 machines, and the on-screen checks on a real display.</li>
     <li><strong>The release</strong> is built by GitHub from its tag; its installers are installed, upgraded and removed on both architectures.</li>
     <li><strong>Before publishing</strong> its checksums are signed once the maintainer approves, and every file is scanned and checked.</li>
@@ -33,15 +33,15 @@
     <li><strong>One command:</strong> <code>build-windows.cmd</code> downloads the exact Zig compiler the source asks for (0.17.0), checks it against its SHA-256, and builds. No Visual Studio, no Windows SDK, nothing installed system-wide. The builder itself is tested on a clean GitHub runner under Windows PowerShell 5.1, the one every Windows has.</li>
     <li><strong>Pinned dependencies:</strong> every package the build fetches is pinned by a content hash in <code>build.zig.zon</code>, and Zig refuses one whose content differs.</li>
     <li><strong>Licenses checked, not assumed:</strong> <code>dist/windows/third-party.json</code> names 35 components and the license of each, and pins the files their versions come from by SHA-256. Packaging stops when a dependency is new or changed until its license has been checked and the record updated; a fetched package left out (16, such as libraries only other platforms use) carries a written reason.</li>
-    <li><strong>Software rendering from source:</strong> the Mesa software OpenGL murrtty falls back to is built from Mesa's and LLVM's source releases (pinned by SHA-256) on GitHub's runners, in the public <a href="https://github.com/murr2k/murrtty-mesa">murrtty-mesa</a> repository, with build attestations; murrtty pins those builds by hash.</li>
+    <li><strong>No third-party renderer:</strong> murrtty draws with Direct3D 11, and where there is no graphics driver with Windows' own software renderer (WARP), so nothing to draw with is downloaded. Releases up to 0.6.0 also carried a Mesa software OpenGL, built from Mesa's and LLVM's source releases (pinned by SHA-256) in the public <a href="https://github.com/murr2k/murrtty-mesa">murrtty-mesa</a> repository; it retired with murrtty's OpenGL renderer.</li>
     <li><strong>The package checks itself:</strong> the packager unpacks the release zip it made and runs the murrtty inside, which must report its version and find its themes.</li>
   </ul>
 
   <h2 id="unit">Unit tests</h2>
   <p>
-    About 4,300 unit tests run on Windows: Ghostty's own suite (terminal
+    About 4,400 unit tests run on Windows: Ghostty's own suite (terminal
     emulation, fonts, configuration, input encoding) and murrtty's
-    (4,265 passed at 0.6.0, 67 skipped where they don't apply). They run in
+    (4,385 passed on 5 November, 69 skipped where they don't apply). They run in
     a Debug build, with Zig's safety checks on. Some of murrtty's guard
     things that would otherwise fail only on a user's machine: its
     hand-written bindings to Windows' COM interfaces (Direct3D 11,
@@ -66,7 +66,7 @@
     folders, and the user's clipboard is saved and put back.
   </p>
   <p>
-    There are <strong>130 scenarios</strong>, from typing into PowerShell
+    There are <strong>128 scenarios</strong>, from typing into PowerShell
     and cmd to splits, tabs, dialogs, session restore, keyboard layouts and
     input methods, links, notifications and the tray. Some examples:
   </p>
@@ -81,12 +81,12 @@
   <p>
     Each feature lands with its scenarios. Stress scenarios run on the
     hosted machines: 16 panes flooding output, 20 launches quitting right
-    after configuration reloads, commands typed ahead of a slow prompt.
-    <strong>Render parity</strong> draws seven scenes (colors, attributes,
-    box drawing, fallback fonts, images, a custom shader, a translucent
-    window) with both renderers, Direct3D 11 and OpenGL, and compares their
-    frames within 1 per color channel; on the test machine they match
-    exactly.
+    after configuration reloads, commands typed ahead of a slow prompt. Until
+    murrtty's OpenGL renderer retired after 0.6.0, <strong>render
+    parity</strong> drew seven scenes (colors, attributes, box drawing,
+    fallback fonts, images, a custom shader, a translucent window) with it
+    and with Direct3D 11 on every push, comparing their frames within 1 per
+    color channel; on the test machine they matched exactly.
   </p>
   <p>
     Some things can only be checked on a real display: transparency and
@@ -104,7 +104,7 @@
       <thead><tr><th>When</th><th>Where</th><th>What runs</th></tr></thead>
       <tbody>
         <tr><td>Before each commit</td><td>The maintainer's desktop</td><td>The unit tests, the GUI scenarios the change touches, an ARM64 compile.</td></tr>
-        <tr><td>Every push</td><td>The same desktop as a self-hosted runner: Windows 11, NVIDIA GeForce RTX 2070, 125% scaling</td><td>The GUI suite (129 scenarios), the unit tests, ARM64 and OpenGL compiles, the scenarios that differ by renderer on OpenGL, render parity. The build that passes the GUI suite is installed as the maintainer's own terminal.</td></tr>
+        <tr><td>Every push</td><td>The same desktop as a self-hosted runner: Windows 11, NVIDIA GeForce RTX 2070, 125% scaling</td><td>The GUI suite (127 scenarios), the unit tests, an ARM64 compile. The build that passes the GUI suite is installed as the maintainer's own terminal.</td></tr>
         <tr><td>Before each release</td><td>GitHub's hosted runners: Windows Server 2025 (x64) and Windows 11 on ARM64, clean machines with no GPU</td><td>The whole GUI suite, stress scenarios included, then the unit tests, natively on each architecture (about 45 minutes).</td></tr>
         <tr><td>Before tagging</td><td>The maintainer's display</td><td>The on-screen checks against golden images.</td></tr>
         <tr><td>The release tag</td><td>GitHub's hosted runners</td><td>Packages, installers built and tested on both architectures, checksums, attestations, the signature (<a href="#release">below</a>).</td></tr>

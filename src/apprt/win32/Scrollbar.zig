@@ -2,7 +2,7 @@
 //! thumb at the pane's right edge that shows when the pane scrolls or the
 //! mouse moves over it, widens (with a faint track) when the mouse is over
 //! the band at the edge, and fades out a second after the last of those.
-//! It is drawn in the renderer's present pass (OpenGL.setOverlay, 3.0's
+//! It is drawn in the renderer's present pass (win32_present's setOverlay, 3.0's
 //! shape layer), over the grid, so the terminal keeps its width.
 //!
 //! The core reports the scrollable area (the `scrollbar` action: rows in

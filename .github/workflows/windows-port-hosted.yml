@@ -8,25 +8,16 @@
 # isn't at startup. The guard job checks that. The self-hosted desktop
 # runner never serves this repository.
 #
-# Hosted runners have no GPU. Direct3D 11, the default (roadmap 7.8),
-# draws with Windows' WARP, asked for by MURRTTY_D3D so the software
-# notice stays out of every window. An OpenGL build
-# (renderer: opengl) draws with the Mesa llvmpipe it ships (bin\mesa,
-# roadmap 6.3b), named by MURRTTY_OPENGL for every launch so that none
-# starts itself again (the harness follows the process it started), and
-# leaves out the scenarios of the graphics driver's own OpenGL
-# (gl-missing, gl-library, gl-fallback) for that reason.
+# Hosted runners have no GPU. Direct3D 11, murrtty's renderer (roadmap
+# 7.8), draws with Windows' WARP, asked for by MURRTTY_D3D so the software
+# notice stays out of every window.
 name: Windows port (hosted GUI suite)
 
 on:
   workflow_dispatch:
     inputs:
       scenarios:
-        description: Scenario names to run (all but the GPU ones when empty)
-        type: string
-        default: ''
-      renderer:
-        description: The renderer to build (d3d11 or opengl; the default, d3d11, when empty)
+        description: Scenario names to run (all when empty)
         type: string
         default: ''
 
@@ -109,12 +100,10 @@ jobs:
         env:
           GHOSTTY_GUI_TARGET: ${{ matrix.target }}
           GHOSTTY_GUI_TEST_DIR: ${{ runner.temp }}\gui
-          MURRTTY_OPENGL: ${{ inputs.renderer == 'opengl' && format('{0}\zig-out\bin\mesa\opengl32.dll', github.workspace) || '' }}
           SCENARIOS: ${{ inputs.scenarios }}
-          GHOSTTY_GUI_RENDERER: ${{ inputs.renderer }}
           # Direct3D 11 (roadmap 7.8): no GPU here, so WARP, asked for
           # (the software notice stays out of every window).
-          MURRTTY_D3D: ${{ inputs.renderer != 'opengl' && 'warp' || '' }}
+          MURRTTY_D3D: warp
           # The opt-in spike runs when asked for by name (overlay-host,
           # S1; with no display here it skips). An empty value is off.
           GHOSTTY_GUI_SPIKE: ${{ contains(inputs.scenarios, 'overlay-host') && '1' || '' }}
@@ -128,7 +117,6 @@ jobs:
           GHOSTTY_GUI_UNWATCHED: '1'
         run: |
           $scenarioArgs = @(($env:SCENARIOS -split '\s+') | Where-Object { $_ })
-          if ($scenarioArgs.Count -eq 0 -and $env:GHOSTTY_GUI_RENDERER -eq 'opengl') { $scenarioArgs = @('--skip', 'gl-missing', '--skip', 'gl-library', '--skip', 'gl-fallback') }
           # Expected here: tab-drag's second half (no room for two
           # windows) and bell-audio (no audio
           # output device: Media Foundation's engine reports

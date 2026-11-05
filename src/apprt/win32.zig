@@ -1,5 +1,5 @@
 //! Application runtime for native Windows, built directly on Win32
-//! (user32/gdi32) with WGL rendering.
+//! (user32/gdi32), rendering with Direct3D 11.
 
 pub const App = @import("win32/App.zig");
 pub const Surface = @import("win32/Surface.zig");
@@ -21,7 +21,6 @@ test {
     _ = @import("win32/draw.zig");
     _ = @import("win32/DropTarget.zig");
     _ = @import("win32/GlobalKeys.zig");
-    _ = @import("win32/gl_diagnosis.zig");
     _ = @import("win32/ipc.zig");
     _ = @import("win32/jump_list.zig");
     _ = @import("win32/KeyState.zig");
