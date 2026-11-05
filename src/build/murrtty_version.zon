@@ -11,5 +11,5 @@
 // it with each upstream merge.
 .{
     .version = "0.7.0",
-    .ghostty = "1.4.0",
+    .ghostty = "1.4.1-dev",
 }

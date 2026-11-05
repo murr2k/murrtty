@@ -127,7 +127,7 @@ pub fn loadFromFile(
 
         // SpirV pointer must be aligned to 4 bytes since we expect
         // a slice of words.
-        var list: std.ArrayListAligned(u8, .of(u32)) = .empty;
+        var list: std.array_list.Aligned(u8, .of(u32)) = .empty;
         try list.appendSlice(alloc, stream.written());
         break :spirv list.items;
     };
@@ -523,7 +523,7 @@ test "shadertoy to msl" {
     try spirvFromGlsl(&buf.writer, null, src);
 
     // TODO: Replace this with an aligned version of Writer.Allocating
-    var spvlist: std.ArrayListAligned(u8, .of(u32)) = .empty;
+    var spvlist: std.array_list.Aligned(u8, .of(u32)) = .empty;
     defer spvlist.deinit(alloc);
     try spvlist.appendSlice(alloc, buf.written());
 
@@ -543,7 +543,7 @@ test "shadertoy to glsl" {
     try spirvFromGlsl(&buf.writer, null, src);
 
     // TODO: Replace this with an aligned version of Writer.Allocating
-    var spvlist: std.ArrayListAligned(u8, .of(u32)) = .empty;
+    var spvlist: std.array_list.Aligned(u8, .of(u32)) = .empty;
     defer spvlist.deinit(alloc);
     try spvlist.appendSlice(alloc, buf.written());
 
