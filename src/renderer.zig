@@ -70,6 +70,8 @@ test {
         _ = D3D11;
         _ = @import("d3d11");
     }
+    // murrtty's readable selection and text (roadmap F3).
+    _ = @import("renderer/readable.zig");
 
     _ = cursor;
     _ = message;

@@ -539,6 +539,17 @@ roadmap item behind it.
   frames identical to the OpenGL backend's before that retired, and custom
   shaders see OpenGL's coordinates. The build refuses `-Drenderer=opengl`
   for Windows.
+- **A selection that always shows** (F3, murrtty's own, the owner's ask,
+  2026-11-05): a selection highlight closer than a color difference of 10
+  (CIE76) to the background is drawn further from it, selected text below
+  3:1 against the highlight takes the theme's foreground or background or
+  black or white, and default text on the default background, text being
+  composed and the cursor, below 1.5:1 against the background, are drawn
+  black or white. GTK's app draws the
+  configured colors as they are: with 108 of the bundled themes the
+  selection barely shows or doesn't (Everblush's is its own background),
+  and any theme can meet it through a background color of the user's own.
+  Nothing in the configuration changes.
 - **The prompt on a resize** (2.2, 2.3): a resize keeps the prompt's rows and
   reflows them like any text. GTK's clears them for the shell to redraw
   (OSC 133's `redraw` defaults to on there, and its shells redraw on
@@ -5283,6 +5294,55 @@ every window's bells, and a click raises the pane's window.
   window showing the first's bell and visiting it, a waiting tab closed
   from its menu, and with a title too long to center, two sharing one
   bell.
+
+**F3 A selection that always shows, S.** *The owner's ask, 2026-11-05:*
+some combinations of themes, background colors and settings left text
+unreadable, the plainest a selection no one could see; the themes should
+keep the terminal usable. *Built 2026-11-05.* Measured over the 861
+bundled themes (all set selection colors): 108 name a selection
+background within a color difference of 10 (CIE76) of their own
+background, four of them that background exactly (Everblush, Galizur,
+Hacktober, Konsolas), the SeedFlip family within 2 to 5; 99 name selected
+text below 3:1 against it; 10 have default text below 3:1 (Darkermatrix's
+1.9 the lowest, all readable as designed); none a cursor near the
+background. A background color of the user's own, or one a program sets
+(OSC 11), can do the same to any theme. The configuration file stays
+Ghostty's, so no option was added: `src/renderer/readable.zig` decides
+the colors drawn, once a frame (`readable.Frame`, chosen in
+`rebuildCells` with the terminal's current background and foreground,
+which builds every row again when those change, as a program's OSC 10 or
+11 does: rows built before hold the old choice, as upstream's did for OSC
+10 already):
+- the highlight: the configured one when it is at least 10 from the
+  background, else carried further along its own way from the background
+  (keeping its hue), else a blend toward the foreground, else black or
+  white;
+- selected text: the configured one when it is at least 3:1 against that
+  highlight, else the first of the theme's foreground, its background,
+  black and white that is, else the one with the most contrast;
+- default text where a cell has no background of its own (a program's
+  background keeps the theme's foreground on it, as before), the text an
+  input method is composing, and the cursor whatever sets its color (every
+  bundled theme sets one): below 1.5:1 against the background (only text
+  no one can read, such as a background set to the theme's foreground),
+  black or white.
+Per-cell selection colors (`cell-foreground`, `cell-background`) are the
+cells' own and pass through, but for selected text over a highlight that
+had to move, which takes a readable color. Custom shaders' selection
+uniforms get the colors drawn (none for a per-cell choice: reading
+`.color` from one was a union-field panic upstream). A review before the
+commit found the first version substituting default text on cells with
+their own background (a tmux bar's black, say, lost its text), rows left
+stale after OSC 11, the cursor guard never reached under a theme, and
+per-cell selected text vanishing on a moved highlight; all four were
+fixed as above, with unit tests. With the guard, all 861 themes keep a
+highlight of at least 10 and selected text of at least 3:1; it changes
+108 themes' highlights and 99 themes' selected text and leaves the rest as
+designed (Everblush's selection: `#141b1e`, its background, becomes
+`#32383a`). Unit tests in `readable.zig`; the GUI scenario
+`selection-visible` reads back a selected blank cell with Everblush (the
+background before Select All, 13.9 apart after; it fails without the
+guard).
 
 ---
 

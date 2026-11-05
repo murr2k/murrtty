@@ -35,6 +35,7 @@ pub const all = [_]Scenario{
     .{ .name = "window-size", .about = "window-width/height give the exact grid", .run = windowSize },
     .{ .name = "links", .about = "Ctrl+click links: programs and UNC paths blocked, web opens, other schemes ask", .run = links },
     .{ .name = "mixed-width", .about = "150 PowerShell lines, each a color, a wide character, an emoji, an OSC 8 link and bold+underline (the print fast path merged from Ghostty's main): every row reads back as written, and a link Ctrl+clicked opens its own address, on the last line, scrolled back and after a resize", .run = mixedWidth },
+    .{ .name = "selection-visible", .about = "a selection always shows (roadmap F3): with Everblush, whose selection color is its own background, Select All draws selected blank cells well apart from the background (CIE76 10 or more)", .run = selectionVisible },
     .{ .name = "links-open", .about = "links really open: a test protocol and file type registered in HKCU", .run = linksOpen },
     .{ .name = "present", .about = "background-opacity doesn't darken an opaque (toggled) window; exact background pixels; translucent, premultiplied", .run = present },
     .{ .name = "theme", .about = "window-theme: caption colors, OSC 11 following, and the color scheme reaching terminals", .run = theme },
@@ -1272,6 +1273,81 @@ fn mixedWidth(h: *Harness) anyerror!void {
     try h.expect(resized[1] == 150, "after the resize the last line shows (up to {d})", .{resized[1]});
     try clickMixedLink(h, &g, surf, 149, 3);
     try quit(h, &g, surf);
+}
+
+/// A selection always shows (roadmap F3, src/renderer/readable.zig):
+/// Everblush names its own background as the selection background, so
+/// Ghostty draws selected cells exactly as unselected ones. A blank cell
+/// between two output lines reads back as the background, then, once
+/// Select All (Ctrl+Shift+A) takes it, at least a color difference of 10
+/// from it.
+fn selectionVisible(h: *Harness) anyerror!void {
+    var g = try start(h, "selection-visible", "theme = Everblush\n", ">");
+    defer g.deinit();
+    const surf = try h.surface(&g, try h.mainWindow(&g));
+    // The caret keeps the markers out of the typed line.
+    try h.typeText(surf, "cls& echo SEL^TOP& echo.& echo.& echo.& echo SEL^BOTTOM");
+    h.enter(surf);
+    try h.waitText(&g, "SELBOTTOM", 1, 10000);
+
+    const point = blk: {
+        var d = try h.dump(&g);
+        defer d.deinit();
+        const t = d.value.windows[0].tabs[d.value.windows[0].active];
+        const cell = t.cell orelse return h.fail("no cell size in the dump", .{});
+        const pad = t.padding orelse return h.fail("no padding in the dump", .{});
+        var row: u32 = 0;
+        var lines = std.mem.splitScalar(u8, t.text orelse "", '\n');
+        while (lines.next()) |line| : (row += 1) {
+            if (std.mem.startsWith(u8, line, "SELTOP")) break;
+        } else return h.fail("no SELTOP row", .{});
+        // Column 3 of the second blank line below it.
+        break :blk [2]u32{ pad[0] + 3 * cell[0] + cell[0] / 2, pad[1] + (row + 2) * cell[1] + cell[1] / 2 };
+    };
+    const before = try h.probe(&g, point[0], point[1]);
+    try h.expect(before == 0x141b1e, "the blank cell is Everblush's background before (#{x:0>6})", .{before});
+
+    h.key(surf, .{ .ctrl = true, .shift = true }, 'A');
+    var after = before;
+    var waited: u32 = 0;
+    while (waited <= 3000) : (waited += 200) {
+        w.Sleep(200);
+        after = try h.probe(&g, point[0], point[1]);
+        if (after != before) break;
+    }
+    const diff = deltaE76(before, after);
+    try h.expect(diff >= 10, "selected, it shows: #{x:0>6} over #{x:0>6}, a difference of {d:.1} (10 or more)", .{ after, before, diff });
+    try quit(h, &g, surf);
+}
+
+/// The CIE76 color difference between two 0xRRGGBB colors (as
+/// src/renderer/readable.zig measures it).
+fn deltaE76(a: u32, b: u32) f64 {
+    const la = lab76(a);
+    const lb = lab76(b);
+    const dl = la[0] - lb[0];
+    const da = la[1] - lb[1];
+    const db = la[2] - lb[2];
+    return @sqrt(dl * dl + da * da + db * db);
+}
+
+fn lab76(c: u32) [3]f64 {
+    const lin = struct {
+        fn f(v: u32) f64 {
+            const s = @as(f64, @floatFromInt(v & 0xff)) / 255;
+            return if (s <= 0.04045) s / 12.92 else std.math.pow(f64, (s + 0.055) / 1.055, 2.4);
+        }
+        fn g(t: f64) f64 {
+            return if (t > 0.008856) std.math.cbrt(t) else 7.787 * t + 16.0 / 116.0;
+        }
+    };
+    const r = lin.f(c >> 16);
+    const gr = lin.f(c >> 8);
+    const b = lin.f(c);
+    const x = lin.g((0.4124 * r + 0.3576 * gr + 0.1805 * b) / 0.95047);
+    const y = lin.g(0.2126 * r + 0.7152 * gr + 0.0722 * b);
+    const z = lin.g((0.0193 * r + 0.1192 * gr + 0.9505 * b) / 1.08883);
+    return .{ 116 * y - 16, 500 * (x - y), 200 * (y - z) };
 }
 
 /// Ctrl+click the cell `col` of the row that starts with `label`.

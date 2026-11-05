@@ -22,6 +22,8 @@ const Overlay = @import("Overlay.zig");
 const imagepkg = @import("image.zig");
 const ImageState = imagepkg.State;
 const shadertoy = @import("shadertoy.zig");
+// murrtty: a selection that shows and text that reads (roadmap F3).
+const readable = @import("readable.zig");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -178,6 +180,11 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// to determine if any possible changes have been made to the
         /// cells for the draw call.
         cells_rebuilt: bool = false,
+
+        /// murrtty: the selection, default text and cursor colors this
+        /// frame draws, and the default colors they were chosen for
+        /// (readable.zig, roadmap F3).
+        readable_colors: readable.Frame = .{},
 
         /// Set to true after the Kitty image placements are rebuilt. Like
         /// `cells_rebuilt`, this means the next frame must be drawn. This
@@ -2439,25 +2446,35 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 };
             }
 
+            // murrtty: the selection colors as drawn (readable.zig), and
+            // none passed for a per-cell choice, which has no one color
+            // (reading `.color` from one was a union-field panic).
+            const drawn_selection = readable.selection(
+                self.config.selection_background,
+                self.config.selection_foreground,
+                colors.background,
+                colors.foreground,
+            );
+
             // Selection background color
-            if (self.config.selection_background) |selection_bg| {
+            if (drawn_selection.background) |v| if (v == .color) {
                 uniforms.selection_background_color = .{
-                    @as(f32, @floatFromInt(selection_bg.color.r)) / 255.0,
-                    @as(f32, @floatFromInt(selection_bg.color.g)) / 255.0,
-                    @as(f32, @floatFromInt(selection_bg.color.b)) / 255.0,
+                    @as(f32, @floatFromInt(v.color.r)) / 255.0,
+                    @as(f32, @floatFromInt(v.color.g)) / 255.0,
+                    @as(f32, @floatFromInt(v.color.b)) / 255.0,
                     1.0,
                 };
-            }
+            };
 
             // Selection foreground color
-            if (self.config.selection_foreground) |selection_fg| {
+            if (drawn_selection.foreground) |v| if (v == .color) {
                 uniforms.selection_foreground_color = .{
-                    @as(f32, @floatFromInt(selection_fg.color.r)) / 255.0,
-                    @as(f32, @floatFromInt(selection_fg.color.g)) / 255.0,
-                    @as(f32, @floatFromInt(selection_fg.color.b)) / 255.0,
+                    @as(f32, @floatFromInt(v.color.r)) / 255.0,
+                    @as(f32, @floatFromInt(v.color.g)) / 255.0,
+                    @as(f32, @floatFromInt(v.color.b)) / 255.0,
                     1.0,
                 };
-            }
+            };
 
             // Cursor visibility
             uniforms.cursor_visible = @intFromBool(self.terminal_state.cursor.visible);
@@ -2689,7 +2706,16 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.uniforms.grid_size = .{ new_size.columns, new_size.rows };
             }
 
-            const rebuild = state.dirty == .full or grid_size_diff;
+            // murrtty: the colors to draw this frame (readable.zig); rows
+            // built for other default colors (OSC 10, 11) are built again.
+            const colors_changed = self.readable_colors.update(
+                self.config.selection_background,
+                self.config.selection_foreground,
+                state.colors.background,
+                state.colors.foreground,
+            );
+
+            const rebuild = state.dirty == .full or grid_size_diff or colors_changed;
             if (rebuild) {
                 // If we are doing a full rebuild, then we clear the entire cell buffer.
                 self.cells.reset();
@@ -2867,7 +2893,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.addCursor(
                     &state.cursor,
                     style,
-                    cursor_color,
+                    // murrtty: a cursor that shows (readable.zig).
+                    readable.text(cursor_color, state.colors.background),
                 );
 
                 // If the cursor is visible then we set our uniforms.
@@ -2939,7 +2966,8 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     self.addPreeditCell(
                         cp,
                         .{ .x = x, .y = range.y },
-                        state.colors.foreground,
+                        // murrtty: as default text is drawn (readable.zig).
+                        self.readable_colors.text,
                     ) catch |err| {
                         log.warn("error building preedit cell, will be invalid x={} y={}, err={}", .{
                             x,
@@ -2972,6 +3000,13 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             links: *const terminal.RenderState.CellSet,
         ) !void {
             const state = &self.terminal_state;
+
+            // murrtty: the selection colors to draw, a highlight that shows
+            // and selected text that reads, and default text that reads
+            // (readable.zig, roadmap F3, chosen for this frame in
+            // rebuildCells); the config's are drawn when they do.
+            const selection_colors = self.readable_colors.selection;
+            const default_fg = self.readable_colors.text;
 
             // If our viewport is wider than our cell contents buffer,
             // we still only process cells up to the width of the buffer.
@@ -3147,7 +3182,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     &state.colors.palette,
                 );
                 const fg_style = style.fg(.{
-                    .default = state.colors.foreground,
+                    // murrtty: substituted only where the cell has no
+                    // background of its own (readable.zig).
+                    .default = if (bg_style == null) default_fg else state.colors.foreground,
                     .palette = &state.colors.palette,
                     .bold = self.config.bold_color,
                 });
@@ -3159,7 +3196,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     //
                     // If no configuration, then our selection background
                     // is our foreground color.
-                    .selection => if (self.config.selection_background) |v| switch (v) {
+                    .selection => if (selection_colors.background) |v| switch (v) {
                         .color => |color| color.toTerminalRGB(),
                         .@"cell-foreground" => if (style.flags.inverse) bg_style else fg_style,
                         .@"cell-background" => if (style.flags.inverse) fg_style else bg_style,
@@ -3203,7 +3240,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     // - Cell is selected, not inverted, and set to cell-background
                     // - Cell is inverted and not selected
                     break :fg switch (selected) {
-                        .selection => if (self.config.selection_foreground) |v| switch (v) {
+                        .selection => if (selection_colors.foreground) |v| switch (v) {
                             .color => |color| color.toTerminalRGB(),
                             .@"cell-foreground" => if (style.flags.inverse) final_bg else fg_style,
                             .@"cell-background" => if (style.flags.inverse) fg_style else final_bg,

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>How murrtty is tested: murrtty</title>
-  <meta name="description" content="How murrtty is built, tested and released: pinned dependencies, about 4,400 unit tests, 129 GUI scenarios driving the real program, CI on a GPU desktop and on GitHub's x64 and ARM64 runners, and releases built by GitHub, tested, attested and signed.">
+  <meta name="description" content="How murrtty is built, tested and released: pinned dependencies, about 4,400 unit tests, 130 GUI scenarios driving the real program, CI on a GPU desktop and on GitHub's x64 and ARM64 runners, and releases built by GitHub, tested, attested and signed.">
   <link rel="icon" type="image/png" href="/icon.png">
   <link rel="stylesheet" href="/style.css">
 </head>
@@ -41,7 +41,7 @@
   <p>
     About 4,400 unit tests run on Windows: Ghostty's own suite (terminal
     emulation, fonts, configuration, input encoding) and murrtty's
-    (4,385 passed on 5 November, 69 skipped where they don't apply). They run in
+    (4,395 passed on 5 November, 69 skipped where they don't apply). They run in
     a Debug build, with Zig's safety checks on. Some of murrtty's guard
     things that would otherwise fail only on a user's machine: its
     hand-written bindings to Windows' COM interfaces (Direct3D 11,
@@ -66,7 +66,7 @@
     folders, and the user's clipboard is saved and put back.
   </p>
   <p>
-    There are <strong>129 scenarios</strong>, from typing into PowerShell
+    There are <strong>130 scenarios</strong>, from typing into PowerShell
     and cmd to splits, tabs, dialogs, session restore, keyboard layouts and
     input methods, links, notifications and the tray. Some examples:
   </p>
@@ -104,7 +104,7 @@
       <thead><tr><th>When</th><th>Where</th><th>What runs</th></tr></thead>
       <tbody>
         <tr><td>Before each commit</td><td>The maintainer's desktop</td><td>The unit tests, the GUI scenarios the change touches, an ARM64 compile.</td></tr>
-        <tr><td>Every push</td><td>The same desktop as a self-hosted runner: Windows 11, NVIDIA GeForce RTX 2070, 125% scaling</td><td>The GUI suite (128 scenarios), the unit tests, an ARM64 compile. The build that passes the GUI suite is installed as the maintainer's own terminal.</td></tr>
+        <tr><td>Every push</td><td>The same desktop as a self-hosted runner: Windows 11, NVIDIA GeForce RTX 2070, 125% scaling</td><td>The GUI suite (129 scenarios), the unit tests, an ARM64 compile. The build that passes the GUI suite is installed as the maintainer's own terminal.</td></tr>
         <tr><td>Before each release</td><td>GitHub's hosted runners: Windows Server 2025 (x64) and Windows 11 on ARM64, clean machines with no GPU</td><td>The whole GUI suite, stress scenarios included, then the unit tests, natively on each architecture (about 45 minutes).</td></tr>
         <tr><td>Before tagging</td><td>The maintainer's display</td><td>The on-screen checks against golden images.</td></tr>
         <tr><td>The release tag</td><td>GitHub's hosted runners</td><td>Packages, installers built and tested on both architectures, checksums, attestations, the signature (<a href="#release">below</a>).</td></tr>

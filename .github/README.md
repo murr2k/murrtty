@@ -103,7 +103,7 @@ the modifier keys set as held where needed, and checked the results with
 window captures, a Debug-build state dump and logs. Those GUI tests are in
 `test/windows/gui/` and run with `test\windows\gui\run.cmd`, on a hidden
 desktop. murrtty has not yet had much use on a physical keyboard. Every
-push runs the unit tests (about 4,400) and the GUI tests (129 scenarios,
+push runs the unit tests (about 4,400) and the GUI tests (130 scenarios,
 11 of them opt-in because they show something on the screen, need Clink
 or run long; 4 more tools save pictures) on a self-hosted
 runner on the development machine, in a private
@@ -290,6 +290,14 @@ release for the maintainer to publish.
   background tab does, a bell for it appears in every window's
   header bar, without moving the title. Its tooltip says which terminal it
   is and where; a left click goes there, a right click dismisses it.
+- A selection that always shows, murrtty's own: whatever the theme or
+  background color, a selection highlight too close to the background is
+  drawn further from it, and selected text too faint against it takes a
+  readable color (text no one could read at all on the background, and a
+  cursor no one could see, are drawn black or white). With 108 of the bundled themes the selection otherwise
+  barely shows (Everblush's is its own background). Colors that are
+  readable are drawn as configured, and no option is added: the
+  configuration stays Ghostty's.
 - An overlay scrollbar, as in Ghostty's GTK app: a thin thumb at the right
   edge shows while you scroll or move the mouse, widens under the mouse,
   drags, and pages with a click on the track; it fades when idle (not when
@@ -753,6 +761,7 @@ Start `zig-out\bin\murrtty.exe`, or build with `-Run`.
 | `src/renderer/D3D11.zig`, `src/renderer/d3d11/`, `src/renderer/shaders/hlsl/` | The Direct3D 11 renderer: a device per terminal, presentation through DirectComposition, WARP without a driver; its HLSL programs |
 | `pkg/d3d11/`, `src/build/DxbcStep.zig` | Direct3D 11, DXGI and DirectComposition bindings; the shaders compiled at build time |
 | `src/renderer/win32_present.zig` | What the renderer shares with the app: translucency, the present pass's shapes, the tests' read-back |
+| `src/renderer/readable.zig` | The selection and text colors drawn, so a selection always shows and text can be read |
 | `build-windows.ps1`, `build-windows.cmd`, `dist/windows/` | The builder, the release package and its third-party notices |
 | `test/windows/gui/`, `src/apprt/win32/test_hooks.zig` | GUI tests, and the Debug-only state dump they read |
 | `.github/workflows/windows-port.yml` | CI, started by hand: the builder and the unit tests on a clean hosted Windows runner |
