@@ -202,11 +202,11 @@
     },
     {
       "name": "z2d",
-      "version": "0.13.0",
+      "version": "0.13.2",
       "use": "2D drawing of box and other sprite glyphs, compiled into murrtty.exe",
       "license": "MPL-2.0, with portions under MIT, BSD-3-Clause and the W3C license (listed in its LICENSE)",
       "home": "https://github.com/vancluever/z2d",
-      "notice": ["z2d is covered by the Mozilla Public License 2.0: its source code, unmodified, is available from https://github.com/vancluever/z2d (tag v0.13.0, commit 40af3e84a4e15a9f31d126b3f281f23ce6a3dae5) and from the archive named above."],
+      "notice": ["z2d is covered by the Mozilla Public License 2.0: its source code, unmodified, is available from https://github.com/vancluever/z2d (tag v0.13.2, commit 8787d71bac42d9aab00428ccb37a4fd453418761) and from the archive named above."],
       "texts": [
         { "from": ":z2d", "path": "LICENSE" },
         { "from": ":z2d", "path": "COPYING" }
@@ -328,7 +328,7 @@
     },
     {
       "name": "iTerm2 Color Schemes",
-      "version": "release 20261019-151001-86a776d",
+      "version": "release 20261026-153024-27cbbb5",
       "use": "the themes in share\\ghostty\\themes",
       "license": "MIT",
       "home": "https://github.com/mbadolato/iTerm2-Color-Schemes",
@@ -391,12 +391,12 @@
     ":murrtty_mesa_arm64": "N-V-__8AAC5JPAMSOJb1X-nxX6CIUO2pWAIm4QIT9g6NIweZ",
     ":libxev": "libxev-0.0.0-86vtc8QQFACz0sVc7U-VDiDIgH-XfBuEY5JpABLjHNpn",
     ":vaxis": "vaxis-0.6.0-BWNV_MafDAAEzkVUvrW9NFUqnnMUoeHqrs2mecnD6D7w",
-    ":z2d": "z2d-0.13.0-j5P_HgsRFABzZDH54gI35P0OSrg7HFyJwS2bXX5uBdU4",
+    ":z2d": "z2d-0.13.2-j5P_HkkVFAAtOSQPRTS7wbZLbYs7oETRn7nUKSUwDjM_",
     ":uucode": "uucode-0.2.0-ZZjBPoGFVgCiflJNFc6Io8xzC67B6PA5bUkk4LT0kCxg",
     ":zf": "zf-0.11.0-OIRy8XCRAAB6FiMwIrtD6FqlagnFwpI6YyOu7bXeYH5J",
     ":jetbrains_mono": "N-V-__8AAIC5lwAVPJJzxnCAahSvZTIlG-HhtOvnM1uh-66x",
     ":nerd_fonts_symbols_only": "N-V-__8AAMVLTABmYkLqhZPLXnMl-KyN38R8UVYqGrxqO26s",
-    ":iterm2_themes": "N-V-__8AAJ3vBQAq1fLMh5J8uWLkeDLS6WAdR2x5KcrmEyz6",
+    ":iterm2_themes": "N-V-__8AAIs9BgCF_swp81fS2tAWIJytW8NCUa6EbSOygPE3",
     "pkg/dcimgui:bindings": "N-V-__8AANT61wB--nJ95Gj_ctmzAtcjloZ__hRqNw5lC1Kr",
     "pkg/dcimgui:imgui": "N-V-__8AAEbOfQBnvcFcCX2W5z7tDaN8vaNZGamEQtNOe0UI",
     "pkg/freetype:freetype": "N-V-__8AAKLKpwC4H27Ps_0iL3bPkQb-z6ZVSrB-x_3EEkub",
@@ -442,6 +442,7 @@
     "pkg/breakpad:breakpad": "not on Windows, where Sentry's in-process backend catches crashes",
     "pkg/wuffs:pixels": "test images only",
     ":vaxis/zigimg": "vaxis's image support, not compiled into murrtty (none of its code is in murrtty's symbols)",
+    ":zigimg": "declared in Ghostty's build.zig.zon since 1.4.1-dev but loaded by no build script (upstream's own note in src/build/LibVtPackages.zig), so none of it is in murrtty",
     "pkg/translate-c:translate_c/aro": "the C translator translate-c uses while building, not compiled into murrtty"
   }
 }
