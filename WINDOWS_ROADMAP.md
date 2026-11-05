@@ -209,7 +209,13 @@ Fork items, ahead of the rest of Phase 3:
   `public` `main`). GitHub's API can't create Discussions categories, so
   "Issue Triage" (`issue-triage`) and "Feature Requests"
   (`feature-requests`) are the owner's to add in the web UI; until then
-  their forms show nowhere. The private repository stays the CI mirror,
+  their forms show nowhere. *Changed 2026-11-04 (the owner's choice):*
+  bugs are issues and wishes are discussions, so those categories aren't
+  needed: the Issue Triage form became the issue form "Bug report"
+  (`.github/ISSUE_TEMPLATE/bug-report.yml`, labels `bug` and
+  `needs-confirmation`), the Feature Requests form the existing Ideas
+  category's (`ideas.yml`), and the issue chooser offers the bug form,
+  Ideas, Q&A and private vulnerability reporting. The private repository stays the CI mirror,
   and the desktop workflow runs only there. murrtty.org went up the same
   day (7.6).
 

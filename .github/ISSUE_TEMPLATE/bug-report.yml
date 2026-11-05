@@ -1,10 +1,14 @@
-labels: ["needs-confirmation"]
+name: Bug report
+description: Something in murrtty doesn't work as it should.
+labels: ["bug", "needs-confirmation"]
 body:
   - type: markdown
     attributes:
       value: |
         > [!IMPORTANT]
-        > Please read the [Status](https://github.com/murr2k/murrtty#status) section of the README (what is tested, untested and not implemented yet) and check for both existing [Discussions](https://github.com/murr2k/murrtty/discussions?discussions_q=) and [Issues](https://github.com/murr2k/murrtty/issues?q=sort%3Areactions-desc) prior to opening a new Discussion.
+        > Please read the [Status](https://github.com/murr2k/murrtty#status) section of the README (what is tested, untested and not implemented yet) and check for both existing [Issues](https://github.com/murr2k/murrtty/issues?q=sort%3Areactions-desc) and [Discussions](https://github.com/murr2k/murrtty/discussions?discussions_q=) prior to opening a new issue.
+        >
+        > This form is for bugs. Ideas and wishes go in [Discussions](https://github.com/murr2k/murrtty/discussions/categories/ideas), questions in [Q&A](https://github.com/murr2k/murrtty/discussions/categories/q-a), and security problems [privately](https://github.com/murr2k/murrtty/security/advisories/new).
         >
         > murrtty is not affiliated with the Ghostty project. Please report murrtty's problems here, never to Ghostty.
   - type: markdown
@@ -26,7 +30,7 @@ body:
         > - **Font issues:** include the problematic character(s), the output of `murrtty +show-face --string=<characters>` for them, and if they work in other applications.
         > - **Terminal emulation issues (including image rendering issues):** attach an [asciinema](https://docs.asciinema.org/getting-started/) cast file, shell script, or text file for reproduction.
         > - **Shell integration issues:** include your shell and its version (PowerShell 7, Windows PowerShell 5.1, or cmd with or without Clink) and the lines of your profile that change the prompt.
-        > - **Renderer issues:** include your graphics card, its driver version, and the text of murrtty's dialog if it says OpenGL 4.3 is missing.
+        > - **Renderer issues:** include your graphics card, its driver version, whether murrtty runs over Remote Desktop or in a virtual machine, and the text of any message murrtty showed about drawing.
         > - **Crashes:** run `murrtty +crash-report` and attach the newest report from `%LOCALAPPDATA%\murrtty\crash`.
       placeholder: |
         When using SSH to connect to my Linux machine from murrtty, I try to run `clear`, and the screen does not clear.  Instead, I see the following error message printed to the terminal: `Error opening terminal: xterm-ghostty.`
@@ -73,17 +77,18 @@ body:
       label: murrtty Version
       description: Paste the output of `murrtty +version` here.
       placeholder: |
-        murrtty, based on Ghostty 1.4.0-windows-port+d448ca7
+        murrtty 0.6.0, based on Ghostty 1.4.0
 
         Version
-          - version: 1.4.0-windows-port+d448ca7
-          - channel: tip
+          - version: 0.6.0
+          - Ghostty: 1.4.0
+          - channel: stable
         Build Config
           - Zig version   : 0.17.0
           - build mode    : .fast
           - app runtime   : .win32
           - font engine   : .freetype_windows
-          - renderer      : renderer.generic.Renderer(renderer.OpenGL)
+          - renderer      : renderer.generic.Renderer(renderer.D3D11)
           - libxev        : iocp
       render: text
     validations:

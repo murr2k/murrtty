@@ -1,11 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Issue Triage
-    url: https://github.com/murr2k/murrtty/discussions/new?category=issue-triage
-    about: Report a problem. Issues are opened from confirmed reports.
-  - name: Feature Requests
-    url: https://github.com/murr2k/murrtty/discussions/new?category=feature-requests
-    about: Suggest a feature.
+  - name: Ideas
+    url: https://github.com/murr2k/murrtty/discussions/new?category=ideas
+    about: Suggest a feature or an improvement.
   - name: Q&A
     url: https://github.com/murr2k/murrtty/discussions/new?category=q-a
     about: Ask a question about using or configuring murrtty.

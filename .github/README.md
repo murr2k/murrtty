@@ -14,10 +14,10 @@ terminals built from Ghostty.
 > and the
 > [Ghostty contributors](https://github.com/ghostty-org/ghostty/graphs/contributors),
 > and most of the code in this repository is theirs. murrtty is not
-> affiliated with or endorsed by the Ghostty project. Please report problems
-> with murrtty in this repository's
-> [Discussions](https://github.com/murr2k/murrtty/discussions/categories/issue-triage),
-> not to Ghostty; security problems privately, as [SECURITY.md](SECURITY.md)
+> affiliated with or endorsed by the Ghostty project. Please report bugs in
+> murrtty as this repository's [Issues](https://github.com/murr2k/murrtty/issues/new/choose)
+> and share ideas in its [Discussions](https://github.com/murr2k/murrtty/discussions/categories/ideas),
+> not with Ghostty; security problems privately, as [SECURITY.md](SECURITY.md)
 > says.
 
 ![murrtty with two tabs, the first split in two running PowerShell 7; the bell in the header bar is the second tab waiting](../images/murrtty/screenshot.png)

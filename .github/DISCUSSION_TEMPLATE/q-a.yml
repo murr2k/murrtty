@@ -5,7 +5,7 @@ body:
         > [!IMPORTANT]
         > Please read the [README](https://github.com/murr2k/murrtty#readme) (what murrtty does, how to build, run and configure it) and check for existing [Discussions](https://github.com/murr2k/murrtty/discussions?discussions_q=) prior to asking.
         >
-        > Most options come from Ghostty and work as its [configuration reference](https://ghostty.org/docs/config/reference) describes; murrtty is not affiliated with the Ghostty project, so please ask about murrtty here, never there. Something that looks broken goes in [Issue Triage](https://github.com/murr2k/murrtty/discussions/categories/issue-triage).
+        > Most options come from Ghostty and work as its [configuration reference](https://ghostty.org/docs/config/reference) describes; murrtty is not affiliated with the Ghostty project, so please ask about murrtty here, never there. Something that looks broken is a [bug report](https://github.com/murr2k/murrtty/issues/new?template=bug-report.yml) instead, and an idea goes in [Ideas](https://github.com/murr2k/murrtty/discussions/categories/ideas).
   - type: textarea
     attributes:
       label: Question
